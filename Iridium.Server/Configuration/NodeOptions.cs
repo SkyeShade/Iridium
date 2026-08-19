@@ -1,0 +1,18 @@
+namespace Iridium.Server.Configuration;
+
+public sealed class NodeOptions
+{
+    public const string SectionName = "Node";
+
+    public bool AllowRegistrations { get; set; } = true;
+
+    public int MaxCommunitiesPerUser { get; set; } = 5;
+
+    public int SessionIdleDays { get; set; } = 60;
+
+    public int SessionAbsoluteDays { get; set; } = 365;
+
+    public int SessionActivityUpdateMinutes { get; set; } = 15;
+
+    public string? PublicAuthority { get; set; }
+}

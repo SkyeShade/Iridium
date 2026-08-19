@@ -1,0 +1,78 @@
+@using Iridium.Client.Core
+@using Iridium.Protocol
+@using Iridium.Web.Models
+
+<ModalShell Title="Settings" Size="extra-large" OnClose="OnClose">
+<div class="settings-view">
+    <aside class="settings-nav">
+        <div class="nav-inner">
+            <p>USER SETTINGS</p>
+            @foreach (var section in new[] { "My Account", "Appearance", "Connections / Nodes", "About" })
+            {
+                <button class="@(section == _section ? "active" : null)" @onclick="() => _section = section">@section</button>
+            }
+            <div class="nav-divider"></div>
+            <button class="logout" @onclick="OnLogout">Log Out</button>
+        </div>
+    </aside>
+    <main class="settings-content">
+        <div class="content-inner">
+            @if (_section == "My Account")
+            {
+                <h1>My Account</h1>
+                <div class="account-card">
+                    <div class="account-banner"></div>
+                    <div class="account-heading"><div class="avatar">@Account.DisplayName[..1].ToUpperInvariant()</div><div><strong class="display-name">@Account.DisplayName</strong><span>@PublicIdentity</span></div></div>
+                    <div class="readonly"><span>Public identity</span><strong>@PublicIdentity</strong></div>
+                    <div class="readonly"><span>Current Node</span><strong>@CurrentNode.Address</strong></div>
+                    @if (!string.IsNullOrWhiteSpace(Error)) { <p class="error">@Error</p> }
+                    <button class="primary edit-profile" @onclick="OnEditProfile">Edit Profile</button>
+                </div>
+            }
+            else if (_section == "Connections / Nodes")
+            {
+                <h1>Connections / Nodes</h1>
+                <p class="lead">Accounts belong to individual Nodes. Your saved list stays in this browser.</p>
+                <div class="node-settings-list">
+                    @foreach (var availability in Nodes)
+                    {
+                        <div class="node-row">
+                            <span class="status @(availability.IsOnline ? "online" : null)"></span>
+                            <div><strong>@(availability.Info?.Name ?? availability.Node.Label ?? new Uri(availability.Node.Address).Authority)</strong><small>@availability.Node.Address</small></div>
+                            @if (availability.Node.Address == CurrentNode.Address) { <span class="current">CURRENT SESSION</span> }
+                            @if (!availability.Node.IsLocal) { <button @onclick="() => OnRemoveNode.InvokeAsync(availability.Node)">Remove</button> }
+                        </div>
+                    }
+                </div>
+                <div class="add-node"><input @bind="_newNode" placeholder="https://chat.example.com" /><button class="primary" @onclick="AddNode">Add Node</button></div>
+            }
+            else if (_section == "Appearance")
+            {
+                <h1>Appearance</h1>
+                <AppearanceSettings />
+            }
+            else
+            {
+                <h1>About</h1><div class="placeholder"><strong>Iridium</strong><p>A decentralized, self-hosted community chat application.</p></div>
+            }
+        </div>
+    </main>
+</div>
+</ModalShell>
+
+@code {
+    [Parameter, EditorRequired] public required NodeAccountDto Account { get; set; }
+    [Parameter, EditorRequired] public required SavedNode CurrentNode { get; set; }
+    [Parameter] public IReadOnlyList<NodeAvailability> Nodes { get; set; } = [];
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public string? Error { get; set; }
+    [Parameter] public EventCallback OnEditProfile { get; set; }
+    [Parameter] public EventCallback<string> OnAddNode { get; set; }
+    [Parameter] public EventCallback<SavedNode> OnRemoveNode { get; set; }
+    [Parameter] public EventCallback OnLogout { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    private string _section = "My Account";
+    private string _newNode = string.Empty;
+    private string PublicIdentity => IridiumIdentity.Format(Account.Username, CurrentNode.PublicAuthority);
+    private async Task AddNode() { if (string.IsNullOrWhiteSpace(_newNode)) return; await OnAddNode.InvokeAsync(_newNode); _newNode = string.Empty; }
+}

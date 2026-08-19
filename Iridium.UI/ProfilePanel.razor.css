@@ -1,0 +1,8 @@
+.profile-panel { display: grid; grid-template-columns: 2.45rem minmax(0, 1fr) 2rem; gap: .65rem; align-items: start; margin: .55rem; padding: .6rem; border: 1px solid transparent; border-radius: var(--radius-md); background: var(--surface-raised); cursor: pointer; transition: background .15s ease, border-color .15s ease; }
+.profile-panel:hover { border-color: var(--border); background: var(--surface-hover); }
+.profile-copy { min-width: 0; padding-top: .05rem; }
+.profile-copy span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.profile-copy .display-name { margin-top:0; color: var(--text-strong); font-size:inherit; line-height: 1.15; }
+.profile-copy span:not(.display-name) { margin-top: .22rem; color: var(--text-muted); font-size: .72rem; }
+.settings-button { align-self: center; width: 2rem; height: 2rem; padding: 0; border: 0; border-radius: .4rem; color: var(--text-muted); background: transparent; cursor: pointer; }
+.settings-button:hover { color: var(--text-strong); background: var(--surface-active); }

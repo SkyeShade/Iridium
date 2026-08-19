@@ -1,0 +1,10 @@
+.community-rail { width: 4.75rem; height: 100%; display: flex; flex-direction: column; align-items: center; gap: .55rem; padding: .75rem .55rem; background: var(--bg-deep); overflow: hidden; }
+.community-scroll { width: 100%; display: flex; flex: 1; flex-direction: column; align-items: center; gap: .55rem; overflow-y: auto; scrollbar-width: none; }
+.notification-stack{width:100%;max-height:min(17rem,35dvh);display:flex;flex:0 1 auto;flex-direction:column;align-items:center;gap:.6rem;padding:.15rem 0 .25rem;overflow-y:auto;overflow-x:hidden;scrollbar-width:none}.notification-item{position:relative;flex:0 0 auto;width:3.25rem;height:3.25rem;display:grid;place-items:center;padding:0;border:0;border-radius:1rem;background:transparent;cursor:pointer;transition:background 120ms ease,transform 120ms ease}.notification-item:hover,.notification-item:focus-visible{background:var(--surface-hover);transform:translateY(-1px);outline:2px solid var(--accent);outline-offset:1px}
+.rail-item { position: relative; flex: 0 0 auto; width: 3rem; height: 3rem; border: 0; border-radius: 50%; color: var(--text); background: var(--surface-raised); font-weight: 750; cursor: pointer; transition: border-radius .16s ease, background .16s ease, color .16s ease; }
+.rail-item:hover, .rail-item.active { border-radius: .95rem; color: white; background: var(--accent); }
+.rail-item.active::before { content: ""; position: absolute; left: -.7rem; top: .55rem; width: .22rem; height: 1.9rem; border-radius: 1rem; background: white; }
+.rail-item.add { color: #56c994; }
+.rail-item.add:hover { color: white; background: #31976a; }
+.community-mention-badge{position:absolute;right:-.22rem;bottom:-.18rem;min-width:1.15rem;height:1.15rem;display:inline-flex;align-items:center;justify-content:center;padding:0 .25rem;border:2px solid var(--bg-deep);border-radius:999px;color:white;background:var(--danger);font-size:.56rem;font-weight:700;line-height:1}
+.rail-divider { width: 2rem; height: 1px; background: var(--border); }

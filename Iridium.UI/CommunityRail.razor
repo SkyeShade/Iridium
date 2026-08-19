@@ -1,0 +1,64 @@
+@using Iridium.Protocol
+
+<nav class="community-rail" aria-label="Communities">
+    <button class="rail-item home active" title="Home" @onclick="() => OnSelected.InvokeAsync(null)">I</button>
+    @if (UnreadConversations.Count > 0)
+    {
+        <div class="notification-stack" aria-label="Unread Direct Messages">
+            @foreach (var conversation in UnreadConversations)
+            {
+                <button class="notification-item" title="@NotificationTitle(conversation)"
+                        aria-label="@NotificationTitle(conversation)"
+                        @onclick="() => OnDirectConversationSelected.InvokeAsync(conversation)">
+                    <ProfileAvatar DisplayName="@conversation.OtherParticipant.DisplayName"
+                                   BadgeMode="AvatarBadgeMode.Notification"
+                                   NotificationCount="@conversation.UnreadCount"
+                                   Tooltip="@NotificationTitle(conversation)"
+                                   Surface="deep" />
+                </button>
+            }
+        </div>
+    }
+    <div class="rail-divider"></div>
+    <div class="community-scroll">
+        @foreach (var community in Communities)
+        {
+            <button class="rail-item @(community.Id == SelectedCommunityId ? "active" : null)"
+                    title="@community.Name"
+                    @onclick="() => OnSelected.InvokeAsync(community)">
+                @Initials(community.Name)
+                @if (CommunityMentionCounts.TryGetValue(community.Id, out var count) && count > 0)
+                {
+                    <span class="community-mention-badge">@(count > 99 ? "99+" : count)</span>
+                }
+            </button>
+        }
+    </div>
+    <button class="rail-item add" title="Create Community" @onclick="OnAdd"><Icon Name="plus" /></button>
+</nav>
+
+@code {
+    [Parameter] public IReadOnlyList<CommunityDto> Communities { get; set; } = [];
+    [Parameter] public Guid? SelectedCommunityId { get; set; }
+    [Parameter] public IReadOnlyList<DirectConversationDto> DirectConversations { get; set; } = [];
+    [Parameter] public IReadOnlyDictionary<Guid, int> CommunityMentionCounts { get; set; } = new Dictionary<Guid, int>();
+    [Parameter] public string NodeAuthority { get; set; } = string.Empty;
+    [Parameter] public EventCallback<CommunityDto?> OnSelected { get; set; }
+    [Parameter] public EventCallback<DirectConversationDto> OnDirectConversationSelected { get; set; }
+    [Parameter] public EventCallback OnAdd { get; set; }
+    private IReadOnlyList<DirectConversationDto> UnreadConversations => DirectConversations
+        .Where(value => value.UnreadCount > 0)
+        .GroupBy(value => value.Id)
+        .Select(group => group.OrderByDescending(value => value.LastMessageAt).First())
+        .OrderByDescending(value => value.LastMessageAt)
+        .ToArray();
+
+    private string NotificationTitle(DirectConversationDto conversation) =>
+        $"{conversation.OtherParticipant.DisplayName} | {IridiumIdentity.Format(conversation.OtherParticipant.Username, NodeAuthority)} | {conversation.UnreadCount} unread";
+
+    private static string Initials(string name)
+    {
+        var words = name.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return string.Concat(words.Take(2).Select(word => char.ToUpperInvariant(word[0])));
+    }
+}

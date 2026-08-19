@@ -1,0 +1,140 @@
+@using Iridium.Client.Core
+@using Iridium.Protocol
+@implements IDisposable
+
+<ModalShell Title="Add Friend" Size="medium" OnClose="OnClose">
+<section class="add-friend-view">
+    <div class="add-friend-content">
+        <h1>Add a friend by Iridium identity</h1>
+        <p>Enter their complete identity</p>
+        <label>
+            Iridium identity
+            <input value="@_identity" @oninput="IdentityChanged" placeholder="skye@friends.example" autocomplete="off" spellcheck="false" />
+        </label>
+
+        <div class="resolution" aria-live="polite">
+            @if (_resolving)
+            {
+                <p class="resolution-state">Resolving profile…</p>
+            }
+            else if (_result?.State == ProfileResolutionState.Resolved && _result.Profile is { } profile && _result.Identity is { } identity)
+            {
+                <article class="resolved-card @(profile.Relationship == ProfileRelationshipStatus.Self ? null : "clickable")"
+                         role="button" tabindex="0" @onclick="() => OpenProfileAsync(profile)">
+                    <ProfileAvatar DisplayName="@profile.DisplayName" Presence="profile.Presence" Size="large" Surface="sidebar" />
+                    <div class="resolved-copy"><strong class="display-name">@profile.DisplayName</strong><span>@identity</span>@if (!string.IsNullOrWhiteSpace(profile.Pronouns)) { <small>@profile.Pronouns</small> }</div>
+                    <div class="resolved-actions">
+                        @switch (profile.Relationship)
+                        {
+                            case ProfileRelationshipStatus.None:
+                                <button class="primary" disabled="@_busy" @onclick="SendRequestAsync" @onclick:stopPropagation="true">Add Friend</button>
+                                break;
+                            case ProfileRelationshipStatus.IncomingPending:
+                                <button class="primary" disabled="@_busy" @onclick="AcceptAsync" @onclick:stopPropagation="true">Accept Request</button>
+                                break;
+                            case ProfileRelationshipStatus.OutgoingPending:
+                                <span>Request pending</span>
+                                break;
+                            case ProfileRelationshipStatus.Friends:
+                                <span>Click profile to message</span>
+                                break;
+                            case ProfileRelationshipStatus.Self:
+                                <span>This is your account</span>
+                                break;
+                        }
+                    </div>
+                </article>
+            }
+            else if (_result is not null && _result.State != ProfileResolutionState.Invalid)
+            {
+                <p class="resolution-state">@_result.Message</p>
+            }
+            @if (!string.IsNullOrWhiteSpace(_error)) { <p class="friend-error">@_error</p> }
+        </div>
+    </div>
+</section>
+</ModalShell>
+
+@code {
+    [Parameter, EditorRequired] public required Func<string, CancellationToken, Task<ProfileResolutionResult>> Resolve { get; set; }
+    [Parameter] public EventCallback<string> OnRequest { get; set; }
+    [Parameter] public EventCallback<Guid> OnAccept { get; set; }
+    [Parameter] public EventCallback<Guid> OnMessage { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    private string _identity = string.Empty;
+    private ProfileResolutionResult? _result;
+    private CancellationTokenSource? _debounce;
+    private bool _resolving;
+    private bool _busy;
+    private string? _error;
+
+    private void IdentityChanged(ChangeEventArgs args)
+    {
+        _identity = args.Value?.ToString() ?? string.Empty;
+        _result = null;
+        _error = null;
+        _debounce?.Cancel();
+        _debounce?.Dispose();
+        _debounce = new CancellationTokenSource();
+        _ = ResolveAfterDelayAsync(_debounce.Token);
+    }
+
+    private async Task ResolveAfterDelayAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Task.Delay(325, cancellationToken);
+            if (!IridiumIdentity.TryParse(_identity, out _))
+            {
+                _resolving = false;
+                await InvokeAsync(StateHasChanged);
+                return;
+            }
+            _resolving = true;
+            await InvokeAsync(StateHasChanged);
+            _result = await Resolve(_identity, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+        finally
+        {
+            if (!cancellationToken.IsCancellationRequested)
+            {
+                _resolving = false;
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+    }
+
+    private async Task SendRequestAsync()
+    {
+        if (_result?.Identity is not { } identity) return;
+        await RunActionAsync(() => OnRequest.InvokeAsync(identity.Username));
+    }
+
+    private async Task AcceptAsync()
+    {
+        if (_result?.Profile?.FriendshipId is not { } id) return;
+        await RunActionAsync(() => OnAccept.InvokeAsync(id));
+    }
+
+    private Task OpenProfileAsync(ResolvedProfileDto profile) =>
+        profile.Relationship == ProfileRelationshipStatus.Self
+            ? Task.CompletedTask
+            : OnMessage.InvokeAsync(profile.AccountId);
+
+    private async Task RunActionAsync(Func<Task> action)
+    {
+        _busy = true;
+        _error = null;
+        try
+        {
+            await action();
+            _result = await Resolve(_identity, CancellationToken.None);
+        }
+        catch (Exception exception) { _error = exception.Message; }
+        finally { _busy = false; }
+    }
+
+    private static string Initial(string value) => string.IsNullOrWhiteSpace(value) ? "?" : value[..1].ToUpperInvariant();
+    public void Dispose() { _debounce?.Cancel(); _debounce?.Dispose(); }
+}

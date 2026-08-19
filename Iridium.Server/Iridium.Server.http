@@ -1,0 +1,6 @@
+@Iridium.Server_HostAddress = http://localhost:5159
+
+GET {{Iridium.Server_HostAddress}}/api/server-info
+Accept: application/json
+
+###

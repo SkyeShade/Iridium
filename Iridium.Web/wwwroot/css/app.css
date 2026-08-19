@@ -1,0 +1,57 @@
+:root {
+    --iridium-accent: #6677e8;
+    --iridium-bg-base: #20232d;
+    --iridium-bg-surface: #292d38;
+    --bg-deep: #111319;
+    --bg-sidebar: #1a1d25;
+    --bg-base: var(--iridium-bg-base);
+    --surface-panel: var(--iridium-bg-surface);
+    --surface-raised: #303542;
+    --surface-hover: #363b49;
+    --surface-active: #3d4353;
+    --input-bg: #12151b;
+    --border: #424857;
+    --border-subtle: #2b2f3a;
+    --text-strong: #f4f6fb;
+    --text: #d8dce6;
+    --text-muted: #a8afbd;
+    --text-faint: #757e90;
+    --accent: var(--iridium-accent);
+    --accent-soft: #9ba7ff;
+    --accent-deep: #7051ad;
+    --scrollbar-thumb: #4b5160;
+    --scrollbar-thumb-hover: #606879;
+    --danger: #c94f58;
+    --danger-text: #ff9da4;
+    --space-1: .25rem;
+    --space-2: .5rem;
+    --space-3: .75rem;
+    --space-4: 1rem;
+    --radius-sm: .4rem;
+    --radius-md: .65rem;
+    --radius-lg: .9rem;
+}
+
+.display-name {
+    font-weight: 400 !important;
+}
+
+* { box-sizing: border-box; }
+html, body, #app { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+body { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--text); background: var(--bg-deep); }
+button, input, textarea { font: inherit; }
+button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent-soft); outline-offset: 2px; }
+.iridium-textarea-scrollbar { scrollbar-width: auto; scrollbar-color: color-mix(in srgb, var(--surface-raised) 45%, black) transparent; }
+.iridium-textarea-scrollbar::-webkit-scrollbar { width: 1rem; }
+.iridium-textarea-scrollbar::-webkit-scrollbar-track, .iridium-textarea-scrollbar::-webkit-scrollbar-corner { background: transparent; }
+.iridium-textarea-scrollbar::-webkit-scrollbar-thumb { min-height: 1.5rem; border: 3px solid transparent; border-radius: 999px; background: color-mix(in srgb, var(--surface-raised) 45%, black); background-clip: padding-box; }
+.iridium-textarea-scrollbar::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--surface-raised) 58%, black); }
+.iridium-textarea-scrollbar::-webkit-scrollbar-button,
+.iridium-textarea-scrollbar::-webkit-scrollbar-button:single-button,
+.iridium-textarea-scrollbar::-webkit-scrollbar-button:vertical:start:decrement,
+.iridium-textarea-scrollbar::-webkit-scrollbar-button:vertical:end:increment { display: none !important; width: 0 !important; height: 0 !important; background: transparent !important; }
+
+#blazor-error-ui { display: none; position: fixed; z-index: 1000; inset: auto 1rem 1rem; padding: .8rem 1rem; border: 1px solid #a54b4b; border-radius: .5rem; color: white; background: #7d3030; }
+#blazor-error-ui .dismiss { position: absolute; right: .6rem; cursor: pointer; }
+.blazor-error-boundary { padding: 1rem; color: white; background: #7d3030; }
+.loading-progress { position: absolute; width: 5rem; height: 5rem; inset: 35vh 0 auto; margin: auto; }.loading-progress circle { fill: none; stroke: var(--surface-raised); stroke-width: .6rem; transform-origin: 50% 50%; transform: rotate(-90deg); }.loading-progress circle:last-child { stroke: var(--accent); stroke-dasharray: calc(3.141 * var(--blazor-load-percentage, 0%) * .8),500%; }.loading-progress-text { position: absolute; inset: calc(35vh + 2rem) 0 auto; text-align: center; }.loading-progress-text::after { content: var(--blazor-load-percentage-text, "Loading"); }

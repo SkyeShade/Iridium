@@ -1,0 +1,42 @@
+@using Iridium.Protocol
+
+<nav class="home-navigation" aria-label="Home navigation">
+    <button class="home-link @(ActiveView is "friends" or "add-friend" ? "active" : null)" @onclick="SelectFriends">
+        <Icon Name="friends" /><span>Friends</span>
+    </button>
+    <button class="home-link @(ActiveView == "requests" ? "active" : null)" @onclick="SelectRequests">
+        <Icon Name="requests" /><span>Message Requests</span>
+    </button>
+    <div class="separator"></div>
+    <div class="dm-heading"><span>DIRECT MESSAGES</span></div>
+    <div class="dm-list">
+        @foreach (var conversation in Conversations.OrderByDescending(value => value.LastMessageAt))
+        {
+            <div class="dm-row @(SelectedConversationId == conversation.Id ? "active" : null) @(conversation.UnreadCount > 0 ? "unread" : "read")">
+                <button class="dm-open" @onclick="() => OnConversationSelected.InvokeAsync(conversation)">
+                    <span class="dm-marker-slot" aria-hidden="true">
+                        @if (conversation.UnreadCount > 0)
+                        {
+                            <span class="dm-unread-marker"></span>
+                        }
+                    </span>
+                    <ProfileAvatar DisplayName="@conversation.OtherParticipant.DisplayName" Presence="conversation.OtherParticipant.Presence" Size="small" Surface="sidebar" />
+                    <span class="dm-name display-name">@conversation.OtherParticipant.DisplayName</span>
+                </button>
+                <button class="dm-close" title="Close Direct Message" @onclick="() => OnConversationClosed.InvokeAsync(conversation.Id)"><Icon Name="close" Size="13" /></button>
+            </div>
+        }
+        @if (Conversations.Count == 0) { <div class="dm-empty">No conversations yet</div> }
+    </div>
+</nav>
+
+@code {
+    [Parameter] public string ActiveView { get; set; } = "friends";
+    [Parameter] public IReadOnlyList<DirectConversationDto> Conversations { get; set; } = [];
+    [Parameter] public Guid? SelectedConversationId { get; set; }
+    [Parameter] public EventCallback<string> OnViewSelected { get; set; }
+    [Parameter] public EventCallback<DirectConversationDto> OnConversationSelected { get; set; }
+    [Parameter] public EventCallback<Guid> OnConversationClosed { get; set; }
+    private Task SelectFriends() => OnViewSelected.InvokeAsync("friends");
+    private Task SelectRequests() => OnViewSelected.InvokeAsync("requests");
+}

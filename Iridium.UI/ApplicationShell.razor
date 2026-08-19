@@ -1,0 +1,44 @@
+@using Iridium.Protocol
+
+<div class="app-shell @(ShowRightSidebar ? "has-context-sidebar" : null)">
+    <CommunityRail Communities="Communities" SelectedCommunityId="SelectedCommunity?.Id"
+                   DirectConversations="DirectConversations" NodeAuthority="@NodeAuthority"
+                   CommunityMentionCounts="CommunityMentionCounts"
+                   OnSelected="OnCommunitySelected" OnDirectConversationSelected="OnDirectConversationSelected" OnAdd="OnAddCommunity" />
+    <aside class="secondary-sidebar">
+        <header class="community-header">
+            @if (SidebarHeader is not null) { @SidebarHeader }
+            else { <strong>@(SelectedCommunity?.Name ?? "Iridium")</strong> }
+        </header>
+        <div class="sidebar-body">
+            @if (SidebarContent is not null) { @SidebarContent }
+        </div>
+        <ProfilePanel DisplayName="@DisplayName" PublicIdentity="@PublicIdentity" Presence="Presence" OnProfile="OnProfile" OnSettings="OnSettings" />
+    </aside>
+    <main class="main-content">@ChildContent</main>
+    @if (ShowRightSidebar && RightSidebar is not null)
+    {
+        <aside class="context-sidebar">@RightSidebar</aside>
+    }
+</div>
+
+@code {
+    [Parameter] public IReadOnlyList<CommunityDto> Communities { get; set; } = [];
+    [Parameter] public CommunityDto? SelectedCommunity { get; set; }
+    [Parameter] public IReadOnlyList<DirectConversationDto> DirectConversations { get; set; } = [];
+    [Parameter] public IReadOnlyDictionary<Guid, int> CommunityMentionCounts { get; set; } = new Dictionary<Guid, int>();
+    [Parameter] public string NodeAuthority { get; set; } = string.Empty;
+    [Parameter, EditorRequired] public required string DisplayName { get; set; }
+    [Parameter, EditorRequired] public required string PublicIdentity { get; set; }
+    [Parameter] public PublicPresence Presence { get; set; }
+    [Parameter] public EventCallback<CommunityDto?> OnCommunitySelected { get; set; }
+    [Parameter] public EventCallback<DirectConversationDto> OnDirectConversationSelected { get; set; }
+    [Parameter] public EventCallback OnAddCommunity { get; set; }
+    [Parameter] public EventCallback OnProfile { get; set; }
+    [Parameter] public EventCallback OnSettings { get; set; }
+    [Parameter] public RenderFragment? SidebarHeader { get; set; }
+    [Parameter] public RenderFragment? SidebarContent { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+    [Parameter] public RenderFragment? RightSidebar { get; set; }
+    [Parameter] public bool ShowRightSidebar { get; set; }
+}

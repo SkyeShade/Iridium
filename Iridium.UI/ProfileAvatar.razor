@@ -1,0 +1,42 @@
+@using Iridium.Protocol
+
+@if (BadgeMode == AvatarBadgeMode.PresenceGlyph)
+{
+    <span class="presence-glyph avatar-@Size surface-@Surface" title="@PresenceLabel">
+        <span class="presence presence-@Presence.ToString().ToLowerInvariant()" aria-label="@PresenceLabel"></span>
+    </span>
+}
+else
+{
+    <span class="profile-avatar avatar-@Size surface-@Surface" title="@Title">
+        <span class="avatar-initial">@Initial</span>
+        @if (BadgeMode == AvatarBadgeMode.Presence)
+        {
+            <span class="presence presence-@Presence.ToString().ToLowerInvariant()" aria-label="@PresenceLabel"></span>
+        }
+        else if (BadgeMode == AvatarBadgeMode.Notification && NotificationCount > 0)
+        {
+            <span class="notification-badge" aria-label="@($"{NotificationCount} unread messages")">@DisplayCount</span>
+        }
+    </span>
+}
+
+@code {
+    [Parameter] public string DisplayName { get; set; } = string.Empty;
+    [Parameter] public PublicPresence Presence { get; set; } = PublicPresence.Offline;
+    [Parameter] public AvatarBadgeMode BadgeMode { get; set; } = AvatarBadgeMode.Presence;
+    [Parameter] public int NotificationCount { get; set; }
+    [Parameter] public string? Tooltip { get; set; }
+    [Parameter] public string Size { get; set; } = "medium";
+    [Parameter] public string Surface { get; set; } = "base";
+    private string Initial => string.IsNullOrWhiteSpace(DisplayName) ? "?" : DisplayName.Trim()[..1].ToUpperInvariant();
+    private string DisplayCount => NotificationCount > 99 ? "99+" : NotificationCount.ToString();
+    private string Title => Tooltip ?? PresenceLabel;
+    private string PresenceLabel => Presence switch
+    {
+        PublicPresence.Online => "Online",
+        PublicPresence.Idle => "Idle",
+        PublicPresence.DoNotDisturb => "Do Not Disturb",
+        _ => "Offline"
+    };
+}

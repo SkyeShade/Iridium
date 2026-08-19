@@ -1,0 +1,206 @@
+@using Iridium.Protocol
+@using Iridium.Web.Models
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+@inject ILogger<MessageComposer> Logger
+
+<div class="composer-wrap">
+    <div class="composer-shell">
+        @if (!string.IsNullOrWhiteSpace(ReplyToDisplayName))
+        {
+            <div class="replying"><span>Replying to <strong class="display-name">@ReplyToDisplayName</strong></span><button title="Cancel reply" @onclick="OnCancelReply"><Icon Name="close" /></button></div>
+        }
+        <textarea class="iridium-textarea-scrollbar" @ref="_textarea" value="@_content" @oninput="ContentChanged" maxlength="4000" rows="1"
+                  placeholder="@ComposerPlaceholder" aria-label="@ComposerPlaceholder"></textarea>
+        @if (Suggestions.Count > 0)
+        {
+            <div class="mention-suggestions" role="listbox" aria-label="Mention suggestions">
+                @for (var index = 0; index < Suggestions.Count; index++)
+                {
+                    var suggestion = Suggestions[index];
+                    <button type="button" class="mention-option @(index == _suggestionIndex ? "active" : null)"
+                            role="option" aria-selected="@(index == _suggestionIndex)" @onclick="() => AcceptSuggestion(suggestion)">
+                        @if (suggestion.Member is { } member)
+                        {
+                            <ProfileAvatar DisplayName="@member.DisplayName" Presence="@member.Presence" Size="small" Surface="panel" />
+                            <span><span class="display-name" style="@(suggestion.Color is { } color ? $"color:{color}" : null)">@member.DisplayName</span><small>@member.Username</small></span>
+                        }
+                        else
+                        {
+                            <span class="mention-symbol">@@</span><span class="role-label" style="@(suggestion.Color is { } color ? $"color:{color}" : null)">@suggestion.Label</span>
+                        }
+                    </button>
+                }
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public required string ChannelName { get; set; }
+    [Parameter] public string? ReplyToDisplayName { get; set; }
+    [Parameter] public string? PlaceholderText { get; set; }
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public Func<string, Task<bool>>? Send { get; set; }
+    [Parameter] public Func<MessageSubmission, Task<bool>>? SendRich { get; set; }
+    [Parameter] public CommunityManagementDto? CommunityManagement { get; set; }
+    [Parameter] public EventCallback OnCancelReply { get; set; }
+    private string _content = string.Empty;
+    private ElementReference _textarea;
+    private IJSObjectReference? _module;
+    private DotNetObjectReference<MessageComposer>? _selfReference;
+    private bool _submitting;
+    private bool _resizeAfterRender;
+    private string? _renderedChannelName;
+    private readonly List<CommunityMentionInput> _mentions = [];
+    private int _mentionStart = -1;
+    private string _mentionQuery = string.Empty;
+    private int _suggestionIndex;
+    private string ComposerPlaceholder => PlaceholderText ?? $"Message #{ChannelName}";
+
+    protected override void OnParametersSet()
+    {
+        if (string.Equals(_renderedChannelName, ChannelName, StringComparison.Ordinal)) return;
+        _renderedChannelName = ChannelName;
+        _resizeAfterRender = true;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/chat.js");
+            _selfReference = DotNetObjectReference.Create(this);
+            await _module.InvokeVoidAsync("wireComposer", _textarea, _selfReference);
+            _resizeAfterRender = false;
+            return;
+        }
+
+        if (!_resizeAfterRender || _module is null) return;
+        _resizeAfterRender = false;
+        await _module.InvokeVoidAsync("resizeComposer", _textarea);
+    }
+
+    [JSInvokable]
+    public async Task SubmitFromKeyboardAsync()
+    {
+        if (Busy || _submitting)
+        {
+            Logger.LogDebug("Ignored a keyboard submission while the composer for channel {ChannelName} was busy.", ChannelName);
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(_content)) return;
+
+        _submitting = true;
+        var content = _content;
+        try
+        {
+            var succeeded = SendRich is not null
+                ? await SendRich(new(content, _mentions.ToArray()))
+                : Send is not null && await Send(content);
+            if (succeeded)
+            {
+                _content = string.Empty;
+                _mentions.Clear();
+                CloseSuggestions();
+                _resizeAfterRender = true;
+            }
+        }
+        catch (Exception exception)
+        {
+            Logger.LogError(exception, "Unexpected composer submission failure in channel {ChannelName}.", ChannelName);
+        }
+        finally
+        {
+            _submitting = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void ContentChanged(ChangeEventArgs args)
+    {
+        _content = args.Value?.ToString() ?? string.Empty;
+        _mentions.RemoveAll(value => value.Start < 0 || value.Start + value.Length > _content.Length || _content[value.Start] != '@');
+        var match = System.Text.RegularExpressions.Regex.Match(_content, @"(?:^|\s)@([\p{L}\p{N}_-]*)$");
+        if (!match.Success || CommunityManagement is null) { CloseSuggestions(); return; }
+        _mentionStart = match.Index + (char.IsWhiteSpace(_content[match.Index]) ? 1 : 0);
+        _mentionQuery = match.Groups[1].Value;
+        _suggestionIndex = Math.Clamp(_suggestionIndex, 0, Math.Max(0, Suggestions.Count - 1));
+    }
+
+    private IReadOnlyList<MentionSuggestion> Suggestions
+    {
+        get
+        {
+            if (_mentionStart < 0 || CommunityManagement is not { } management) return [];
+            var query = _mentionQuery;
+            var members = management.Members
+                .Where(value => Match(value.DisplayName, query) || Match(value.Username, query))
+                .OrderByDescending(value => value.DisplayName.StartsWith(query, StringComparison.OrdinalIgnoreCase))
+                .ThenBy(value => value.DisplayName, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(value => value.Username, StringComparer.OrdinalIgnoreCase)
+                .Take(4)
+                .Select(value => new MentionSuggestion(CommunityMentionKind.Account, value.AccountId, value.DisplayName, value,
+                    HighestColor(value))).ToList();
+            if (management.Access.Has(CommunityPermission.MentionEveryone) && Match("everyone", query))
+                members.Add(new(CommunityMentionKind.Everyone, null, "everyone", null, null));
+            members.AddRange(management.Roles.Where(value => !value.IsDefault &&
+                    (value.IsMentionable || management.Access.Has(CommunityPermission.MentionEveryone)) && Match(value.Name, query))
+                .OrderByDescending(value => value.Position).ThenBy(value => value.Name, StringComparer.OrdinalIgnoreCase).Take(4)
+                .Select(value => new MentionSuggestion(CommunityMentionKind.Role, value.Id, value.Name.TrimStart('@'), null, value.Color)));
+            return members;
+        }
+    }
+
+    [JSInvokable]
+    public async Task HandleMentionKeyAsync(string key)
+    {
+        var suggestions = Suggestions;
+        if (suggestions.Count == 0) return;
+        switch (key)
+        {
+            case "ArrowDown": _suggestionIndex = (_suggestionIndex + 1) % suggestions.Count; break;
+            case "ArrowUp": _suggestionIndex = (_suggestionIndex - 1 + suggestions.Count) % suggestions.Count; break;
+            case "Enter": case "Tab": AcceptSuggestion(suggestions[Math.Clamp(_suggestionIndex, 0, suggestions.Count - 1)]); break;
+            case "Escape": CloseSuggestions(); break;
+        }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void AcceptSuggestion(MentionSuggestion suggestion)
+    {
+        if (_mentionStart < 0) return;
+        var display = $"@{suggestion.Label}";
+        _content = _content[.._mentionStart] + display + " ";
+        _mentions.Add(new(suggestion.Kind, suggestion.TargetId, _mentionStart, display.Length));
+        CloseSuggestions();
+        _resizeAfterRender = true;
+    }
+
+    private string? HighestColor(CommunityMemberDto member) => CommunityManagement?.Roles
+        .Where(value => member.RoleIds.Contains(value.Id) && !string.IsNullOrWhiteSpace(value.Color))
+        .OrderByDescending(value => value.Position).FirstOrDefault()?.Color;
+    private static bool Match(string value, string query) => string.IsNullOrEmpty(query) || value.Contains(query, StringComparison.OrdinalIgnoreCase);
+    private void CloseSuggestions() { _mentionStart = -1; _mentionQuery = string.Empty; _suggestionIndex = 0; }
+    private sealed record MentionSuggestion(CommunityMentionKind Kind, Guid? TargetId, string Label, CommunityMemberDto? Member, string? Color);
+
+    public async Task FocusAsync()
+    {
+        _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/chat.js");
+        await _module.InvokeVoidAsync("focusComposer", _textarea);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_module is not null)
+        {
+            try
+            {
+                await _module.InvokeVoidAsync("unwireComposer", _textarea);
+                await _module.DisposeAsync();
+            }
+            catch (JSDisconnectedException) { }
+        }
+        _selfReference?.Dispose();
+    }
+}

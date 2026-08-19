@@ -1,0 +1,12 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Iridium Development" type="CompoundRunConfigurationType">
+    <toRun name="Iridium.Server: http" type="LaunchSettings" />
+    <toRun name="Iridium.Web: http" type="LaunchSettings" />
+    <method v="2" />
+  </configuration>
+  <configuration default="false" name="Iridium Development" type="CompoundRunConfigurationType">
+    <toRun name="Iridium.Server: http" type="LaunchSettings" />
+    <toRun name="Iridium.Web: http" type="LaunchSettings" />
+    <method v="2" />
+  </configuration>
+</component>

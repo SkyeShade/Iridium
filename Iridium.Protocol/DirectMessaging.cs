@@ -1,0 +1,45 @@
+namespace Iridium.Protocol;
+
+public static class DirectMessageHubContract
+{
+    public const string JoinConversation = "JoinDirectConversation";
+    public const string LeaveConversation = "LeaveDirectConversation";
+    public const string SendMessage = "SendDirectMessage";
+    public const string EditMessage = "EditDirectMessage";
+    public const string DeleteMessage = "DeleteDirectMessage";
+    public const string MessageCreated = "DirectMessageCreated";
+    public const string MessageUpdated = "DirectMessageUpdated";
+    public const string MessageDeleted = "DirectMessageDeleted";
+}
+
+public sealed record DirectParticipantDto(
+    Guid AccountId,
+    string Username,
+    string DisplayName,
+    string? Pronouns,
+    string? Description,
+    PublicPresence Presence)
+{
+    public bool IsOnline => Presence != PublicPresence.Offline;
+}
+
+public sealed record DirectConversationDto(
+    Guid Id,
+    DirectParticipantDto OtherParticipant,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset? LastMessageAt,
+    int UnreadCount);
+
+public sealed record DirectMessageDto(
+    Guid Id,
+    Guid ConversationId,
+    MessageAuthorDto Author,
+    string Content,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset? EditedAt,
+    bool IsDeleted,
+    MessageReplyDto? ReplyTo);
+
+public sealed record SendDirectMessageRequest(string Content, Guid? ReplyToMessageId);
+public sealed record EditDirectMessageRequest(string Content);
+public sealed record DirectMessageDeletedEvent(Guid ConversationId, Guid MessageId, DateTimeOffset DeletedAt);

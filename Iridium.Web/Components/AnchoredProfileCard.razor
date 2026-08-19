@@ -1,0 +1,155 @@
+@using Iridium.Protocol
+@using Iridium.Web.Models
+
+<div class="profile-card-layer" @onclick="OnClose">
+    <section class="profile-card" style="--profile-x:@($"{X}px");--profile-y:@($"{Y}px")" @onclick:stopPropagation="true">
+        <div class="profile-banner"></div>
+        <div class="profile-avatar"><ProfileAvatar DisplayName="@DisplayName" Presence="@Presence" Size="large" Surface="sidebar" /></div>
+        <div class="profile-content" @onclick="CloseRolePicker">
+            <h2 class="display-name" style="@NameStyle">@DisplayName</h2>
+            <p class="identity">@IridiumIdentity.Format(Username, NodeAuthority)</p>
+            @if (!string.IsNullOrWhiteSpace(Pronouns)) { <span class="pronouns">@Pronouns</span> }
+            @if (!string.IsNullOrWhiteSpace(Description)) { <p class="bio">@Description</p> }
+            @if (DisplayedRoles.Count > 0 || CanManageTargetRoles)
+            {
+                <div class="profile-roles" @onclick="CloseRolePicker" @onclick:stopPropagation="true">
+                    <div class="role-chips">
+                        @foreach (var role in DisplayedRoles)
+                        {
+                            <span class="role-chip" style="--role-color:@(role.Color ?? "var(--text-muted)")">
+                                <span class="role-dot"></span><span class="role-name">@role.Name</span>
+                                @if (CanManageRole(role))
+                                {
+                                    <button type="button" class="remove-role" title="Remove @role.Name"
+                                            disabled="@_updatingRoles" @onclick="() => RemoveRoleAsync(role)"
+                                            @onclick:stopPropagation="true">&times;</button>
+                                }
+                            </span>
+                        }
+                        @if (CanManageTargetRoles)
+                        {
+                            <button type="button" class="add-role" aria-label="Add Role" data-tooltip="Add Role"
+                                    aria-expanded="@_rolePickerOpen" @onclick="ToggleRolePicker"
+                                    @onclick:stopPropagation="true">+</button>
+                        }
+                    </div>
+                    @if (_rolePickerOpen)
+                    {
+                        <CommunityRolePicker Roles="AssignableRoles" Busy="_updatingRoles"
+                                             OnSelect="AddRoleAsync" OnClose="CloseRolePicker" />
+                    }
+                    @if (!string.IsNullOrWhiteSpace(_roleError))
+                    {
+                        <p class="role-error" role="status">@_roleError</p>
+                    }
+                </div>
+            }
+            <div class="profile-actions">
+                @if (AccountId == CurrentAccountId)
+                {
+                    <button @onclick="OnEditProfile">Edit Profile</button>
+                }
+                else
+                {
+                    <button @onclick="() => OnMessage.InvokeAsync(AccountId)"><Icon Name="message" /> Message</button>
+                }
+            </div>
+        </div>
+    </section>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public required Guid AccountId { get; set; }
+    [Parameter, EditorRequired] public required Guid CurrentAccountId { get; set; }
+    [Parameter, EditorRequired] public required string Username { get; set; }
+    [Parameter, EditorRequired] public required string DisplayName { get; set; }
+    [Parameter, EditorRequired] public required string NodeAuthority { get; set; }
+    [Parameter] public string? Pronouns { get; set; }
+    [Parameter] public string? Description { get; set; }
+    [Parameter] public PublicPresence Presence { get; set; }
+    [Parameter] public IReadOnlyList<CommunityRoleDto> Roles { get; set; } = [];
+    [Parameter] public CommunityManagementDto? CommunityContext { get; set; }
+    [Parameter] public string? NameColor { get; set; }
+    [Parameter] public double X { get; set; }
+    [Parameter] public double Y { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback OnEditProfile { get; set; }
+    [Parameter] public EventCallback<Guid> OnMessage { get; set; }
+    [Parameter] public EventCallback<CommunityMemberRolesChange> OnMemberRolesChanged { get; set; }
+    private readonly HashSet<Guid> _assignedRoleIds = [];
+    private bool _rolePickerOpen;
+    private bool _updatingRoles;
+    private string? _roleError;
+    private string? NameStyle
+    {
+        get
+        {
+            var color = CommunityContext is null
+                ? NameColor
+                : DisplayedRoles.FirstOrDefault(role => !string.IsNullOrWhiteSpace(role.Color))?.Color;
+            return string.IsNullOrWhiteSpace(color) ? null : $"color:{color}";
+        }
+    }
+    private CommunityMemberDto? TargetMember => CommunityContext?.Members.FirstOrDefault(member => member.AccountId == AccountId);
+    private CommunityMemberDto? ActingMember => CommunityContext?.Members.FirstOrDefault(member => member.AccountId == CurrentAccountId);
+    private int ActingHighestPosition => CommunityContext?.Access.IsOwner == true
+        ? int.MaxValue
+        : HighestPosition(ActingMember);
+    private int TargetHighestPosition => HighestPosition(TargetMember);
+    private bool CanManageTargetRoles => CommunityContext is { } context && OnMemberRolesChanged.HasDelegate &&
+        context.Access.Has(CommunityPermission.ManageRoles) && TargetMember is not null &&
+        (context.Access.IsOwner || !TargetMember.IsOwner && ActingHighestPosition > TargetHighestPosition);
+    private IReadOnlyList<CommunityRoleDto> DisplayedRoles => AvailableRoles
+        .Where(role => _assignedRoleIds.Contains(role.Id))
+        .OrderByDescending(role => role.Position).ThenBy(role => role.Name, StringComparer.OrdinalIgnoreCase).ToArray();
+    private IReadOnlyList<CommunityRoleDto> AssignableRoles => CanManageTargetRoles
+        ? AvailableRoles.Where(role => !_assignedRoleIds.Contains(role.Id) && CanManageRole(role))
+            .OrderByDescending(role => role.Position).ThenBy(role => role.Name, StringComparer.OrdinalIgnoreCase).ToArray()
+        : [];
+    private IReadOnlyList<CommunityRoleDto> AvailableRoles => CommunityContext?.Roles ?? Roles;
+
+    protected override void OnParametersSet()
+    {
+        var ids = TargetMember?.RoleIds ?? Roles.Select(role => role.Id).ToArray();
+        _assignedRoleIds.Clear();
+        _assignedRoleIds.UnionWith(ids);
+        if (!CanManageTargetRoles) _rolePickerOpen = false;
+    }
+
+    private int HighestPosition(CommunityMemberDto? member) => member is null ? -1 : AvailableRoles
+        .Where(role => member.RoleIds.Contains(role.Id)).Select(role => role.Position).DefaultIfEmpty(-1).Max();
+    private bool CanManageRole(CommunityRoleDto role) => CanManageTargetRoles && !role.IsDefault &&
+        (CommunityContext!.Access.IsOwner || role.Position < ActingHighestPosition);
+    private void ToggleRolePicker()
+    {
+        if (!CanManageTargetRoles) return;
+        _roleError = null;
+        _rolePickerOpen = !_rolePickerOpen;
+    }
+    private void CloseRolePicker() => _rolePickerOpen = false;
+    private Task AddRoleAsync(CommunityRoleDto role) => ChangeRoleAsync(role, true);
+    private Task RemoveRoleAsync(CommunityRoleDto role) => ChangeRoleAsync(role, false);
+    private async Task ChangeRoleAsync(CommunityRoleDto role, bool assign)
+    {
+        if (_updatingRoles || !CanManageRole(role)) return;
+        var updated = _assignedRoleIds.ToHashSet();
+        if (assign) updated.Add(role.Id); else updated.Remove(role.Id);
+        _updatingRoles = true;
+        _roleError = null;
+        try
+        {
+            await OnMemberRolesChanged.InvokeAsync(new CommunityMemberRolesChange(AccountId, updated.ToArray()));
+            _assignedRoleIds.Clear();
+            _assignedRoleIds.UnionWith(updated);
+            _rolePickerOpen = false;
+        }
+        catch
+        {
+            _roleError = "The role could not be updated.";
+        }
+        finally
+        {
+            _updatingRoles = false;
+        }
+    }
+}

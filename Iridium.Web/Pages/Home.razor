@@ -1,0 +1,611 @@
+@page "/"
+@implements IDisposable
+@using Iridium.Client.Core
+@using Iridium.Protocol
+@using Iridium.UI
+@using Iridium.Web.Models
+@inject SavedNodeState SavedNodes
+@inject NodeSession Session
+@inject CommunitySession CommunityState
+@inject ChannelMessagingSession Messaging
+@inject AccountSwitchService AccountSwitching
+@inject IWebAssemblyHostEnvironment HostEnvironment
+@inject AppearanceService Appearance
+@inject IIdentityProfileResolver ProfileResolver
+
+<PageTitle>Iridium</PageTitle>
+
+@if (!_initialized)
+{
+    <div class="boot-screen"><div class="boot-mark">I</div><span>Starting Iridium…</span></div>
+}
+else if (_authenticationVisible || !Session.IsAuthenticated)
+{
+    <AuthenticationScreen Nodes="_nodeAvailability"
+                          SelectedNode="Session.AuthenticationNode"
+                          SavedAccounts="Session.SavedAccounts"
+                          InitialUsername="Session.ReauthenticationAccount?.Username"
+                          CanCancel="@(_addingAccount && Session.IsAuthenticated)"
+                          Busy="_busy"
+                          Error="@_error"
+                          OnNodeSelected="SelectNodeAsync"
+                          OnNodeAdded="AddNodeAsync"
+                          OnNodeRemoved="RemoveNodeAsync"
+                          OnSavedAccountSelected="SwitchAccountAsync"
+                          OnSubmit="AuthenticateAsync"
+                          OnCancel="CancelAddAccount" />
+}
+else
+{
+    <ApplicationShell Communities="Session.Communities"
+                      DirectConversations="Session.DirectConversations"
+                      CommunityMentionCounts="_communityMentionCounts"
+                      NodeAuthority="@(Session.SelectedNode!.PublicAuthority)"
+                      SelectedCommunity="_selectedCommunity"
+                      DisplayName="@Session.Account!.DisplayName"
+                      PublicIdentity="@PublicIdentity"
+                      Presence="@CurrentPresence"
+                      OnCommunitySelected="SelectCommunity"
+                      OnDirectConversationSelected="SelectDirectConversationAsync"
+                      OnAddCommunity="() => _showCommunityCreate = true"
+                      OnProfile="() => _showProfile = true"
+                      OnSettings="() => _showSettings = true"
+                      ShowRightSidebar="@HasContextSidebar">
+        <SidebarHeader>
+            <div class="sidebar-heading"><strong>@(_selectedCommunity?.Name ?? "Home")</strong>
+                @if (_selectedCommunity is not null)
+                {
+                    <span class="community-header-actions">
+                        @if (CommunityState.HasPermission(CommunityPermission.CreateInvites))
+                        {
+                            <button title="Invite People" @onclick="OpenQuickInviteAsync"><Icon Name="friends" /></button>
+                        }
+                        @if (CanOpenCommunitySettings)
+                        {
+                            <button title="Community Settings" @onclick="OpenCommunitySettings"><Icon Name="settings" /></button>
+                        }
+                    </span>
+                }
+            </div>
+        </SidebarHeader>
+        <SidebarContent>
+            @if (_selectedCommunity is null)
+            {
+                <HomeSidebar ActiveView="_homeView" Conversations="Session.DirectConversations"
+                             SelectedConversationId="_selectedDirectConversation?.Id"
+                             OnViewSelected="SelectHomeView" OnConversationSelected="SelectDirectConversationAsync"
+                             OnConversationClosed="CloseDirectConversationAsync" />
+            }
+            else
+            {
+                <CommunitySidebar State="CommunityState" AccountId="Session.Account!.Id"
+                                  CommunityId="_selectedCommunity.Id" SelectedChannel="_selectedChannel"
+                                  OnChannelSelected="SelectChannelAsync" />
+            }
+        </SidebarContent>
+        <ChildContent>
+            @if (_selectedCommunity is null)
+            {
+                @if (_homeView == "dm" && _selectedDirectConversation is not null)
+                {
+                    <DirectMessageView @key="_selectedDirectConversation.Id" Conversation="_selectedDirectConversation"
+                                       CurrentAccountId="Session.Account!.Id" NodeAuthority="@(Session.SelectedNode!.PublicAuthority)"
+                                       OnEditProfile="OpenProfileEditor" OnMessage="OpenDirectMessageAsync" />
+                }
+                else if (_homeView == "requests")
+                {
+                    <MessageRequestsView />
+                }
+                else
+                {
+                    <FriendsView Friends="Session.Friends" NodeAuthority="@(Session.SelectedNode!.PublicAuthority)" CurrentAccountId="Session.Account!.Id" Error="@_error"
+                                 OnEditProfile="OpenProfileEditor"
+                                 OnAddFriend="ShowAddFriend" OnAccept="AcceptFriendRequestAsync"
+                                 OnRemove="RemoveFriendshipAsync" OnMessage="OpenFriendDirectMessageAsync" />
+                }
+            }
+            else
+            {
+                <div class="content-header"><strong>@(_selectedChannel is null ? _selectedCommunity.Name : $"# {_selectedChannel.Name}")</strong></div>
+                @if (_selectedChannel is null)
+                {
+                    <div class="welcome-panel"><div class="welcome-icon">@CommunityInitials(_selectedCommunity.Name)</div><h1>@_selectedCommunity.Name</h1><p>@(_selectedCommunity.Description ?? "Choose a text channel or create one to get started.")</p></div>
+                }
+                else
+                {
+                    <ChannelView @key="_selectedChannel.Id" Community="_selectedCommunity" Channel="_selectedChannel"
+                                 CurrentAccountId="Session.Account!.Id"
+                                 NodeAuthority="@(Session.SelectedNode!.PublicAuthority)" CommunityManagement="CommunityState.Management"
+                                 OnEditProfile="OpenProfileEditor" OnMessage="OpenDirectMessageAsync"
+                                 OnMemberRolesChanged="SetCommunityMemberRolesAsync"
+                                 CanManageMessages="@CommunityState.HasPermission(CommunityPermission.ManageMessages)"
+                                 CanSend="@CommunityState.HasPermission(CommunityPermission.SendMessages)" />
+                }
+            }
+        </ChildContent>
+        <RightSidebar>
+            @if (_selectedCommunity is not null && _selectedChannel is not null && CommunityState.Management is { } management)
+            {
+                <CommunityMemberSidebar Management="management" CurrentAccountId="Session.Account!.Id"
+                    NodeAuthority="@(Session.SelectedNode!.PublicAuthority)" OnEditProfile="OpenProfileEditor"
+                    OnMessage="OpenDirectMessageAsync" OnMemberRolesChanged="SetCommunityMemberRolesAsync" />
+            }
+            else if (_selectedCommunity is null && _homeView == "dm" && _selectedDirectConversation is { } direct)
+            {
+                <DirectParticipantSidebar Participant="direct.OtherParticipant" NodeAuthority="@(Session.SelectedNode!.PublicAuthority)"
+                    Friend="@Session.Friends.FirstOrDefault(value => value.AccountId == direct.OtherParticipant.AccountId)"
+                    OnAddFriend="SendFriendRequestAsync" OnRemoveFriend="RemoveFriendAsync" />
+            }
+        </RightSidebar>
+    </ApplicationShell>
+
+    @if (_showProfile)
+    {
+        <ProfilePopup Account="Session.Account!" PublicIdentity="@PublicIdentity" Busy="_busy"
+                      Presence="@CurrentPresence" OnPresenceChanged="SetPresenceAsync"
+                      Accounts="Session.SavedAccounts" ActiveAccount="Session.ActiveSavedAccount"
+                      OnEditProfile="OpenProfileEditor" OnSwitchAccount="SwitchAccountAsync"
+                      OnAddAccount="AddAccount" OnLogout="LogoutAsync" OnRemoveAccount="RemoveAccountAsync"
+                      OnCancel="CloseProfile" />
+    }
+    @if (_showCommunityCreate)
+    {
+        <CommunityCreateDialog Busy="_busy" Error="@_error" OnCreate="CreateCommunityAsync"
+                               OnCancel="CloseCommunityCreate" />
+    }
+    @if (_showSettings)
+    {
+        <SettingsView Account="Session.Account!" CurrentNode="Session.SelectedNode!" Nodes="_nodeAvailability"
+                      Busy="_busy" Error="@_error" OnEditProfile="OpenProfileEditor"
+                      OnAddNode="AddNodeAsync" OnRemoveNode="RemoveNodeAsync"
+                      OnLogout="LogoutAsync" OnClose="CloseSettings" />
+    }
+    @if (_showAddFriend)
+    {
+        <AddFriendView Resolve="ProfileResolver.ResolveAsync" OnRequest="SendFriendRequestAsync"
+                       OnAccept="AcceptFriendRequestAsync" OnMessage="OpenDirectMessageAsync"
+                       OnClose="CloseAddFriend" />
+    }
+    @if (_showEditProfile)
+    {
+        <EditProfileModal Account="Session.Account!" PublicIdentity="@PublicIdentity"
+                          Save="SaveProfileAsync" OnClosed="CloseProfileEditor" />
+    }
+    @if (_showCommunitySettings && _selectedCommunity is not null)
+    {
+        <CommunitySettingsModal Community="_selectedCommunity" State="CommunityState"
+                                NodeAuthority="@(Session.SelectedNode!.PublicAuthority)"
+                                OnCommunityUpdated="CommunityUpdatedAsync" OnClose="CloseCommunitySettings" />
+    }
+    @if (_showQuickInvite && _quickInviteUrl is not null)
+    {
+        <InvitePeopleModal Friends="Session.Friends" NodeAuthority="@(Session.SelectedNode!.PublicAuthority)" InviteUrl="_quickInviteUrl"
+                           Error="@_quickInviteError" Send="SendQuickInviteAsync" OnClose="CloseQuickInvite" />
+    }
+}
+
+@code {
+    private IReadOnlyList<NodeAvailability> _nodeAvailability = [];
+    private bool _initialized;
+    private bool _busy;
+    private bool _showProfile;
+    private bool _showSettings;
+    private bool _showAddFriend;
+    private bool _showEditProfile;
+    private bool _showCommunityCreate;
+    private bool _showCommunitySettings;
+    private bool _showQuickInvite;
+    private bool _authenticationVisible;
+    private bool _addingAccount;
+    private string? _error;
+    private CommunityDto? _selectedCommunity;
+    private CommunityChannelDto? _selectedChannel;
+    private DirectConversationDto? _selectedDirectConversation;
+    private string? _quickInviteUrl;
+    private string? _quickInviteError;
+    private readonly Dictionary<Guid, int> _communityMentionCounts = [];
+    private static readonly TimeSpan QuickInviteLifetime = TimeSpan.FromHours(24);
+    private string _homeView = "friends";
+    private string PublicIdentity => IridiumIdentity.Format(Session.Account!.Username, Session.SelectedNode!.PublicAuthority);
+    private PublicPresence CurrentPresence => PresenceVisibility.ToPublic(Session.Account!.PreferredPresence, Messaging.IsConnected);
+    private bool CanOpenCommunitySettings => CommunityState.IsOwner ||
+        CommunityState.HasPermission(CommunityPermission.ManageCommunity) ||
+        CommunityState.HasPermission(CommunityPermission.ManageRoles) ||
+        CommunityState.HasPermission(CommunityPermission.CreateInvites) ||
+        CommunityState.HasPermission(CommunityPermission.KickMembers) ||
+        CommunityState.HasPermission(CommunityPermission.BanMembers);
+    private bool HasContextSidebar =>
+        _selectedCommunity is not null && _selectedChannel is not null && CommunityState.Management is not null ||
+        _selectedCommunity is null && _homeView == "dm" && _selectedDirectConversation is not null;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Appearance.InitializeAsync();
+        var localAddress = new Uri(HostEnvironment.BaseAddress).Scheme == Uri.UriSchemeHttps
+            ? "https://localhost:7008"
+            : "http://localhost:5159";
+        await SavedNodes.InitializeAsync(new SavedNode(localAddress, "Local Iridium Node", true));
+        _nodeAvailability = await SavedNodes.ProbeAllAsync();
+        Session.Changed += OnSessionChanged;
+        Session.CommunityAccessRevoked += OnCommunityAccessRevoked;
+        Session.CommunityJoined += OnCommunityJoined;
+        Session.CommunityChanged += OnCommunityChanged;
+        Session.PresenceChanged += OnPresenceChanged;
+        Session.CommunityMentionReceived += OnCommunityMentionReceived;
+        Messaging.Changed += OnSessionChanged;
+        await AccountSwitching.InitializeAsync(SavedNodes.Nodes);
+        if (!Session.IsAuthenticated)
+        {
+            if (Session.AuthenticationNode is null) AccountSwitching.BeginAuthentication(SavedNodes.Nodes[0]);
+            _authenticationVisible = true;
+        }
+        _initialized = true;
+    }
+
+    private async Task SelectNodeAsync(SavedNode node)
+    {
+        _error = null;
+        AccountSwitching.BeginAuthentication(node);
+        await Task.CompletedTask;
+    }
+
+    private async Task AddNodeAsync(string address)
+    {
+        _error = null;
+        try
+        {
+            var node = await SavedNodes.AddAsync(address);
+            _nodeAvailability = await SavedNodes.ProbeAllAsync();
+            if (_authenticationVisible) AccountSwitching.BeginAuthentication(node);
+        }
+        catch (Exception exception)
+        {
+            _error = UserMessage(exception);
+        }
+    }
+
+    private async Task RemoveNodeAsync(SavedNode node)
+    {
+        await SavedNodes.RemoveAsync(node);
+        if (Session.AuthenticationNode == node) AccountSwitching.BeginAuthentication(SavedNodes.Nodes[0]);
+        _nodeAvailability = await SavedNodes.ProbeAllAsync();
+    }
+
+    private async Task AuthenticateAsync(AuthenticationSubmission submission)
+    {
+        _error = null;
+        if (submission.IsRegister && submission.Password != submission.ConfirmPassword)
+        {
+            _error = "Passwords do not match.";
+            return;
+        }
+
+        _busy = true;
+        try
+        {
+            if (submission.IsRegister)
+                await AccountSwitching.RegisterAsync(submission.Username, submission.DisplayName, submission.Password);
+            else
+                await AccountSwitching.LoginAsync(submission.Username, submission.Password);
+            ResetAccountUi();
+            _authenticationVisible = false;
+            _addingAccount = false;
+        }
+        catch (Exception exception)
+        {
+            _error = UserMessage(exception);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task<bool> SaveProfileAsync(ProfileSubmission submission)
+    {
+        _busy = true;
+        _error = null;
+        try
+        {
+            await Session.UpdateProfileAsync(submission.DisplayName, submission.Pronouns, submission.Description);
+            return true;
+        }
+        catch (Exception exception)
+        {
+            _error = UserMessage(exception);
+            return false;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task CreateCommunityAsync(CommunitySubmission submission)
+    {
+        _busy = true;
+        _error = null;
+        try
+        {
+            var community = await Session.CreateCommunityAsync(submission.Name, submission.Description);
+            await SelectCommunity(community);
+            _showCommunityCreate = false;
+        }
+        catch (Exception exception)
+        {
+            _error = UserMessage(exception);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task LogoutAsync()
+    {
+        await AccountSwitching.LogoutAsync();
+        ResetAccountUi();
+        _authenticationVisible = true;
+        _addingAccount = false;
+        _error = null;
+    }
+
+    private async Task SwitchAccountAsync(SavedAccountKey key)
+    {
+        var wasAddingAccount = _addingAccount;
+        var hadActiveAccount = Session.IsAuthenticated;
+        _busy = true;
+        _error = null;
+        try
+        {
+            var authenticated = await AccountSwitching.SwitchAsync(key);
+            if (authenticated) ResetAccountUi();
+            _authenticationVisible = !authenticated;
+            _addingAccount = !authenticated && (wasAddingAccount || hadActiveAccount) && Session.IsAuthenticated;
+        }
+        catch (Exception exception)
+        {
+            _error = UserMessage(exception);
+            _authenticationVisible = !Session.IsAuthenticated;
+        }
+        finally { _busy = false; }
+    }
+
+    private void AddAccount()
+    {
+        _showProfile = false;
+        _addingAccount = true;
+        _authenticationVisible = true;
+        _error = null;
+        AccountSwitching.BeginAuthentication(Session.SelectedNode ?? SavedNodes.Nodes[0]);
+    }
+
+    private void CancelAddAccount()
+    {
+        if (!Session.IsAuthenticated) return;
+        _authenticationVisible = false;
+        _addingAccount = false;
+        _error = null;
+    }
+
+    private async Task RemoveAccountAsync(SavedAccountKey key)
+    {
+        var removingActive = Session.ActiveSavedAccount?.Key == key;
+        await AccountSwitching.RemoveFromDeviceAsync(key);
+        _showProfile = false;
+        if (!removingActive) return;
+        ResetAccountUi();
+        _authenticationVisible = true;
+        _addingAccount = false;
+        AccountSwitching.BeginAuthentication(SavedNodes.Nodes[0]);
+    }
+
+    private async Task SelectCommunity(CommunityDto? community)
+    {
+        await Messaging.ClearAsync();
+        CloseQuickInvite();
+        _selectedCommunity = community;
+        _selectedChannel = null;
+        _selectedDirectConversation = null;
+        _error = null;
+        if (community is not null) _communityMentionCounts.Remove(community.Id);
+        if (community is null) { CommunityState.Clear(); return; }
+        try { await CommunityState.LoadAsync(community.Id); await CommunityState.LoadManagementAsync(); }
+        catch (Exception exception) { _error = UserMessage(exception); _selectedCommunity = null; CommunityState.Clear(); }
+    }
+    private async Task SelectChannelAsync(CommunityChannelDto? channel)
+    {
+        if (channel is null) await Messaging.ClearAsync();
+        _selectedChannel = channel;
+    }
+    private void SelectHomeView(string view)
+    {
+        _homeView = view;
+        if (view != "dm") _selectedDirectConversation = null;
+    }
+    private async Task SendFriendRequestAsync(string username)
+    {
+        _error = null;
+        try { await Session.SendFriendRequestAsync(username); }
+        catch (Exception exception) { _error = UserMessage(exception); }
+    }
+    private async Task AcceptFriendRequestAsync(Guid friendshipId)
+    {
+        _error = null;
+        try { await Session.AcceptFriendRequestAsync(friendshipId); }
+        catch (Exception exception) { _error = UserMessage(exception); }
+    }
+    private async Task RemoveFriendshipAsync(Guid friendshipId)
+    {
+        _error = null;
+        try { await Session.RemoveFriendshipAsync(friendshipId); }
+        catch (Exception exception) { _error = UserMessage(exception); }
+    }
+    private Task RemoveFriendAsync(FriendDto friend) => RemoveFriendshipAsync(friend.FriendshipId);
+    private async Task OpenDirectMessageAsync(Guid accountId)
+    {
+        _error = null;
+        try
+        {
+            _selectedDirectConversation = await Session.OpenDirectConversationAsync(accountId);
+            _selectedCommunity = null;
+            _selectedChannel = null;
+            CommunityState.Clear();
+            _homeView = "dm";
+            _showAddFriend = false;
+        }
+        catch (Exception exception) { _error = UserMessage(exception); }
+    }
+    private Task OpenFriendDirectMessageAsync(FriendDto friend) => OpenDirectMessageAsync(friend.AccountId);
+    private void ShowFriends() { _homeView = "friends"; _selectedDirectConversation = null; }
+    private void ShowAddFriend() { _showAddFriend = true; _error = null; }
+    private async Task SelectDirectConversationAsync(DirectConversationDto conversation)
+    {
+        if (_selectedCommunity is not null) await Messaging.ClearAsync();
+        _selectedCommunity = null;
+        CloseQuickInvite();
+        _selectedChannel = null;
+        CommunityState.Clear();
+        _selectedDirectConversation = conversation;
+        _homeView = "dm";
+    }
+    private async Task CloseDirectConversationAsync(Guid conversationId)
+    {
+        await Session.HideDirectConversationAsync(conversationId);
+        if (_selectedDirectConversation?.Id != conversationId) return;
+        await Messaging.ClearAsync();
+        _selectedDirectConversation = null;
+        _homeView = "friends";
+    }
+    private void CloseProfile() { _showProfile = false; _error = null; }
+    private void CloseSettings() { _showSettings = false; _error = null; }
+    private void CloseAddFriend() { _showAddFriend = false; _error = null; }
+    private void OpenProfileEditor() { _showProfile = false; _showEditProfile = true; _error = null; }
+    private void CloseProfileEditor() { _showEditProfile = false; _error = null; }
+    private void CloseCommunityCreate() { _showCommunityCreate = false; _error = null; }
+    private void OpenCommunitySettings() { _showCommunitySettings = true; _error = null; }
+    private void CloseCommunitySettings() { _showCommunitySettings = false; _error = null; }
+    private async Task OpenQuickInviteAsync()
+    {
+        if (_selectedCommunity is null || _showQuickInvite) return;
+        _quickInviteError = null;
+        try
+        {
+            var invite = await CommunityState.CreateInviteAsync(DateTimeOffset.UtcNow.Add(QuickInviteLifetime), null);
+            _quickInviteUrl = invite.InviteUrl ?? throw new InvalidOperationException("The Node did not return an invite link.");
+            _showQuickInvite = true;
+        }
+        catch (Exception exception) { _error = UserMessage(exception); }
+    }
+    private void CloseQuickInvite() { _showQuickInvite = false; _quickInviteUrl = null; _quickInviteError = null; }
+    private async Task<bool> SendQuickInviteAsync(FriendDto friend)
+    {
+        if (_quickInviteUrl is null) return false;
+        _quickInviteError = null;
+        try
+        {
+            var conversation = await Session.OpenDirectConversationAsync(friend.AccountId);
+            await Messaging.SendDirectToAsync(conversation.Id, _quickInviteUrl);
+            return true;
+        }
+        catch (Exception exception) { _quickInviteError = UserMessage(exception); return false; }
+    }
+    private async Task CommunityUpdatedAsync(CommunityDto community)
+    {
+        _selectedCommunity = community;
+        await Session.RefreshCommunitiesAsync();
+    }
+    private void ResetAccountUi()
+    {
+        _selectedCommunity = null;
+        _selectedChannel = null;
+        _selectedDirectConversation = null;
+        _homeView = "friends";
+        _showSettings = false;
+        _showProfile = false;
+        _showAddFriend = false;
+        _showEditProfile = false;
+        _showCommunityCreate = false;
+        _showCommunitySettings = false;
+        _showQuickInvite = false;
+        _quickInviteUrl = null;
+        _quickInviteError = null;
+        _communityMentionCounts.Clear();
+    }
+    private void OnSessionChanged() => _ = InvokeAsync(() =>
+    {
+        if (_selectedCommunity is { } selectedCommunity)
+        {
+            var refreshed = Session.Communities.FirstOrDefault(value => value.Id == selectedCommunity.Id);
+            if (refreshed is not null) _selectedCommunity = refreshed;
+        }
+        if (_selectedDirectConversation is { } selected)
+            _selectedDirectConversation = Session.DirectConversations.FirstOrDefault(value => value.Id == selected.Id) ?? selected;
+        StateHasChanged();
+    });
+    private void OnCommunityAccessRevoked(CommunityAccessRevokedEvent change) => _ = InvokeAsync(async () =>
+    {
+        if (_selectedCommunity?.Id != change.CommunityId) return;
+        await Messaging.ClearAsync();
+        _selectedCommunity = null;
+        _selectedChannel = null;
+        _showCommunitySettings = false;
+        CommunityState.Clear();
+        _error = change.Reason == "banned" ? "You were banned from that Community." : "You were removed from that Community.";
+        StateHasChanged();
+    });
+    private void OnCommunityJoined(CommunityDto community) => _ = InvokeAsync(() => SelectCommunity(community));
+    private void OnCommunityChanged(CommunityStateChangedEvent change) => _ = InvokeAsync(async () =>
+    {
+        if (_selectedCommunity?.Id != change.CommunityId) return;
+        try
+        {
+            await CommunityState.LoadAsync(change.CommunityId);
+            await CommunityState.LoadManagementAsync();
+        }
+        catch (NodeApiException exception) when (exception.StatusCode == System.Net.HttpStatusCode.Forbidden)
+        {
+            await Messaging.ClearAsync();
+            _selectedCommunity = null;
+            _selectedChannel = null;
+            _showCommunitySettings = false;
+            CommunityState.Clear();
+            _error = "You no longer have access to that Community.";
+        }
+        StateHasChanged();
+    });
+    private void OnPresenceChanged(PresenceChangedEvent change) => _ = InvokeAsync(() =>
+    {
+        CommunityState.ApplyPresence(change);
+        StateHasChanged();
+    });
+    private void OnCommunityMentionReceived(CommunityMentionReceivedEvent mention) => _ = InvokeAsync(() =>
+    {
+        if (_selectedCommunity?.Id == mention.CommunityId && _selectedChannel?.Id == mention.ChannelId) return;
+        _communityMentionCounts[mention.CommunityId] = _communityMentionCounts.GetValueOrDefault(mention.CommunityId) + 1;
+        StateHasChanged();
+    });
+    private async Task SetPresenceAsync(UserPresence presence)
+    {
+        _error = null;
+        try { await Messaging.SetPresenceAsync(presence); }
+        catch (Exception exception) { _error = UserMessage(exception); }
+    }
+    private async Task SetCommunityMemberRolesAsync(CommunityMemberRolesChange change)
+    {
+        await CommunityState.SetMemberRolesAsync(change.AccountId, change.RoleIds);
+        StateHasChanged();
+    }
+    public void Dispose()
+    {
+        Session.Changed -= OnSessionChanged;
+        Session.CommunityAccessRevoked -= OnCommunityAccessRevoked;
+        Session.CommunityJoined -= OnCommunityJoined;
+        Session.CommunityChanged -= OnCommunityChanged;
+        Session.PresenceChanged -= OnPresenceChanged;
+        Session.CommunityMentionReceived -= OnCommunityMentionReceived;
+        Messaging.Changed -= OnSessionChanged;
+    }
+    private static string UserMessage(Exception exception) => exception is NodeApiException ? exception.Message : exception.Message;
+    private static string CommunityInitials(string name) => string.Concat(name.Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(2).Select(word => char.ToUpperInvariant(word[0])));
+}

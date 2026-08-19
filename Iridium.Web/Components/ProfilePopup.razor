@@ -1,0 +1,101 @@
+@using Iridium.Client.Core
+@using Iridium.Protocol
+
+<div class="popup-backdrop" @onclick="OnCancel">
+    <section class="profile-popup" @onclick:stopPropagation="true">
+        <div class="profile-banner"></div>
+        <div class="avatar-position"><ProfileAvatar DisplayName="@Account.DisplayName" Presence="Presence" Size="large" Surface="sidebar" /></div>
+        <div class="identity">
+            <strong class="display-name">@Account.DisplayName</strong>
+            <span>@PublicIdentity</span>
+        </div>
+
+        <button class="edit-profile" @onclick="OnEditProfile">Edit Profile</button>
+        <div class="presence-selector">
+            <button class="presence-current" @onclick="() => _presenceOpen = !_presenceOpen">
+                <ProfileAvatar Presence="Presence" BadgeMode="AvatarBadgeMode.PresenceGlyph" Size="tiny" Surface="sidebar" />
+                <span>@PresenceName(Account.PreferredPresence)</span><Icon Name="chevron" Size="12" />
+            </button>
+            @if (_presenceOpen)
+            {
+                <div class="presence-menu">
+                    @foreach (var option in Enum.GetValues<UserPresence>())
+                    {
+                        <button class="@(option == Account.PreferredPresence ? "active" : null)" @onclick="() => SelectPresenceAsync(option)">
+                            <ProfileAvatar Presence="@PresenceVisibility.ToPublic(option)" BadgeMode="AvatarBadgeMode.PresenceGlyph" Size="tiny" Surface="sidebar" />
+                            <span>@PresenceName(option)</span>
+                        </button>
+                    }
+                </div>
+            }
+        </div>
+
+        <div class="account-switcher">
+            <p>SWITCH ACCOUNT</p>
+            <div class="account-list">
+                @foreach (var account in Accounts)
+                {
+                    var active = ActiveAccount?.Key == account.Key;
+                    <div class="saved-account @(active ? "active" : null) @(account.Status == SavedAccountStatus.LoginRequired ? "expired" : null)">
+                        <button class="account-select" disabled="@active" @onclick="() => OnSwitchAccount.InvokeAsync(account.Key)">
+                            <span class="account-indicator"></span>
+                            <ProfileAvatar DisplayName="@account.DisplayName" Presence="@(active ? Presence : PublicPresence.Offline)" Size="small" Surface="sidebar" />
+                            <span class="account-copy">
+                                <strong class="display-name">@account.DisplayName</strong>
+                                <small>@account.PublicIdentity</small>
+                                @if (account.Status == SavedAccountStatus.LoginRequired) { <em>Login required</em> }
+                            </span>
+                        </button>
+                        <button class="remove-account" title="Remove @account.PublicIdentity from this device"
+                                @onclick="() => _confirmRemove = account.Key">×</button>
+                    </div>
+                }
+            </div>
+            @if (_confirmRemove is { } removeKey)
+            {
+                <div class="remove-confirmation">
+                    <span>Remove this saved account from this device?</span>
+                    <button @onclick="() => _confirmRemove = null">Cancel</button>
+                    <button class="destructive" @onclick="() => RemoveAsync(removeKey)">Remove from device</button>
+                </div>
+            }
+            <button class="add-account" @onclick="OnAddAccount">＋ Add Account</button>
+            <button class="logout-account" disabled="Busy" @onclick="OnLogout">Log Out</button>
+        </div>
+    </section>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public required NodeAccountDto Account { get; set; }
+    [Parameter, EditorRequired] public required string PublicIdentity { get; set; }
+    [Parameter] public IReadOnlyList<SavedAccount> Accounts { get; set; } = [];
+    [Parameter] public SavedAccount? ActiveAccount { get; set; }
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public PublicPresence Presence { get; set; }
+    [Parameter] public EventCallback<UserPresence> OnPresenceChanged { get; set; }
+    [Parameter] public EventCallback OnEditProfile { get; set; }
+    [Parameter] public EventCallback<SavedAccountKey> OnSwitchAccount { get; set; }
+    [Parameter] public EventCallback OnAddAccount { get; set; }
+    [Parameter] public EventCallback OnLogout { get; set; }
+    [Parameter] public EventCallback<SavedAccountKey> OnRemoveAccount { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+
+    private SavedAccountKey? _confirmRemove;
+    private bool _presenceOpen;
+    private async Task RemoveAsync(SavedAccountKey key)
+    {
+        _confirmRemove = null;
+        await OnRemoveAccount.InvokeAsync(key);
+    }
+    private async Task SelectPresenceAsync(UserPresence presence)
+    {
+        _presenceOpen = false;
+        await OnPresenceChanged.InvokeAsync(presence);
+    }
+    private static string PresenceName(UserPresence presence) => presence switch
+    {
+        UserPresence.DoNotDisturb => "Do Not Disturb",
+        _ => presence.ToString()
+    };
+    private static string Initial(string value) => string.IsNullOrWhiteSpace(value) ? "?" : value[..1].ToUpperInvariant();
+}

@@ -1,0 +1,73 @@
+@using Iridium.Client.Core
+@using Iridium.Protocol
+@using Iridium.Web.Models
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+
+<div class="message-list" role="log" aria-live="polite" @ref="_container">
+    @if (Messages.Count == 0)
+    {
+        <div class="message-empty"><div><Icon Name="@EmptyIcon" /></div><h2>@EmptyTitle</h2><p>@EmptyDescription</p></div>
+    }
+    else
+    {
+        @for (var index = 0; index < Messages.Count; index++)
+        {
+            var message = Messages[index];
+            var previous = index == 0 ? null : Messages[index - 1];
+            <MessageRow @key="message.Id" Message="message"
+                        StartsGroup="MessageGrouping.StartsNewGroup(previous, message)"
+                        CanEdit="@(!message.IsDeleted && message.Author.AccountId == CurrentAccountId)"
+                        CanDelete="@(!message.IsDeleted && (message.Author.AccountId == CurrentAccountId || CanManage))"
+                        CurrentAccountId="CurrentAccountId" NodeAuthority="@NodeAuthority" CommunityManagement="CommunityManagement"
+                        AuthorPresence="@PresenceFor(message.Author.AccountId)"
+                        OnEditProfile="OnEditProfile" OnMessage="OnMessage"
+                        OnMemberRolesChanged="OnMemberRolesChanged"
+                        OnReply="OnReply" Edit="Edit" OnDelete="OnDelete" OnFocusReply="FocusMessageAsync" />
+        }
+    }
+</div>
+
+@code {
+    [Parameter] public IReadOnlyList<ChannelMessageDto> Messages { get; set; } = [];
+    [Parameter] public string EmptyIcon { get; set; } = "channel";
+    [Parameter] public string EmptyTitle { get; set; } = "No messages yet";
+    [Parameter] public string EmptyDescription { get; set; } = "Start the conversation in this channel.";
+    [Parameter, EditorRequired] public required Guid CurrentAccountId { get; set; }
+    [Parameter] public bool CanManage { get; set; }
+    [Parameter, EditorRequired] public required string NodeAuthority { get; set; }
+    [Parameter] public CommunityManagementDto? CommunityManagement { get; set; }
+    [Parameter] public DirectParticipantDto? DirectParticipant { get; set; }
+    [Parameter] public EventCallback OnEditProfile { get; set; }
+    [Parameter] public EventCallback<Guid> OnMessage { get; set; }
+    [Parameter] public EventCallback<CommunityMemberRolesChange> OnMemberRolesChanged { get; set; }
+    [Parameter] public EventCallback<ChannelMessageDto> OnReply { get; set; }
+    [Parameter, EditorRequired] public required Func<MessageEditSubmission, Task<bool>> Edit { get; set; }
+    [Parameter] public EventCallback<Guid> OnDelete { get; set; }
+    private ElementReference _container;
+    private IJSObjectReference? _module;
+    private int _renderedCount = -1;
+    private PublicPresence? PresenceFor(Guid accountId) => CommunityManagement?.Members
+        .FirstOrDefault(value => value.AccountId == accountId)?.Presence
+        ?? (DirectParticipant?.AccountId == accountId ? DirectParticipant.Presence : null);
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_renderedCount == Messages.Count) return;
+        var force = _renderedCount <= 0;
+        _renderedCount = Messages.Count;
+        _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/chat.js");
+        await _module.InvokeVoidAsync("scrollToEnd", _container, force);
+    }
+
+    private async Task FocusMessageAsync(Guid messageId)
+    {
+        _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/chat.js");
+        await _module.InvokeVoidAsync("focusMessage", _container, messageId.ToString());
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_module is not null) await _module.DisposeAsync();
+    }
+}

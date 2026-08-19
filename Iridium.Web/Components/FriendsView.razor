@@ -1,0 +1,106 @@
+@using Iridium.Protocol
+
+<section class="friends-view">
+    <header class="friends-header">
+        <div class="title"><Icon Name="friends" /><strong>Friends</strong></div>
+        @if (!RequestsOnly)
+        {
+            @foreach (var tab in new[] { "Online", "All", "Pending" })
+            {
+                <button class="tab @(_filter == tab ? "active" : null)" @onclick="() => _filter = tab">
+                    @tab
+                    @if (tab == "Pending" && IncomingPendingCount > 0)
+                    {
+                        <span class="pending-badge">@IncomingPendingCount</span>
+                    }
+                </button>
+            }
+            <button class="add-friend" @onclick="OnAddFriend">Add Friend</button>
+        }
+    </header>
+    <div class="friends-content">
+        @if (!string.IsNullOrWhiteSpace(Error)) { <div class="friends-error">@Error</div> }
+        <div class="search"><Icon Name="search" Size="16" /><input @bind="_search" placeholder="Search friends" /></div>
+        <p class="list-heading">@Heading</p>
+        <div class="friend-list">
+            @foreach (var friend in VisibleFriends)
+            {
+                <article class="friend-row">
+                    <button class="friend-profile" @onclick="args => OpenProfile(friend, args)">
+                        <ProfileAvatar DisplayName="@friend.DisplayName" Presence="friend.Presence" Surface="base" />
+                        <span class="friend-copy"><strong class="display-name">@friend.DisplayName</strong><small>@IridiumIdentity.Format(friend.Username, NodeAuthority) · @StatusText(friend)</small></span>
+                    </button>
+                    <div class="friend-actions">
+                        @if (friend.Status == FriendshipStatus.Accepted)
+                        {
+                            <button title="Message" @onclick="() => MessageAsync(friend)"><Icon Name="message" /></button>
+                            <button class="destructive-link" @onclick="() => OnRemove.InvokeAsync(friend.FriendshipId)">Remove</button>
+                        }
+                        else if (!friend.IsOutgoing)
+                        {
+                            <button class="accept" @onclick="() => OnAccept.InvokeAsync(friend.FriendshipId)">Accept</button>
+                            <button class="destructive-link" @onclick="() => OnRemove.InvokeAsync(friend.FriendshipId)">Decline</button>
+                        }
+                        else
+                        {
+                            <button class="destructive-link" @onclick="() => OnRemove.InvokeAsync(friend.FriendshipId)">Cancel</button>
+                        }
+                    </div>
+                </article>
+            }
+            @if (!VisibleFriends.Any()) { <div class="empty">No friends match this view yet.</div> }
+        </div>
+    </div>
+</section>
+@if (_profileFriend is { } profile)
+{
+    <AnchoredProfileCard AccountId="profile.AccountId" CurrentAccountId="CurrentAccountId" Username="@profile.Username"
+        DisplayName="@profile.DisplayName" Pronouns="@profile.Pronouns" Description="@profile.Description" Presence="profile.Presence"
+        NodeAuthority="@NodeAuthority" X="_profileX" Y="_profileY" OnClose="CloseProfile"
+        OnEditProfile="OnEditProfile" OnMessage="accountId => OnMessage.InvokeAsync(profile)" />
+}
+
+@code {
+    [Parameter] public IReadOnlyList<FriendDto> Friends { get; set; } = [];
+    [Parameter, EditorRequired] public required string NodeAuthority { get; set; }
+    [Parameter] public bool RequestsOnly { get; set; }
+    [Parameter] public string? Error { get; set; }
+    [Parameter] public EventCallback OnAddFriend { get; set; }
+    [Parameter] public EventCallback<Guid> OnAccept { get; set; }
+    [Parameter] public EventCallback<Guid> OnRemove { get; set; }
+    [Parameter] public EventCallback<FriendDto> OnMessage { get; set; }
+    [Parameter, EditorRequired] public required Guid CurrentAccountId { get; set; }
+    [Parameter] public EventCallback OnEditProfile { get; set; }
+    private string _filter = "Online";
+    private string _search = string.Empty;
+    private FriendDto? _profileFriend;
+    private double _profileX;
+    private double _profileY;
+    private int IncomingPendingCount => Friends.Count(friend => friend.Status == FriendshipStatus.Pending && !friend.IsOutgoing);
+
+    private IEnumerable<FriendDto> VisibleFriends => Friends
+        .Where(friend => RequestsOnly ? friend.Status == FriendshipStatus.Pending : _filter switch
+        {
+            "Online" => friend.Status == FriendshipStatus.Accepted && friend.IsOnline,
+            "Pending" => friend.Status == FriendshipStatus.Pending,
+            _ => friend.Status == FriendshipStatus.Accepted
+        })
+        .Where(friend => string.IsNullOrWhiteSpace(_search) || friend.DisplayName.Contains(_search, StringComparison.OrdinalIgnoreCase) || friend.Username.Contains(_search, StringComparison.OrdinalIgnoreCase))
+        .OrderBy(friend => friend.DisplayName, StringComparer.OrdinalIgnoreCase)
+        .ThenBy(friend => friend.Username, StringComparer.OrdinalIgnoreCase);
+
+    private string Heading => RequestsOnly ? $"PENDING — {VisibleFriends.Count()}" : $"{_filter.ToUpperInvariant()} — {VisibleFriends.Count()}";
+    private static string StatusText(FriendDto friend) => friend.Status == FriendshipStatus.Pending
+        ? friend.IsOutgoing ? "Outgoing request" : "Incoming request"
+        : friend.Presence switch
+        {
+            PublicPresence.Online => "Online",
+            PublicPresence.Idle => "Idle",
+            PublicPresence.DoNotDisturb => "Do Not Disturb",
+            _ => "Offline"
+        };
+    private static string Initial(string value) => string.IsNullOrWhiteSpace(value) ? "?" : value[..1].ToUpperInvariant();
+    private Task MessageAsync(FriendDto friend) => OnMessage.InvokeAsync(friend);
+    private void OpenProfile(FriendDto friend, MouseEventArgs args) { _profileFriend = friend; _profileX = args.ClientX + 8; _profileY = args.ClientY - 18; }
+    private void CloseProfile() => _profileFriend = null;
+}

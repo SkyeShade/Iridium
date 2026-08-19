@@ -1,0 +1,82 @@
+@using Iridium.Protocol
+@using Iridium.Web.Models
+
+<ModalShell Title="Edit Profile" Size="large" OnClose="TryCloseAsync">
+    <div class="profile-editor">
+        <header>
+            <span>PROFILE</span>
+            <h1>Edit Profile</h1>
+            <p>Changes are saved automatically when you close this window.</p>
+        </header>
+        <div class="editor-layout">
+            <div class="fields">
+                <label>Display Name <input @bind="_displayName" maxlength="64" /></label>
+                <label>Pronouns <input @bind="_pronouns" maxlength="64" placeholder="Optional" /></label>
+                <label>Description <textarea class="iridium-textarea-scrollbar bio-input" @bind="_description" maxlength="400" rows="4" placeholder="Tell people a little about yourself"></textarea></label>
+                <div class="readonly"><span>Public identity</span><strong>@PublicIdentity</strong></div>
+                @if (!string.IsNullOrWhiteSpace(_error)) { <p class="error" role="alert">@_error</p> }
+                @if (_saving) { <p class="saving">Saving profile…</p> }
+            </div>
+            <aside class="preview">
+                <div class="banner"></div>
+                <div class="avatar">@Initial(_displayName)</div>
+                <strong class="display-name">@_displayName</strong>
+                <span>@PublicIdentity</span>
+                @if (!string.IsNullOrWhiteSpace(_pronouns)) { <small>@_pronouns</small> }
+                @if (!string.IsNullOrWhiteSpace(_description)) { <p class="bio-preview">@_description</p> }
+            </aside>
+        </div>
+    </div>
+</ModalShell>
+
+@code {
+    [Parameter, EditorRequired] public required NodeAccountDto Account { get; set; }
+    [Parameter, EditorRequired] public required string PublicIdentity { get; set; }
+    [Parameter, EditorRequired] public required Func<ProfileSubmission, Task<bool>> Save { get; set; }
+    [Parameter] public EventCallback OnClosed { get; set; }
+    private string _displayName = string.Empty;
+    private string _pronouns = string.Empty;
+    private string _originalDisplayName = string.Empty;
+    private string _originalPronouns = string.Empty;
+    private string _description = string.Empty;
+    private string _originalDescription = string.Empty;
+    private string? _error;
+    private Guid? _loadedAccountId;
+    private bool _saving;
+
+    protected override void OnParametersSet()
+    {
+        if (_loadedAccountId == Account.Id) return;
+        _loadedAccountId = Account.Id;
+        _displayName = _originalDisplayName = Account.DisplayName;
+        _pronouns = _originalPronouns = Account.Pronouns ?? string.Empty;
+        _description = _originalDescription = Account.Description ?? string.Empty;
+        _error = null;
+    }
+
+    private async Task TryCloseAsync()
+    {
+        if (_saving) return;
+        var displayName = _displayName.Trim();
+        var pronouns = _pronouns.Trim();
+        var description = _description.Trim();
+        if (displayName.Length == 0) { _error = "Display Name is required."; return; }
+        if (displayName == _originalDisplayName && pronouns == _originalPronouns && description == _originalDescription)
+        {
+            await OnClosed.InvokeAsync();
+            return;
+        }
+
+        _saving = true;
+        _error = null;
+        try
+        {
+            if (await Save(new ProfileSubmission(displayName, pronouns, description))) await OnClosed.InvokeAsync();
+            else _error = "Your changes could not be saved. They are still available here to retry.";
+        }
+        catch (Exception exception) { _error = exception.Message; }
+        finally { _saving = false; }
+    }
+
+    private static string Initial(string value) => string.IsNullOrWhiteSpace(value) ? "?" : value[..1].ToUpperInvariant();
+}

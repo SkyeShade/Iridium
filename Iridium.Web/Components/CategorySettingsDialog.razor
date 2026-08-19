@@ -1,0 +1,51 @@
+@using Iridium.Protocol
+@using Iridium.Web.Models
+
+<div class="modal-backdrop" @onclick="OnCancel">
+    <section class="settings-dialog" @onclick:stopPropagation="true">
+        <header><div><h2>@(Category is null ? "Create Category" : "Category Settings")</h2><p>Categories organize this Community's channels.</p></div><button class="icon-button" title="Close" @onclick="OnCancel"><Icon Name="close" /></button></header>
+        <label>Category name<input @bind="_name" maxlength="100" autofocus /></label>
+        @if (!string.IsNullOrWhiteSpace(Error)) { <p class="error">@Error</p> }
+        @if (_confirmDelete)
+        {
+            <div class="confirmation"><strong>Delete @Category!.Name?</strong><span>Its channels will be moved safely to the uncategorized area; they will not be deleted.</span></div>
+        }
+        <footer>
+            @if (Category is not null)
+            {
+                <button class="danger" disabled="Busy" @onclick="DeleteAsync">@(_confirmDelete ? "Confirm Delete" : "Delete Category")</button>
+            }
+            <span></span><button class="secondary" @onclick="OnCancel">Cancel</button>
+            <button class="primary" disabled="@(Busy || string.IsNullOrWhiteSpace(_name))" @onclick="SaveAsync">@(Category is null ? "Create" : "Save Changes")</button>
+        </footer>
+    </section>
+</div>
+
+@code {
+    [Parameter] public CommunityCategoryDto? Category { get; set; }
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public string? Error { get; set; }
+    [Parameter] public bool ConfirmDeleteInitially { get; set; }
+    [Parameter] public EventCallback<CategorySettingsSubmission> OnSave { get; set; }
+    [Parameter] public EventCallback<Guid> OnDelete { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+    private Guid? _initializedId;
+    private bool _initializedCreate;
+    private string _name = string.Empty;
+    private bool _confirmDelete;
+
+    protected override void OnParametersSet()
+    {
+        var createChanged = Category is null && !_initializedCreate;
+        if (!createChanged && Category?.Id == _initializedId) return;
+        _initializedId = Category?.Id; _initializedCreate = Category is null;
+        _name = Category?.Name ?? string.Empty; _confirmDelete = ConfirmDeleteInitially;
+    }
+
+    private Task SaveAsync() => OnSave.InvokeAsync(new CategorySettingsSubmission(Category?.Id, _name));
+    private Task DeleteAsync()
+    {
+        if (!_confirmDelete) { _confirmDelete = true; return Task.CompletedTask; }
+        return OnDelete.InvokeAsync(Category!.Id);
+    }
+}

@@ -1,0 +1,39 @@
+@using Iridium.Protocol
+
+<section class="participant-sidebar">
+    <div class="profile-banner"></div>
+    <div class="profile-avatar"><ProfileAvatar DisplayName="@Participant.DisplayName" Presence="@Participant.Presence" Size="large" Surface="sidebar" /></div>
+    <div class="profile-copy">
+        <h2 class="display-name">@Participant.DisplayName</h2>
+        <p>@IridiumIdentity.Format(Participant.Username, NodeAuthority)</p>
+        @if (!string.IsNullOrWhiteSpace(Participant.Pronouns)) { <span>@Participant.Pronouns</span> }
+        @if (!string.IsNullOrWhiteSpace(Participant.Description)) { <p class="profile-bio">@Participant.Description</p> }
+    </div>
+    <div class="profile-section">
+        <h3>Friendship</h3>
+        <p>@RelationshipText</p>
+        @if (Friend is null)
+        {
+            <button class="primary" @onclick="() => OnAddFriend.InvokeAsync(Participant.Username)">Add Friend</button>
+        }
+        else if (Friend.Status == FriendshipStatus.Accepted)
+        {
+            <button class="danger-link" @onclick="() => OnRemoveFriend.InvokeAsync(Friend)">Remove Friend</button>
+        }
+    </div>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public required DirectParticipantDto Participant { get; set; }
+    [Parameter, EditorRequired] public required string NodeAuthority { get; set; }
+    [Parameter] public FriendDto? Friend { get; set; }
+    [Parameter] public EventCallback<string> OnAddFriend { get; set; }
+    [Parameter] public EventCallback<FriendDto> OnRemoveFriend { get; set; }
+    private string RelationshipText => Friend switch
+    {
+        { Status: FriendshipStatus.Accepted } => "Friends",
+        { Status: FriendshipStatus.Pending, IsOutgoing: true } => "Friend request sent",
+        { Status: FriendshipStatus.Pending } => "Incoming friend request",
+        _ => "Not friends"
+    };
+}

@@ -1,0 +1,168 @@
+@using Iridium.Client.Core
+@using Iridium.Protocol
+@using Iridium.Web.Models
+
+<div class="auth-screen">
+    <div class="atmosphere one"></div>
+    <div class="atmosphere two"></div>
+    <section class="auth-card">
+        <div class="brand-mark">I</div>
+        <h1>Welcome to Iridium</h1>
+        <p class="intro">Choose a Node, then continue with your account on that Node.</p>
+
+        @if (SavedAccounts.Count != 0)
+        {
+            <div class="auth-accounts">
+                <p class="picker-label">SAVED ACCOUNTS</p>
+                @foreach (var account in SavedAccounts)
+                {
+                    <button class="auth-account" @onclick="() => OnSavedAccountSelected.InvokeAsync(account.Key)">
+                        <span class="auth-avatar">@Initial(account.DisplayName)</span>
+                        <span><strong class="display-name">@account.DisplayName</strong><small>@account.PublicIdentity</small></span>
+                        @if (account.Status == SavedAccountStatus.LoginRequired) { <em>Login required</em> }
+                    </button>
+                }
+            </div>
+        }
+
+        <div class="node-picker">
+            <p class="picker-label">SELECT A NODE</p>
+            @foreach (var group in NodeGroups())
+            {
+                @if (group.ShowDivider)
+                {
+                    <div class="node-divider"><span>SAVED NODES</span></div>
+                }
+                @foreach (var availability in group.Nodes)
+                {
+                    var node = availability.Node;
+                    <button class="node-option @(node == SelectedNode ? "selected" : null)"
+                            @onclick="() => OnNodeSelected.InvokeAsync(node)">
+                        <span class="node-dot @(availability.IsOnline ? "online" : "offline")"></span>
+                        <span class="node-copy">
+                            <strong>@(availability.Info?.Name ?? node.Label ?? NodeAuthority(node))</strong>
+                            <small>@NodeAuthority(node) · @(availability.IsOnline ? $"{availability.LatencyMs} ms" : "unreachable")</small>
+                        </span>
+                        @if (!node.IsLocal)
+                        {
+                            <span class="remove-node" role="button" title="Remove Node"
+                                  @onclick="() => OnNodeRemoved.InvokeAsync(node)" @onclick:stopPropagation="true">×</span>
+                        }
+                    </button>
+                }
+            }
+            <button class="add-node-button" @onclick="() => _addingNode = !_addingNode">＋ Add Node</button>
+            @if (_addingNode)
+            {
+                <div class="add-node-form">
+                    <input @bind="_newNodeAddress" placeholder="https://chat.example.com" />
+                    <button @onclick="AddNodeAsync">Add</button>
+                </div>
+            }
+        </div>
+
+        <div class="mode-tabs">
+            <button class="@(!_registerMode ? "active" : null)" @onclick="() => SwitchMode(false)">Login</button>
+            <button class="@(_registerMode ? "active" : null)" @onclick="() => SwitchMode(true)">Register</button>
+        </div>
+
+        <div class="auth-form">
+            <label>
+                Username
+                <input @bind="_username" autocomplete="username" placeholder="your username" />
+                @if (_registerMode && SelectedNode is not null && !string.IsNullOrWhiteSpace(_username))
+                {
+                    <span class="identity-preview">@IridiumIdentity.Format(_username, SelectedNode.PublicAuthority)</span>
+                }
+            </label>
+            @if (_registerMode)
+            {
+                <label>Display Name <input @bind="_displayName" autocomplete="name" placeholder="How others see you" /></label>
+            }
+            <label>Password <input type="password" @bind="_password" autocomplete="@(_registerMode ? "new-password" : "current-password")" /></label>
+            @if (_registerMode)
+            {
+                <label>Confirm Password <input type="password" @bind="_confirmPassword" autocomplete="new-password" /></label>
+            }
+            @if (!string.IsNullOrWhiteSpace(Error))
+            {
+                <p class="auth-error">@Error</p>
+            }
+            <button class="submit" disabled="@(Busy || SelectedNode is null)" @onclick="SubmitAsync">
+                @(Busy ? "Please wait…" : _registerMode ? "Create account" : "Login")
+            </button>
+        </div>
+
+        <button class="mode-switch" @onclick="() => SwitchMode(!_registerMode)">
+            @(_registerMode ? "Already have an account? Login" : "New to this Node? Register")
+        </button>
+        @if (CanCancel)
+        {
+            <button class="cancel-auth" @onclick="OnCancel">Cancel</button>
+        }
+    </section>
+</div>
+
+@code {
+    [Parameter] public IReadOnlyList<NodeAvailability> Nodes { get; set; } = [];
+    [Parameter] public SavedNode? SelectedNode { get; set; }
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public string? Error { get; set; }
+    [Parameter] public IReadOnlyList<SavedAccount> SavedAccounts { get; set; } = [];
+    [Parameter] public string? InitialUsername { get; set; }
+    [Parameter] public bool CanCancel { get; set; }
+    [Parameter] public EventCallback<SavedNode> OnNodeSelected { get; set; }
+    [Parameter] public EventCallback<SavedNode> OnNodeRemoved { get; set; }
+    [Parameter] public EventCallback<string> OnNodeAdded { get; set; }
+    [Parameter] public EventCallback<AuthenticationSubmission> OnSubmit { get; set; }
+    [Parameter] public EventCallback<SavedAccountKey> OnSavedAccountSelected { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+
+    private bool _registerMode;
+    private bool _addingNode;
+    private string _newNodeAddress = string.Empty;
+    private string _username = string.Empty;
+    private string _displayName = string.Empty;
+    private string _password = string.Empty;
+    private string _confirmPassword = string.Empty;
+    private string? _authenticationContext;
+
+    protected override void OnParametersSet()
+    {
+        var context = $"{SelectedNode?.Address}|{InitialUsername}";
+        if (_authenticationContext == context) return;
+        _authenticationContext = context;
+        _username = InitialUsername ?? string.Empty;
+        _password = string.Empty;
+        _confirmPassword = string.Empty;
+    }
+
+    private IEnumerable<(bool ShowDivider, IEnumerable<NodeAvailability> Nodes)> NodeGroups()
+    {
+        var local = Nodes.Where(value => value.Node.IsLocal).ToArray();
+        var saved = Nodes.Where(value => !value.Node.IsLocal).ToArray();
+        if (local.Length != 0) yield return (false, local);
+        if (saved.Length != 0) yield return (local.Length != 0, saved);
+    }
+
+    private async Task AddNodeAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_newNodeAddress)) return;
+        await OnNodeAdded.InvokeAsync(_newNodeAddress);
+        _newNodeAddress = string.Empty;
+        _addingNode = false;
+    }
+
+    private Task SubmitAsync() => OnSubmit.InvokeAsync(new AuthenticationSubmission(
+        _registerMode, _username, _displayName, _password, _confirmPassword));
+
+    private void SwitchMode(bool register)
+    {
+        _registerMode = register;
+        _password = string.Empty;
+        _confirmPassword = string.Empty;
+    }
+
+    private static string NodeAuthority(SavedNode node) => node.PublicAuthority;
+    private static string Initial(string value) => string.IsNullOrWhiteSpace(value) ? "?" : value[..1].ToUpperInvariant();
+}

@@ -1,0 +1,235 @@
+@using Iridium.Protocol
+@using Iridium.Web.Models
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+@inject ILogger<MessageRow> Logger
+@inject IIdentityProfileResolver ProfileResolver
+
+<article class="message-row @(StartsGroup ? "group-start" : "compact") @(Message.IsDeleted ? "deleted" : null)"
+         data-message-id="@Message.Id">
+    @if (Message.ReplyTo is { } reply)
+    {
+        <button class="reply-reference" title="Go to replied message" @onclick="() => OnFocusReply.InvokeAsync(reply.MessageId)">
+            <span class="reply-avatar">@Initial(reply.AuthorDisplayName)</span>
+            @if (reply.IsDeleted)
+            {
+                <span class="reply-deleted">Original message deleted</span>
+            }
+            else
+            {
+                <strong class="display-name">@reply.AuthorDisplayName</strong>
+                <span class="reply-excerpt">@reply.Excerpt</span>
+            }
+        </button>
+    }
+    @if (StartsGroup)
+    {
+        <button type="button" class="message-avatar author-trigger" @onclick="OpenAuthorProfileAsync" title="View @Message.Author.DisplayName's profile">
+            <ProfileAvatar DisplayName="@Message.Author.DisplayName" Presence="@(AuthorPresence ?? PublicPresence.Offline)"
+                           BadgeMode="@(AuthorPresence.HasValue ? AvatarBadgeMode.Presence : AvatarBadgeMode.None)" Size="medium" Surface="base" />
+        </button>
+    }
+
+    <div class="message-body">
+        @if (StartsGroup)
+        {
+            <header><button type="button" class="author-name display-name" style="@AuthorStyle" @onclick="OpenAuthorProfileAsync">@Message.Author.DisplayName</button><time title="@Message.CreatedAt.ToLocalTime().ToString("F")">@Message.CreatedAt.ToLocalTime().ToString("HH:mm")</time></header>
+        }
+        <div class="message-content">
+            @if (_editing)
+            {
+                <textarea class="edit-textarea iridium-textarea-scrollbar" @ref="_editTextarea" @bind="_editContent" @bind:event="oninput"
+                          maxlength="4000" rows="1" aria-label="Edit message"></textarea>
+                <div class="edit-help">
+                    <span>escape to </span><button type="button" @onclick="CancelEdit">cancel</button>
+                    <span class="separator">•</span><span>enter to </span>
+                    <button type="button" disabled="@(_savingEdit || string.IsNullOrWhiteSpace(_editContent))" @onclick="SaveEditAsync">save</button>
+                </div>
+            }
+            else if (Message.IsDeleted)
+            {
+                <em>Message deleted</em>
+            }
+            else
+            {
+                <MentionedMessageContent Content="@Message.Content" Mentions="Message.Mentions" OnProfile="OpenMentionProfileAsync" />
+                @if (Message.EditedAt is not null) { <span class="edited" title="Edited @Message.EditedAt.Value.ToLocalTime().ToString("g")">(edited)</span> }
+                <InviteEmbed Content="@Message.Content" />
+            }
+        </div>
+    </div>
+
+    @if (!Message.IsDeleted && !_editing)
+    {
+        <div class="message-actions">
+            <button title="Reply" @onclick="ReplyAsync"><Icon Name="reply" /></button>
+            @if (CanEdit) { <button title="Edit" @onclick="BeginEdit"><Icon Name="edit" /></button> }
+            <button title="More actions" @onclick="ToggleMenu"><Icon Name="more" /></button>
+        </div>
+        @if (_menuOpen)
+        {
+            <div class="message-menu">
+                <button @onclick="ReplyFromMenuAsync"><Icon Name="reply" /> Reply</button>
+                @if (CanEdit) { <button @onclick="EditFromMenu"><Icon Name="edit" /> Edit</button> }
+                @if (CanDelete) { <button class="destructive" @onclick="DeleteAsync"><Icon Name="trash" /> Delete Message</button> }
+            </div>
+        }
+    }
+</article>
+@if (_profile is { } profile)
+{
+    <AnchoredProfileCard AccountId="profile.AccountId" CurrentAccountId="CurrentAccountId" Username="@profile.Username"
+        DisplayName="@profile.DisplayName" Pronouns="@profile.Pronouns" Description="@profile.Description" Presence="profile.Presence"
+        NodeAuthority="@NodeAuthority" Roles="_profileRoles" CommunityContext="CommunityManagement"
+        NameColor="@_profileColor" X="_profileX" Y="_profileY"
+        OnClose="CloseProfile" OnEditProfile="OnEditProfile" OnMessage="OnMessage"
+        OnMemberRolesChanged="OnMemberRolesChanged" />
+}
+
+@code {
+    [Parameter, EditorRequired] public required ChannelMessageDto Message { get; set; }
+    [Parameter] public bool StartsGroup { get; set; }
+    [Parameter] public bool CanEdit { get; set; }
+    [Parameter] public bool CanDelete { get; set; }
+    [Parameter, EditorRequired] public required Guid CurrentAccountId { get; set; }
+    [Parameter, EditorRequired] public required string NodeAuthority { get; set; }
+    [Parameter] public CommunityManagementDto? CommunityManagement { get; set; }
+    [Parameter] public PublicPresence? AuthorPresence { get; set; }
+    [Parameter] public EventCallback OnEditProfile { get; set; }
+    [Parameter] public EventCallback<Guid> OnMessage { get; set; }
+    [Parameter] public EventCallback<CommunityMemberRolesChange> OnMemberRolesChanged { get; set; }
+    [Parameter] public EventCallback<ChannelMessageDto> OnReply { get; set; }
+    [Parameter, EditorRequired] public required Func<MessageEditSubmission, Task<bool>> Edit { get; set; }
+    [Parameter] public EventCallback<Guid> OnDelete { get; set; }
+    [Parameter] public EventCallback<Guid> OnFocusReply { get; set; }
+    private bool _menuOpen;
+    private bool _editing;
+    private bool _savingEdit;
+    private bool _focusEditorAfterRender;
+    private string _editContent = string.Empty;
+    private ElementReference _editTextarea;
+    private IJSObjectReference? _module;
+    private DotNetObjectReference<MessageRow>? _selfReference;
+    private ResolvedProfileDto? _profile;
+    private double _profileX;
+    private double _profileY;
+    private IReadOnlyList<CommunityRoleDto> _profileRoles = [];
+    private string? _profileColor;
+    private IReadOnlyList<CommunityRoleDto> AuthorRoles => CommunityManagement?.Members
+        .FirstOrDefault(value => value.AccountId == Message.Author.AccountId) is { } member
+        ? CommunityManagement.Roles.Where(value => member.RoleIds.Contains(value.Id)).OrderByDescending(value => value.Position).ToArray()
+        : [];
+    private string? AuthorColor => AuthorRoles.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value.Color))?.Color;
+    private string? AuthorStyle => AuthorColor is null ? null : $"color:{AuthorColor}";
+
+    private static string Initial(string value) => string.IsNullOrWhiteSpace(value) ? "?" : char.ToUpperInvariant(value.Trim()[0]).ToString();
+    private Task ReplyAsync() => OnReply.InvokeAsync(Message);
+    private Task ReplyFromMenuAsync() { _menuOpen = false; return ReplyAsync(); }
+    private void ToggleMenu() => _menuOpen = !_menuOpen;
+    private void BeginEdit() { _menuOpen = false; _editContent = Message.Content; _editing = true; _focusEditorAfterRender = true; }
+    private void EditFromMenu() => BeginEdit();
+    private void CancelEdit() { _editing = false; _editContent = string.Empty; }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_focusEditorAfterRender) return;
+        _focusEditorAfterRender = false;
+        try
+        {
+            _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/chat.js");
+            _selfReference ??= DotNetObjectReference.Create(this);
+            await _module.InvokeVoidAsync("wireMessageEditor", _editTextarea, _selfReference);
+        }
+        catch (Exception exception)
+        {
+            Logger.LogError(exception, "Could not initialize the inline editor for message {MessageId}.", Message.Id);
+        }
+    }
+
+    [JSInvokable]
+    public async Task CancelEditFromKeyboardAsync()
+    {
+        CancelEdit();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    [JSInvokable]
+    public Task SaveEditFromKeyboardAsync() => SaveEditAsync();
+
+    private async Task SaveEditAsync()
+    {
+        if (_savingEdit || string.IsNullOrWhiteSpace(_editContent)) return;
+        var content = _editContent.TrimEnd();
+        if (string.Equals(content, Message.Content, StringComparison.Ordinal))
+        {
+            CancelEdit();
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
+
+        _savingEdit = true;
+        try
+        {
+            if (await Edit(new MessageEditSubmission(Message.Id, content)))
+            {
+                _editing = false;
+                _editContent = string.Empty;
+            }
+        }
+        finally
+        {
+            _savingEdit = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+    private Task DeleteAsync() { _menuOpen = false; return OnDelete.InvokeAsync(Message.Id); }
+    private async Task OpenAuthorProfileAsync(MouseEventArgs args)
+    {
+        ClearProfile();
+        var position = await ProfilePositionAsync(args);
+        var result = await ProfileResolver.ResolveAsync(IridiumIdentity.Format(Message.Author.Username, NodeAuthority));
+        if (result.Profile is null) return;
+        _profile = result.Profile;
+        _profileRoles = AuthorRoles;
+        _profileColor = AuthorColor;
+        _profileX = position.X;
+        _profileY = position.Y;
+    }
+    private async Task OpenMentionProfileAsync(MentionProfileClick click)
+    {
+        ClearProfile();
+        var position = await ProfilePositionAsync(click.Pointer);
+        var member = CommunityManagement?.Members.FirstOrDefault(value => value.AccountId == click.AccountId);
+        if (member is null) return;
+        var result = await ProfileResolver.ResolveAsync(IridiumIdentity.Format(member.Username, NodeAuthority));
+        if (result.Profile is null) return;
+        _profile = result.Profile;
+        _profileRoles = CommunityManagement!.Roles.Where(value => member.RoleIds.Contains(value.Id))
+            .OrderByDescending(value => value.Position).ToArray();
+        _profileColor = _profileRoles.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value.Color))?.Color;
+        _profileX = position.X;
+        _profileY = position.Y;
+    }
+    private async Task<ProfileCardPosition> ProfilePositionAsync(MouseEventArgs args)
+    {
+        _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/chat.js");
+        return await _module.InvokeAsync<ProfileCardPosition>("profileCardPosition", args.ClientX, args.ClientY, "chat");
+    }
+    private void CloseProfile() => ClearProfile();
+    private void ClearProfile()
+    {
+        _profile = null;
+        _profileRoles = [];
+        _profileColor = null;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_module is not null)
+        {
+            try { await _module.DisposeAsync(); }
+            catch (JSDisconnectedException) { }
+        }
+        _selfReference?.Dispose();
+    }
+}

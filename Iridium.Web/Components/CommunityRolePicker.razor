@@ -1,0 +1,47 @@
+@using Iridium.Protocol
+
+<div class="role-picker" role="dialog" aria-label="Add role" @onclick:stopPropagation="true" @onkeydown="HandleKeyDown">
+    <input @ref="_searchInput" @bind="_search" @bind:event="oninput" placeholder="Role"
+           aria-label="Search roles" autocomplete="off" />
+    <div class="role-picker-list">
+        @foreach (var role in FilteredRoles)
+        {
+            <button type="button" disabled="@Busy" @onclick="() => OnSelect.InvokeAsync(role)">
+                <span class="role-color" style="--role-color:@(role.Color ?? "var(--text-faint)")"></span>
+                <span style="color:@(role.Color ?? "var(--text-muted)")">@role.Name</span>
+            </button>
+        }
+        @if (FilteredRoles.Count == 0)
+        {
+            <p class="role-picker-empty">No roles found</p>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public IReadOnlyList<CommunityRoleDto> Roles { get; set; } = [];
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public EventCallback<CommunityRoleDto> OnSelect { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    private ElementReference _searchInput;
+    private string _search = string.Empty;
+    private bool _focused;
+
+    private IReadOnlyList<CommunityRoleDto> FilteredRoles => Roles
+        .Where(role => string.IsNullOrWhiteSpace(_search) || role.Name.Contains(_search.Trim(), StringComparison.OrdinalIgnoreCase))
+        .OrderByDescending(role => role.Position)
+        .ThenBy(role => role.Name, StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_focused) return;
+        _focused = true;
+        await _searchInput.FocusAsync();
+    }
+
+    private async Task HandleKeyDown(KeyboardEventArgs args)
+    {
+        if (args.Key == "Escape") await OnClose.InvokeAsync();
+    }
+}

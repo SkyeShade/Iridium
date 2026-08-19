@@ -1,0 +1,43 @@
+@using Iridium.Protocol
+
+<section class="category-block" data-channel-group="@Category.Id">
+    <div class="category-heading"
+         data-iridium-category-drag-handle="@(CanManage ? Category.Id : null)"
+         @onclick="ToggleAsync"
+         @oncontextmenu="OpenMenu"
+         @oncontextmenu:preventDefault="true"
+         @oncontextmenu:stopPropagation="true">
+        <span class="category-name">@Category.Name</span>
+        <span class="chevron @(Collapsed ? "collapsed" : null)"><Icon Name="chevron" /></span>
+    </div>
+    @if (_menuOpen && CanManage)
+    {
+        <div class="category-menu" @onclick:stopPropagation="true">
+            <button @onclick="EditAsync"><Icon Name="edit" /> Edit Category</button>
+            <button @onclick="CreateAsync"><Icon Name="plus" /> Create Channel</button>
+            <button class="destructive" @onclick="DeleteAsync"><Icon Name="trash" /> Delete Category</button>
+        </div>
+    }
+    @if (!Collapsed)
+    {
+        <div class="category-children">@ChildContent</div>
+    }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public required CommunityCategoryDto Category { get; set; }
+    [Parameter] public bool Collapsed { get; set; }
+    [Parameter] public bool CanManage { get; set; }
+    [Parameter] public EventCallback<CommunityCategoryDto> OnToggle { get; set; }
+    [Parameter] public EventCallback<CommunityCategoryDto> OnEdit { get; set; }
+    [Parameter] public EventCallback<CommunityCategoryDto> OnCreateChannel { get; set; }
+    [Parameter] public EventCallback<CommunityCategoryDto> OnDelete { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+    private bool _menuOpen;
+
+    private Task ToggleAsync() { _menuOpen = false; return OnToggle.InvokeAsync(Category); }
+    private void OpenMenu() { if (CanManage) _menuOpen = true; }
+    private Task EditAsync() { _menuOpen = false; return OnEdit.InvokeAsync(Category); }
+    private Task CreateAsync() { _menuOpen = false; return OnCreateChannel.InvokeAsync(Category); }
+    private Task DeleteAsync() { _menuOpen = false; return OnDelete.InvokeAsync(Category); }
+}

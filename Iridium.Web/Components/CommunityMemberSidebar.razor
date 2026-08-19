@@ -1,0 +1,101 @@
+@using Iridium.Protocol
+@using Iridium.Web.Models
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+
+<section class="member-sidebar">
+    <header><h2>Members</h2><span>@Management.Members.Count</span></header>
+    <div class="member-groups">
+        @foreach (var group in Groups)
+        {
+            <section class="member-group">
+                <h3 style="@(group.Color is { } groupColor ? $"color:{groupColor}" : null)">@group.Name — @group.Members.Count</h3>
+                @foreach (var member in group.Members)
+                {
+                    <button class="member-entry" @onclick="args => OpenProfile(member, args)">
+                        <ProfileAvatar DisplayName="@member.DisplayName" Presence="@member.Presence" Size="medium" Surface="sidebar" />
+                        <span class="display-name" style="@(HighestColor(member) is { } color ? $"color:{color}" : null)">@member.DisplayName</span>
+                    </button>
+                }
+            </section>
+        }
+    </div>
+</section>
+@if (_profileMember is { } profile)
+{
+    var profileRoles = RolesFor(profile);
+    <AnchoredProfileCard AccountId="profile.AccountId" CurrentAccountId="CurrentAccountId" Username="@profile.Username"
+        DisplayName="@profile.DisplayName" Pronouns="@profile.Pronouns" Description="@profile.Description" Presence="profile.Presence"
+        NodeAuthority="@NodeAuthority" Roles="profileRoles" CommunityContext="Management"
+        NameColor="@HighestColor(profile)" X="_profileX" Y="_profileY"
+        OnClose="CloseProfile" OnEditProfile="OnEditProfile" OnMessage="OnMessage"
+        OnMemberRolesChanged="OnMemberRolesChanged" />
+}
+
+@code {
+    [Parameter, EditorRequired] public required CommunityManagementDto Management { get; set; }
+    [Parameter, EditorRequired] public required Guid CurrentAccountId { get; set; }
+    [Parameter, EditorRequired] public required string NodeAuthority { get; set; }
+    [Parameter] public EventCallback OnEditProfile { get; set; }
+    [Parameter] public EventCallback<Guid> OnMessage { get; set; }
+    [Parameter] public EventCallback<CommunityMemberRolesChange> OnMemberRolesChanged { get; set; }
+    private CommunityMemberDto? _profileMember;
+    private double _profileX;
+    private double _profileY;
+
+    private IReadOnlyList<MemberGroup> Groups
+    {
+        get
+        {
+            var members = Management.Members.ToList();
+            var result = new List<MemberGroup>();
+            var owners = members.Where(value => value.IsOwner).ToList();
+            if (owners.Count > 0) result.Add(new("OWNER", null, Sort(owners)));
+            members.RemoveAll(value => value.IsOwner);
+
+            foreach (var role in Management.Roles.Where(value => value.DisplaySeparately && !value.IsDefault)
+                         .OrderByDescending(value => value.Position))
+            {
+                var roleMembers = members.Where(value => HighestDisplayedRole(value)?.Id == role.Id).ToList();
+                if (roleMembers.Count == 0) continue;
+                result.Add(new(role.Name.ToUpperInvariant(), role.Color, Sort(roleMembers)));
+                members.RemoveAll(value => roleMembers.Any(member => member.AccountId == value.AccountId));
+            }
+
+            var online = members.Where(value => value.Presence != PublicPresence.Offline).ToList();
+            var offline = members.Where(value => value.Presence == PublicPresence.Offline).ToList();
+            if (online.Count > 0) result.Add(new("ONLINE", null, Sort(online)));
+            if (offline.Count > 0) result.Add(new("OFFLINE", null, Sort(offline)));
+            return result;
+        }
+    }
+
+    private CommunityRoleDto? HighestDisplayedRole(CommunityMemberDto member) => Management.Roles
+        .Where(value => value.DisplaySeparately && member.RoleIds.Contains(value.Id))
+        .OrderByDescending(value => value.Position).FirstOrDefault();
+    private IReadOnlyList<CommunityRoleDto> RolesFor(CommunityMemberDto member) => Management.Roles
+        .Where(value => member.RoleIds.Contains(value.Id)).OrderByDescending(value => value.Position).ToArray();
+    private string? HighestColor(CommunityMemberDto member) => RolesFor(member)
+        .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value.Color))?.Color;
+    private async Task OpenProfile(CommunityMemberDto member, MouseEventArgs args)
+    {
+        _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/chat.js");
+        var position = await _module.InvokeAsync<ProfileCardPosition>("profileCardPosition", args.ClientX, args.ClientY, "member");
+        _profileMember = member;
+        _profileX = position.X;
+        _profileY = position.Y;
+    }
+    private void CloseProfile() => _profileMember = null;
+    private static IReadOnlyList<CommunityMemberDto> Sort(IEnumerable<CommunityMemberDto> members) => members
+        .OrderBy(value => value.Presence == PublicPresence.Offline)
+        .ThenBy(value => value.DisplayName, StringComparer.OrdinalIgnoreCase)
+        .ThenBy(value => value.Username, StringComparer.OrdinalIgnoreCase).ToArray();
+    private sealed record MemberGroup(string Name, string? Color, IReadOnlyList<CommunityMemberDto> Members);
+    private IJSObjectReference? _module;
+    public async ValueTask DisposeAsync()
+    {
+        if (_module is null) return;
+        try { await _module.DisposeAsync(); }
+        catch (JSDisconnectedException) { }
+    }
+}

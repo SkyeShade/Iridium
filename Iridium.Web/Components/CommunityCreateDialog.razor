@@ -1,0 +1,22 @@
+@using Iridium.Web.Models
+
+<div class="modal-backdrop" @onclick="OnCancel">
+    <section class="dialog" @onclick:stopPropagation="true">
+        <h2>Create a Community</h2>
+        <p>Communities live entirely on your current server.</p>
+        <label>Name <input @bind="_name" autofocus /></label>
+        <label>Description <textarea @bind="_description" placeholder="Optional"></textarea></label>
+        @if (!string.IsNullOrWhiteSpace(Error)) { <p class="error">@Error</p> }
+        <div class="actions"><button class="secondary" @onclick="OnCancel">Cancel</button><button class="primary" disabled="Busy" @onclick="Submit">Create</button></div>
+    </section>
+</div>
+
+@code {
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public string? Error { get; set; }
+    [Parameter] public EventCallback<CommunitySubmission> OnCreate { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+    private string _name = string.Empty;
+    private string _description = string.Empty;
+    private Task Submit() => OnCreate.InvokeAsync(new CommunitySubmission(_name, _description));
+}

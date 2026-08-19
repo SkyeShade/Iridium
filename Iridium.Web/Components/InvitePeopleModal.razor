@@ -1,0 +1,62 @@
+@using Iridium.Protocol
+@inject IJSRuntime JS
+
+<ModalShell Title="Invite People" Size="medium" OnClose="OnClose">
+    <section class="invite-people">
+        <header><span>COMMUNITY INVITE</span><h1>Invite People</h1><p>Send this 24-hour invite as a Direct Message.</p>
+            <button class="copy-quick" @onclick="CopyAsync">@(_copied ? "Copied" : "Copy Link")</button>
+        </header>
+        @if (!string.IsNullOrWhiteSpace(Error))
+        {
+            <p class="invite-error" role="alert">@Error</p>
+        }
+        <div class="people-list">
+            @foreach (var friend in People)
+            {
+                <div class="person-row">
+                    <ProfileAvatar DisplayName="@friend.DisplayName" Presence="@friend.Presence" Size="medium" Surface="panel" />
+                    <span class="person-copy"><span class="display-name">@friend.DisplayName</span><small>@IridiumIdentity.Format(friend.Username, NodeAuthority)</small></span>
+                    <button title="Send invite to @friend.DisplayName" disabled="@(_sending.Contains(friend.AccountId) || _sent.Contains(friend.AccountId))"
+                            @onclick="() => SendAsync(friend)">
+                        @if (_sent.Contains(friend.AccountId)) { <span>Sent</span> } else { <Icon Name="message" /> }
+                    </button>
+                </div>
+            }
+            @if (!People.Any())
+            {
+                <div class="empty-people"><Icon Name="friends" /><p>No friends are available to invite yet.</p></div>
+            }
+        </div>
+    </section>
+</ModalShell>
+
+@code {
+    [Parameter] public IReadOnlyList<FriendDto> Friends { get; set; } = [];
+    [Parameter, EditorRequired] public required string NodeAuthority { get; set; }
+    [Parameter, EditorRequired] public required string InviteUrl { get; set; }
+    [Parameter] public string? Error { get; set; }
+    [Parameter, EditorRequired] public required Func<FriendDto, Task<bool>> Send { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    private readonly HashSet<Guid> _sending = [];
+    private readonly HashSet<Guid> _sent = [];
+    private bool _copied;
+    private IEnumerable<FriendDto> People => Friends.Where(value => value.Status == FriendshipStatus.Accepted)
+        .GroupBy(value => value.AccountId).Select(value => value.First())
+        .OrderBy(value => value.DisplayName, StringComparer.OrdinalIgnoreCase)
+        .ThenBy(value => value.Username, StringComparer.OrdinalIgnoreCase);
+
+    private async Task SendAsync(FriendDto friend)
+    {
+        if (!_sending.Add(friend.AccountId)) return;
+        try
+        {
+            if (await Send(friend)) _sent.Add(friend.AccountId);
+        }
+        finally { _sending.Remove(friend.AccountId); }
+    }
+    private async Task CopyAsync()
+    {
+        await JS.InvokeVoidAsync("navigator.clipboard.writeText", InviteUrl);
+        _copied = true;
+    }
+}

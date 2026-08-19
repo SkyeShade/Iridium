@@ -1,0 +1,42 @@
+@using Iridium.Protocol
+
+<div class="channel-row @(CanManage ? "draggable" : null) @(Selected ? "selected" : null)"
+     data-iridium-channel-drag="@(CanManage ? Channel.Id : null)"
+     data-channel-category="@(Channel.CategoryId?.ToString() ?? string.Empty)"
+     @onclick="SelectAsync"
+     @oncontextmenu="OpenMenu"
+     @oncontextmenu:preventDefault="true"
+     @oncontextmenu:stopPropagation="true"
+     >
+    <span class="channel-symbol"><Icon Name="channel" /></span>
+    <span class="channel-name">@Channel.Name</span>
+    @if (CanManage)
+    {
+        <button class="channel-settings" title="Channel settings" aria-label="Settings for @Channel.Name"
+                draggable="false" @onpointerdown:stopPropagation="true"
+                @onclick="EditAsync" @onclick:stopPropagation="true"><Icon Name="settings" /></button>
+    }
+    @if (_menuOpen && CanManage)
+    {
+        <div class="row-menu" @onclick:stopPropagation="true">
+            <button @onclick="EditFromMenuAsync"><Icon Name="edit" /> Edit Channel</button>
+            <button class="destructive" @onclick="DeleteAsync"><Icon Name="trash" /> Delete Channel</button>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public required CommunityChannelDto Channel { get; set; }
+    [Parameter] public bool Selected { get; set; }
+    [Parameter] public bool CanManage { get; set; }
+    [Parameter] public EventCallback<CommunityChannelDto> OnSelect { get; set; }
+    [Parameter] public EventCallback<CommunityChannelDto> OnEdit { get; set; }
+    [Parameter] public EventCallback<CommunityChannelDto> OnDelete { get; set; }
+    private bool _menuOpen;
+
+    private Task SelectAsync() { _menuOpen = false; return OnSelect.InvokeAsync(Channel); }
+    private void OpenMenu() { if (CanManage) _menuOpen = true; }
+    private Task EditAsync() { _menuOpen = false; return OnEdit.InvokeAsync(Channel); }
+    private Task EditFromMenuAsync() => EditAsync();
+    private Task DeleteAsync() { _menuOpen = false; return OnDelete.InvokeAsync(Channel); }
+}

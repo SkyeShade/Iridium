@@ -1,0 +1,59 @@
+# .NET build output
+**/bin/
+**/obj/
+artifacts/
+
+# Rider / Visual Studio local state
+.idea/
+.vs/
+*.sln.iml
+*.DotSettings.user
+*.user
+*.suo
+*.userprefs
+_ReSharper*/
+*.resharper.user
+
+# Tests and coverage
+TestResults/
+**/TestResults/
+coverage/
+coverage.*
+*.coverage
+*.coveragexml
+
+# NuGet output and legacy local package folders
+packages/
+*.nupkg
+*.snupkg
+
+# Runtime databases (EF migrations remain source-controlled)
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Local secrets and machine-specific overrides
+.env
+.env.*
+appsettings.Local.json
+appsettings.*.local.json
+secrets.json
+*.pfx
+*.p12
+*.key
+
+# Frontend dependencies
+node_modules/
+
+# Logs, temporary files, and OS noise
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+Desktop.ini

@@ -1,0 +1,242 @@
+@using Iridium.Client.Core
+@using Iridium.Protocol
+@using Iridium.Web.Models
+@inject ICategoryCollapseStore CollapseStore
+@inject IJSRuntime JS
+@implements IAsyncDisposable
+
+<div class="community-sidebar" @ref="_sidebar" @onclick="CloseSidebarContextMenu">
+    @if (State.CanManage)
+    {
+        <div class="sidebar-tools">
+            <button title="Create a text channel" @onclick="() => OpenChannelDialog(null)"><Icon Name="channel" /> Channel</button>
+            <button title="Create a category" @onclick="OpenCategoryDialog"><Icon Name="plus" /> Category</button>
+        </div>
+    }
+    @if (!string.IsNullOrWhiteSpace(_error))
+    {
+        <div class="sidebar-error">@_error</div>
+    }
+
+    <div class="channel-scroll"
+         @oncontextmenu="OpenSidebarContextMenu"
+         @oncontextmenu:preventDefault="true">
+        <div class="top-level-list" data-sidebar-top-level>
+            @foreach (var item in TopLevelItems)
+            {
+                <div @key="item.Key" class="top-level-item @(item.Category is not null ? "category-item" : "channel-item")"
+                     data-top-level-item data-sidebar-item-kind="@(item.Category is null ? "channel" : "category")">
+                    @if (item.Channel is { } topChannel)
+                    {
+                        <ChannelRow Channel="topChannel" CanManage="State.CanManage"
+                                    Selected="@(SelectedChannel?.Id == topChannel.Id)"
+                                    OnSelect="SelectChannelAsync" OnEdit="EditChannel" OnDelete="RequestDeleteChannel" />
+                    }
+                    else if (item.Category is { } category)
+                    {
+                        <div class="category-drop-group" data-iridium-category-drag="@(State.CanManage ? category.Id : null)">
+                            <CategoryRow Category="category" CanManage="State.CanManage"
+                                         Collapsed="@_collapsed.Contains(category.Id)"
+                                         OnToggle="ToggleCategoryAsync" OnEdit="EditCategory"
+                                         OnCreateChannel="categoryValue => OpenChannelDialog(categoryValue.Id)"
+                                         OnDelete="RequestDeleteCategory">
+                                @foreach (var channel in ChannelsFor(category.Id))
+                                {
+                                    <ChannelRow @key="channel.Id" Channel="channel" CanManage="State.CanManage"
+                                                Selected="@(SelectedChannel?.Id == channel.Id)"
+                                                OnSelect="SelectChannelAsync" OnEdit="EditChannel" OnDelete="RequestDeleteChannel" />
+                                }
+                            </CategoryRow>
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+        @if (!State.Channels.Any() && State.CanManage)
+        {
+            <button class="first-channel" @onclick="() => OpenChannelDialog(null)"><Icon Name="plus" /> Create your first channel</button>
+        }
+    </div>
+    @if (_showSidebarContextMenu && State.CanManage)
+    {
+        <div class="sidebar-context-menu"
+             @onclick:stopPropagation="true"
+             @onpointerdown:stopPropagation="true"
+             @oncontextmenu:preventDefault="true"
+             @oncontextmenu:stopPropagation="true">
+            <button @onclick="CreateChannelFromSidebarMenu"><Icon Name="channel" /> Create Channel</button>
+            <button @onclick="CreateCategoryFromSidebarMenu"><Icon Name="plus" /> Create Category</button>
+        </div>
+    }
+</div>
+
+@if (_showChannelDialog)
+{
+    <ChannelSettingsDialog Channel="_editingChannel" InitialCategoryId="_newChannelCategoryId"
+                           Categories="State.Categories" Busy="_busy" Error="@_dialogError"
+                           ConfirmDeleteInitially="_confirmChannelDelete"
+                           OnSave="SaveChannelAsync" OnDelete="DeleteChannelAsync" OnCancel="CloseChannelDialog" />
+}
+@if (_showCategoryDialog)
+{
+    <CategorySettingsDialog Category="_editingCategory" Busy="_busy" Error="@_dialogError"
+                            ConfirmDeleteInitially="_confirmCategoryDelete"
+                            OnSave="SaveCategoryAsync" OnDelete="DeleteCategoryAsync" OnCancel="CloseCategoryDialog" />
+}
+
+@code {
+    [Parameter, EditorRequired] public required CommunitySession State { get; set; }
+    [Parameter, EditorRequired] public required Guid AccountId { get; set; }
+    [Parameter, EditorRequired] public required Guid CommunityId { get; set; }
+    [Parameter] public CommunityChannelDto? SelectedChannel { get; set; }
+    [Parameter] public EventCallback<CommunityChannelDto?> OnChannelSelected { get; set; }
+
+    private readonly HashSet<Guid> _collapsed = [];
+    private Guid? _loadedCommunityId;
+    private bool _showChannelDialog;
+    private bool _showCategoryDialog;
+    private bool _showSidebarContextMenu;
+    private bool _confirmChannelDelete;
+    private bool _confirmCategoryDelete;
+    private bool _busy;
+    private CommunityChannelDto? _editingChannel;
+    private CommunityCategoryDto? _editingCategory;
+    private Guid? _newChannelCategoryId;
+    private string? _error;
+    private string? _dialogError;
+    private ElementReference _sidebar;
+    private IJSObjectReference? _dragModule;
+    private DotNetObjectReference<CommunitySidebar>? _selfReference;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_loadedCommunityId == CommunityId) return;
+        _loadedCommunityId = CommunityId;
+        _collapsed.Clear();
+        _collapsed.UnionWith(await CollapseStore.LoadAsync(AccountId, CommunityId));
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        _dragModule = await JS.InvokeAsync<IJSObjectReference>("import", "./js/chat.js");
+        _selfReference = DotNetObjectReference.Create(this);
+        await _dragModule.InvokeVoidAsync("wireChannelSorter", _sidebar, _selfReference);
+    }
+
+    private IEnumerable<CommunityChannelDto> ChannelsFor(Guid? categoryId) => State.Channels
+        .Where(value => value.CategoryId == categoryId)
+        .OrderBy(value => value.Position).ThenBy(value => value.Name);
+    private IReadOnlyList<SidebarItem> TopLevelItems => State.Categories.Select(category => new SidebarItem(category, null))
+        .Concat(State.Channels.Where(channel => channel.CategoryId is null).Select(channel => new SidebarItem(null, channel)))
+        .OrderBy(item => item.Position)
+        .ThenBy(item => item.Category is null ? 0 : 1)
+        .ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+
+    private Task SelectChannelAsync(CommunityChannelDto channel) => OnChannelSelected.InvokeAsync(channel);
+    private void EditChannel(CommunityChannelDto channel) { _editingChannel = channel; _newChannelCategoryId = null; _confirmChannelDelete = false; _dialogError = null; _showChannelDialog = true; }
+    private void RequestDeleteChannel(CommunityChannelDto channel) { EditChannel(channel); _confirmChannelDelete = true; }
+    private void OpenChannelDialog(Guid? categoryId) { _editingChannel = null; _newChannelCategoryId = categoryId; _confirmChannelDelete = false; _dialogError = null; _showChannelDialog = true; }
+    private void CloseChannelDialog() { _showChannelDialog = false; _editingChannel = null; _dialogError = null; }
+    private void EditCategory(CommunityCategoryDto category) { _editingCategory = category; _confirmCategoryDelete = false; _dialogError = null; _showCategoryDialog = true; }
+    private void RequestDeleteCategory(CommunityCategoryDto category) { EditCategory(category); _confirmCategoryDelete = true; }
+    private void OpenCategoryDialog() { _editingCategory = null; _confirmCategoryDelete = false; _dialogError = null; _showCategoryDialog = true; }
+    private void CloseCategoryDialog() { _showCategoryDialog = false; _editingCategory = null; _dialogError = null; }
+    private void OpenSidebarContextMenu(MouseEventArgs _) { if (State.CanManage) _showSidebarContextMenu = true; }
+    private void CloseSidebarContextMenu() => _showSidebarContextMenu = false;
+    private void CreateChannelFromSidebarMenu() { CloseSidebarContextMenu(); OpenChannelDialog(null); }
+    private void CreateCategoryFromSidebarMenu() { CloseSidebarContextMenu(); OpenCategoryDialog(); }
+
+    private async Task SaveChannelAsync(ChannelSettingsSubmission submission)
+    {
+        await RunDialogAsync(async () =>
+        {
+            CommunityChannelDto? created = null;
+            if (submission.ChannelId is { } id) await State.UpdateChannelAsync(id, submission.Name, submission.CategoryId);
+            else created = await State.CreateChannelAsync(submission.Name, submission.CategoryId);
+            CloseChannelDialog();
+            if (created is not null) await OnChannelSelected.InvokeAsync(created);
+        });
+    }
+
+    private async Task DeleteChannelAsync(Guid channelId)
+    {
+        await RunDialogAsync(async () =>
+        {
+            await State.DeleteChannelAsync(channelId);
+            CloseChannelDialog();
+            if (SelectedChannel?.Id == channelId) await OnChannelSelected.InvokeAsync(null);
+        });
+    }
+
+    private async Task SaveCategoryAsync(CategorySettingsSubmission submission)
+    {
+        await RunDialogAsync(async () =>
+        {
+            if (submission.CategoryId is { } id) await State.UpdateCategoryAsync(id, submission.Name);
+            else await State.CreateCategoryAsync(submission.Name);
+            CloseCategoryDialog();
+        });
+    }
+
+    private async Task DeleteCategoryAsync(Guid categoryId)
+    {
+        await RunDialogAsync(async () => { await State.DeleteCategoryAsync(categoryId); _collapsed.Remove(categoryId); CloseCategoryDialog(); });
+    }
+
+    private async Task RunDialogAsync(Func<Task> action)
+    {
+        _busy = true; _dialogError = null;
+        try { await action(); }
+        catch (Exception exception) { _dialogError = exception.Message; }
+        finally { _busy = false; }
+    }
+
+    private async Task ToggleCategoryAsync(CommunityCategoryDto category)
+    {
+        if (!_collapsed.Add(category.Id)) _collapsed.Remove(category.Id);
+        await CollapseStore.SaveAsync(AccountId, CommunityId, _collapsed);
+    }
+
+    [JSInvokable]
+    public async Task CommitChannelDropAsync(string channelId, string? categoryId, int position)
+    {
+        if (!State.CanManage || !Guid.TryParse(channelId, out var parsedChannelId)) return;
+        Guid? parsedCategoryId = null;
+        if (!string.IsNullOrWhiteSpace(categoryId))
+        {
+            if (!Guid.TryParse(categoryId, out var parsed)) return;
+            parsedCategoryId = parsed;
+        }
+        try { await State.MoveChannelAsync(parsedChannelId, parsedCategoryId, Math.Max(0, position)); _error = null; }
+        catch (Exception exception) { _error = exception.Message; }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    [JSInvokable]
+    public async Task CommitCategoryDropAsync(string categoryId, int position)
+    {
+        if (!State.CanManage || !Guid.TryParse(categoryId, out var parsedCategoryId)) return;
+        try { await State.MoveCategoryAsync(parsedCategoryId, Math.Max(0, position)); _error = null; }
+        catch (Exception exception) { _error = exception.Message; }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private sealed record SidebarItem(CommunityCategoryDto? Category, CommunityChannelDto? Channel)
+    {
+        public string Key => Category?.Id.ToString() ?? Channel!.Id.ToString();
+        public int Position => Category?.Position ?? Channel!.Position;
+        public string Name => Category?.Name ?? Channel!.Name;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_dragModule is not null)
+        {
+            try { await _dragModule.InvokeVoidAsync("unwireChannelSorter", _sidebar); await _dragModule.DisposeAsync(); }
+            catch (JSDisconnectedException) { }
+        }
+        _selfReference?.Dispose();
+    }
+}

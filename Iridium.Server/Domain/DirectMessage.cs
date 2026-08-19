@@ -1,0 +1,18 @@
+namespace Iridium.Server.Domain;
+
+public sealed class DirectMessage
+{
+    public Guid Id { get; set; }
+    public Guid ConversationId { get; set; }
+    public Guid AuthorAccountId { get; set; }
+    public string Content { get; set; } = string.Empty;
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset? EditedAt { get; set; }
+    public bool IsDeleted { get; set; }
+    public DateTimeOffset? DeletedAt { get; set; }
+    public Guid? ReplyToMessageId { get; set; }
+    public required DirectConversation Conversation { get; set; }
+    public required NodeAccount AuthorAccount { get; set; }
+    public DirectMessage? ReplyToMessage { get; set; }
+    public ICollection<DirectMessage> Replies { get; set; } = [];
+}

@@ -1,0 +1,24 @@
+@using Iridium.Protocol
+
+<div class="profile-panel" role="button" tabindex="0" @onclick="OnProfile" @onkeydown="HandleKey">
+    <ProfileAvatar DisplayName="@DisplayName" Presence="Presence" Surface="raised" />
+    <div class="profile-copy">
+        <span class="display-name">@DisplayName</span>
+        <span>@PublicIdentity</span>
+    </div>
+    <button class="settings-button" title="Settings" aria-label="Open settings"
+            @onclick="OpenSettings" @onclick:stopPropagation="true">
+        <Icon Name="settings" Size="17" />
+    </button>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public required string DisplayName { get; set; }
+    [Parameter, EditorRequired] public required string PublicIdentity { get; set; }
+    [Parameter] public PublicPresence Presence { get; set; }
+    [Parameter] public EventCallback OnProfile { get; set; }
+    [Parameter] public EventCallback OnSettings { get; set; }
+
+    private Task OpenSettings(MouseEventArgs args) => OnSettings.InvokeAsync();
+    private Task HandleKey(KeyboardEventArgs args) => args.Key is "Enter" or " " ? OnProfile.InvokeAsync() : Task.CompletedTask;
+}

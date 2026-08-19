@@ -1,0 +1,95 @@
+@using Iridium.Web.Services
+@inject AppearanceService Appearance
+@inject ILogger<AppearanceSettings> Logger
+
+<section class="appearance-settings">
+    <p class="lead">Color preferences are stored only on this device and preview immediately.</p>
+    @if (_preferences is null)
+    {
+        <div class="appearance-card loading">Loading appearance…</div>
+    }
+    else
+    {
+        <div class="appearance-card">
+            <div class="color-setting">
+                <div><strong>Accent Color</strong><span>Interactive controls, links, focus, and selected states.</span></div>
+                <label class="color-control">
+                    <input type="color" value="@_preferences.AccentColor" aria-label="Accent Color"
+                           @oninput="eventArgs => ChangeAsync(ColorSetting.Accent, eventArgs)" />
+                    <output>@_preferences.AccentColor.ToUpperInvariant()</output>
+                </label>
+            </div>
+            <div class="color-setting">
+                <div><strong>Base Background</strong><span>The deepest and main application background levels.</span></div>
+                <label class="color-control">
+                    <input type="color" value="@_preferences.BaseBackgroundColor" aria-label="Base Background Color"
+                           @oninput="eventArgs => ChangeAsync(ColorSetting.Base, eventArgs)" />
+                    <output>@_preferences.BaseBackgroundColor.ToUpperInvariant()</output>
+                </label>
+            </div>
+            <div class="color-setting">
+                <div><strong>Surface / Highlight Color</strong><span>Panels, inputs, hover surfaces, and selected navigation.</span></div>
+                <label class="color-control">
+                    <input type="color" value="@_preferences.SurfaceColor" aria-label="Surface and Highlight Color"
+                           @oninput="eventArgs => ChangeAsync(ColorSetting.Surface, eventArgs)" />
+                    <output>@_preferences.SurfaceColor.ToUpperInvariant()</output>
+                </label>
+            </div>
+        </div>
+        @if (!string.IsNullOrWhiteSpace(_error))
+        {
+            <p class="appearance-error">@_error</p>
+        }
+        <button class="reset-appearance" disabled="@_busy" @onclick="ResetAsync">Reset to Default</button>
+    }
+</section>
+
+@code {
+    private AppearancePreferences? _preferences;
+    private bool _busy;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync() =>
+        _preferences = Appearance.Current ?? await Appearance.InitializeAsync();
+
+    private async Task ChangeAsync(ColorSetting setting, ChangeEventArgs eventArgs)
+    {
+        if (_preferences is null || eventArgs.Value is not string value) return;
+        var updated = setting switch
+        {
+            ColorSetting.Accent => _preferences with { AccentColor = value },
+            ColorSetting.Base => _preferences with { BaseBackgroundColor = value },
+            ColorSetting.Surface => _preferences with { SurfaceColor = value },
+            _ => _preferences
+        };
+        await SaveAsync(updated);
+    }
+
+    private async Task SaveAsync(AppearancePreferences preferences)
+    {
+        _busy = true;
+        _error = null;
+        try { _preferences = await Appearance.UpdateAsync(preferences); }
+        catch (Exception exception)
+        {
+            Logger.LogError(exception, "Could not save local appearance preferences.");
+            _error = "Appearance could not be saved in this browser.";
+        }
+        finally { _busy = false; }
+    }
+
+    private async Task ResetAsync()
+    {
+        _busy = true;
+        _error = null;
+        try { _preferences = await Appearance.ResetAsync(); }
+        catch (Exception exception)
+        {
+            Logger.LogError(exception, "Could not reset local appearance preferences.");
+            _error = "Appearance could not be reset in this browser.";
+        }
+        finally { _busy = false; }
+    }
+
+    private enum ColorSetting { Accent, Base, Surface }
+}

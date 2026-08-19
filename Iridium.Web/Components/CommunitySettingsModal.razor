@@ -1,0 +1,301 @@
+@using Iridium.Client.Core
+@using Iridium.Protocol
+@inject IJSRuntime JS
+
+<ModalShell Title="Community Settings" Size="extra-large" OnClose="OnClose">
+    <div class="community-settings">
+        <aside>
+            <p>@Community.Name</p>
+            @foreach (var section in Sections)
+            {
+                <button class="@(section == _section ? "active" : null)" @onclick="() => SelectSection(section)">@section</button>
+            }
+        </aside>
+        <main>
+            @if (_loading)
+            {
+                <p class="muted">Loading Community settings...</p>
+            }
+            else if (!string.IsNullOrWhiteSpace(_error))
+            {
+                <p class="error" role="alert">@_error</p>
+            }
+            else if (State.Management is { } management)
+            {
+                @if (_section == "Overview")
+                {
+                    <h1>Overview</h1>
+                    <label>Community Name<input @bind="_communityName" maxlength="100" disabled="@(!management.Access.Has(CommunityPermission.ManageCommunity))" /></label>
+                    <label>Description<textarea @bind="_communityDescription" maxlength="500" disabled="@(!management.Access.Has(CommunityPermission.ManageCommunity))"></textarea></label>
+                    @if (management.Access.Has(CommunityPermission.ManageCommunity))
+                    {
+                        <button class="primary" @onclick="SaveOverviewAsync">Save Changes</button>
+                    }
+                }
+                else if (_section == "Roles")
+                {
+                    <div class="section-heading"><div><h1>Roles</h1><p>Higher roles appear first. The owner always has every permission.</p></div>
+                        @if (management.Access.Has(CommunityPermission.ManageRoles)) { <button class="primary" @onclick="NewRole">Create Role</button> }
+                    </div>
+                    <div class="roles-layout">
+                        <div class="role-list">
+                            @foreach (var role in management.Roles.OrderByDescending(value => value.Position))
+                            {
+                                <button class="@(_selectedRole?.Id == role.Id ? "active" : null)" @onclick="() => SelectRole(role)">
+                                    <span class="role-name" style="color:@(role.Color ?? "var(--text-muted)")">@role.Name</span>@if (role.IsDefault) { <small>DEFAULT</small> }
+                                </button>
+                            }
+                        </div>
+                        @if (_editingNewRole || _selectedRole is not null)
+                        {
+                            <div class="role-editor">
+                                <label>Role Name<input @bind="_roleName" maxlength="64" disabled="@(!management.Access.Has(CommunityPermission.ManageRoles) || _selectedRole?.IsDefault == true)" /></label>
+                                <label>Display Color</label>
+                                <div class="role-color-control">
+                                    <input class="role-swatch" type="color" @bind="_roleColor" disabled="@(!management.Access.Has(CommunityPermission.ManageRoles))" aria-label="Role color picker" />
+                                    <input class="role-hex" value="@_roleColor" @oninput="UpdateRoleHex" maxlength="7" spellcheck="false"
+                                           disabled="@(!management.Access.Has(CommunityPermission.ManageRoles))" aria-label="Role color hex value" />
+                                </div>
+                                <label class="display-separately"><input type="checkbox" @bind="_roleDisplaySeparately"
+                                    disabled="@(!management.Access.Has(CommunityPermission.ManageRoles) || _selectedRole?.IsDefault == true)" />
+                                    Display members separately in the member list</label>
+                                <label class="display-separately"><input type="checkbox" @bind="_roleIsMentionable"
+                                    disabled="@(!management.Access.Has(CommunityPermission.ManageRoles) || _selectedRole?.IsDefault == true)" />
+                                    Members may mention this role</label>
+                                <h2>Permissions</h2>
+                                <div class="permission-list">
+                                    @foreach (var permission in PermissionOptions)
+                                    {
+                                        <label><input type="checkbox" checked="@HasRolePermission(permission)"
+                                                      disabled="@(!management.Access.Has(CommunityPermission.ManageRoles))"
+                                                      @onchange="args => ToggleRolePermission(permission, args)" /> <span>@PermissionLabel(permission)</span></label>
+                                    }
+                                </div>
+                                @if (management.Access.Has(CommunityPermission.ManageRoles))
+                                {
+                                    <div class="actions">
+                                        <button class="primary" @onclick="SaveRoleAsync">@(_editingNewRole ? "Create Role" : "Save Role")</button>
+                                        @if (_selectedRole is { IsDefault: false } selected)
+                                        {
+                                            <button @onclick="() => MoveRoleAsync(selected, -1)">Move Down</button>
+                                            <button @onclick="() => MoveRoleAsync(selected, 1)">Move Up</button>
+                                            @if (_confirmRoleDelete)
+                                            {
+                                                <button class="danger" @onclick="DeleteRoleAsync">Confirm Delete</button>
+                                            }
+                                            else
+                                            {
+                                                <button class="danger-link" @onclick="() => _confirmRoleDelete = true">Delete Role</button>
+                                            }
+                                        }
+                                    </div>
+                                }
+                            </div>
+                        }
+                    </div>
+                }
+                else if (_section == "Members")
+                {
+                    <h1>Members</h1>
+                    <div class="member-list">
+                        @foreach (var member in management.Members)
+                        {
+                            <button class="member-row @(_selectedMember?.AccountId == member.AccountId ? "active" : null)" @onclick="() => SelectMember(member)">
+                                <ProfileAvatar DisplayName="@member.DisplayName" Presence="member.Presence" Size="small" Surface="panel" />
+                                <span><span class="display-name">@member.DisplayName</span><small>@IridiumIdentity.Format(member.Username, NodeAuthority)</small></span>
+                                @if (member.IsOwner) { <em>OWNER</em> }
+                            </button>
+                        }
+                    </div>
+                    @if (_selectedMember is { } memberValue)
+                    {
+                        <div class="member-editor">
+                            <h2 class="display-name">@memberValue.DisplayName</h2>
+                            <div class="member-roles">
+                                @foreach (var role in management.Roles.Where(value => !value.IsDefault).OrderByDescending(value => value.Position))
+                                {
+                                    <label><input type="checkbox" checked="@_memberRoleIds.Contains(role.Id)"
+                                                  disabled="@(!management.Access.Has(CommunityPermission.ManageRoles) || memberValue.IsOwner && !management.Access.IsOwner)"
+                                                  @onchange="args => ToggleMemberRole(role.Id, args)" /> <span style="color:@(role.Color ?? "var(--text-muted)")">@role.Name</span></label>
+                                }
+                            </div>
+                            <div class="actions">
+                                @if (management.Access.Has(CommunityPermission.ManageRoles)) { <button class="primary" @onclick="SaveMemberRolesAsync">Save Roles</button> }
+                                @if (!memberValue.IsOwner && management.Access.Has(CommunityPermission.KickMembers))
+                                {
+                                    <button class="danger-link" @onclick="KickSelectedAsync">@(_confirmKick ? "Confirm Kick" : "Kick Member")</button>
+                                }
+                                @if (!memberValue.IsOwner && management.Access.Has(CommunityPermission.BanMembers))
+                                {
+                                    <button class="danger" @onclick="BanSelectedAsync">@(_confirmBan ? "Confirm Ban" : "Ban Member")</button>
+                                }
+                            </div>
+                        </div>
+                    }
+                    @if (management.Access.Has(CommunityPermission.BanMembers) && management.Bans.Count > 0)
+                    {
+                        <h2>Banned Accounts</h2>
+                        @foreach (var ban in management.Bans)
+                        {
+                            <div class="ban-row"><span><span class="display-name">@ban.DisplayName</span><small>@IridiumIdentity.Format(ban.Username, NodeAuthority)</small></span><button @onclick="() => UnbanAsync(ban.AccountId)">Unban</button></div>
+                        }
+                    }
+                }
+                else if (_section == "Invites")
+                {
+                    <div class="section-heading"><div><h1>Invites</h1><p>Invite secrets are shown only once when created.</p></div></div>
+                    @if (management.Access.Has(CommunityPermission.CreateInvites))
+                    {
+                        <div class="invite-create">
+                            <label>Expires<select @bind="_inviteLifetime"><option value="never">Never</option><option value="day">24 hours</option><option value="week">7 days</option></select></label>
+                            <label>Maximum Uses<input type="number" min="1" placeholder="Unlimited" @bind="_inviteMaxUses" /></label>
+                            <button class="join" @onclick="CreateInviteAsync">Create Invite</button>
+                        </div>
+                        @if (!string.IsNullOrWhiteSpace(_createdInviteUrl))
+                        {
+                            <div class="created-invite"><span>Share this invite now:</span><code>@_createdInviteUrl</code>
+                                <button class="copy-link" @onclick="CopyInviteAsync">@(_inviteCopied ? "Copied" : "Copy Link")</button>
+                            </div>
+                        }
+                        <div class="invite-list">
+                            @foreach (var invite in management.Invites)
+                            {
+                                <div class="invite-row"><code>@invite.CodePrefix...</code><span>by <span class="display-name">@invite.CreatorDisplayName</span></span><span>@invite.Uses / @(invite.MaxUses?.ToString() ?? "unlimited") uses</span><span>@Expiration(invite)</span><button class="danger-link" @onclick="() => RevokeInviteAsync(invite.Id)">Revoke</button></div>
+                            }
+                        </div>
+                    }
+                    else { <p class="muted">You do not have permission to create or manage invites.</p> }
+                }
+            }
+        </main>
+    </div>
+</ModalShell>
+
+@code {
+    [Parameter, EditorRequired] public required CommunityDto Community { get; set; }
+    [Parameter, EditorRequired] public required CommunitySession State { get; set; }
+    [Parameter, EditorRequired] public required string NodeAuthority { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback<CommunityDto> OnCommunityUpdated { get; set; }
+    private static readonly string[] Sections = ["Overview", "Roles", "Members", "Invites"];
+    private static readonly CommunityPermission[] PermissionOptions =
+    [
+        CommunityPermission.ViewChannels, CommunityPermission.SendMessages, CommunityPermission.ManageMessages,
+        CommunityPermission.ManageChannels, CommunityPermission.ManageCommunity, CommunityPermission.ManageRoles,
+        CommunityPermission.CreateInvites, CommunityPermission.KickMembers, CommunityPermission.BanMembers,
+        CommunityPermission.MentionEveryone,
+        CommunityPermission.Administrator
+    ];
+    private string _section = "Overview";
+    private bool _loading = true;
+    private string? _error;
+    private string _communityName = string.Empty;
+    private string? _communityDescription;
+    private CommunityRoleDto? _selectedRole;
+    private bool _editingNewRole;
+    private bool _confirmRoleDelete;
+    private string _roleName = string.Empty;
+    private string _roleColor = "#6677E8";
+    private CommunityPermission _rolePermissions;
+    private bool _roleDisplaySeparately;
+    private bool _roleIsMentionable;
+    private CommunityMemberDto? _selectedMember;
+    private readonly HashSet<Guid> _memberRoleIds = [];
+    private bool _confirmKick;
+    private bool _confirmBan;
+    private string _inviteLifetime = "never";
+    private int? _inviteMaxUses;
+    private string? _createdInviteUrl;
+    private bool _inviteCopied;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _communityName = Community.Name;
+        _communityDescription = Community.Description;
+        await RunAsync(() => State.LoadManagementAsync());
+        _loading = false;
+    }
+
+    private void SelectSection(string section) { _section = section; _error = null; }
+    private void NewRole() { _editingNewRole = true; _selectedRole = null; _roleName = "New Role"; _roleColor = "#6677E8"; _rolePermissions = CommunityPermission.None; _roleDisplaySeparately = false; _roleIsMentionable = false; _confirmRoleDelete = false; }
+    private void SelectRole(CommunityRoleDto role) { _editingNewRole = false; _selectedRole = role; _roleName = role.Name; _roleColor = role.Color ?? "#6677E8"; _rolePermissions = role.Permissions; _roleDisplaySeparately = role.DisplaySeparately; _roleIsMentionable = role.IsMentionable; _confirmRoleDelete = false; }
+    private bool HasRolePermission(CommunityPermission permission) => (_rolePermissions & permission) != 0;
+    private void ToggleRolePermission(CommunityPermission permission, ChangeEventArgs args)
+    {
+        if (args.Value is true) _rolePermissions |= permission; else _rolePermissions &= ~permission;
+    }
+    private async Task SaveRoleAsync() => await RunAsync(async () =>
+    {
+        if (!System.Text.RegularExpressions.Regex.IsMatch(_roleColor, "^#[0-9A-Fa-f]{6}$"))
+            throw new InvalidOperationException("Role color must use the format #RRGGBB.");
+        _roleColor = _roleColor.ToUpperInvariant();
+        if (_editingNewRole) await State.CreateRoleAsync(_roleName, _rolePermissions, _roleColor, _roleDisplaySeparately, _roleIsMentionable);
+        else if (_selectedRole is { } role) await State.UpdateRoleAsync(role.Id, _roleName, _rolePermissions, _roleColor, _roleDisplaySeparately, _roleIsMentionable);
+        _editingNewRole = false;
+        _selectedRole = State.Management?.Roles.FirstOrDefault(value => value.Name == _roleName);
+    });
+    private void UpdateRoleHex(ChangeEventArgs args)
+    {
+        var value = args.Value?.ToString()?.Trim() ?? string.Empty;
+        _roleColor = value.Length <= 7 ? value : value[..7];
+    }
+    private async Task MoveRoleAsync(CommunityRoleDto role, int delta) => await RunAsync(async () =>
+    {
+        await State.MoveRoleAsync(role.Id, role.Position + delta);
+        _selectedRole = State.Management?.Roles.FirstOrDefault(value => value.Id == role.Id);
+    });
+    private async Task DeleteRoleAsync() => await RunAsync(async () =>
+    {
+        if (_selectedRole is null) return;
+        await State.DeleteRoleAsync(_selectedRole.Id);
+        _selectedRole = null;
+        _confirmRoleDelete = false;
+    });
+    private void SelectMember(CommunityMemberDto member) { _selectedMember = member; _memberRoleIds.Clear(); _memberRoleIds.UnionWith(member.RoleIds); _confirmKick = _confirmBan = false; }
+    private void ToggleMemberRole(Guid roleId, ChangeEventArgs args) { if (args.Value is true) _memberRoleIds.Add(roleId); else _memberRoleIds.Remove(roleId); }
+    private async Task SaveMemberRolesAsync() => await RunAsync(async () =>
+    {
+        if (_selectedMember is null) return;
+        await State.SetMemberRolesAsync(_selectedMember.AccountId, _memberRoleIds.ToArray());
+        _selectedMember = State.Management?.Members.FirstOrDefault(value => value.AccountId == _selectedMember.AccountId);
+    });
+    private async Task KickSelectedAsync()
+    {
+        if (!_confirmKick) { _confirmKick = true; return; }
+        await RunAsync(async () => { await State.KickMemberAsync(_selectedMember!.AccountId); _selectedMember = null; });
+    }
+    private async Task BanSelectedAsync()
+    {
+        if (!_confirmBan) { _confirmBan = true; return; }
+        await RunAsync(async () => { await State.BanMemberAsync(_selectedMember!.AccountId, null); _selectedMember = null; });
+    }
+    private Task UnbanAsync(Guid accountId) => RunAsync(() => State.UnbanMemberAsync(accountId));
+    private async Task SaveOverviewAsync() => await RunAsync(async () =>
+    {
+        var updated = await State.UpdateCommunityAsync(_communityName, _communityDescription);
+        await OnCommunityUpdated.InvokeAsync(updated);
+    });
+    private async Task CreateInviteAsync() => await RunAsync(async () =>
+    {
+        var expires = _inviteLifetime switch { "day" => DateTimeOffset.UtcNow.AddDays(1), "week" => DateTimeOffset.UtcNow.AddDays(7), _ => (DateTimeOffset?)null };
+        var created = await State.CreateInviteAsync(expires, _inviteMaxUses);
+        _createdInviteUrl = created.InviteUrl;
+        _inviteCopied = false;
+    });
+    private async Task CopyInviteAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_createdInviteUrl)) return;
+        await JS.InvokeVoidAsync("navigator.clipboard.writeText", _createdInviteUrl);
+        _inviteCopied = true;
+    }
+    private Task RevokeInviteAsync(Guid inviteId) => RunAsync(() => State.RevokeInviteAsync(inviteId));
+    private async Task RunAsync(Func<Task> action)
+    {
+        _error = null;
+        try { await action(); }
+        catch (Exception exception) { _error = exception.Message; }
+        await InvokeAsync(StateHasChanged);
+    }
+    private static string PermissionLabel(CommunityPermission permission) => string.Concat(permission.ToString().Select((character, index) => index > 0 && char.IsUpper(character) ? $" {character}" : character.ToString()));
+    private static string Expiration(CommunityInviteDto invite) => invite.ExpiresAt is null ? "Never expires" : $"Expires {invite.ExpiresAt.Value.ToLocalTime():g}";
+}

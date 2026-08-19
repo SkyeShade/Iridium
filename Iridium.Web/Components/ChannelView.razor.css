@@ -1,0 +1,6 @@
+.channel-view { height: calc(100% - 3.45rem); min-height: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; overflow: hidden; background: var(--bg-base); }
+.channel-status { grid-row: 1; padding: .45rem 1rem; color: var(--text-muted); background: var(--surface-panel); font-size: .75rem; text-align: center; }
+.channel-error { grid-row: 2; padding: .5rem 1rem; border-bottom: 1px solid color-mix(in srgb, var(--danger) 40%, transparent); color: var(--danger-text); background: color-mix(in srgb, var(--danger) 10%, transparent); font-size: .78rem; }
+.message-region { grid-row: 3; min-height: 0; overflow: hidden; }.message-region ::deep .message-list { height: 100%; }
+.composer-region { grid-row: 4; }
+.composer-region.read-only { padding: .8rem 1rem; color: var(--text-faint); font-size: .75rem; text-align: center; }

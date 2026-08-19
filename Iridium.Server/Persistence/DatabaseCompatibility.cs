@@ -1,0 +1,305 @@
+using System.Data;
+using Iridium.Protocol;
+using Iridium.Server.Domain;
+using Microsoft.EntityFrameworkCore;
+
+namespace Iridium.Server.Persistence;
+
+public static class DatabaseCompatibility
+{
+    public static async Task EnsureCommunityManagementSchemaAsync(IridiumDbContext db)
+    {
+        await EnsureColumnAsync(db, "Accounts", "Description", "TEXT NULL");
+        await EnsureColumnAsync(db, "CommunityRoles", "Position", "INTEGER NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(db, "CommunityRoles", "IsDefault", "INTEGER NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(db, "CommunityRoles", "Color", "TEXT NULL");
+        await EnsureColumnAsync(db, "CommunityRoles", "DisplaySeparately", "INTEGER NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(db, "CommunityRoles", "IsMentionable", "INTEGER NOT NULL DEFAULT 0");
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE INDEX IF NOT EXISTS IX_CommunityRoles_CommunityId_Position
+                ON CommunityRoles (CommunityId, Position);
+            CREATE UNIQUE INDEX IF NOT EXISTS IX_CommunityRoles_CommunityId_IsDefault
+                ON CommunityRoles (CommunityId) WHERE IsDefault = 1;
+            CREATE TABLE IF NOT EXISTS CommunityInvites (
+                Id TEXT NOT NULL CONSTRAINT PK_CommunityInvites PRIMARY KEY,
+                CommunityId TEXT NOT NULL,
+                TokenHash TEXT NOT NULL,
+                CodePrefix TEXT NOT NULL,
+                CreatedByAccountId TEXT NOT NULL,
+                CreatedAt TEXT NOT NULL,
+                ExpiresAt TEXT NULL,
+                MaxUses INTEGER NULL,
+                Uses INTEGER NOT NULL DEFAULT 0,
+                Revoked INTEGER NOT NULL DEFAULT 0,
+                CONSTRAINT FK_CommunityInvites_Communities_CommunityId FOREIGN KEY (CommunityId) REFERENCES Communities (Id) ON DELETE CASCADE,
+                CONSTRAINT FK_CommunityInvites_Accounts_CreatedByAccountId FOREIGN KEY (CreatedByAccountId) REFERENCES Accounts (Id) ON DELETE RESTRICT
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS IX_CommunityInvites_TokenHash ON CommunityInvites (TokenHash);
+            CREATE INDEX IF NOT EXISTS IX_CommunityInvites_CommunityId_Revoked ON CommunityInvites (CommunityId, Revoked);
+            CREATE TABLE IF NOT EXISTS CommunityBans (
+                CommunityId TEXT NOT NULL,
+                AccountId TEXT NOT NULL,
+                BannedByAccountId TEXT NOT NULL,
+                BannedAt TEXT NOT NULL,
+                Reason TEXT NULL,
+                CONSTRAINT PK_CommunityBans PRIMARY KEY (CommunityId, AccountId),
+                CONSTRAINT FK_CommunityBans_Communities_CommunityId FOREIGN KEY (CommunityId) REFERENCES Communities (Id) ON DELETE CASCADE,
+                CONSTRAINT FK_CommunityBans_Accounts_AccountId FOREIGN KEY (AccountId) REFERENCES Accounts (Id) ON DELETE RESTRICT,
+                CONSTRAINT FK_CommunityBans_Accounts_BannedByAccountId FOREIGN KEY (BannedByAccountId) REFERENCES Accounts (Id) ON DELETE RESTRICT
+            );
+            CREATE INDEX IF NOT EXISTS IX_CommunityBans_AccountId ON CommunityBans (AccountId);
+            CREATE INDEX IF NOT EXISTS IX_CommunityBans_BannedByAccountId ON CommunityBans (BannedByAccountId);
+            """);
+
+        var communitiesWithDefaults = await db.CommunityRoles.Where(value => value.IsDefault)
+            .Select(value => value.CommunityId).ToListAsync();
+        var missing = await db.Communities.Where(value => !communitiesWithDefaults.Contains(value.Id))
+            .Select(value => value.Id).ToListAsync();
+        foreach (var communityId in missing)
+            db.CommunityRoles.Add(new CommunityRole
+            {
+                Id = Guid.NewGuid(), CommunityId = communityId, Community = null!, Name = "@everyone",
+                Position = 0, IsDefault = true,
+                Permissions = CommunityPermission.ViewChannels | CommunityPermission.SendMessages
+            });
+        if (missing.Count > 0) await db.SaveChangesAsync();
+    }
+
+    public static async Task EnsureDirectMessageTablesAsync(IridiumDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS DirectConversations (
+                Id TEXT NOT NULL CONSTRAINT PK_DirectConversations PRIMARY KEY,
+                ParticipantAAccountId TEXT NOT NULL,
+                ParticipantBAccountId TEXT NOT NULL,
+                CreatedAt INTEGER NOT NULL,
+                CONSTRAINT FK_DirectConversations_Accounts_ParticipantAAccountId FOREIGN KEY (ParticipantAAccountId) REFERENCES Accounts (Id) ON DELETE RESTRICT,
+                CONSTRAINT FK_DirectConversations_Accounts_ParticipantBAccountId FOREIGN KEY (ParticipantBAccountId) REFERENCES Accounts (Id) ON DELETE RESTRICT
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS IX_DirectConversations_ParticipantAAccountId_ParticipantBAccountId
+                ON DirectConversations (ParticipantAAccountId, ParticipantBAccountId);
+            CREATE TABLE IF NOT EXISTS DirectConversationStates (
+                ConversationId TEXT NOT NULL,
+                AccountId TEXT NOT NULL,
+                HiddenAt INTEGER NULL,
+                LastReadAt INTEGER NULL,
+                CONSTRAINT PK_DirectConversationStates PRIMARY KEY (ConversationId, AccountId),
+                CONSTRAINT FK_DirectConversationStates_DirectConversations_ConversationId FOREIGN KEY (ConversationId) REFERENCES DirectConversations (Id) ON DELETE CASCADE,
+                CONSTRAINT FK_DirectConversationStates_Accounts_AccountId FOREIGN KEY (AccountId) REFERENCES Accounts (Id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS DirectMessages (
+                Id TEXT NOT NULL CONSTRAINT PK_DirectMessages PRIMARY KEY,
+                ConversationId TEXT NOT NULL,
+                AuthorAccountId TEXT NOT NULL,
+                Content TEXT NOT NULL,
+                CreatedAt INTEGER NOT NULL,
+                EditedAt INTEGER NULL,
+                IsDeleted INTEGER NOT NULL DEFAULT 0,
+                DeletedAt INTEGER NULL,
+                ReplyToMessageId TEXT NULL,
+                CONSTRAINT FK_DirectMessages_DirectConversations_ConversationId FOREIGN KEY (ConversationId) REFERENCES DirectConversations (Id) ON DELETE CASCADE,
+                CONSTRAINT FK_DirectMessages_Accounts_AuthorAccountId FOREIGN KEY (AuthorAccountId) REFERENCES Accounts (Id) ON DELETE RESTRICT,
+                CONSTRAINT FK_DirectMessages_DirectMessages_ReplyToMessageId FOREIGN KEY (ReplyToMessageId) REFERENCES DirectMessages (Id) ON DELETE SET NULL
+            );
+            CREATE INDEX IF NOT EXISTS IX_DirectMessages_ConversationId_CreatedAt ON DirectMessages (ConversationId, CreatedAt);
+            CREATE INDEX IF NOT EXISTS IX_DirectMessages_AuthorAccountId ON DirectMessages (AuthorAccountId);
+            CREATE INDEX IF NOT EXISTS IX_DirectMessages_ReplyToMessageId ON DirectMessages (ReplyToMessageId);
+            """);
+        await EnsureColumnAsync(db, "DirectConversationStates", "LastReadAt", "INTEGER NULL");
+    }
+
+    public static Task EnsurePresenceColumnAsync(IridiumDbContext db) =>
+        EnsureColumnAsync(db, "Accounts", "PreferredPresence", "INTEGER NOT NULL DEFAULT 0");
+
+    private static async Task EnsureColumnAsync(IridiumDbContext db, string table, string column, string definition)
+    {
+        var connection = db.Database.GetDbConnection();
+        if (connection.State != ConnectionState.Open) await connection.OpenAsync();
+        await using var inspect = connection.CreateCommand();
+        inspect.CommandText = $"PRAGMA table_info('{table}');";
+        await using (var reader = await inspect.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync())
+                if (string.Equals(reader.GetString(1), column, StringComparison.OrdinalIgnoreCase)) return;
+        }
+        await using var alter = connection.CreateCommand();
+        alter.CommandText = $"ALTER TABLE {table} ADD COLUMN {column} {definition};";
+        await alter.ExecuteNonQueryAsync();
+    }
+
+    public static async Task EnsureAccountSessionActivityColumnAsync(IridiumDbContext db)
+    {
+        var connection = db.Database.GetDbConnection();
+        if (connection.State != ConnectionState.Open) await connection.OpenAsync();
+
+        await using var inspect = connection.CreateCommand();
+        inspect.CommandText = "PRAGMA table_info('AccountSessions');";
+        var hasLastUsedAt = false;
+        await using (var reader = await inspect.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync())
+            {
+                if (!string.Equals(reader.GetString(1), "LastUsedAt", StringComparison.OrdinalIgnoreCase)) continue;
+                hasLastUsedAt = true;
+                break;
+            }
+        }
+
+        if (hasLastUsedAt) return;
+        await using var alter = connection.CreateCommand();
+        alter.CommandText = "ALTER TABLE AccountSessions ADD COLUMN LastUsedAt TEXT NULL;";
+        await alter.ExecuteNonQueryAsync();
+        await using var initialize = connection.CreateCommand();
+        initialize.CommandText = "UPDATE AccountSessions SET LastUsedAt = CreatedAt WHERE LastUsedAt IS NULL;";
+        await initialize.ExecuteNonQueryAsync();
+    }
+
+    public static async Task EnsurePronounsColumnAsync(IridiumDbContext db)
+    {
+        var connection = db.Database.GetDbConnection();
+        if (connection.State != ConnectionState.Open) await connection.OpenAsync();
+
+        await using var inspect = connection.CreateCommand();
+        inspect.CommandText = "PRAGMA table_info('Accounts');";
+        var hasPronouns = false;
+        await using (var reader = await inspect.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync())
+            {
+                if (string.Equals(reader.GetString(1), "Pronouns", StringComparison.OrdinalIgnoreCase))
+                {
+                    hasPronouns = true;
+                    break;
+                }
+            }
+        }
+
+        if (hasPronouns) return;
+        await using var alter = connection.CreateCommand();
+        alter.CommandText = "ALTER TABLE Accounts ADD COLUMN Pronouns TEXT NULL;";
+        await alter.ExecuteNonQueryAsync();
+    }
+
+    public static async Task EnsureFriendsTableAsync(IridiumDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS Friendships (
+                Id TEXT NOT NULL CONSTRAINT PK_Friendships PRIMARY KEY,
+                RequesterAccountId TEXT NOT NULL,
+                AddresseeAccountId TEXT NOT NULL,
+                Status INTEGER NOT NULL,
+                CreatedAt TEXT NOT NULL,
+                AcceptedAt TEXT NULL,
+                CONSTRAINT FK_Friendships_Accounts_RequesterAccountId FOREIGN KEY (RequesterAccountId) REFERENCES Accounts (Id) ON DELETE RESTRICT,
+                CONSTRAINT FK_Friendships_Accounts_AddresseeAccountId FOREIGN KEY (AddresseeAccountId) REFERENCES Accounts (Id) ON DELETE RESTRICT
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS IX_Friendships_RequesterAccountId_AddresseeAccountId
+                ON Friendships (RequesterAccountId, AddresseeAccountId);
+            CREATE INDEX IF NOT EXISTS IX_Friendships_AddresseeAccountId ON Friendships (AddresseeAccountId);
+            """);
+    }
+
+    public static async Task EnsureCommunityStructureTablesAsync(IridiumDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS CommunityCategories (
+                CommunityId TEXT NOT NULL,
+                Id TEXT NOT NULL,
+                Name TEXT NOT NULL,
+                Position INTEGER NOT NULL,
+                ParentCategoryId TEXT NULL,
+                CONSTRAINT PK_CommunityCategories PRIMARY KEY (CommunityId, Id),
+                CONSTRAINT FK_CommunityCategories_Communities_CommunityId FOREIGN KEY (CommunityId) REFERENCES Communities (Id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS IX_CommunityCategories_CommunityId_Position ON CommunityCategories (CommunityId, Position);
+            CREATE TABLE IF NOT EXISTS CommunityChannels (
+                CommunityId TEXT NOT NULL,
+                Id TEXT NOT NULL,
+                CategoryId TEXT NULL,
+                Name TEXT NOT NULL,
+                Position INTEGER NOT NULL,
+                CreatedAt TEXT NOT NULL,
+                CONSTRAINT PK_CommunityChannels PRIMARY KEY (CommunityId, Id),
+                CONSTRAINT FK_CommunityChannels_Communities_CommunityId FOREIGN KEY (CommunityId) REFERENCES Communities (Id) ON DELETE CASCADE,
+                CONSTRAINT FK_CommunityChannels_CommunityCategories_CommunityId_CategoryId FOREIGN KEY (CommunityId, CategoryId) REFERENCES CommunityCategories (CommunityId, Id) ON DELETE RESTRICT
+            );
+            CREATE INDEX IF NOT EXISTS IX_CommunityChannels_CommunityId_CategoryId_Position ON CommunityChannels (CommunityId, CategoryId, Position);
+            """);
+    }
+
+    public static async Task EnsureUnifiedCommunitySidebarOrderingAsync(IridiumDbContext db)
+    {
+        var communityIds = await db.Communities.Select(value => value.Id).ToListAsync();
+        foreach (var communityId in communityIds)
+        {
+            var categories = await db.CommunityCategories
+                .Where(value => value.CommunityId == communityId).ToListAsync();
+            var uncategorized = await db.CommunityChannels
+                .Where(value => value.CommunityId == communityId && value.CategoryId == null).ToListAsync();
+            var hasLegacyOverlap = categories.Select(value => value.Position)
+                .Intersect(uncategorized.Select(value => value.Position)).Any();
+
+            var topLevel = hasLegacyOverlap
+                ? uncategorized.OrderBy(value => value.Position).ThenBy(value => value.Name)
+                    .Select(value => new SidebarPosition(null, value))
+                    .Concat(categories.OrderBy(value => value.Position).ThenBy(value => value.Name)
+                        .Select(value => new SidebarPosition(value, null))).ToList()
+                : categories.Select(value => new SidebarPosition(value, null))
+                    .Concat(uncategorized.Select(value => new SidebarPosition(null, value)))
+                    .OrderBy(value => value.Position)
+                    .ThenBy(value => value.Category is null ? 0 : 1)
+                    .ThenBy(value => value.Name, StringComparer.OrdinalIgnoreCase).ToList();
+            for (var index = 0; index < topLevel.Count; index++) topLevel[index].SetPosition(index);
+
+            foreach (var group in (await db.CommunityChannels
+                         .Where(value => value.CommunityId == communityId && value.CategoryId != null).ToListAsync())
+                     .GroupBy(value => value.CategoryId))
+            {
+                var ordered = group.OrderBy(value => value.Position)
+                    .ThenBy(value => value.Name, StringComparer.OrdinalIgnoreCase).ToList();
+                for (var index = 0; index < ordered.Count; index++) ordered[index].Position = index;
+            }
+        }
+        await db.SaveChangesAsync();
+    }
+
+    public static async Task EnsureChannelMessagesTableAsync(IridiumDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS ChannelMessages (
+                Id TEXT NOT NULL CONSTRAINT PK_ChannelMessages PRIMARY KEY,
+                CommunityId TEXT NOT NULL,
+                ChannelId TEXT NOT NULL,
+                AuthorAccountId TEXT NOT NULL,
+                Content TEXT NOT NULL,
+                CreatedAt INTEGER NOT NULL,
+                EditedAt INTEGER NULL,
+                IsDeleted INTEGER NOT NULL DEFAULT 0,
+                DeletedAt INTEGER NULL,
+                ReplyToMessageId TEXT NULL,
+                CONSTRAINT FK_ChannelMessages_CommunityChannels_CommunityId_ChannelId
+                    FOREIGN KEY (CommunityId, ChannelId) REFERENCES CommunityChannels (CommunityId, Id) ON DELETE CASCADE,
+                CONSTRAINT FK_ChannelMessages_Accounts_AuthorAccountId
+                    FOREIGN KEY (AuthorAccountId) REFERENCES Accounts (Id) ON DELETE RESTRICT,
+                CONSTRAINT FK_ChannelMessages_ChannelMessages_ReplyToMessageId
+                    FOREIGN KEY (ReplyToMessageId) REFERENCES ChannelMessages (Id) ON DELETE SET NULL
+            );
+            CREATE INDEX IF NOT EXISTS IX_ChannelMessages_CommunityId_ChannelId_CreatedAt
+                ON ChannelMessages (CommunityId, ChannelId, CreatedAt);
+            CREATE INDEX IF NOT EXISTS IX_ChannelMessages_AuthorAccountId ON ChannelMessages (AuthorAccountId);
+            CREATE INDEX IF NOT EXISTS IX_ChannelMessages_ReplyToMessageId ON ChannelMessages (ReplyToMessageId);
+            """);
+        await EnsureColumnAsync(db, "ChannelMessages", "MentionsJson", "TEXT NULL");
+    }
+
+    private sealed record SidebarPosition(CommunityCategory? Category, CommunityChannel? Channel)
+    {
+        public int Position => Category?.Position ?? Channel!.Position;
+        public string Name => Category?.Name ?? Channel!.Name;
+        public void SetPosition(int position)
+        {
+            if (Category is not null) Category.Position = position;
+            else Channel!.Position = position;
+        }
+    }
+}

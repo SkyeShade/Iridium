@@ -1,0 +1,107 @@
+@using Iridium.Client.Core
+@using Iridium.Protocol
+@using Iridium.Web.Models
+@implements IDisposable
+@inject ChannelMessagingSession Messaging
+@inject ILogger<DirectMessageView> Logger
+
+<section class="direct-message-view">
+    <header class="dm-header">
+        <ProfileAvatar DisplayName="@Conversation.OtherParticipant.DisplayName" Presence="@Conversation.OtherParticipant.Presence" Size="small" Surface="base" />
+        <div><strong class="display-name">@Conversation.OtherParticipant.DisplayName</strong><span>@IridiumIdentity.Format(Conversation.OtherParticipant.Username, NodeAuthority)</span></div>
+    </header>
+    @if (_loading) { <div class="dm-status">Loading message history…</div> }
+    @if (!string.IsNullOrWhiteSpace(_error)) { <div class="dm-error">@_error</div> }
+    <div class="dm-message-region">
+        <MessageList Messages="ProjectedMessages" CurrentAccountId="CurrentAccountId" CanManage="false"
+                     DirectParticipant="Conversation.OtherParticipant"
+                     NodeAuthority="@NodeAuthority" OnEditProfile="OnEditProfile" OnMessage="OnMessage"
+                     EmptyIcon="message" EmptyTitle="No messages yet" EmptyDescription="Send the first Direct Message."
+                     OnReply="BeginReply" Edit="EditMessageAsync" OnDelete="DeleteMessageAsync" />
+    </div>
+    <div class="dm-composer-region">
+        <MessageComposer @ref="_composer" ChannelName="@Conversation.OtherParticipant.DisplayName"
+                         PlaceholderText="@($"Message {Conversation.OtherParticipant.DisplayName}")"
+                         ReplyToDisplayName="@(_replyTo?.Author.DisplayName)" Busy="@(_sending || _loading)"
+                         Send="SendMessageAsync" OnCancelReply="CancelReplyAsync" />
+    </div>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public required DirectConversationDto Conversation { get; set; }
+    [Parameter, EditorRequired] public required Guid CurrentAccountId { get; set; }
+    [Parameter, EditorRequired] public required string NodeAuthority { get; set; }
+    [Parameter] public EventCallback OnEditProfile { get; set; }
+    [Parameter] public EventCallback<Guid> OnMessage { get; set; }
+    private Guid? _loadedConversationId;
+    private ChannelMessageDto? _replyTo;
+    private MessageComposer? _composer;
+    private bool _loading;
+    private bool _sending;
+    private string? _error;
+
+    private IReadOnlyList<ChannelMessageDto> ProjectedMessages => Messaging.DirectMessages.Select(message =>
+        new ChannelMessageDto(message.Id, Guid.Empty, message.ConversationId, message.Author, message.Content,
+            message.CreatedAt, message.EditedAt, message.IsDeleted, message.ReplyTo)).ToArray();
+
+    protected override void OnInitialized() => Messaging.Changed += MessagesChanged;
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_loadedConversationId == Conversation.Id && Messaging.DirectConversationId == Conversation.Id) return;
+        _replyTo = null;
+        _error = null;
+        _loading = true;
+        try
+        {
+            await Messaging.OpenDirectConversationAsync(Conversation.Id);
+            _loadedConversationId = Conversation.Id;
+        }
+        catch (Exception exception)
+        {
+            Logger.LogError(exception, "Could not open Direct Message {ConversationId}.", Conversation.Id);
+            _error = exception.Message;
+        }
+        finally { _loading = false; }
+    }
+
+    private void MessagesChanged() => _ = InvokeAsync(StateHasChanged);
+    private async Task BeginReply(ChannelMessageDto message)
+    {
+        _replyTo = message;
+        await InvokeAsync(StateHasChanged);
+        if (_composer is not null) await _composer.FocusAsync();
+    }
+    private async Task CancelReplyAsync()
+    {
+        _replyTo = null;
+        await InvokeAsync(StateHasChanged);
+        if (_composer is not null) await _composer.FocusAsync();
+    }
+    private async Task<bool> SendMessageAsync(string content)
+    {
+        if (_sending || _loading) return false;
+        _sending = true;
+        _error = null;
+        try
+        {
+            await Messaging.SendDirectAsync(content, _replyTo?.Id);
+            _replyTo = null;
+            await InvokeAsync(StateHasChanged);
+            if (_composer is not null) await _composer.FocusAsync();
+            return true;
+        }
+        catch (Exception exception) { Logger.LogError(exception, "Direct Message send failed."); _error = exception.Message; return false; }
+        finally { _sending = false; }
+    }
+    private async Task<bool> EditMessageAsync(MessageEditSubmission submission)
+    {
+        try { await Messaging.EditDirectAsync(submission.MessageId, submission.Content); return true; }
+        catch (Exception exception) { _error = exception.Message; return false; }
+    }
+    private async Task DeleteMessageAsync(Guid messageId)
+    {
+        try { await Messaging.DeleteDirectAsync(messageId); }
+        catch (Exception exception) { _error = exception.Message; }
+    }
+    public void Dispose() => Messaging.Changed -= MessagesChanged;
+}

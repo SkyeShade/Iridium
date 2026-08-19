@@ -1,0 +1,72 @@
+@using Iridium.Protocol
+@using Iridium.Web.Models
+
+<div class="modal-backdrop" @onclick="OnCancel">
+    <section class="settings-dialog" @onclick:stopPropagation="true">
+        <header><div><h2>@(Channel is null ? "Create Text Channel" : "Channel Settings")</h2><p>Text channels are visible to Community members.</p></div><button class="icon-button" title="Close" @onclick="OnCancel"><Icon Name="close" /></button></header>
+        <label>Channel name<input @bind="_name" maxlength="100" autofocus /></label>
+        <label>Category
+            <select @bind="_categoryValue">
+                <option value="">No category</option>
+                @foreach (var category in Categories.OrderBy(value => value.Position))
+                {
+                    <option value="@category.Id">@category.Name</option>
+                }
+            </select>
+        </label>
+        @if (!string.IsNullOrWhiteSpace(Error)) { <p class="error">@Error</p> }
+        @if (_confirmDelete)
+        {
+            <div class="confirmation"><strong>Delete #@Channel!.Name?</strong><span>Messages in this channel will also be removed. This cannot be undone.</span></div>
+        }
+        <footer>
+            @if (Channel is not null)
+            {
+                <button class="danger" disabled="Busy" @onclick="DeleteAsync">@(_confirmDelete ? "Confirm Delete" : "Delete Channel")</button>
+            }
+            <span></span>
+            <button class="secondary" @onclick="OnCancel">Cancel</button>
+            <button class="primary" disabled="@(Busy || string.IsNullOrWhiteSpace(_name))" @onclick="SaveAsync">@(Channel is null ? "Create" : "Save Changes")</button>
+        </footer>
+    </section>
+</div>
+
+@code {
+    [Parameter] public CommunityChannelDto? Channel { get; set; }
+    [Parameter] public Guid? InitialCategoryId { get; set; }
+    [Parameter] public IReadOnlyList<CommunityCategoryDto> Categories { get; set; } = [];
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public string? Error { get; set; }
+    [Parameter] public bool ConfirmDeleteInitially { get; set; }
+    [Parameter] public EventCallback<ChannelSettingsSubmission> OnSave { get; set; }
+    [Parameter] public EventCallback<Guid> OnDelete { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+    private Guid? _initializedId;
+    private bool _initializedCreate;
+    private string _name = string.Empty;
+    private string _categoryValue = string.Empty;
+    private bool _confirmDelete;
+
+    protected override void OnParametersSet()
+    {
+        var createChanged = Channel is null && !_initializedCreate;
+        if (!createChanged && Channel?.Id == _initializedId) return;
+        _initializedId = Channel?.Id;
+        _initializedCreate = Channel is null;
+        _name = Channel?.Name ?? string.Empty;
+        _categoryValue = (Channel?.CategoryId ?? InitialCategoryId)?.ToString() ?? string.Empty;
+        _confirmDelete = ConfirmDeleteInitially;
+    }
+
+    private Task SaveAsync()
+    {
+        Guid? categoryId = Guid.TryParse(_categoryValue, out var parsed) ? parsed : null;
+        return OnSave.InvokeAsync(new ChannelSettingsSubmission(Channel?.Id, _name, categoryId));
+    }
+
+    private Task DeleteAsync()
+    {
+        if (!_confirmDelete) { _confirmDelete = true; return Task.CompletedTask; }
+        return OnDelete.InvokeAsync(Channel!.Id);
+    }
+}

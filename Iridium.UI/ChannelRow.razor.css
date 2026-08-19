@@ -1,0 +1,20 @@
+.channel-row { position: relative; display: flex; align-items: center; min-height: 2rem; gap: .35rem; margin: 1px .4rem; padding: .28rem .4rem; border-radius: var(--radius-sm); color: var(--text-muted); cursor: pointer; user-select: none; -webkit-user-select: none; transition: color 120ms ease, background 120ms ease; }
+.channel-row.draggable { cursor: grab; }.channel-row.draggable:active { cursor: grabbing; }
+.channel-row.native-dragging { opacity: .55; background: var(--surface-active); }
+.channel-row.pointer-dragging{opacity:.55;background:var(--surface-active)}.channel-row.pointer-drop-before::before{content:"";position:absolute;z-index:3;inset:-2px .25rem auto;height:2px;border-radius:2px;background:var(--accent-soft);box-shadow:0 0 8px color-mix(in srgb,var(--accent) 65%,transparent)}
+.channel-row:hover { color: var(--text); background: var(--surface-hover); }
+.channel-row.selected { color: var(--text-strong); background: var(--surface-active); }
+.channel-row.drop-target::before { content: ""; position: absolute; z-index: 2; inset: -2px .25rem auto; height: 2px; border-radius: 2px; background: var(--accent-soft); box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 65%, transparent); }
+.channel-symbol { width: 1.05rem; height: 1.05rem; display: grid; place-items: center; align-self: center; flex: 0 0 auto; color: var(--text-faint); }
+.channel-symbol ::deep svg { display: block; width: 100%; height: 100%; }
+.channel-name { min-width: 0; min-height: 1.55rem; display: flex; align-items: center; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .9rem; line-height: 1.2; }
+.channel-settings { width: 1.55rem; height: 1.55rem; display: grid; place-items: center; flex: 0 0 auto; padding: .25rem; border: 0; border-radius: .3rem; color: var(--text-muted); background: transparent; cursor: pointer; opacity: 0; }
+.channel-row:hover .channel-settings, .channel-row.selected .channel-settings { opacity: 1; }
+.channel-settings:hover { color: var(--text-strong); background: #ffffff0c; }
+.channel-settings ::deep svg { display: block; width: 100%; height: 100%; }
+.row-menu { position: absolute; z-index: 20; top: calc(100% - .2rem); right: .15rem; width: 10.75rem; padding: .35rem; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-deep); box-shadow: 0 12px 30px #0009; }
+.row-menu button { width: 100%; display: flex; align-items: center; gap: .5rem; padding: .48rem .55rem; border: 0; border-radius: .3rem; color: var(--text); background: transparent; text-align: left; cursor: pointer; }
+.row-menu button:hover { background: var(--surface-hover); }
+.row-menu button.destructive { color: var(--danger, #ef6b73); }
+.row-menu button.destructive:hover { color: white; background: var(--danger, #c94f58); }
+.row-menu ::deep svg { width: .9rem; height: .9rem; }

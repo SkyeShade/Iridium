@@ -1,0 +1,174 @@
+@using Iridium.Client.Core
+@using Iridium.Protocol
+@using Iridium.Web.Models
+@implements IDisposable
+@inject ChannelMessagingSession Messaging
+@inject ILogger<ChannelView> Logger
+@inject IWebAssemblyHostEnvironment HostEnvironment
+
+<section class="channel-view">
+    @if (_loading)
+    {
+        <div class="channel-status">Loading message history...</div>
+    }
+    @if (!string.IsNullOrWhiteSpace(_error))
+    {
+        <div class="channel-error">@_error</div>
+    }
+    <div class="message-region">
+        <MessageList Messages="Messaging.Messages" CurrentAccountId="CurrentAccountId" CanManage="CanManageMessages"
+                     NodeAuthority="@NodeAuthority" CommunityManagement="CommunityManagement"
+                     OnEditProfile="OnEditProfile" OnMessage="OnMessage" OnMemberRolesChanged="OnMemberRolesChanged"
+                     OnReply="BeginReply" Edit="EditMessageAsync" OnDelete="DeleteMessageAsync" />
+    </div>
+    @if (CanSend)
+    {
+        <div class="composer-region">
+            <MessageComposer @ref="_composer" ChannelName="@Channel.Name" ReplyToDisplayName="@(_replyTo?.Author.DisplayName)" Busy="@(_sending || _loading)"
+                             CommunityManagement="CommunityManagement" SendRich="SendMessageAsync" OnCancelReply="CancelReplyAsync" />
+        </div>
+    }
+    else
+    {
+        <div class="composer-region read-only">You do not have permission to send messages in this Community.</div>
+    }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public required CommunityDto Community { get; set; }
+    [Parameter, EditorRequired] public required CommunityChannelDto Channel { get; set; }
+    [Parameter, EditorRequired] public required Guid CurrentAccountId { get; set; }
+    [Parameter] public bool CanManageMessages { get; set; }
+    [Parameter] public bool CanSend { get; set; } = true;
+    [Parameter, EditorRequired] public required string NodeAuthority { get; set; }
+    [Parameter] public CommunityManagementDto? CommunityManagement { get; set; }
+    [Parameter] public EventCallback OnEditProfile { get; set; }
+    [Parameter] public EventCallback<Guid> OnMessage { get; set; }
+    [Parameter] public EventCallback<CommunityMemberRolesChange> OnMemberRolesChanged { get; set; }
+    private Guid? _loadedChannelId;
+    private ChannelMessageDto? _replyTo;
+    private MessageComposer? _composer;
+    private bool _loading;
+    private bool _sending;
+    private bool _disposed;
+    private string? _error;
+
+    protected override void OnInitialized() => Messaging.Changed += MessagesChanged;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_loadedChannelId == Channel.Id && Messaging.CommunityId == Community.Id && Messaging.ChannelId == Channel.Id) return;
+        _replyTo = null;
+        _error = null;
+        _loading = true;
+        try
+        {
+            await Messaging.OpenChannelAsync(Community.Id, Channel.Id);
+            _loadedChannelId = Channel.Id;
+        }
+        catch (Exception exception)
+        {
+            Logger.LogError(exception, "Could not open Community {CommunityId} channel {ChannelId}.", Community.Id, Channel.Id);
+            _error = FailureMessage(exception, "Channel loading failed", "This channel could not be opened.");
+        }
+        finally { _loading = false; }
+    }
+
+    private void MessagesChanged() => _ = RenderFromRealtimeAsync();
+    private async Task BeginReply(ChannelMessageDto message)
+    {
+        _replyTo = message;
+        await RenderAsync();
+        if (_composer is not null) await _composer.FocusAsync();
+    }
+    private async Task CancelReplyAsync()
+    {
+        _replyTo = null;
+        await RenderAsync();
+        if (_composer is not null) await _composer.FocusAsync();
+    }
+
+    private async Task<bool> SendMessageAsync(MessageSubmission submission)
+    {
+        if (_sending || _loading)
+        {
+            Logger.LogDebug("Ignored a message submission while channel {ChannelId} was busy.", Channel.Id);
+            return false;
+        }
+
+        if (Messaging.CommunityId != Community.Id || Messaging.ChannelId != Channel.Id)
+        {
+            Logger.LogWarning("Rejected a message submission because the active realtime channel did not match {CommunityId}/{ChannelId}.", Community.Id, Channel.Id);
+            _error = "The channel is still connecting. Please try again.";
+            return false;
+        }
+
+        _sending = true;
+        _error = null;
+        await RenderAsync();
+        try
+        {
+            await Messaging.SendAsync(submission.Content, _replyTo?.Id, submission.Mentions);
+            _replyTo = null;
+            await RenderAsync();
+            if (_composer is not null) await _composer.FocusAsync();
+            return true;
+        }
+        catch (Exception exception)
+        {
+            Logger.LogError(exception, "Message send failed in Community {CommunityId} channel {ChannelId}.", Community.Id, Channel.Id);
+            _error = FailureMessage(exception, "Message send failed", "Your message could not be sent. Please try again.");
+            return false;
+        }
+        finally
+        {
+            _sending = false;
+            await RenderAsync();
+        }
+    }
+
+    private async Task<bool> EditMessageAsync(MessageEditSubmission submission)
+    {
+        _error = null;
+        try { await Messaging.EditAsync(submission.MessageId, submission.Content); return true; }
+        catch (Exception exception)
+        {
+            Logger.LogError(exception, "Message {MessageId} edit failed in Community {CommunityId} channel {ChannelId}.", submission.MessageId, Community.Id, Channel.Id);
+            _error = FailureMessage(exception, "Message edit failed", "The message could not be edited.");
+            return false;
+        }
+    }
+
+    private async Task DeleteMessageAsync(Guid messageId)
+    {
+        _error = null;
+        try { await Messaging.DeleteAsync(messageId); }
+        catch (Exception exception)
+        {
+            Logger.LogError(exception, "Message {MessageId} deletion failed in Community {CommunityId} channel {ChannelId}.", messageId, Community.Id, Channel.Id);
+            _error = FailureMessage(exception, "Message deletion failed", "The message could not be deleted.");
+        }
+    }
+
+    private async Task RenderFromRealtimeAsync()
+    {
+        try { await RenderAsync(); }
+        catch (Exception exception) when (!_disposed)
+        {
+            Logger.LogError(exception, "Rendering a realtime update failed for channel {ChannelId}.", Channel.Id);
+        }
+    }
+
+    private Task RenderAsync() => _disposed ? Task.CompletedTask : InvokeAsync(StateHasChanged);
+
+    private string FailureMessage(Exception exception, string developmentPrefix, string productionMessage) =>
+        HostEnvironment.IsDevelopment()
+            ? $"{developmentPrefix}: {exception.GetBaseException().Message}"
+            : productionMessage;
+
+    public void Dispose()
+    {
+        _disposed = true;
+        Messaging.Changed -= MessagesChanged;
+    }
+}

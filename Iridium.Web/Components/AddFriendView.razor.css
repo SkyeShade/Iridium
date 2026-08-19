@@ -1,0 +1,14 @@
+.add-friend-view { height:100%; overflow-y:auto; display:flex; flex-direction:column; }
+.add-friend-content { width:min(46rem,100%); margin:auto; padding:clamp(2rem,5vw,4rem); }
+.add-friend-content h1 { margin:0; color:var(--text-strong); font-size:1.35rem; }
+.add-friend-content>p { margin:.45rem 0 1.4rem; color:var(--text-muted); font-size:.85rem; line-height:1.5; }
+.add-friend-content label { display:block; color:var(--text-muted); font-size:.72rem; font-weight:750; text-transform:uppercase; letter-spacing:.04em; }
+.add-friend-content input { width:100%; margin-top:.45rem; padding:.8rem .9rem; border:1px solid var(--border); border-radius:var(--radius-md); outline:0; color:var(--text-strong); background:var(--input-bg); font:.9rem ui-monospace,monospace; }
+.add-friend-content input:focus { border-color:var(--accent); box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 20%,transparent); }
+.resolution { margin-top:1rem; }.resolution-state,.friend-error { padding:.8rem; color:var(--text-muted); font-size:.8rem; }.friend-error { color:var(--danger-text); }
+.resolved-card { display:grid; grid-template-columns:3rem minmax(0,1fr) auto; align-items:center; gap:.8rem; padding:1rem; border:1px solid var(--border); border-radius:var(--radius-lg); background:var(--bg-sidebar); transition:border-color 120ms ease,background 120ms ease; }
+.resolved-card.clickable { cursor:pointer; }.resolved-card.clickable:hover,.resolved-card.clickable:focus-visible { border-color:var(--accent); background:var(--surface-hover); outline:0; }
+.resolved-avatar { width:3rem; height:3rem; display:grid; place-items:center; border-radius:50%; color:white; background:linear-gradient(145deg,var(--accent),var(--accent-deep)); font-weight:800; }
+.resolved-copy strong,.resolved-copy span,.resolved-copy small { display:block; }.resolved-copy strong { color:var(--text-strong); }.resolved-copy span { margin-top:.15rem; color:var(--text-muted); font:.72rem ui-monospace,monospace; }.resolved-copy small { margin-top:.2rem; color:var(--text-faint); }
+.resolved-actions { color:var(--text-muted); font-size:.75rem; }.primary { padding:.55rem .8rem; border:0; border-radius:var(--radius-sm); color:white; background:var(--accent); cursor:pointer; }
+@media(max-width:720px){.add-friend-content{padding:3.5rem 1rem 1rem}.resolved-card{grid-template-columns:3rem 1fr}.resolved-actions{grid-column:1/-1}}

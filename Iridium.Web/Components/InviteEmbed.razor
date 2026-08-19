@@ -1,0 +1,80 @@
+@using Iridium.Client.Core
+@using Iridium.Protocol
+@inject ICommunityInviteResolver Resolver
+
+@if (_reference is not null)
+{
+    <section class="invite-embed">
+        @if (_loading)
+        {
+            <div class="invite-state">Resolving Iridium invite...</div>
+        }
+        else if (_preview is { Status: CommunityInviteStatus.Valid } preview)
+        {
+            <div class="invite-banner"></div>
+            <div class="invite-details">
+                <div class="invite-icon">@Initials(preview.CommunityName)</div>
+                <div><span>IRIDIUM COMMUNITY</span><h3>@preview.CommunityName</h3><p>@preview.MemberCount members - hosted on @preview.NodeAuthority</p></div>
+            </div>
+            <button class="join" disabled="@_joining" @onclick="JoinAsync">@JoinLabel(preview)</button>
+            @if (!string.IsNullOrWhiteSpace(_error)) { <p class="error">@_error</p> }
+        }
+        else if (_preview is { Status: CommunityInviteStatus.AuthenticationRequiredOnTargetNode } remote)
+        {
+            <div class="invite-state"><strong>Community invite on @remote.NodeAuthority</strong><span>Sign in with an account on that Node to resolve and join it.</span></div>
+        }
+        else
+        {
+            <div class="invite-state"><strong>Invite unavailable</strong><span>@StatusText(_preview?.Status)</span></div>
+        }
+    </section>
+}
+
+@code {
+    [Parameter, EditorRequired] public required string Content { get; set; }
+    private string? _loadedContent;
+    private CommunityInviteReference? _reference;
+    private CommunityInvitePreviewDto? _preview;
+    private bool _loading;
+    private bool _joining;
+    private string? _error;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (string.Equals(_loadedContent, Content, StringComparison.Ordinal)) return;
+        _loadedContent = Content;
+        _reference = Resolver.Find(Content);
+        _preview = null;
+        _error = null;
+        if (_reference is null) return;
+        _loading = true;
+        try { _preview = await Resolver.ResolveAsync(_reference); }
+        catch { _preview = new CommunityInvitePreviewDto(CommunityInviteStatus.NotFound, null, null, null, 0, _reference.NodeAuthority, false, null); }
+        finally { _loading = false; }
+    }
+
+    private async Task JoinAsync()
+    {
+        if (_reference is null || _joining) return;
+        _joining = true;
+        _error = null;
+        try
+        {
+            var result = await Resolver.JoinAsync(_reference);
+            _preview = _preview! with { AlreadyMember = true, CommunityId = result.Community.Id };
+        }
+        catch (Exception exception) { _error = exception.Message; }
+        finally { _joining = false; }
+    }
+
+    private static string JoinLabel(CommunityInvitePreviewDto preview) => preview.AlreadyMember ? "Open Community" : "Join Community";
+    private static string StatusText(CommunityInviteStatus? status) => status switch
+    {
+        CommunityInviteStatus.Expired => "This invite has expired.",
+        CommunityInviteStatus.Revoked => "This invite was revoked.",
+        CommunityInviteStatus.Exhausted => "This invite has reached its maximum uses.",
+        _ => "This invite could not be resolved."
+    };
+    private static string Initials(string? name) => string.IsNullOrWhiteSpace(name) ? "?" :
+        string.Concat(name.Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(2).Select(value => char.ToUpperInvariant(value[0])));
+}

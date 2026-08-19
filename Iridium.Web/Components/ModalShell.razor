@@ -1,0 +1,31 @@
+@using Microsoft.AspNetCore.Components.Web
+
+<div class="modal-backdrop" role="presentation" @onclick="CloseAsync">
+    <section class="modal-shell modal-@Size" role="dialog" aria-modal="true" aria-label="@Title"
+             tabindex="-1" @ref="_shell" @onclick:stopPropagation="true"
+             @onkeydown="HandleKeyDown" @onkeydown:stopPropagation="true">
+        <button class="modal-close" type="button" title="Close" aria-label="Close" @onclick="CloseAsync">×</button>
+        @ChildContent
+    </section>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public required RenderFragment ChildContent { get; set; }
+    [Parameter] public string Title { get; set; } = "Dialog";
+    [Parameter] public string Size { get; set; } = "medium";
+    [Parameter] public EventCallback OnClose { get; set; }
+    private ElementReference _shell;
+    private bool _focusPending = true;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_focusPending) return;
+        _focusPending = false;
+        await _shell.FocusAsync();
+    }
+
+    private Task HandleKeyDown(KeyboardEventArgs args) =>
+        args.Key == "Escape" ? CloseAsync() : Task.CompletedTask;
+
+    private Task CloseAsync() => OnClose.InvokeAsync();
+}
