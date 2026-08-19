@@ -12,6 +12,8 @@
 @inject IWebAssemblyHostEnvironment HostEnvironment
 @inject AppearanceService Appearance
 @inject IIdentityProfileResolver ProfileResolver
+@inject ILastCommunityChannelStore LastChannelStore
+@inject Iridium.Web.Services.MessageMenuCoordinator MessageMenus
 
 <PageTitle>Iridium</PageTitle>
 
@@ -39,12 +41,12 @@ else
 {
     <ApplicationShell Communities="Session.Communities"
                       DirectConversations="Session.DirectConversations"
-                      CommunityMentionCounts="_communityMentionCounts"
                       NodeAuthority="@(Session.SelectedNode!.PublicAuthority)"
                       SelectedCommunity="_selectedCommunity"
                       DisplayName="@Session.Account!.DisplayName"
                       PublicIdentity="@PublicIdentity"
                       Presence="@CurrentPresence"
+                      OnBackgroundInteraction="CloseMessageMenus"
                       OnCommunitySelected="SelectCommunity"
                       OnDirectConversationSelected="SelectDirectConversationAsync"
                       OnAddCommunity="() => _showCommunityCreate = true"
@@ -119,7 +121,8 @@ else
                                  OnEditProfile="OpenProfileEditor" OnMessage="OpenDirectMessageAsync"
                                  OnMemberRolesChanged="SetCommunityMemberRolesAsync"
                                  CanManageMessages="@CommunityState.HasPermission(CommunityPermission.ManageMessages)"
-                                 CanSend="@CommunityState.HasPermission(CommunityPermission.SendMessages)" />
+                                 CanSend="@CommunityState.HasPermission(CommunityPermission.SendMessages)"
+                                 TargetMessageId="_searchTargetMessageId" />
                 }
             }
         </ChildContent>
@@ -128,6 +131,7 @@ else
             {
                 <CommunityMemberSidebar Management="management" CurrentAccountId="Session.Account!.Id"
                     NodeAuthority="@(Session.SelectedNode!.PublicAuthority)" OnEditProfile="OpenProfileEditor"
+                    Channels="CommunityState.Channels" OnSearchResultSelected="OpenCommunitySearchResultAsync"
                     OnMessage="OpenDirectMessageAsync" OnMemberRolesChanged="SetCommunityMemberRolesAsync" />
             }
             else if (_selectedCommunity is null && _homeView == "dm" && _selectedDirectConversation is { } direct)
@@ -174,7 +178,7 @@ else
     @if (_showCommunitySettings && _selectedCommunity is not null)
     {
         <CommunitySettingsModal Community="_selectedCommunity" State="CommunityState"
-                                NodeAuthority="@(Session.SelectedNode!.PublicAuthority)"
+                                NodeAuthority="@(Session.SelectedNode!.PublicAuthority)" CurrentAccountId="Session.Account!.Id"
                                 OnCommunityUpdated="CommunityUpdatedAsync" OnClose="CloseCommunitySettings" />
     }
     @if (_showQuickInvite && _quickInviteUrl is not null)
@@ -200,14 +204,15 @@ else
     private string? _error;
     private CommunityDto? _selectedCommunity;
     private CommunityChannelDto? _selectedChannel;
+    private Guid? _searchTargetMessageId;
     private DirectConversationDto? _selectedDirectConversation;
     private string? _quickInviteUrl;
     private string? _quickInviteError;
-    private readonly Dictionary<Guid, int> _communityMentionCounts = [];
     private static readonly TimeSpan QuickInviteLifetime = TimeSpan.FromHours(24);
     private string _homeView = "friends";
     private string PublicIdentity => IridiumIdentity.Format(Session.Account!.Username, Session.SelectedNode!.PublicAuthority);
     private PublicPresence CurrentPresence => PresenceVisibility.ToPublic(Session.Account!.PreferredPresence, Messaging.IsConnected);
+    private void CloseMessageMenus() => MessageMenus.Close();
     private bool CanOpenCommunitySettings => CommunityState.IsOwner ||
         CommunityState.HasPermission(CommunityPermission.ManageCommunity) ||
         CommunityState.HasPermission(CommunityPermission.ManageRoles) ||
@@ -231,7 +236,7 @@ else
         Session.CommunityJoined += OnCommunityJoined;
         Session.CommunityChanged += OnCommunityChanged;
         Session.PresenceChanged += OnPresenceChanged;
-        Session.CommunityMentionReceived += OnCommunityMentionReceived;
+        Session.CommunityChannelActivity += OnCommunityChannelActivity;
         Messaging.Changed += OnSessionChanged;
         await AccountSwitching.InitializeAsync(SavedNodes.Nodes);
         if (!Session.IsAuthenticated)
@@ -406,17 +411,38 @@ else
         CloseQuickInvite();
         _selectedCommunity = community;
         _selectedChannel = null;
+        _searchTargetMessageId = null;
         _selectedDirectConversation = null;
         _error = null;
-        if (community is not null) _communityMentionCounts.Remove(community.Id);
         if (community is null) { CommunityState.Clear(); return; }
-        try { await CommunityState.LoadAsync(community.Id); await CommunityState.LoadManagementAsync(); }
+        try
+        {
+            await CommunityState.LoadAsync(community.Id);
+            await CommunityState.LoadManagementAsync();
+            var remembered = await LastChannelStore.LoadAsync(Session.Account!.Id, community.Id);
+            var channel = remembered is { } id ? CommunityState.Channels.FirstOrDefault(value => value.Id == id) : null;
+            await SelectChannelAsync(channel ?? CommunityState.FirstOrderedChannel());
+        }
         catch (Exception exception) { _error = UserMessage(exception); _selectedCommunity = null; CommunityState.Clear(); }
     }
     private async Task SelectChannelAsync(CommunityChannelDto? channel)
     {
+        _searchTargetMessageId = null;
         if (channel is null) await Messaging.ClearAsync();
         _selectedChannel = channel;
+        if (channel is null || Session.Account is null) return;
+        await LastChannelStore.SaveAsync(Session.Account.Id, channel.CommunityId, channel.Id);
+        CommunityState.MarkChannelRead(channel.Id);
+        await Session.MarkCommunityChannelReadAsync(channel.CommunityId, channel.Id);
+    }
+
+    private async Task OpenCommunitySearchResultAsync(MessageSearchResultDto result)
+    {
+        if (result.ChannelId is not { } channelId) return;
+        var channel = CommunityState.Channels.FirstOrDefault(value => value.Id == channelId);
+        if (channel is null) return;
+        await SelectChannelAsync(channel);
+        _searchTargetMessageId = result.MessageId;
     }
     private void SelectHomeView(string view)
     {
@@ -465,6 +491,7 @@ else
         _selectedCommunity = null;
         CloseQuickInvite();
         _selectedChannel = null;
+        _searchTargetMessageId = null;
         CommunityState.Clear();
         _selectedDirectConversation = conversation;
         _homeView = "dm";
@@ -530,7 +557,6 @@ else
         _showQuickInvite = false;
         _quickInviteUrl = null;
         _quickInviteError = null;
-        _communityMentionCounts.Clear();
     }
     private void OnSessionChanged() => _ = InvokeAsync(() =>
     {
@@ -579,10 +605,17 @@ else
         CommunityState.ApplyPresence(change);
         StateHasChanged();
     });
-    private void OnCommunityMentionReceived(CommunityMentionReceivedEvent mention) => _ = InvokeAsync(() =>
+    private void OnCommunityChannelActivity(CommunityChannelActivityEvent activity) => _ = InvokeAsync(async () =>
     {
-        if (_selectedCommunity?.Id == mention.CommunityId && _selectedChannel?.Id == mention.ChannelId) return;
-        _communityMentionCounts[mention.CommunityId] = _communityMentionCounts.GetValueOrDefault(mention.CommunityId) + 1;
+        if (_selectedCommunity?.Id == activity.CommunityId)
+        {
+            if (_selectedChannel?.Id == activity.ChannelId)
+            {
+                await Session.MarkCommunityChannelReadAsync(activity.CommunityId, activity.ChannelId);
+                await CommunityState.LoadAsync(activity.CommunityId);
+            }
+            else await CommunityState.LoadAsync(activity.CommunityId);
+        }
         StateHasChanged();
     });
     private async Task SetPresenceAsync(UserPresence presence)
@@ -603,7 +636,7 @@ else
         Session.CommunityJoined -= OnCommunityJoined;
         Session.CommunityChanged -= OnCommunityChanged;
         Session.PresenceChanged -= OnPresenceChanged;
-        Session.CommunityMentionReceived -= OnCommunityMentionReceived;
+        Session.CommunityChannelActivity -= OnCommunityChannelActivity;
         Messaging.Changed -= OnSessionChanged;
     }
     private static string UserMessage(Exception exception) => exception is NodeApiException ? exception.Message : exception.Message;

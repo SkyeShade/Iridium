@@ -1,6 +1,6 @@
 .boot-screen { width: 100vw; height: 100dvh; display: grid; place-content: center; justify-items: center; gap: .8rem; color: var(--text-muted); background: var(--bg-deep); }
 .boot-mark { width: 3.5rem; height: 3.5rem; display: grid; place-items: center; border-radius: 1rem; color: white; background: linear-gradient(145deg, var(--accent), var(--accent-deep)); font-size: 1.6rem; font-weight: 800; box-shadow: 0 0 50px color-mix(in srgb, var(--accent) 35%, transparent); }
-.content-header { height: 3.45rem; display: flex; align-items: center; padding: 0 1.1rem; border-bottom: 1px solid var(--border-subtle); box-shadow: 0 1px 4px #0003; }
+.content-header { height: 3.45rem; display: flex; align-items: center; gap:1rem; padding: 0 1.1rem; border-bottom: 1px solid var(--border-subtle); box-shadow: 0 1px 4px #0003; }
 .content-header strong { color: var(--text-strong); }
 .sidebar-heading{width:100%;display:flex;align-items:center;justify-content:space-between;gap:.5rem}.sidebar-heading strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.sidebar-heading button{flex:0 0 auto;width:1.8rem;height:1.8rem;display:grid;place-items:center;padding:.38rem;border:0;border-radius:var(--radius-sm);color:var(--text-muted);background:transparent;cursor:pointer}.sidebar-heading button:hover{color:var(--text-strong);background:var(--surface-hover)}.sidebar-heading ::deep svg{width:100%;height:100%}
 .community-header-actions{display:flex;align-items:center;gap:.1rem}

@@ -15,6 +15,8 @@ public static class DirectMessageEndpoints
         group.MapGet("/", ListAsync);
         group.MapPost("/with/{accountId:guid}", OpenAsync);
         group.MapGet("/{conversationId:guid}/messages", HistoryAsync);
+        group.MapGet("/{conversationId:guid}/messages/search", SearchAsync);
+        group.MapPost("/{conversationId:guid}/messages/search", SearchRequestAsync);
         group.MapPost("/{conversationId:guid}/hide", HideAsync);
         group.MapPost("/{conversationId:guid}/read", MarkReadAsync);
         return endpoints;
@@ -99,6 +101,8 @@ public static class DirectMessageEndpoints
     private static async Task<IResult> HistoryAsync(
         Guid conversationId,
         int? limit,
+        string? before,
+        Guid? around,
         HttpContext context,
         IridiumDbContext db,
         SessionService sessions)
@@ -106,15 +110,143 @@ public static class DirectMessageEndpoints
         var session = await sessions.GetAsync(context, db);
         if (session is null) return Results.Unauthorized();
         if (!await IsParticipantAsync(conversationId, session.AccountId, db)) return Results.StatusCode(StatusCodes.Status403Forbidden);
-        var take = Math.Clamp(limit ?? 75, 1, 100);
-        var messages = await db.DirectMessages
+        var take = Math.Clamp(limit ?? MessageHistoryDefaults.PageSize, 1, MessageHistoryDefaults.MaximumPageSize);
+        if (!string.IsNullOrWhiteSpace(before) && !MessageHistoryCursor.TryDecode(before, out _))
+            return Results.BadRequest(new { message = "The history cursor is invalid." });
+        if (around is { } targetId) return await AroundAsync(conversationId, targetId, take, db);
+        var query = db.DirectMessages.AsNoTracking().Where(value => value.ConversationId == conversationId);
+        if (MessageHistoryCursor.TryDecode(before, out var cursor))
+        {
+            var cursorAt = new DateTimeOffset(cursor.UtcTicks, TimeSpan.Zero);
+            query = query.Where(value => value.CreatedAt < cursorAt ||
+                                         value.CreatedAt == cursorAt && value.Id.CompareTo(cursor.MessageId) < 0);
+        }
+        var messages = await query
             .Include(value => value.AuthorAccount)
             .Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
-            .Where(value => value.ConversationId == conversationId)
             .OrderByDescending(value => value.CreatedAt)
-            .Take(take)
+            .ThenByDescending(value => value.Id)
+            .Take(take + 1)
             .ToListAsync();
-        return Results.Ok(messages.OrderBy(value => value.CreatedAt).Select(DirectMessageMapper.ToDto).ToArray());
+        var hasOlder = messages.Count > take;
+        if (hasOlder) messages.RemoveAt(messages.Count - 1);
+        var result = messages.OrderBy(value => value.CreatedAt).ThenBy(value => value.Id)
+            .Select(DirectMessageMapper.ToDto).ToArray();
+        var olderCursor = result.Length == 0 ? null : MessageHistoryCursor.Encode(result[0].CreatedAt, result[0].Id);
+        return Results.Ok(new MessageHistoryPage<DirectMessageDto>(result, olderCursor, hasOlder));
+    }
+
+    private static async Task<IResult> AroundAsync(Guid conversationId, Guid targetId, int take, IridiumDbContext db)
+    {
+        var target = await db.DirectMessages.AsNoTracking().Include(value => value.AuthorAccount)
+            .Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
+            .SingleOrDefaultAsync(value => value.Id == targetId && value.ConversationId == conversationId);
+        if (target is null) return Results.NotFound(new { message = "Message not found in this conversation." });
+        var half = Math.Min(MessageHistoryDefaults.AroundHalfWindow, Math.Max(1, take / 2));
+        var older = await db.DirectMessages.AsNoTracking()
+            .Where(value => value.ConversationId == conversationId &&
+                            (value.CreatedAt < target.CreatedAt || value.CreatedAt == target.CreatedAt && value.Id.CompareTo(target.Id) < 0))
+            .Include(value => value.AuthorAccount).Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
+            .OrderByDescending(value => value.CreatedAt).ThenByDescending(value => value.Id).Take(half + 1).ToListAsync();
+        var hasOlder = older.Count > half;
+        if (hasOlder) older.RemoveAt(older.Count - 1);
+        var newer = await db.DirectMessages.AsNoTracking()
+            .Where(value => value.ConversationId == conversationId &&
+                            (value.CreatedAt > target.CreatedAt || value.CreatedAt == target.CreatedAt && value.Id.CompareTo(target.Id) > 0))
+            .Include(value => value.AuthorAccount).Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
+            .OrderBy(value => value.CreatedAt).ThenBy(value => value.Id).Take(half).ToListAsync();
+        var result = older.OrderBy(value => value.CreatedAt).ThenBy(value => value.Id).Append(target).Concat(newer)
+            .Select(DirectMessageMapper.ToDto).ToArray();
+        var cursor = result.Length == 0 ? null : MessageHistoryCursor.Encode(result[0].CreatedAt, result[0].Id);
+        return Results.Ok(new MessageHistoryPage<DirectMessageDto>(result, cursor, hasOlder, true, targetId));
+    }
+
+    private static async Task<IResult> SearchAsync(
+        Guid conversationId, string? q, string? from, string? before, int? limit,
+        HttpContext context, IridiumDbContext db, SessionService sessions)
+    {
+        var session = await sessions.GetAsync(context, db);
+        if (session is null) return Results.Unauthorized();
+        if (!await IsParticipantAsync(conversationId, session.AccountId, db))
+            return Results.StatusCode(StatusCodes.Status403Forbidden);
+        var take = Math.Clamp(limit ?? MessageHistoryDefaults.SearchPageSize, 1, MessageHistoryDefaults.MaximumPageSize);
+        var query = db.DirectMessages.AsNoTracking().Where(value => value.ConversationId == conversationId && !value.IsDeleted)
+            .Include(value => value.AuthorAccount).AsQueryable();
+        if (!string.IsNullOrWhiteSpace(q))
+        {
+            var text = q.ToLower();
+            query = query.Where(value => value.Content.ToLower().Contains(text));
+        }
+        if (!string.IsNullOrWhiteSpace(from))
+        {
+            var author = from.ToLower();
+            query = query.Where(value => value.AuthorAccount.Username.ToLower() == author ||
+                                         value.AuthorAccount.DisplayName.ToLower() == author);
+        }
+        if (MessageHistoryCursor.TryDecode(before, out var cursor))
+        {
+            var cursorAt = new DateTimeOffset(cursor.UtcTicks, TimeSpan.Zero);
+            query = query.Where(value => value.CreatedAt < cursorAt ||
+                                         value.CreatedAt == cursorAt && value.Id.CompareTo(cursor.MessageId) < 0);
+        }
+        var found = await query.OrderByDescending(value => value.CreatedAt).ThenByDescending(value => value.Id)
+            .Take(take + 1).ToListAsync();
+        var hasMore = found.Count > take;
+        if (hasMore) found.RemoveAt(found.Count - 1);
+        var results = found.Select(value => new MessageSearchResultDto(value.Id, null, null, value.ConversationId, null,
+            new(value.AuthorAccountId, value.AuthorAccount.Username, value.AuthorAccount.DisplayName), value.Content, value.CreatedAt)).ToArray();
+        var next = results.Length == 0 ? null : MessageHistoryCursor.Encode(results[^1].CreatedAt, results[^1].MessageId);
+        return Results.Ok(new MessageSearchPageDto(results, next, hasMore));
+    }
+
+    private static async Task<IResult> SearchRequestAsync(
+        Guid conversationId, MessageSearchRequest request, HttpContext context,
+        IridiumDbContext db, SessionService sessions)
+    {
+        var session = await sessions.GetAsync(context, db);
+        if (session is null) return Results.Unauthorized();
+        if (!await IsParticipantAsync(conversationId, session.AccountId, db))
+            return Results.StatusCode(StatusCodes.Status403Forbidden);
+        var criteria = request.Query;
+        var take = Math.Clamp(request.Limit, 1, MessageHistoryDefaults.MaximumPageSize);
+        var query = db.DirectMessages.AsNoTracking()
+            .Where(value => value.ConversationId == conversationId && !value.IsDeleted)
+            .Include(value => value.AuthorAccount).AsQueryable();
+        if (!string.IsNullOrWhiteSpace(criteria.Text))
+        {
+            var text = criteria.Text.ToLower();
+            query = query.Where(value => value.Content.ToLower().Contains(text));
+        }
+        if (criteria.FromAccountId is { } authorId) query = query.Where(value => value.AuthorAccountId == authorId);
+        if (criteria.MentionedAccountId is not null || criteria.ChannelId is not null || criteria.AuthorType != MessageAuthorType.User)
+            query = query.Where(_ => false);
+        if (criteria.BeforeUtc is { } beforeUtc) query = query.Where(value => value.CreatedAt < beforeUtc);
+        if (criteria.AfterUtc is { } afterUtc) query = query.Where(value => value.CreatedAt > afterUtc);
+        if (criteria.DuringStartUtc is { } duringStart) query = query.Where(value => value.CreatedAt >= duringStart);
+        if (criteria.DuringEndUtc is { } duringEnd) query = query.Where(value => value.CreatedAt < duringEnd);
+        if (criteria.HasTypes.Count > 0)
+        {
+            if (criteria.HasTypes.Contains(MessageSearchContentType.Link))
+                query = query.Where(value => value.Content.Contains("http://") || value.Content.Contains("https://"));
+            else query = query.Where(_ => false);
+        }
+        if (MessageHistoryCursor.TryDecode(request.Cursor, out var cursor))
+        {
+            var cursorAt = new DateTimeOffset(cursor.UtcTicks, TimeSpan.Zero);
+            query = criteria.Sort == MessageSearchSort.Newest
+                ? query.Where(value => value.CreatedAt < cursorAt || value.CreatedAt == cursorAt && value.Id.CompareTo(cursor.MessageId) < 0)
+                : query.Where(value => value.CreatedAt > cursorAt || value.CreatedAt == cursorAt && value.Id.CompareTo(cursor.MessageId) > 0);
+        }
+        query = criteria.Sort == MessageSearchSort.Newest
+            ? query.OrderByDescending(value => value.CreatedAt).ThenByDescending(value => value.Id)
+            : query.OrderBy(value => value.CreatedAt).ThenBy(value => value.Id);
+        var found = await query.Take(take + 1).ToListAsync();
+        var hasMore = found.Count > take;
+        if (hasMore) found.RemoveAt(found.Count - 1);
+        var results = found.Select(value => new MessageSearchResultDto(value.Id, null, null, value.ConversationId, null,
+            new(value.AuthorAccountId, value.AuthorAccount.Username, value.AuthorAccount.DisplayName), value.Content, value.CreatedAt)).ToArray();
+        var next = results.Length == 0 ? null : MessageHistoryCursor.Encode(results[^1].CreatedAt, results[^1].MessageId);
+        return Results.Ok(new MessageSearchPageDto(results, next, hasMore));
     }
 
     private static async Task<IResult> HideAsync(

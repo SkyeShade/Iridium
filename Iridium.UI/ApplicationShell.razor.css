@@ -9,7 +9,7 @@
 .channel:hover, .channel.active { color: var(--text-strong); background: var(--surface-hover); }
 .placeholder-note { padding: .5rem; color: var(--text-faint); font-size: .75rem; }
 .main-content { min-width: 0; min-height: 0; overflow: auto; background: var(--bg-base); }
-.context-sidebar { min-width:0; min-height:0; overflow:hidden; border-left:1px solid var(--border-subtle); background:var(--bg-sidebar); }
+.context-sidebar { position:relative; z-index:20; min-width:0; min-height:0; overflow:visible; border-left:1px solid var(--border-subtle); background:var(--bg-sidebar); }
 @media (max-width: 1180px) {
     .app-shell.has-context-sidebar { grid-template-columns: 4.75rem 15.5rem minmax(0,1fr); }
     .context-sidebar { display:none; }

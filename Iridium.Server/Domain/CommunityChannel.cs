@@ -11,4 +11,5 @@ public sealed class CommunityChannel
     public required Community Community { get; set; }
     public CommunityCategory? Category { get; set; }
     public ICollection<ChannelMessage> Messages { get; set; } = [];
+    public ICollection<CommunityChannelReadState> ReadStates { get; set; } = [];
 }

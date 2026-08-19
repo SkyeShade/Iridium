@@ -38,8 +38,12 @@ public sealed record DirectMessageDto(
     DateTimeOffset CreatedAt,
     DateTimeOffset? EditedAt,
     bool IsDeleted,
-    MessageReplyDto? ReplyTo);
+    MessageReplyDto? ReplyTo,
+    Guid? ClientMessageId = null,
+    MessageDeliveryState DeliveryState = MessageDeliveryState.Confirmed,
+    string? DeliveryError = null,
+    bool CanRetry = false);
 
-public sealed record SendDirectMessageRequest(string Content, Guid? ReplyToMessageId);
+public sealed record SendDirectMessageRequest(string Content, Guid? ReplyToMessageId, Guid? ClientMessageId = null);
 public sealed record EditDirectMessageRequest(string Content);
 public sealed record DirectMessageDeletedEvent(Guid ConversationId, Guid MessageId, DateTimeOffset DeletedAt);

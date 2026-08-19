@@ -1,6 +1,7 @@
 @using Iridium.Client.Core
 @using Iridium.Protocol
 @inject IJSRuntime JS
+@implements IAsyncDisposable
 
 <ModalShell Title="Community Settings" Size="extra-large" OnClose="OnClose">
     <div class="community-settings">
@@ -39,16 +40,36 @@
                     </div>
                     <div class="roles-layout">
                         <div class="role-list">
-                            @foreach (var role in management.Roles.OrderByDescending(value => value.Position))
+                            <input class="role-search" placeholder="Search roles" @bind="_roleSearch" @bind:event="oninput" />
+                            @if (management.Roles.FirstOrDefault(value => value.IsDefault) is { } defaultRole)
                             {
-                                <button class="@(_selectedRole?.Id == role.Id ? "active" : null)" @onclick="() => SelectRole(role)">
-                                    <span class="role-name" style="color:@(role.Color ?? "var(--text-muted)")">@role.Name</span>@if (role.IsDefault) { <small>DEFAULT</small> }
+                                <button class="default-permissions @(_selectedRole?.Id == defaultRole.Id ? "active" : null)" @onclick="() => SelectRole(defaultRole)">
+                                    <span>Default permissions</span><small>ALL MEMBERS</small>
                                 </button>
                             }
+                            <div class="role-sort-list" @ref="_roleList">
+                                @foreach (var role in FilteredRoles)
+                                {
+                                    <div class="role-list-row" data-iridium-role-drag="@(CanManageRoleInSettings(role) ? role.Id : null)">
+                                        <button class="role-select @(_selectedRole?.Id == role.Id ? "active" : null)" @onclick="() => SelectRole(role)">
+                                            <span class="role-indicator" style="background:@(role.Color ?? "var(--text-muted)")"></span>
+                                            <span class="role-name" style="color:@(role.Color ?? "var(--text-muted)")">@role.Name</span>
+                                            <small>@MemberCount(role.Id) members</small>
+                                        </button>
+                                        <button class="role-row-action" title="Edit @role.Name" @onclick="() => SelectRole(role)"><Icon Name="edit" /></button>
+                                        <button class="role-row-action" title="More options" @onclick="() => SelectRole(role)"><Icon Name="more" /></button>
+                                    </div>
+                                }
+                            </div>
                         </div>
                         @if (_editingNewRole || _selectedRole is not null)
                         {
                             <div class="role-editor">
+                                <nav class="role-editor-tabs">
+                                    @foreach (var tab in RoleEditorTabs) { <button class="@(_roleEditorTab == tab ? "active" : null)" @onclick="() => _roleEditorTab = tab">@tab</button> }
+                                </nav>
+                                @if (_roleEditorTab == "Display")
+                                {
                                 <label>Role Name<input @bind="_roleName" maxlength="64" disabled="@(!management.Access.Has(CommunityPermission.ManageRoles) || _selectedRole?.IsDefault == true)" /></label>
                                 <label>Display Color</label>
                                 <div class="role-color-control">
@@ -62,23 +83,39 @@
                                 <label class="display-separately"><input type="checkbox" @bind="_roleIsMentionable"
                                     disabled="@(!management.Access.Has(CommunityPermission.ManageRoles) || _selectedRole?.IsDefault == true)" />
                                     Members may mention this role</label>
-                                <h2>Permissions</h2>
+                                }
+                                else if (_roleEditorTab == "Permissions")
+                                {
+                                <input class="permission-search" placeholder="Search permissions" @bind="_permissionSearch" @bind:event="oninput" />
                                 <div class="permission-list">
-                                    @foreach (var permission in PermissionOptions)
+                                    @foreach (var permission in FilteredPermissions)
                                     {
                                         <label><input type="checkbox" checked="@HasRolePermission(permission)"
                                                       disabled="@(!management.Access.Has(CommunityPermission.ManageRoles))"
                                                       @onchange="args => ToggleRolePermission(permission, args)" /> <span>@PermissionLabel(permission)</span></label>
                                     }
                                 </div>
+                                }
+                                else
+                                {
+                                    <div class="role-member-list">
+                                        @foreach (var member in MembersForSelectedRole)
+                                        {
+                                            <div><ProfileAvatar DisplayName="@member.DisplayName" Presence="member.Presence" Size="small" Surface="panel" /><span class="display-name">@member.DisplayName</span><button disabled="@(!CanManageRoleInSettings(_selectedRole!))" @onclick="() => RemoveSelectedRoleFromMemberAsync(member)">Remove</button></div>
+                                        }
+                                        @if (MembersForSelectedRole.Count == 0) { <p class="muted">No members have this role.</p> }
+                                        @if (_selectedRole is { IsDefault: false } selectedRole && CanManageRoleInSettings(selectedRole))
+                                        {
+                                            <select value="" @onchange="AddSelectedRoleToMemberAsync"><option value="">Add member...</option>@foreach (var member in MembersWithoutSelectedRole) { <option value="@member.AccountId">@member.DisplayName</option> }</select>
+                                        }
+                                    </div>
+                                }
                                 @if (management.Access.Has(CommunityPermission.ManageRoles))
                                 {
                                     <div class="actions">
                                         <button class="primary" @onclick="SaveRoleAsync">@(_editingNewRole ? "Create Role" : "Save Role")</button>
                                         @if (_selectedRole is { IsDefault: false } selected)
                                         {
-                                            <button @onclick="() => MoveRoleAsync(selected, -1)">Move Down</button>
-                                            <button @onclick="() => MoveRoleAsync(selected, 1)">Move Up</button>
                                             @if (_confirmRoleDelete)
                                             {
                                                 <button class="danger" @onclick="DeleteRoleAsync">Confirm Delete</button>
@@ -175,6 +212,7 @@
     [Parameter, EditorRequired] public required CommunityDto Community { get; set; }
     [Parameter, EditorRequired] public required CommunitySession State { get; set; }
     [Parameter, EditorRequired] public required string NodeAuthority { get; set; }
+    [Parameter, EditorRequired] public required Guid CurrentAccountId { get; set; }
     [Parameter] public EventCallback OnClose { get; set; }
     [Parameter] public EventCallback<CommunityDto> OnCommunityUpdated { get; set; }
     private static readonly string[] Sections = ["Overview", "Roles", "Members", "Invites"];
@@ -196,6 +234,10 @@
     private bool _confirmRoleDelete;
     private string _roleName = string.Empty;
     private string _roleColor = "#6677E8";
+    private string _roleSearch = string.Empty;
+    private string _permissionSearch = string.Empty;
+    private string _roleEditorTab = "Display";
+    private static readonly string[] RoleEditorTabs = ["Display", "Permissions", "Manage Members"];
     private CommunityPermission _rolePermissions;
     private bool _roleDisplaySeparately;
     private bool _roleIsMentionable;
@@ -207,6 +249,45 @@
     private int? _inviteMaxUses;
     private string? _createdInviteUrl;
     private bool _inviteCopied;
+    private ElementReference _roleList;
+    private IJSObjectReference? _roleSortModule;
+    private DotNetObjectReference<CommunitySettingsModal>? _roleSortReference;
+    private bool _roleSorterWired;
+
+    private IReadOnlyList<CommunityRoleDto> FilteredRoles => State.Management?.Roles
+        .Where(value => !value.IsDefault && (string.IsNullOrWhiteSpace(_roleSearch) || value.Name.Contains(_roleSearch, StringComparison.OrdinalIgnoreCase)))
+        .OrderByDescending(value => value.Position).ToArray() ?? [];
+    private IReadOnlyList<CommunityPermission> FilteredPermissions => PermissionOptions
+        .Where(value => string.IsNullOrWhiteSpace(_permissionSearch) || PermissionLabel(value).Contains(_permissionSearch, StringComparison.OrdinalIgnoreCase)).ToArray();
+    private IReadOnlyList<CommunityMemberDto> MembersForSelectedRole => _selectedRole is null ? [] :
+        State.Management?.Members.Where(value => value.RoleIds.Contains(_selectedRole.Id))
+            .OrderBy(value => value.DisplayName, StringComparer.OrdinalIgnoreCase).ToArray() ?? [];
+    private IReadOnlyList<CommunityMemberDto> MembersWithoutSelectedRole => _selectedRole is null ? [] :
+        State.Management?.Members.Where(value => !value.IsOwner && !value.RoleIds.Contains(_selectedRole.Id))
+            .OrderBy(value => value.DisplayName, StringComparer.OrdinalIgnoreCase).ToArray() ?? [];
+    private int MemberCount(Guid roleId) => State.Management?.Members.Count(value => value.RoleIds.Contains(roleId)) ?? 0;
+    private bool CanManageRoleInSettings(CommunityRoleDto role)
+    {
+        if (role.IsDefault || State.Management is not { } management || !management.Access.Has(CommunityPermission.ManageRoles)) return false;
+        if (management.Access.IsOwner) return true;
+        var member = management.Members.FirstOrDefault(value => value.AccountId == CurrentAccountId);
+        if (member is null) return false;
+        var highest = management.Roles.Where(value => member.RoleIds.Contains(value.Id)).Select(value => value.Position).DefaultIfEmpty(-1).Max();
+        return role.Position < highest;
+    }
+
+    private async Task RemoveSelectedRoleFromMemberAsync(CommunityMemberDto member)
+    {
+        if (_selectedRole is null || !CanManageRoleInSettings(_selectedRole)) return;
+        await RunAsync(() => State.SetMemberRolesAsync(member.AccountId, member.RoleIds.Where(value => value != _selectedRole.Id).ToArray()));
+    }
+    private async Task AddSelectedRoleToMemberAsync(ChangeEventArgs args)
+    {
+        if (_selectedRole is null || !CanManageRoleInSettings(_selectedRole) || !Guid.TryParse(args.Value?.ToString(), out var accountId)) return;
+        var member = State.Management?.Members.FirstOrDefault(value => value.AccountId == accountId);
+        if (member is null) return;
+        await RunAsync(() => State.SetMemberRolesAsync(accountId, member.RoleIds.Append(_selectedRole.Id).Distinct().ToArray()));
+    }
 
     protected override async Task OnInitializedAsync()
     {
@@ -216,9 +297,18 @@
         _loading = false;
     }
 
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_section != "Roles" || _loading || _roleSorterWired || State.Management?.Access.Has(CommunityPermission.ManageRoles) != true) return;
+        _roleSortModule ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/chat.js");
+        _roleSortReference ??= DotNetObjectReference.Create(this);
+        await _roleSortModule.InvokeVoidAsync("wireRoleSorter", _roleList, _roleSortReference);
+        _roleSorterWired = true;
+    }
+
     private void SelectSection(string section) { _section = section; _error = null; }
-    private void NewRole() { _editingNewRole = true; _selectedRole = null; _roleName = "New Role"; _roleColor = "#6677E8"; _rolePermissions = CommunityPermission.None; _roleDisplaySeparately = false; _roleIsMentionable = false; _confirmRoleDelete = false; }
-    private void SelectRole(CommunityRoleDto role) { _editingNewRole = false; _selectedRole = role; _roleName = role.Name; _roleColor = role.Color ?? "#6677E8"; _rolePermissions = role.Permissions; _roleDisplaySeparately = role.DisplaySeparately; _roleIsMentionable = role.IsMentionable; _confirmRoleDelete = false; }
+    private void NewRole() { _editingNewRole = true; _selectedRole = null; _roleEditorTab = "Display"; _roleName = "New Role"; _roleColor = "#6677E8"; _rolePermissions = CommunityPermission.None; _roleDisplaySeparately = false; _roleIsMentionable = false; _confirmRoleDelete = false; }
+    private void SelectRole(CommunityRoleDto role) { _editingNewRole = false; _selectedRole = role; _roleEditorTab = role.IsDefault ? "Permissions" : "Display"; _roleName = role.Name; _roleColor = role.Color ?? "#6677E8"; _rolePermissions = role.Permissions; _roleDisplaySeparately = role.DisplaySeparately; _roleIsMentionable = role.IsMentionable; _confirmRoleDelete = false; }
     private bool HasRolePermission(CommunityPermission permission) => (_rolePermissions & permission) != 0;
     private void ToggleRolePermission(CommunityPermission permission, ChangeEventArgs args)
     {
@@ -244,6 +334,16 @@
         await State.MoveRoleAsync(role.Id, role.Position + delta);
         _selectedRole = State.Management?.Roles.FirstOrDefault(value => value.Id == role.Id);
     });
+    [JSInvokable]
+    public async Task CommitRoleDropAsync(string roleId, int displayIndex)
+    {
+        if (!Guid.TryParse(roleId, out var id) || State.Management is not { } management) return;
+        var roles = management.Roles.Where(value => !value.IsDefault).OrderByDescending(value => value.Position).ToArray();
+        if (roles.All(value => value.Id != id)) return;
+        var position = Math.Clamp(roles.Length - displayIndex, 1, roles.Length);
+        await RunAsync(() => State.MoveRoleAsync(id, position));
+        _selectedRole = State.Management?.Roles.FirstOrDefault(value => value.Id == id);
+    }
     private async Task DeleteRoleAsync() => await RunAsync(async () =>
     {
         if (_selectedRole is null) return;
@@ -298,4 +398,13 @@
     }
     private static string PermissionLabel(CommunityPermission permission) => string.Concat(permission.ToString().Select((character, index) => index > 0 && char.IsUpper(character) ? $" {character}" : character.ToString()));
     private static string Expiration(CommunityInviteDto invite) => invite.ExpiresAt is null ? "Never expires" : $"Expires {invite.ExpiresAt.Value.ToLocalTime():g}";
+    public async ValueTask DisposeAsync()
+    {
+        if (_roleSortModule is not null)
+        {
+            try { await _roleSortModule.InvokeVoidAsync("unwireRoleSorter", _roleList); await _roleSortModule.DisposeAsync(); }
+            catch (JSDisconnectedException) { }
+        }
+        _roleSortReference?.Dispose();
+    }
 }

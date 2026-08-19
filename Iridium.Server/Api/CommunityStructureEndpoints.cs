@@ -41,6 +41,21 @@ public static partial class CommunityStructureEndpoints
             .OrderBy(value => value.CategoryId).ThenBy(value => value.Position).ThenBy(value => value.Name)
             .Select(value => new CommunityChannelDto(value.Id, value.CommunityId, value.CategoryId, value.Name, value.Position, value.CreatedAt))
             .ToListAsync();
+        var readStates = await db.CommunityChannelReadStates.AsNoTracking()
+            .Where(value => value.CommunityId == communityId && value.AccountId == session.AccountId)
+            .ToDictionaryAsync(value => value.ChannelId, value => value.LastReadAt);
+        for (var index = 0; index < channels.Count; index++)
+        {
+            var channel = channels[index];
+            readStates.TryGetValue(channel.Id, out var lastReadAt);
+            var unread = await db.ChannelMessages.CountAsync(value =>
+                value.CommunityId == communityId && value.ChannelId == channel.Id &&
+                value.AuthorAccountId != session.AccountId && value.CreatedAt > lastReadAt);
+            var mentions = await db.CommunityMentionNotifications.CountAsync(value =>
+                value.AccountId == session.AccountId && value.CommunityId == communityId &&
+                value.ChannelId == channel.Id && value.ReadAt == null);
+            channels[index] = channel with { UnreadCount = unread, MentionCount = mentions };
+        }
         return Results.Ok(new CommunityStructureDto(
             communityId,
             access.Has(CommunityPermission.ManageChannels),

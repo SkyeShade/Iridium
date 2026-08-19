@@ -16,7 +16,7 @@ else
         }
         else if (BadgeMode == AvatarBadgeMode.Notification && NotificationCount > 0)
         {
-            <span class="notification-badge" aria-label="@($"{NotificationCount} unread messages")">@DisplayCount</span>
+            <span class="notification-badge" aria-label="@($"{NotificationCount} unread messages")"><span class="red-notification-count">@DisplayCount</span></span>
         }
     </span>
 }

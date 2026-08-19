@@ -1,8 +1,22 @@
 @using Iridium.Protocol
 @using Iridium.Web.Models
+@inject NodeSession Session
+@inject ChannelMessagingSession Messaging
 
 <div class="profile-card-layer" @onclick="OnClose">
     <section class="profile-card" style="--profile-x:@($"{X}px");--profile-y:@($"{Y}px")" @onclick:stopPropagation="true">
+        <button type="button" class="profile-more" title="Profile actions" @onclick="ToggleActionMenu" @onclick:stopPropagation="true"><Icon Name="more" /></button>
+        @if (_actionMenuOpen)
+        {
+            <div class="profile-action-menu" @onclick:stopPropagation="true">
+                <button @onclick="() => _actionMenuOpen = false">View Profile</button>
+                @if (AccountId != CurrentAccountId)
+                {
+                    <div class="menu-separator"></div>
+                    <button class="@(_blocked ? null : "destructive")" @onclick="ToggleBlockAsync">@(_blocked ? "Unblock" : "Block")</button>
+                }
+            </div>
+        }
         <div class="profile-banner"></div>
         <div class="profile-avatar"><ProfileAvatar DisplayName="@DisplayName" Presence="@Presence" Size="large" Surface="sidebar" /></div>
         <div class="profile-content" @onclick="CloseRolePicker">
@@ -51,7 +65,8 @@
                 }
                 else
                 {
-                    <button @onclick="() => OnMessage.InvokeAsync(AccountId)"><Icon Name="message" /> Message</button>
+                    <input class="quick-message" @bind="_quickMessage" @bind:event="oninput" @onkeydown="QuickMessageKeyDownAsync"
+                           placeholder="@($"Message @{DisplayName}")" aria-label="Message @DisplayName" disabled="@_sendingMessage" />
                 }
             </div>
         </div>
@@ -76,10 +91,15 @@
     [Parameter] public EventCallback OnEditProfile { get; set; }
     [Parameter] public EventCallback<Guid> OnMessage { get; set; }
     [Parameter] public EventCallback<CommunityMemberRolesChange> OnMemberRolesChanged { get; set; }
+    [Parameter] public bool IsBlocked { get; set; }
     private readonly HashSet<Guid> _assignedRoleIds = [];
     private bool _rolePickerOpen;
     private bool _updatingRoles;
     private string? _roleError;
+    private bool _actionMenuOpen;
+    private bool _blocked;
+    private bool _sendingMessage;
+    private string _quickMessage = string.Empty;
     private string? NameStyle
     {
         get
@@ -113,7 +133,31 @@
         var ids = TargetMember?.RoleIds ?? Roles.Select(role => role.Id).ToArray();
         _assignedRoleIds.Clear();
         _assignedRoleIds.UnionWith(ids);
+        _blocked = IsBlocked;
         if (!CanManageTargetRoles) _rolePickerOpen = false;
+    }
+
+    private void ToggleActionMenu() => _actionMenuOpen = !_actionMenuOpen;
+    private async Task ToggleBlockAsync()
+    {
+        if (_blocked) await Session.UnblockAccountAsync(AccountId);
+        else await Session.BlockAccountAsync(AccountId);
+        _blocked = !_blocked;
+        _actionMenuOpen = false;
+    }
+    private async Task QuickMessageKeyDownAsync(KeyboardEventArgs args)
+    {
+        if (args.Key != "Enter" || args.ShiftKey || _sendingMessage || string.IsNullOrWhiteSpace(_quickMessage)) return;
+        var content = _quickMessage.TrimEnd();
+        _sendingMessage = true;
+        try
+        {
+            var conversation = await Session.OpenDirectConversationAsync(AccountId);
+            await Messaging.SendDirectToAsync(conversation.Id, content);
+            _quickMessage = string.Empty;
+            await OnMessage.InvokeAsync(AccountId);
+        }
+        finally { _sendingMessage = false; }
     }
 
     private int HighestPosition(CommunityMemberDto? member) => member is null ? -1 : AvailableRoles

@@ -71,6 +71,16 @@ public sealed class ChatHub(
     {
         var session = await RequireSessionAsync();
         await RequireChannelAsync(communityId, channelId, session.AccountId, CommunityPermission.SendMessages);
+        if (request.ClientMessageId == Guid.Empty) throw new HubException("The client message identifier is invalid.");
+        if (request.ClientMessageId is { } existingClientId)
+        {
+            var existing = await db.ChannelMessages.Include(value => value.AuthorAccount)
+                .Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
+                .SingleOrDefaultAsync(value => value.AuthorAccountId == session.AccountId &&
+                    value.CommunityId == communityId && value.ChannelId == channelId &&
+                    value.ClientMessageId == existingClientId);
+            if (existing is not null) return ChannelMessageMapper.ToDto(existing);
+        }
         var content = ValidContent(request.Content);
         var (mentions, recipients) = await ValidateMentionsAsync(
             communityId, session.AccountId, content, request.Mentions);
@@ -89,6 +99,7 @@ public sealed class ChatHub(
             CommunityId = communityId,
             ChannelId = channelId,
             AuthorAccountId = session.AccountId,
+            ClientMessageId = request.ClientMessageId,
             AuthorAccount = session.Account,
             Channel = null!,
             Content = content,
@@ -98,9 +109,29 @@ public sealed class ChatHub(
             MentionsJson = mentions.Count == 0 ? null : JsonSerializer.Serialize(mentions)
         };
         db.ChannelMessages.Add(message);
+        foreach (var recipientId in recipients)
+        {
+            db.CommunityMentionNotifications.Add(new CommunityMentionNotification
+            {
+                MessageId = message.Id,
+                AccountId = recipientId,
+                CommunityId = communityId,
+                ChannelId = channelId,
+                CreatedAt = message.CreatedAt,
+                Message = message,
+                Account = null!
+            });
+        }
         await db.SaveChangesAsync();
         var result = ChannelMessageMapper.ToDto(message);
         await Clients.Group(GroupName(communityId, channelId)).SendAsync(ChatHubContract.MessageCreated, result);
+        var communityRecipients = await db.CommunityMembers
+            .Where(value => value.CommunityId == communityId && value.AccountId != session.AccountId)
+            .Select(value => value.AccountId).ToListAsync();
+        if (communityRecipients.Count > 0)
+            await Clients.Groups(communityRecipients.Select(AccountGroup).ToArray()).SendAsync(
+                CommunityHubContract.ChannelActivity,
+                new CommunityChannelActivityEvent(communityId, channelId, session.AccountId));
         if (recipients.Count > 0)
         {
             var mentionEvent = new CommunityMentionReceivedEvent(communityId, channelId, message.Id, session.AccountId);
@@ -165,6 +196,15 @@ public sealed class ChatHub(
     {
         var session = await RequireSessionAsync();
         var conversation = await RequireDirectConversationAsync(conversationId, session.AccountId);
+        if (request.ClientMessageId == Guid.Empty) throw new HubException("The client message identifier is invalid.");
+        if (request.ClientMessageId is { } existingClientId)
+        {
+            var existing = await db.DirectMessages.Include(value => value.AuthorAccount)
+                .Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
+                .SingleOrDefaultAsync(value => value.AuthorAccountId == session.AccountId &&
+                    value.ConversationId == conversationId && value.ClientMessageId == existingClientId);
+            if (existing is not null) return DirectMessageMapper.ToDto(existing);
+        }
         DirectMessage? reply = null;
         if (request.ReplyToMessageId is { } replyId)
         {
@@ -178,6 +218,7 @@ public sealed class ChatHub(
             ConversationId = conversationId,
             Conversation = conversation,
             AuthorAccountId = session.AccountId,
+            ClientMessageId = request.ClientMessageId,
             AuthorAccount = session.Account,
             Content = ValidContent(request.Content),
             CreatedAt = DateTimeOffset.UtcNow,

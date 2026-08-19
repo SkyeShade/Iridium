@@ -201,10 +201,18 @@ public sealed class RealtimeFlowTests
             await Assert.ThrowsAsync<HubException>(() => intruderConnection.InvokeAsync<DirectMessageDto>(
                 DirectMessageHubContract.SendMessage, directConversation.Id,
                 new SendDirectMessageRequest("intrusion", null)));
+            var directClientMessageId = Guid.NewGuid();
             var directMessage = await firstConnection.InvokeAsync<DirectMessageDto>(
                 DirectMessageHubContract.SendMessage, directConversation.Id,
-                new SendDirectMessageRequest("private hello", null));
+                new SendDirectMessageRequest("private hello", null, directClientMessageId));
             Assert.Equal(directMessage.Id, (await directOnOutsider.Task.WaitAsync(TimeSpan.FromSeconds(5))).Id);
+            var directIdempotentRetry = await firstConnection.InvokeAsync<DirectMessageDto>(
+                DirectMessageHubContract.SendMessage, directConversation.Id,
+                new SendDirectMessageRequest("private hello", null, directClientMessageId));
+            Assert.Equal(directMessage.Id, directIdempotentRetry.Id);
+            Assert.Equal(directClientMessageId, directIdempotentRetry.ClientMessageId);
+            Assert.Single(await owner.GetDirectMessagesAsync(directConversation.Id),
+                value => value.ClientMessageId == directClientMessageId);
             Assert.Equal(0, Assert.Single(await owner.GetDirectConversationsAsync()).UnreadCount);
             Assert.Equal(1, Assert.Single(await outsider.GetDirectConversationsAsync()).UnreadCount);
             await firstConnection.InvokeAsync<DirectMessageDto>(
@@ -248,10 +256,18 @@ public sealed class RealtimeFlowTests
             Assert.Equal(PublicPresence.DoNotDisturb,
                 (await outsiderPresenceOnOwner.Task.WaitAsync(TimeSpan.FromSeconds(5))).Presence);
 
+            var channelClientMessageId = Guid.NewGuid();
             var sent = await firstConnection.InvokeAsync<ChannelMessageDto>(
                 ChatHubContract.SendMessage, communityA.Id, chatChannel.Id,
-                new SendChannelMessageRequest("hello from tab one", null));
+                new SendChannelMessageRequest("hello from tab one", null, null, channelClientMessageId));
             Assert.Equal(sent.Id, (await createdOnSecond.Task.WaitAsync(TimeSpan.FromSeconds(5))).Id);
+            var idempotentRetry = await firstConnection.InvokeAsync<ChannelMessageDto>(
+                ChatHubContract.SendMessage, communityA.Id, chatChannel.Id,
+                new SendChannelMessageRequest("hello from tab one", null, null, channelClientMessageId));
+            Assert.Equal(sent.Id, idempotentRetry.Id);
+            Assert.Equal(channelClientMessageId, idempotentRetry.ClientMessageId);
+            Assert.Single(await owner.GetChannelMessagesAsync(communityA.Id, chatChannel.Id),
+                value => value.ClientMessageId == channelClientMessageId);
             var mentioned = await firstConnection.InvokeAsync<ChannelMessageDto>(
                 ChatHubContract.SendMessage, communityA.Id, chatChannel.Id,
                 new SendChannelMessageRequest("@Outsider @everyone", null,
@@ -264,6 +280,24 @@ public sealed class RealtimeFlowTests
             Assert.Equal(2, mentioned.Mentions?.Count);
             await Task.Delay(150);
             Assert.Equal(1, Volatile.Read(ref mentionNotificationCount));
+            var mentionStructure = await outsider.GetCommunityStructureAsync(communityA.Id);
+            Assert.Equal(1, mentionStructure.Channels.Single(value => value.Id == chatChannel.Id).MentionCount);
+            Assert.Equal(1, (await outsider.GetCommunitiesAsync()).Single(value => value.Id == communityA.Id).MentionCount);
+
+            await firstConnection.InvokeAsync<ChannelMessageDto>(
+                ChatHubContract.SendMessage, communityA.Id, welcome.Id,
+                new SendChannelMessageRequest("@Outsider", null,
+                [new(CommunityMentionKind.Account, outsiderAuth.Account.Id, 0, 9)]));
+            mentionStructure = await outsider.GetCommunityStructureAsync(communityA.Id);
+            Assert.Equal(1, mentionStructure.Channels.Single(value => value.Id == chatChannel.Id).MentionCount);
+            Assert.Equal(1, mentionStructure.Channels.Single(value => value.Id == welcome.Id).MentionCount);
+            Assert.Equal(2, (await outsider.GetCommunitiesAsync()).Single(value => value.Id == communityA.Id).MentionCount);
+
+            await outsider.MarkCommunityChannelReadAsync(communityA.Id, chatChannel.Id);
+            mentionStructure = await outsider.GetCommunityStructureAsync(communityA.Id);
+            Assert.Equal(0, mentionStructure.Channels.Single(value => value.Id == chatChannel.Id).MentionCount);
+            Assert.Equal(1, mentionStructure.Channels.Single(value => value.Id == welcome.Id).MentionCount);
+            Assert.Equal(1, (await outsider.GetCommunitiesAsync()).Single(value => value.Id == communityA.Id).MentionCount);
             var secondFromFirst = await firstConnection.InvokeAsync<ChannelMessageDto>(
                 ChatHubContract.SendMessage, communityA.Id, chatChannel.Id,
                 new SendChannelMessageRequest("second from tab one", null));
@@ -298,6 +332,64 @@ public sealed class RealtimeFlowTests
             var history = await owner.GetChannelMessagesAsync(communityA.Id, chatChannel.Id);
             Assert.True(history.Single(value => value.Id == sent.Id).IsDeleted);
             Assert.True(history.Single(value => value.Id == reply.Id).ReplyTo?.IsDeleted);
+
+            var pagedMessages = new List<ChannelMessageDto>();
+            for (var index = 0; index < 55; index++)
+                pagedMessages.Add(await firstConnection.InvokeAsync<ChannelMessageDto>(
+                    ChatHubContract.SendMessage, communityA.Id, chatChannel.Id,
+                    new SendChannelMessageRequest($"paged marker {index:D2}", null)));
+            var latestPage = await owner.GetChannelMessagePageAsync(communityA.Id, chatChannel.Id);
+            Assert.Equal(MessageHistoryDefaults.PageSize, latestPage.Messages.Count);
+            Assert.True(latestPage.HasOlder);
+            Assert.Contains(latestPage.Messages, value => value.Id == pagedMessages[^1].Id);
+            Assert.DoesNotContain(latestPage.Messages, value => value.Id == pagedMessages[0].Id);
+            var olderPage = await owner.GetChannelMessagePageAsync(
+                communityA.Id, chatChannel.Id, before: latestPage.OlderCursor);
+            Assert.DoesNotContain(olderPage.Messages, value => latestPage.Messages.Any(latest => latest.Id == value.Id));
+            Assert.Contains(olderPage.Messages, value => value.Id == pagedMessages[0].Id);
+            var aroundPage = await owner.GetChannelMessagePageAsync(
+                communityA.Id, chatChannel.Id, around: pagedMessages[5].Id);
+            Assert.True(aroundPage.IsAroundWindow);
+            Assert.Contains(aroundPage.Messages, value => value.Id == pagedMessages[5].Id);
+            var searchPage = await owner.SearchCommunityMessagesAsync(communityA.Id, "paged marker 00", null, null);
+            Assert.Equal(pagedMessages[0].Id, Assert.Single(searchPage.Results).MessageId);
+            var typedSearch = await owner.SearchCommunityMessagesAsync(communityA.Id,
+                new MessageSearchRequest(new("paged marker", ownerAuth.Account.Id, chatChannel.Id, null, [],
+                    null, null, null, null, MessageAuthorType.User, MessageSearchSort.Oldest), Limit: 3));
+            Assert.Equal(3, typedSearch.Results.Count);
+            Assert.True(typedSearch.HasMore);
+            Assert.Equal(pagedMessages[0].Id, typedSearch.Results[0].MessageId);
+            Assert.All(typedSearch.Results, value => Assert.Equal(chatChannel.Id, value.ChannelId));
+            var typedNext = await owner.SearchCommunityMessagesAsync(communityA.Id,
+                new MessageSearchRequest(
+                    new("paged marker", ownerAuth.Account.Id, chatChannel.Id, null, [], null, null, null, null,
+                        MessageAuthorType.User, MessageSearchSort.Oldest),
+                    typedSearch.OlderCursor, 3));
+            Assert.DoesNotContain(typedNext.Results,
+                value => typedSearch.Results.Any(firstPage => firstPage.MessageId == value.MessageId));
+            var mentionSearch = await owner.SearchCommunityMessagesAsync(communityA.Id,
+                new MessageSearchRequest(new(null, null, chatChannel.Id, outsiderAuth.Account.Id, [],
+                    null, null, null, null)));
+            Assert.Contains(mentionSearch.Results, value => value.MessageId == mentioned.Id);
+            var dateSearch = await owner.SearchCommunityMessagesAsync(communityA.Id,
+                new MessageSearchRequest(new("paged marker 00", null, chatChannel.Id, null, [],
+                    pagedMessages[0].CreatedAt.AddTicks(1), pagedMessages[0].CreatedAt.AddTicks(-1), null, null)));
+            Assert.Equal(pagedMessages[0].Id, Assert.Single(dateSearch.Results).MessageId);
+            await Assert.ThrowsAsync<NodeApiException>(() =>
+                intruder.SearchCommunityMessagesAsync(communityA.Id, "paged", null, null));
+            await Assert.ThrowsAsync<NodeApiException>(() =>
+                intruder.SearchCommunityMessagesAsync(communityA.Id,
+                    new MessageSearchRequest(new("paged", null, null, null, [], null, null, null, null))));
+
+            var directLatest = await outsider.GetDirectMessagePageAsync(directConversation.Id, 2);
+            Assert.Equal(2, directLatest.Messages.Count);
+            Assert.True(directLatest.HasOlder);
+            var directOlder = await outsider.GetDirectMessagePageAsync(
+                directConversation.Id, 2, before: directLatest.OlderCursor);
+            Assert.DoesNotContain(directOlder.Messages, value => directLatest.Messages.Any(latest => latest.Id == value.Id));
+            var directAround = await outsider.GetDirectMessagePageAsync(
+                directConversation.Id, around: directLatest.Messages[0].Id);
+            Assert.Contains(directAround.Messages, value => value.Id == directLatest.Messages[0].Id);
 
             var outsiderMessage = await outsiderConnection.InvokeAsync<ChannelMessageDto>(
                 ChatHubContract.SendMessage, communityB.Id, outsiderChannel.Id,

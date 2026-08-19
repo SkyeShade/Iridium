@@ -1,0 +1,286 @@
+@using System.Text.RegularExpressions
+@using Iridium.Client.Core
+@using Iridium.Protocol
+@implements IAsyncDisposable
+@inject NodeSession Session
+@inject IJSRuntime JS
+
+<div class="message-search @(Focused ? "focused" : null)">
+    <div class="search-input"><Icon Name="search" Size="15" />
+        <input @ref="_input" value="@_query" @oninput="QueryChangedAsync" @onfocus="OpenSearch"
+               placeholder="@Placeholder" aria-label="@Placeholder" />
+        @if (!string.IsNullOrEmpty(_query)) { <button title="Clear search" @onclick="Clear"><Icon Name="close" Size="13" /></button> }
+    </div>
+
+    @if (Focused && string.IsNullOrWhiteSpace(_query))
+    {
+        <div class="filter-menu iridium-message-scrollbar">
+            <h3>Filters</h3>
+            <button class="filter-choice" @onclick='() => StartFilterAsync("from")'><Icon Name="profile" Size="16" />
+                <span><strong>From a specific user</strong><small>from: user</small></span></button>
+            <button class="filter-choice" @onclick='() => StartFilterAsync("has")'><Icon Name="search" Size="16" />
+                <span><strong>Includes a link</strong><small>has: link</small></span></button>
+            @if (CommunityId is not null)
+            {
+                <button class="filter-choice" @onclick='() => StartFilterAsync("mentions")'><Icon Name="friends" Size="16" />
+                    <span><strong>Mentions a specific user</strong><small>mentions: user</small></span></button>
+                <button class="filter-choice" @onclick='() => StartFilterAsync("in")'><Icon Name="channel" Size="16" />
+                    <span><strong>Sent in a specific channel</strong><small>in: channel</small></span></button>
+            }
+            <button class="filter-choice" @onclick="() => _moreFilters = true"><Icon Name="settings" Size="16" />
+                <span><strong>More filters</strong><small>dates and author type</small></span></button>
+            @if (_moreFilters)
+            {
+                <div class="more-filters">
+                    <button class="filter-choice" @onclick='() => StartFilterAsync("before")'><Icon Name="search" Size="16" /><span><strong>Before date</strong><small>before:2026-08-10</small></span></button>
+                    <button class="filter-choice" @onclick='() => StartFilterAsync("after")'><Icon Name="search" Size="16" /><span><strong>After date</strong><small>after:2026-08-01</small></span></button>
+                    <button class="filter-choice" @onclick='() => StartFilterAsync("during")'><Icon Name="search" Size="16" /><span><strong>During date</strong><small>during:2026-08-12</small></span></button>
+                    <button class="filter-choice" @onclick='() => StartFilterAsync("author")'><Icon Name="profile" Size="16" /><span><strong>Author type</strong><small>author:user</small></span></button>
+                </div>
+            }
+        </div>
+    }
+    else if (Focused && Suggestions.Count > 0)
+    {
+        <div class="search-suggestions iridium-message-scrollbar">
+            @for (var index = 0; index < Suggestions.Count; index++)
+            {
+                var suggestion = Suggestions[index];
+                <button class="@(index == _suggestionIndex ? "active" : null)" @onpointerdown:preventDefault="true"
+                        @onclick="() => AcceptSuggestionAsync(suggestion)">
+                    @if (suggestion.Member is { } member)
+                    {
+                        <ProfileAvatar DisplayName="@member.DisplayName" Presence="@member.Presence" Size="small" Surface="panel" />
+                        <span class="suggestion-copy"><strong style="@NameStyle(member)">@member.DisplayName</strong>
+                            <small>@IridiumIdentity.Format(member.Username, NodeAuthority)</small></span>
+                    }
+                    else if (suggestion.Channel is { } channel)
+                    {
+                        <span class="suggestion-icon"><Icon Name="channel" /></span><span class="suggestion-copy"><strong>@channel.Name</strong><small>Text channel</small></span>
+                    }
+                    else
+                    {
+                        <span class="suggestion-icon"><Icon Name="search" /></span><span class="suggestion-copy"><strong>@suggestion.Label</strong><small>@suggestion.Description</small></span>
+                    }
+                </button>
+            }
+        </div>
+    }
+
+    @if (Focused && (_loading || _results.Count > 0 || _searched || _errors.Count > 0))
+    {
+        <div class="search-results iridium-message-scrollbar">
+            <header><strong>Search results</strong><div class="sort-controls">
+                <button class="@(_sort == MessageSearchSort.Newest ? "active" : null)" @onclick="() => SetSortAsync(MessageSearchSort.Newest)">Newest</button>
+                <button class="@(_sort == MessageSearchSort.Oldest ? "active" : null)" @onclick="() => SetSortAsync(MessageSearchSort.Oldest)">Oldest</button>
+            </div></header>
+            @if (_errors.Count > 0) { <div class="search-state error">@_errors[0]</div> }
+            else if (_loading && _results.Count == 0) { <div class="search-state">Searching…</div> }
+            @foreach (var result in _results)
+            {
+                <button class="search-result" @onclick="() => SelectResultAsync(result)">
+                    <ProfileAvatar DisplayName="@result.Author.DisplayName" Size="small" BadgeMode="AvatarBadgeMode.None" />
+                    <span class="result-copy"><span><strong class="display-name">@result.Author.DisplayName</strong>
+                        @if (!string.IsNullOrWhiteSpace(result.ChannelName)) { <small>#@result.ChannelName</small> }
+                        <time>@result.CreatedAt.ToLocalTime().ToString("g")</time></span>
+                        <span class="excerpt">@result.Content</span></span>
+                </button>
+            }
+            @if (!_loading && _errors.Count == 0 && _searched && _results.Count == 0) { <div class="search-state">No results found</div> }
+            @if (_hasMore) { <button class="load-more" @onclick="LoadMoreAsync">Load more</button> }
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter] public Guid? CommunityId { get; set; }
+    [Parameter] public Guid? ConversationId { get; set; }
+    [Parameter] public string ContextName { get; set; } = string.Empty;
+    [Parameter] public string NodeAuthority { get; set; } = string.Empty;
+    [Parameter] public IReadOnlyList<CommunityChannelDto> Channels { get; set; } = [];
+    [Parameter] public IReadOnlyList<CommunityMemberDto> Members { get; set; } = [];
+    [Parameter] public IReadOnlyList<CommunityRoleDto> Roles { get; set; } = [];
+    [Parameter] public EventCallback<MessageSearchResultDto> OnResultSelected { get; set; }
+    private ElementReference _input;
+    private IJSObjectReference? _module;
+    private DotNetObjectReference<MessageSearch>? _selfReference;
+    private CancellationTokenSource? _debounce;
+    private string _query = string.Empty;
+    private readonly List<MessageSearchResultDto> _results = [];
+    private readonly List<string> _errors = [];
+    private readonly Dictionary<string, Guid> _resolvedTokens = new(StringComparer.OrdinalIgnoreCase);
+    private string? _cursor;
+    private bool _hasMore, _loading, _searched, _moreFilters;
+    private bool Focused { get; set; }
+    private int _suggestionIndex;
+    private int? _focusCaretAfterRender;
+    private MessageSearchSort _sort = MessageSearchSort.Newest;
+    private Guid? _lastCommunityId;
+    private Guid? _lastConversationId;
+    private string Placeholder => CommunityId is not null && !string.IsNullOrWhiteSpace(ContextName)
+        ? $"Search {ContextName}" : string.IsNullOrWhiteSpace(ContextName) ? "Search" : $"Search @{ContextName}";
+
+    private void OpenSearch() { Focused = true; _moreFilters = false; }
+    [JSInvokable] public Task OpenSearchFromShortcutAsync() { Focused = true; return InvokeAsync(StateHasChanged); }
+    [JSInvokable] public Task CloseSearchFromOutsideAsync()
+    {
+        if (!Focused) return Task.CompletedTask;
+        Focused = false;
+        return InvokeAsync(StateHasChanged);
+    }
+
+    protected override void OnParametersSet()
+    {
+        if (_lastCommunityId == CommunityId && _lastConversationId == ConversationId) return;
+        _lastCommunityId = CommunityId;
+        _lastConversationId = ConversationId;
+        _debounce?.Cancel();
+        _query = string.Empty;
+        _results.Clear();
+        _errors.Clear();
+        _resolvedTokens.Clear();
+        _cursor = null;
+        _hasMore = _loading = _searched = _moreFilters = Focused = false;
+    }
+
+    private async Task StartFilterAsync(string token)
+    {
+        _query = $"{token}:";
+        _moreFilters = false;
+        _suggestionIndex = 0;
+        _focusCaretAfterRender = _query.Length;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task QueryChangedAsync(ChangeEventArgs args)
+    {
+        _query = args.Value?.ToString() ?? string.Empty;
+        _suggestionIndex = 0;
+        _searched = false;
+        _debounce?.Cancel(); _debounce?.Dispose(); _debounce = new();
+        if (string.IsNullOrWhiteSpace(_query) || ActiveFilter is { Kind: "from" or "in" or "mentions" or "has" or "author" })
+        {
+            _results.Clear(); _errors.Clear(); _hasMore = false;
+            return;
+        }
+        try { await Task.Delay(350, _debounce.Token); await SearchAsync(false, _debounce.Token); }
+        catch (OperationCanceledException) { }
+    }
+
+    private async Task SearchAsync(bool append, CancellationToken cancellationToken)
+    {
+        var parsed = MessageSearchParser.Parse(_query,
+            new(Members, Channels, _resolvedTokens, TimeZoneInfo.Local), _sort);
+        _errors.Clear(); _errors.AddRange(parsed.Errors);
+        if (!parsed.IsValid) { _results.Clear(); _hasMore = false; _searched = true; await InvokeAsync(StateHasChanged); return; }
+        _loading = true; _searched = true; await InvokeAsync(StateHasChanged);
+        try
+        {
+            var request = new MessageSearchRequest(parsed.Query, append ? _cursor : null);
+            var page = CommunityId is { } communityId
+                ? await Session.SearchCommunityMessagesAsync(communityId, request, cancellationToken)
+                : await Session.SearchDirectMessagesAsync(ConversationId!.Value, request, cancellationToken);
+            if (!append) _results.Clear();
+            foreach (var result in page.Results)
+                if (_results.All(value => value.MessageId != result.MessageId)) _results.Add(result);
+            _cursor = page.OlderCursor; _hasMore = page.HasMore;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            _errors.Clear(); _errors.Add("Search failed. Please try again.");
+        }
+        finally { _loading = false; await InvokeAsync(StateHasChanged); }
+    }
+
+    private Task LoadMoreAsync() => SearchAsync(true, CancellationToken.None);
+    private async Task SetSortAsync(MessageSearchSort sort) { _sort = sort; await SearchAsync(false, CancellationToken.None); }
+    private async Task SelectResultAsync(MessageSearchResultDto result) { Focused = false; await OnResultSelected.InvokeAsync(result); }
+    private void Clear() { _query = string.Empty; _results.Clear(); _errors.Clear(); _searched = false; _hasMore = false; Focused = true; }
+
+    private ActiveFilterInfo? ActiveFilter
+    {
+        get
+        {
+            var match = Regex.Match(_query, @"(?:^|\s)(from|in|mentions|has|before|after|during|author):([^\s]*)$", RegexOptions.IgnoreCase);
+            return match.Success ? new(match.Groups[1].Value.ToLowerInvariant(), match.Groups[2].Value, match.Index, match.Length) : null;
+        }
+    }
+
+    private IReadOnlyList<SearchSuggestion> Suggestions
+    {
+        get
+        {
+            if (ActiveFilter is not { } active) return [];
+            if (active.Kind is "from" or "mentions")
+                return Members.Where(member => member.DisplayName.Contains(active.Value, StringComparison.OrdinalIgnoreCase) || member.Username.Contains(active.Value, StringComparison.OrdinalIgnoreCase))
+                    .OrderBy(member => member.DisplayName, StringComparer.OrdinalIgnoreCase).Take(7)
+                    .Select(member => new SearchSuggestion(active.Kind, member.Username, null, member, null, member.AccountId)).ToArray();
+            if (active.Kind == "in")
+                return Channels.Where(channel => channel.Name.Contains(active.Value, StringComparison.OrdinalIgnoreCase))
+                    .OrderBy(channel => channel.Name, StringComparer.OrdinalIgnoreCase).Take(7)
+                    .Select(channel => new SearchSuggestion(active.Kind, channel.Name, null, null, channel, channel.Id)).ToArray();
+            if (active.Kind == "has")
+                return new[] { new SearchSuggestion("has", "link", "Messages containing web links", null, null, null) }
+                    .Where(value => value.Label.Contains(active.Value, StringComparison.OrdinalIgnoreCase)).ToArray();
+            if (active.Kind == "author")
+                return new[] { new SearchSuggestion("author", "user", "Messages from Node accounts", null, null, null) };
+            return [];
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/chat.js");
+            _selfReference = DotNetObjectReference.Create(this);
+            await _module.InvokeVoidAsync("wireSearchAutocomplete", _input, _selfReference);
+        }
+        if (_focusCaretAfterRender is { } caret && _module is not null)
+        {
+            _focusCaretAfterRender = null;
+            await _module.InvokeVoidAsync("focusComposerAt", _input, caret);
+        }
+    }
+
+    [JSInvokable]
+    public async Task HandleSearchKeyAsync(string key)
+    {
+        var suggestions = Suggestions;
+        if (key == "Escape") { Focused = false; await InvokeAsync(StateHasChanged); return; }
+        if (suggestions.Count == 0) return;
+        if (key == "ArrowDown") _suggestionIndex = (_suggestionIndex + 1) % suggestions.Count;
+        else if (key == "ArrowUp") _suggestionIndex = (_suggestionIndex - 1 + suggestions.Count) % suggestions.Count;
+        else if (key is "Enter" or "Tab") await AcceptSuggestionAsync(suggestions[Math.Clamp(_suggestionIndex, 0, suggestions.Count - 1)]);
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task AcceptSuggestionAsync(SearchSuggestion suggestion)
+    {
+        if (ActiveFilter is not { } active) return;
+        var prefix = _query[..active.Start];
+        var leading = active.Start > 0 && char.IsWhiteSpace(_query[active.Start]) ? " " : string.Empty;
+        _query = prefix + leading + $"{suggestion.Kind}:{suggestion.Label} ";
+        if (suggestion.StableId is { } id) _resolvedTokens[$"{suggestion.Kind}:{suggestion.Label}".ToLowerInvariant()] = id;
+        _focusCaretAfterRender = _query.Length;
+        await InvokeAsync(StateHasChanged);
+        await SearchAsync(false, CancellationToken.None);
+    }
+
+    private string? NameStyle(CommunityMemberDto member) => Roles.Where(role => member.RoleIds.Contains(role.Id) && !string.IsNullOrWhiteSpace(role.Color))
+        .OrderByDescending(role => role.Position).FirstOrDefault() is { } role ? $"color:{role.Color}" : null;
+
+    public async ValueTask DisposeAsync()
+    {
+        _debounce?.Cancel(); _debounce?.Dispose();
+        if (_module is not null)
+        {
+            await _module.InvokeVoidAsync("unwireSearchAutocomplete", _input);
+            await _module.DisposeAsync();
+        }
+        _selfReference?.Dispose();
+    }
+    private sealed record ActiveFilterInfo(string Kind, string Value, int Start, int Length);
+    private sealed record SearchSuggestion(string Kind, string Label, string? Description, CommunityMemberDto? Member,
+        CommunityChannelDto? Channel, Guid? StableId);
+}

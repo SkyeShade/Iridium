@@ -24,6 +24,13 @@ public sealed record FriendshipChangedEvent(Guid FriendshipId);
 
 public sealed record MessageAuthorDto(Guid AccountId, string Username, string DisplayName);
 
+public enum MessageDeliveryState
+{
+    Confirmed,
+    Pending,
+    Failed
+}
+
 public sealed record MessageReplyDto(
     Guid MessageId,
     Guid AuthorAccountId,
@@ -41,11 +48,16 @@ public sealed record ChannelMessageDto(
     DateTimeOffset? EditedAt,
     bool IsDeleted,
     MessageReplyDto? ReplyTo,
-    IReadOnlyList<CommunityMentionDto>? Mentions = null);
+    IReadOnlyList<CommunityMentionDto>? Mentions = null,
+    Guid? ClientMessageId = null,
+    MessageDeliveryState DeliveryState = MessageDeliveryState.Confirmed,
+    string? DeliveryError = null,
+    bool CanRetry = false);
 
 public sealed record SendChannelMessageRequest(
     string Content,
     Guid? ReplyToMessageId,
-    IReadOnlyList<CommunityMentionInput>? Mentions = null);
+    IReadOnlyList<CommunityMentionInput>? Mentions = null,
+    Guid? ClientMessageId = null);
 public sealed record EditChannelMessageRequest(string Content);
 public sealed record ChannelMessageDeletedEvent(Guid CommunityId, Guid ChannelId, Guid MessageId, DateTimeOffset DeletedAt);

@@ -4,7 +4,9 @@
 @inject IJSRuntime JS
 
 <section class="member-sidebar">
-    <header><h2>Members</h2><span>@Management.Members.Count</span></header>
+    <header><MessageSearch CommunityId="Management.Community.Id" ContextName="@Management.Community.Name"
+                           Channels="Channels" Members="Management.Members" Roles="Management.Roles" NodeAuthority="@NodeAuthority"
+                           OnResultSelected="OnSearchResultSelected" /></header>
     <div class="member-groups">
         @foreach (var group in Groups)
         {
@@ -12,7 +14,8 @@
                 <h3 style="@(group.Color is { } groupColor ? $"color:{groupColor}" : null)">@group.Name — @group.Members.Count</h3>
                 @foreach (var member in group.Members)
                 {
-                    <button class="member-entry" @onclick="args => OpenProfile(member, args)">
+                    <button class="member-entry" @onclick="args => OpenProfile(member, args)"
+                            @oncontextmenu="args => OpenMemberContext(member, args)" @oncontextmenu:preventDefault="true">
                         <ProfileAvatar DisplayName="@member.DisplayName" Presence="@member.Presence" Size="medium" Surface="sidebar" />
                         <span class="display-name" style="@(HighestColor(member) is { } color ? $"color:{color}" : null)">@member.DisplayName</span>
                     </button>
@@ -31,6 +34,12 @@
         OnClose="CloseProfile" OnEditProfile="OnEditProfile" OnMessage="OnMessage"
         OnMemberRolesChanged="OnMemberRolesChanged" />
 }
+@if (_contextMember is { } contextMember)
+{
+    <CommunityMemberContextMenu Management="Management" Target="contextMember" CurrentAccountId="CurrentAccountId"
+                                X="_contextX" Y="_contextY" OnProfile="OpenContextProfileAsync"
+                                OnMessage="OnMessage" OnClose="CloseMemberContext" />
+}
 
 @code {
     [Parameter, EditorRequired] public required CommunityManagementDto Management { get; set; }
@@ -39,9 +48,14 @@
     [Parameter] public EventCallback OnEditProfile { get; set; }
     [Parameter] public EventCallback<Guid> OnMessage { get; set; }
     [Parameter] public EventCallback<CommunityMemberRolesChange> OnMemberRolesChanged { get; set; }
+    [Parameter] public IReadOnlyList<CommunityChannelDto> Channels { get; set; } = [];
+    [Parameter] public EventCallback<MessageSearchResultDto> OnSearchResultSelected { get; set; }
     private CommunityMemberDto? _profileMember;
     private double _profileX;
     private double _profileY;
+    private CommunityMemberDto? _contextMember;
+    private double _contextX;
+    private double _contextY;
 
     private IReadOnlyList<MemberGroup> Groups
     {
@@ -86,6 +100,16 @@
         _profileY = position.Y;
     }
     private void CloseProfile() => _profileMember = null;
+    private void OpenMemberContext(CommunityMemberDto member, MouseEventArgs args)
+    {
+        _contextMember = member; _contextX = args.ClientX; _contextY = args.ClientY;
+    }
+    private void CloseMemberContext() => _contextMember = null;
+    private async Task OpenContextProfileAsync()
+    {
+        if (_contextMember is null) return;
+        await OpenProfile(_contextMember, new MouseEventArgs { ClientX = _contextX, ClientY = _contextY });
+    }
     private static IReadOnlyList<CommunityMemberDto> Sort(IEnumerable<CommunityMemberDto> members) => members
         .OrderBy(value => value.Presence == PublicPresence.Offline)
         .ThenBy(value => value.DisplayName, StringComparer.OrdinalIgnoreCase)

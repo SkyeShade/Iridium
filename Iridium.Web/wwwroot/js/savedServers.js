@@ -38,6 +38,36 @@ export function saveSessionValue(key, value) {
     else sessionStorage.setItem(key, JSON.stringify(value));
 }
 
+export function loadGuidValue(key) {
+    const raw = localStorage.getItem(key);
+    if (raw === null) return null;
+    if (raw.trim() === "" || raw === "undefined" || raw === "null") {
+        localStorage.removeItem(key);
+        return null;
+    }
+
+    let value;
+    try {
+        value = JSON.parse(raw);
+    } catch {
+        value = raw;
+    }
+
+    if (typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value))
+        return value;
+
+    localStorage.removeItem(key);
+    return null;
+}
+
+export function saveGuidValue(key, value) {
+    if (typeof value !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) {
+        localStorage.removeItem(key);
+        return;
+    }
+    localStorage.setItem(key, JSON.stringify(value));
+}
+
 export function loadToken(nodeAddress) {
     return localStorage.getItem(`iridium.nodeToken:${nodeAddress}`);
 }

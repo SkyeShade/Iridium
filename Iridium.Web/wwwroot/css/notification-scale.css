@@ -1,0 +1,3 @@
+:root{--iridium-red-notification-scale:.63;--iridium-red-notification-offset:7.5%;--iridium-red-notification-number-scale:1.277778}
+.notification-badge,.community-mention-badge,.pending-badge,.channel-mention-badge{scale:var(--iridium-red-notification-scale);translate:var(--iridium-red-notification-offset) var(--iridium-red-notification-offset);transform-origin:center}
+.red-notification-count{display:inline-flex;align-items:center;justify-content:center;line-height:1;font-size:calc(1em * var(--iridium-red-notification-number-scale))}

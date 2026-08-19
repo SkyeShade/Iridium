@@ -113,10 +113,12 @@ public static class CommunityHubContract
 {
     public const string StateChanged = "CommunityStateChanged";
     public const string AccessRevoked = "CommunityAccessRevoked";
+    public const string ChannelActivity = "CommunityChannelActivity";
 }
 
 public sealed record CommunityStateChangedEvent(Guid CommunityId, string Change);
 public sealed record CommunityAccessRevokedEvent(Guid CommunityId, Guid AccountId, string Reason);
+public sealed record CommunityChannelActivityEvent(Guid CommunityId, Guid ChannelId, Guid AuthorAccountId);
 
 public sealed record CommunityInviteReference(string Token, string NodeAuthority, string OriginalUrl);
 

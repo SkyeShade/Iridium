@@ -1,6 +1,6 @@
 @using Iridium.Protocol
 
-<div class="channel-row @(CanManage ? "draggable" : null) @(Selected ? "selected" : null)"
+<div class="channel-row @(CanManage ? "draggable" : null) @(Selected ? "selected" : null) @(Channel.UnreadCount > 0 ? "unread" : null)"
      data-iridium-channel-drag="@(CanManage ? Channel.Id : null)"
      data-channel-category="@(Channel.CategoryId?.ToString() ?? string.Empty)"
      @onclick="SelectAsync"
@@ -10,6 +10,12 @@
      >
     <span class="channel-symbol"><Icon Name="channel" /></span>
     <span class="channel-name">@Channel.Name</span>
+    @if (Channel.MentionCount > 0)
+    {
+        <span class="channel-mention-badge" aria-label="@($"{Channel.MentionCount} unread mentions")">
+            <span class="red-notification-count">@(Channel.MentionCount > 99 ? "99+" : Channel.MentionCount)</span>
+        </span>
+    }
     @if (CanManage)
     {
         <button class="channel-settings" title="Channel settings" aria-label="Settings for @Channel.Name"

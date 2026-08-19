@@ -59,6 +59,12 @@ public sealed class NodeClient(Uri nodeAddress)
     public Task<ResolvedProfileDto> ResolveProfileAsync(string username, CancellationToken cancellationToken = default) =>
         SendAsync<ResolvedProfileDto>(HttpMethod.Get, $"api/profiles/{Uri.EscapeDataString(username)}", null, cancellationToken);
 
+    public Task BlockAccountAsync(Guid accountId, CancellationToken cancellationToken = default) =>
+        SendNoContentAsync(HttpMethod.Put, $"api/profiles/{accountId}/block", null, cancellationToken);
+
+    public Task UnblockAccountAsync(Guid accountId, CancellationToken cancellationToken = default) =>
+        SendNoContentAsync(HttpMethod.Delete, $"api/profiles/{accountId}/block", null, cancellationToken);
+
     public Task<FriendDto> SendFriendRequestAsync(string username, CancellationToken cancellationToken = default) =>
         SendAsync<FriendDto>(HttpMethod.Post, "api/friends/requests", new SendFriendRequest(username), cancellationToken);
 
@@ -78,10 +84,28 @@ public sealed class NodeClient(Uri nodeAddress)
     public Task<DirectConversationDto> OpenDirectConversationAsync(Guid accountId, CancellationToken cancellationToken = default) =>
         SendAsync<DirectConversationDto>(HttpMethod.Post, $"api/direct-messages/with/{accountId}", null, cancellationToken);
 
-    public Task<List<DirectMessageDto>> GetDirectMessagesAsync(
-        Guid conversationId, int limit = 75, CancellationToken cancellationToken = default) =>
-        SendAsync<List<DirectMessageDto>>(HttpMethod.Get,
-            $"api/direct-messages/{conversationId}/messages?limit={Math.Clamp(limit, 1, 100)}", null, cancellationToken);
+    public async Task<List<DirectMessageDto>> GetDirectMessagesAsync(
+        Guid conversationId, int limit = MessageHistoryDefaults.PageSize, CancellationToken cancellationToken = default) =>
+        [.. (await GetDirectMessagePageAsync(conversationId, limit, cancellationToken: cancellationToken)).Messages];
+
+    public Task<MessageHistoryPage<DirectMessageDto>> GetDirectMessagePageAsync(
+        Guid conversationId, int limit = MessageHistoryDefaults.PageSize, string? before = null, Guid? around = null,
+        CancellationToken cancellationToken = default) =>
+        SendAsync<MessageHistoryPage<DirectMessageDto>>(HttpMethod.Get,
+            $"api/direct-messages/{conversationId}/messages?limit={Math.Clamp(limit, 1, MessageHistoryDefaults.MaximumPageSize)}{Query("before", before)}{Query("around", around?.ToString())}",
+            null, cancellationToken);
+
+    public Task<MessageSearchPageDto> SearchDirectMessagesAsync(
+        Guid conversationId, string? text, string? from, string? before = null,
+        CancellationToken cancellationToken = default) =>
+        SendAsync<MessageSearchPageDto>(HttpMethod.Get,
+            $"api/direct-messages/{conversationId}/messages/search?limit={MessageHistoryDefaults.SearchPageSize}{Query("q", text)}{Query("from", from)}{Query("before", before)}",
+            null, cancellationToken);
+
+    public Task<MessageSearchPageDto> SearchDirectMessagesAsync(
+        Guid conversationId, MessageSearchRequest request, CancellationToken cancellationToken = default) =>
+        SendAsync<MessageSearchPageDto>(HttpMethod.Post,
+            $"api/direct-messages/{conversationId}/messages/search", request, cancellationToken);
 
     public Task HideDirectConversationAsync(Guid conversationId, CancellationToken cancellationToken = default) =>
         SendNoContentAsync(HttpMethod.Post, $"api/direct-messages/{conversationId}/hide", null, cancellationToken);
@@ -155,13 +179,31 @@ public sealed class NodeClient(Uri nodeAddress)
     public Task<JoinCommunityInviteResultDto> JoinCommunityInviteAsync(string token, CancellationToken cancellationToken = default) =>
         SendAsync<JoinCommunityInviteResultDto>(HttpMethod.Post, $"api/invites/{Uri.EscapeDataString(token)}/join", null, cancellationToken);
 
-    public Task<List<ChannelMessageDto>> GetChannelMessagesAsync(
-        Guid communityId, Guid channelId, int limit = 75, CancellationToken cancellationToken = default) =>
-        SendAsync<List<ChannelMessageDto>>(
-            HttpMethod.Get,
-            $"api/communities/{communityId}/channels/{channelId}/messages?limit={Math.Clamp(limit, 1, 100)}",
-            null,
-            cancellationToken);
+    public async Task<List<ChannelMessageDto>> GetChannelMessagesAsync(
+        Guid communityId, Guid channelId, int limit = MessageHistoryDefaults.PageSize, CancellationToken cancellationToken = default) =>
+        [.. (await GetChannelMessagePageAsync(communityId, channelId, limit, cancellationToken: cancellationToken)).Messages];
+
+    public Task<MessageHistoryPage<ChannelMessageDto>> GetChannelMessagePageAsync(
+        Guid communityId, Guid channelId, int limit = MessageHistoryDefaults.PageSize, string? before = null, Guid? around = null,
+        CancellationToken cancellationToken = default) =>
+        SendAsync<MessageHistoryPage<ChannelMessageDto>>(HttpMethod.Get,
+            $"api/communities/{communityId}/channels/{channelId}/messages?limit={Math.Clamp(limit, 1, MessageHistoryDefaults.MaximumPageSize)}{Query("before", before)}{Query("around", around?.ToString())}",
+            null, cancellationToken);
+
+    public Task<MessageSearchPageDto> SearchCommunityMessagesAsync(
+        Guid communityId, string? text, string? from, string? channel, string? before = null,
+        CancellationToken cancellationToken = default) =>
+        SendAsync<MessageSearchPageDto>(HttpMethod.Get,
+            $"api/communities/{communityId}/messages/search?limit={MessageHistoryDefaults.SearchPageSize}{Query("q", text)}{Query("from", from)}{Query("in", channel)}{Query("before", before)}",
+            null, cancellationToken);
+
+    public Task<MessageSearchPageDto> SearchCommunityMessagesAsync(
+        Guid communityId, MessageSearchRequest request, CancellationToken cancellationToken = default) =>
+        SendAsync<MessageSearchPageDto>(HttpMethod.Post,
+            $"api/communities/{communityId}/messages/search", request, cancellationToken);
+
+    public Task MarkCommunityChannelReadAsync(Guid communityId, Guid channelId, CancellationToken cancellationToken = default) =>
+        SendNoContentAsync(HttpMethod.Post, $"api/communities/{communityId}/channels/{channelId}/read", null, cancellationToken);
 
     private async Task<T> SendAsync<T>(HttpMethod method, string path, object? body, CancellationToken cancellationToken)
     {
@@ -171,6 +213,10 @@ public sealed class NodeClient(Uri nodeAddress)
         return await response.Content.ReadFromJsonAsync<T>(cancellationToken: cancellationToken)
             ?? throw new NodeApiException(response.StatusCode, "The node returned an empty response.");
     }
+
+    private static string Query(string name, string? value) => string.IsNullOrWhiteSpace(value)
+        ? string.Empty
+        : $"&{name}={Uri.EscapeDataString(value)}";
 
     private async Task SendNoContentAsync(HttpMethod method, string path, object? body, CancellationToken cancellationToken)
     {

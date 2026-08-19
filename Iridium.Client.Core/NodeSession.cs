@@ -39,6 +39,7 @@ public sealed class NodeSession(
     public event Action<CommunityDto>? CommunityJoined;
     public event Action<PresenceChangedEvent>? PresenceChanged;
     public event Action<CommunityMentionReceivedEvent>? CommunityMentionReceived;
+    public event Action<CommunityChannelActivityEvent>? CommunityChannelActivity;
 
     internal NodeClient AuthorizedClient
     {
@@ -284,11 +285,67 @@ public sealed class NodeSession(
 
     internal void ApplyCommunityMention(CommunityMentionReceivedEvent mention) => CommunityMentionReceived?.Invoke(mention);
 
+    internal async Task ApplyCommunityChannelActivityAsync(CommunityChannelActivityEvent activity)
+    {
+        if (!IsAuthenticated || activity.AuthorAccountId == Account?.Id) return;
+        await RefreshCommunitiesAsync();
+        CommunityChannelActivity?.Invoke(activity);
+    }
+
+    public async Task MarkCommunityChannelReadAsync(Guid communityId, Guid channelId, CancellationToken cancellationToken = default)
+    {
+        EnsureAuthenticated();
+        await _client!.MarkCommunityChannelReadAsync(communityId, channelId, cancellationToken);
+        await RefreshCommunitiesAsync(cancellationToken);
+    }
+
+    public Task<MessageSearchPageDto> SearchCommunityMessagesAsync(
+        Guid communityId, string? text, string? from, string? channel, string? before = null,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureAuthenticated();
+        return _client!.SearchCommunityMessagesAsync(communityId, text, from, channel, before, cancellationToken);
+    }
+
+    public Task<MessageSearchPageDto> SearchDirectMessagesAsync(
+        Guid conversationId, string? text, string? from, string? before = null,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureAuthenticated();
+        return _client!.SearchDirectMessagesAsync(conversationId, text, from, before, cancellationToken);
+    }
+
+    public Task<MessageSearchPageDto> SearchCommunityMessagesAsync(
+        Guid communityId, MessageSearchRequest request, CancellationToken cancellationToken = default)
+    {
+        EnsureAuthenticated();
+        return _client!.SearchCommunityMessagesAsync(communityId, request, cancellationToken);
+    }
+
+    public Task<MessageSearchPageDto> SearchDirectMessagesAsync(
+        Guid conversationId, MessageSearchRequest request, CancellationToken cancellationToken = default)
+    {
+        EnsureAuthenticated();
+        return _client!.SearchDirectMessagesAsync(conversationId, request, cancellationToken);
+    }
+
     public async Task SendFriendRequestAsync(string username, CancellationToken cancellationToken = default)
     {
         EnsureAuthenticated();
         await _client!.SendFriendRequestAsync(username, cancellationToken);
         await RefreshFriendsAsync(cancellationToken);
+    }
+
+    public Task BlockAccountAsync(Guid accountId, CancellationToken cancellationToken = default)
+    {
+        EnsureAuthenticated();
+        return _client!.BlockAccountAsync(accountId, cancellationToken);
+    }
+
+    public Task UnblockAccountAsync(Guid accountId, CancellationToken cancellationToken = default)
+    {
+        EnsureAuthenticated();
+        return _client!.UnblockAccountAsync(accountId, cancellationToken);
     }
 
     public async Task AcceptFriendRequestAsync(Guid friendshipId, CancellationToken cancellationToken = default)

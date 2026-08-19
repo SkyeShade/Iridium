@@ -1,0 +1,81 @@
+@using Iridium.Client.Core
+@using Iridium.Protocol
+@inject CommunitySession CommunityState
+
+<div class="member-context-layer" @onclick="OnClose" @oncontextmenu:preventDefault="true">
+    <div class="member-context" style="--context-x:@($"{X}px");--context-y:@($"{Y}px")" @onclick:stopPropagation="true">
+        <button @onclick="ProfileAsync">Profile</button>
+        @if (OnMention.HasDelegate) { <button @onclick="MentionAsync">Mention</button> }
+        <button @onclick="MessageAsync">Message</button>
+        @if (CanManageRoles)
+        {
+            <div class="separator"></div>
+            <button @onclick="ProfileAsync">Roles <span>›</span></button>
+        }
+        @if (CanKick || CanBan)
+        {
+            <div class="separator"></div>
+            @if (CanKick) { <button class="destructive" @onclick="PromptKick">Kick @Target.DisplayName</button> }
+            @if (CanBan) { <button class="destructive" @onclick="PromptBan">Ban @Target.DisplayName</button> }
+        }
+    </div>
+</div>
+
+@if (_confirm is not null)
+{
+    <ModalShell Title="@(_confirm == "ban" ? "Ban member" : "Kick member")" Size="medium" OnClose="CancelConfirm">
+        <div class="moderation-confirm">
+            <p>@(_confirm == "ban" ? $"Ban {Target.DisplayName} from this Community? They cannot rejoin until unbanned." : $"Kick {Target.DisplayName}? They may rejoin with a valid invite.")</p>
+            @if (_confirm == "ban") { <label>Reason (optional)<textarea @bind="_reason" maxlength="500"></textarea></label> }
+            @if (!string.IsNullOrWhiteSpace(_error)) { <p class="error">@_error</p> }
+            <div><button @onclick="CancelConfirm">Cancel</button><button class="danger" disabled="@_busy" @onclick="ConfirmAsync">Confirm @(_confirm == "ban" ? "Ban" : "Kick")</button></div>
+        </div>
+    </ModalShell>
+}
+
+@code {
+    [Parameter, EditorRequired] public required CommunityManagementDto Management { get; set; }
+    [Parameter, EditorRequired] public required CommunityMemberDto Target { get; set; }
+    [Parameter, EditorRequired] public required Guid CurrentAccountId { get; set; }
+    [Parameter] public double X { get; set; }
+    [Parameter] public double Y { get; set; }
+    [Parameter] public EventCallback OnProfile { get; set; }
+    [Parameter] public EventCallback<Guid> OnMessage { get; set; }
+    [Parameter] public EventCallback<CommunityMemberDto> OnMention { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    private string? _confirm;
+    private string? _reason;
+    private string? _error;
+    private bool _busy;
+    private CommunityMemberDto? Actor => Management.Members.FirstOrDefault(value => value.AccountId == CurrentAccountId);
+    private int ActorPosition => Management.Access.IsOwner ? int.MaxValue : HighestPosition(Actor);
+    private int TargetPosition => HighestPosition(Target);
+    private bool CanModerate(CommunityPermission permission) => Target.AccountId != CurrentAccountId && !Target.IsOwner &&
+        Management.Access.Has(permission) && (Management.Access.IsOwner || ActorPosition > TargetPosition);
+    private bool CanKick => CanModerate(CommunityPermission.KickMembers);
+    private bool CanBan => CanModerate(CommunityPermission.BanMembers);
+    private bool CanManageRoles => Management.Access.Has(CommunityPermission.ManageRoles) && !Target.IsOwner &&
+        (Management.Access.IsOwner || ActorPosition > TargetPosition);
+    private int HighestPosition(CommunityMemberDto? member) => member is null ? -1 : Management.Roles
+        .Where(value => member.RoleIds.Contains(value.Id)).Select(value => value.Position).DefaultIfEmpty(-1).Max();
+    private async Task ProfileAsync() { await OnProfile.InvokeAsync(); await OnClose.InvokeAsync(); }
+    private async Task MessageAsync() { await OnMessage.InvokeAsync(Target.AccountId); await OnClose.InvokeAsync(); }
+    private async Task MentionAsync() { await OnMention.InvokeAsync(Target); await OnClose.InvokeAsync(); }
+    private void PromptKick() => _confirm = "kick";
+    private void PromptBan() => _confirm = "ban";
+    private void CancelConfirm() { _confirm = null; _reason = null; _error = null; }
+    private async Task ConfirmAsync()
+    {
+        if (_busy || _confirm is null) return;
+        _busy = true; _error = null;
+        try
+        {
+            if (_confirm == "ban") await CommunityState.BanMemberAsync(Target.AccountId, _reason);
+            else await CommunityState.KickMemberAsync(Target.AccountId);
+            _confirm = null;
+            await OnClose.InvokeAsync();
+        }
+        catch (Exception exception) { _error = exception.Message; }
+        finally { _busy = false; }
+    }
+}

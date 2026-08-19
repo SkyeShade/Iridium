@@ -9,15 +9,22 @@
     <header class="dm-header">
         <ProfileAvatar DisplayName="@Conversation.OtherParticipant.DisplayName" Presence="@Conversation.OtherParticipant.Presence" Size="small" Surface="base" />
         <div><strong class="display-name">@Conversation.OtherParticipant.DisplayName</strong><span>@IridiumIdentity.Format(Conversation.OtherParticipant.Username, NodeAuthority)</span></div>
+        <MessageSearch ConversationId="Conversation.Id" ContextName="@Conversation.OtherParticipant.DisplayName"
+                       NodeAuthority="@NodeAuthority"
+                       OnResultSelected="OpenSearchResultAsync" />
     </header>
     @if (_loading) { <div class="dm-status">Loading message history…</div> }
     @if (!string.IsNullOrWhiteSpace(_error)) { <div class="dm-error">@_error</div> }
     <div class="dm-message-region">
-        <MessageList Messages="ProjectedMessages" CurrentAccountId="CurrentAccountId" CanManage="false"
+        <MessageList @ref="_messageList" Messages="ProjectedMessages" CurrentAccountId="CurrentAccountId" CanManage="false"
                      DirectParticipant="Conversation.OtherParticipant"
                      NodeAuthority="@NodeAuthority" OnEditProfile="OnEditProfile" OnMessage="OnMessage"
                      EmptyIcon="message" EmptyTitle="No messages yet" EmptyDescription="Send the first Direct Message."
-                     OnReply="BeginReply" Edit="EditMessageAsync" OnDelete="DeleteMessageAsync" />
+                     OnReply="BeginReply" Edit="EditMessageAsync" OnDelete="DeleteMessageAsync"
+                     OnRetryLocal="RetryMessageAsync" OnRemoveLocal="RemoveLocalMessage"
+                     WindowRevision="Messaging.WindowRevision" TargetMessageId="@(Messaging.WindowMode == MessageWindowMode.SearchTarget ? _loadedTargetMessageId : null)"
+                     OnLoadOlder="LoadOlderAsync" OnViewportStateChanged="ViewportStateChanged" />
+        @if (ShowJumpToLatest) { <button class="jump-latest" @onclick="JumpToLatestAsync">Jump to Latest</button> }
     </div>
     <div class="dm-composer-region">
         <MessageComposer @ref="_composer" ChannelName="@Conversation.OtherParticipant.DisplayName"
@@ -33,28 +40,39 @@
     [Parameter, EditorRequired] public required string NodeAuthority { get; set; }
     [Parameter] public EventCallback OnEditProfile { get; set; }
     [Parameter] public EventCallback<Guid> OnMessage { get; set; }
+    [Parameter] public Guid? TargetMessageId { get; set; }
     private Guid? _loadedConversationId;
     private ChannelMessageDto? _replyTo;
     private MessageComposer? _composer;
+    private MessageList? _messageList;
+    private Guid? _loadedTargetMessageId;
+    private bool _isPinnedToLatest = true;
+    private bool _shouldShowJumpToLatest;
     private bool _loading;
     private bool _sending;
     private string? _error;
 
     private IReadOnlyList<ChannelMessageDto> ProjectedMessages => Messaging.DirectMessages.Select(message =>
         new ChannelMessageDto(message.Id, Guid.Empty, message.ConversationId, message.Author, message.Content,
-            message.CreatedAt, message.EditedAt, message.IsDeleted, message.ReplyTo)).ToArray();
+            message.CreatedAt, message.EditedAt, message.IsDeleted, message.ReplyTo, null,
+            message.ClientMessageId, message.DeliveryState, message.DeliveryError, message.CanRetry)).ToArray();
 
     protected override void OnInitialized() => Messaging.Changed += MessagesChanged;
     protected override async Task OnParametersSetAsync()
     {
-        if (_loadedConversationId == Conversation.Id && Messaging.DirectConversationId == Conversation.Id) return;
+        if (_loadedConversationId == Conversation.Id && Messaging.DirectConversationId == Conversation.Id &&
+            _loadedTargetMessageId == TargetMessageId) return;
         _replyTo = null;
         _error = null;
         _loading = true;
         try
         {
             await Messaging.OpenDirectConversationAsync(Conversation.Id);
+            if (TargetMessageId is { } target) await Messaging.OpenDirectAroundAsync(Conversation.Id, target);
             _loadedConversationId = Conversation.Id;
+            _loadedTargetMessageId = TargetMessageId;
+            _isPinnedToLatest = TargetMessageId is null;
+            _shouldShowJumpToLatest = TargetMessageId is not null;
         }
         catch (Exception exception)
         {
@@ -84,7 +102,9 @@
         _error = null;
         try
         {
-            await Messaging.SendDirectAsync(content, _replyTo?.Id);
+            var smooth = ShowJumpToLatest;
+            _messageList?.PrepareUserLatestTransition(smooth);
+            Messaging.QueueDirectMessage(content, _replyTo?.Id);
             _replyTo = null;
             await InvokeAsync(StateHasChanged);
             if (_composer is not null) await _composer.FocusAsync();
@@ -102,6 +122,31 @@
     {
         try { await Messaging.DeleteDirectAsync(messageId); }
         catch (Exception exception) { _error = exception.Message; }
+    }
+    private Task RetryMessageAsync(Guid clientMessageId) => Messaging.RetryDirectAsync(clientMessageId);
+    private void RemoveLocalMessage(Guid clientMessageId) => Messaging.RemoveFailedMessage(clientMessageId);
+    private bool ShowJumpToLatest => _shouldShowJumpToLatest || Messaging.WindowMode == MessageWindowMode.SearchTarget;
+    private Task LoadOlderAsync() => Messaging.LoadOlderAsync();
+    private void ViewportStateChanged(MessageViewportState state)
+    {
+        _isPinnedToLatest = state.IsPinnedToLatest;
+        _shouldShowJumpToLatest = state.ShouldShowJumpToLatest;
+        _ = InvokeAsync(StateHasChanged);
+    }
+    private async Task JumpToLatestAsync()
+    {
+        _messageList?.PrepareUserLatestTransition(true);
+        await Messaging.ResetToLatestAsync();
+        _loadedTargetMessageId = TargetMessageId;
+        await InvokeAsync(StateHasChanged);
+    }
+    private async Task OpenSearchResultAsync(MessageSearchResultDto result)
+    {
+        _loadedTargetMessageId = result.MessageId;
+        await Messaging.OpenDirectAroundAsync(Conversation.Id, result.MessageId);
+        _isPinnedToLatest = false;
+        _shouldShowJumpToLatest = true;
+        await InvokeAsync(StateHasChanged);
     }
     public void Dispose() => Messaging.Changed -= MessagesChanged;
 }

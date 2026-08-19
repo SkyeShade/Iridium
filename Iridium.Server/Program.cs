@@ -41,10 +41,15 @@ await using (var scope = app.Services.CreateAsyncScope())
     await DatabaseCompatibility.EnsurePronounsColumnAsync(db);
     await DatabaseCompatibility.EnsurePresenceColumnAsync(db);
     await DatabaseCompatibility.EnsureFriendsTableAsync(db);
+    await DatabaseCompatibility.EnsureAccountBlocksAsync(db);
     await DatabaseCompatibility.EnsureCommunityStructureTablesAsync(db);
     await DatabaseCompatibility.EnsureUnifiedCommunitySidebarOrderingAsync(db);
     await DatabaseCompatibility.EnsureChannelMessagesTableAsync(db);
+    await DatabaseCompatibility.EnsureCommunityChannelReadStatesAsync(db);
+    await DatabaseCompatibility.EnsureCommunityMentionNotificationsAsync(db);
     await DatabaseCompatibility.EnsureDirectMessageTablesAsync(db);
+    await DatabaseCompatibility.EnsureMessageClientIdsAsync(db);
+    await DatabaseCompatibility.EnsureMessageHistoryIndexesAsync(db);
     await DatabaseCompatibility.EnsureCommunityManagementSchemaAsync(db);
 }
 

@@ -29,7 +29,7 @@ public sealed record NodeAccountDto(
     DateTimeOffset CreatedAt);
 public sealed record AuthenticationResultDto(string AccessToken, NodeAccountDto Account);
 public sealed record UpdateProfileRequest(string DisplayName, string? Pronouns, string? Description);
-public sealed record CommunityDto(Guid Id, string Name, string? Description, Guid OwnerAccountId, DateTimeOffset CreatedAt);
+public sealed record CommunityDto(Guid Id, string Name, string? Description, Guid OwnerAccountId, DateTimeOffset CreatedAt, bool HasUnread = false, int MentionCount = 0);
 public sealed record CreateCommunityRequest(string Name, string? Description);
 
 public enum FriendshipStatus
@@ -69,15 +69,17 @@ public sealed record ResolvedProfileDto(
     string? Description,
     ProfileRelationshipStatus Relationship,
     Guid? FriendshipId,
-    PublicPresence Presence)
+    PublicPresence Presence,
+    bool IsBlockedByCurrentAccount = false)
 {
     public bool IsOnline => Presence != PublicPresence.Offline;
 }
 
 public sealed record SendFriendRequest(string Username);
+public sealed record ProfileBlockChange(Guid AccountId, bool IsBlocked);
 
 public sealed record CommunityCategoryDto(Guid Id, Guid CommunityId, string Name, int Position, Guid? ParentCategoryId);
-public sealed record CommunityChannelDto(Guid Id, Guid CommunityId, Guid? CategoryId, string Name, int Position, DateTimeOffset CreatedAt);
+public sealed record CommunityChannelDto(Guid Id, Guid CommunityId, Guid? CategoryId, string Name, int Position, DateTimeOffset CreatedAt, int UnreadCount = 0, int MentionCount = 0);
 public sealed record CommunityStructureDto(
     Guid CommunityId,
     bool CanManage,

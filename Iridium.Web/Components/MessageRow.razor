@@ -4,9 +4,10 @@
 @inject IJSRuntime JS
 @inject ILogger<MessageRow> Logger
 @inject IIdentityProfileResolver ProfileResolver
+@inject Iridium.Web.Services.MessageMenuCoordinator MessageMenus
 
-<article class="message-row @(StartsGroup ? "group-start" : "compact") @(Message.IsDeleted ? "deleted" : null)"
-         data-message-id="@Message.Id">
+<article class="message-row @(StartsGroup ? "group-start" : "compact") @(Message.IsDeleted ? "deleted" : null) @DeliveryClass"
+         data-message-id="@Message.Id" @onpointerenter="MessageEntered" @onpointerleave="MessageLeft">
     @if (Message.ReplyTo is { } reply)
     {
         <button class="reply-reference" title="Go to replied message" @onclick="() => OnFocusReply.InvokeAsync(reply.MessageId)">
@@ -24,7 +25,7 @@
     }
     @if (StartsGroup)
     {
-        <button type="button" class="message-avatar author-trigger" @onclick="OpenAuthorProfileAsync" title="View @Message.Author.DisplayName's profile">
+        <button type="button" class="message-avatar author-trigger" @onclick="OpenAuthorProfileAsync" @oncontextmenu="OpenAuthorContext" @oncontextmenu:preventDefault="true" title="View @Message.Author.DisplayName's profile">
             <ProfileAvatar DisplayName="@Message.Author.DisplayName" Presence="@(AuthorPresence ?? PublicPresence.Offline)"
                            BadgeMode="@(AuthorPresence.HasValue ? AvatarBadgeMode.Presence : AvatarBadgeMode.None)" Size="medium" Surface="base" />
         </button>
@@ -33,7 +34,7 @@
     <div class="message-body">
         @if (StartsGroup)
         {
-            <header><button type="button" class="author-name display-name" style="@AuthorStyle" @onclick="OpenAuthorProfileAsync">@Message.Author.DisplayName</button><time title="@Message.CreatedAt.ToLocalTime().ToString("F")">@Message.CreatedAt.ToLocalTime().ToString("HH:mm")</time></header>
+            <header><button type="button" class="author-name display-name" style="@AuthorStyle" @onclick="OpenAuthorProfileAsync" @oncontextmenu="OpenAuthorContext" @oncontextmenu:preventDefault="true">@Message.Author.DisplayName</button><time title="@Message.CreatedAt.ToLocalTime().ToString("F")">@Message.CreatedAt.ToLocalTime().ToString("HH:mm")</time></header>
         }
         <div class="message-content">
             @if (_editing)
@@ -56,19 +57,32 @@
                 @if (Message.EditedAt is not null) { <span class="edited" title="Edited @Message.EditedAt.Value.ToLocalTime().ToString("g")">(edited)</span> }
                 <InviteEmbed Content="@Message.Content" />
             }
+            @if (Message.DeliveryState == MessageDeliveryState.Failed)
+            {
+                <div class="delivery-failure"><span>@(Message.DeliveryError ?? "Failed to send")</span>
+                    @if (Message.CanRetry && Message.ClientMessageId is { } retryId)
+                    {
+                        <span>&middot;</span><button type="button" @onclick="() => OnRetryLocal.InvokeAsync(retryId)">Retry</button>
+                    }
+                    @if (Message.ClientMessageId is { } removeId)
+                    {
+                        <span>&middot;</span><button type="button" @onclick="() => OnRemoveLocal.InvokeAsync(removeId)">Remove</button>
+                    }
+                </div>
+            }
         </div>
     </div>
 
-    @if (!Message.IsDeleted && !_editing)
+    @if (Message.DeliveryState == MessageDeliveryState.Confirmed && !Message.IsDeleted && !_editing)
     {
         <div class="message-actions">
-            <button title="Reply" @onclick="ReplyAsync"><Icon Name="reply" /></button>
-            @if (CanEdit) { <button title="Edit" @onclick="BeginEdit"><Icon Name="edit" /></button> }
-            <button title="More actions" @onclick="ToggleMenu"><Icon Name="more" /></button>
+            <button title="Reply" @onclick="ReplyAsync" @onclick:stopPropagation="true"><Icon Name="reply" /></button>
+            @if (CanEdit) { <button title="Edit" @onclick="BeginEdit" @onclick:stopPropagation="true"><Icon Name="edit" /></button> }
+            <button title="More actions" @onclick="ToggleMenu" @onclick:stopPropagation="true"><Icon Name="more" /></button>
         </div>
         @if (_menuOpen)
         {
-            <div class="message-menu">
+            <div class="message-menu" @onpointerenter="MenuEntered" @onpointerleave="MenuLeft" @onclick:stopPropagation="true">
                 <button @onclick="ReplyFromMenuAsync"><Icon Name="reply" /> Reply</button>
                 @if (CanEdit) { <button @onclick="EditFromMenu"><Icon Name="edit" /> Edit</button> }
                 @if (CanDelete) { <button class="destructive" @onclick="DeleteAsync"><Icon Name="trash" /> Delete Message</button> }
@@ -83,7 +97,14 @@
         NodeAuthority="@NodeAuthority" Roles="_profileRoles" CommunityContext="CommunityManagement"
         NameColor="@_profileColor" X="_profileX" Y="_profileY"
         OnClose="CloseProfile" OnEditProfile="OnEditProfile" OnMessage="OnMessage"
+        IsBlocked="profile.IsBlockedByCurrentAccount"
         OnMemberRolesChanged="OnMemberRolesChanged" />
+}
+@if (_contextMember is { } contextMember && CommunityManagement is { } contextManagement)
+{
+    <CommunityMemberContextMenu Management="contextManagement" Target="contextMember" CurrentAccountId="CurrentAccountId"
+                                X="_contextX" Y="_contextY" OnProfile="OpenContextProfileAsync"
+                                OnMessage="OnMessage" OnMention="OnMention" OnClose="CloseAuthorContext" />
 }
 
 @code {
@@ -98,11 +119,17 @@
     [Parameter] public EventCallback OnEditProfile { get; set; }
     [Parameter] public EventCallback<Guid> OnMessage { get; set; }
     [Parameter] public EventCallback<CommunityMemberRolesChange> OnMemberRolesChanged { get; set; }
+    [Parameter] public EventCallback<CommunityMemberDto> OnMention { get; set; }
     [Parameter] public EventCallback<ChannelMessageDto> OnReply { get; set; }
     [Parameter, EditorRequired] public required Func<MessageEditSubmission, Task<bool>> Edit { get; set; }
     [Parameter] public EventCallback<Guid> OnDelete { get; set; }
+    [Parameter] public EventCallback<Guid> OnRetryLocal { get; set; }
+    [Parameter] public EventCallback<Guid> OnRemoveLocal { get; set; }
     [Parameter] public EventCallback<Guid> OnFocusReply { get; set; }
-    private bool _menuOpen;
+    private bool _menuOpen => MessageMenus.OpenMessageId == Message.Id;
+    private bool _messageHovered;
+    private bool _menuHovered;
+    private CancellationTokenSource? _menuClose;
     private bool _editing;
     private bool _savingEdit;
     private bool _focusEditorAfterRender;
@@ -115,18 +142,27 @@
     private double _profileY;
     private IReadOnlyList<CommunityRoleDto> _profileRoles = [];
     private string? _profileColor;
+    private CommunityMemberDto? _contextMember;
+    private double _contextX;
+    private double _contextY;
     private IReadOnlyList<CommunityRoleDto> AuthorRoles => CommunityManagement?.Members
         .FirstOrDefault(value => value.AccountId == Message.Author.AccountId) is { } member
         ? CommunityManagement.Roles.Where(value => member.RoleIds.Contains(value.Id)).OrderByDescending(value => value.Position).ToArray()
         : [];
     private string? AuthorColor => AuthorRoles.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value.Color))?.Color;
     private string? AuthorStyle => AuthorColor is null ? null : $"color:{AuthorColor}";
+    private string? DeliveryClass => Message.DeliveryState switch
+    {
+        MessageDeliveryState.Pending => "pending",
+        MessageDeliveryState.Failed => "failed",
+        _ => null
+    };
 
     private static string Initial(string value) => string.IsNullOrWhiteSpace(value) ? "?" : char.ToUpperInvariant(value.Trim()[0]).ToString();
     private Task ReplyAsync() => OnReply.InvokeAsync(Message);
-    private Task ReplyFromMenuAsync() { _menuOpen = false; return ReplyAsync(); }
-    private void ToggleMenu() => _menuOpen = !_menuOpen;
-    private void BeginEdit() { _menuOpen = false; _editContent = Message.Content; _editing = true; _focusEditorAfterRender = true; }
+    private Task ReplyFromMenuAsync() { MessageMenus.Close(Message.Id); return ReplyAsync(); }
+    private void ToggleMenu() { CancelMenuClose(); MessageMenus.Toggle(Message.Id); }
+    private void BeginEdit() { MessageMenus.Close(Message.Id); _editContent = Message.Content; _editing = true; _focusEditorAfterRender = true; }
     private void EditFromMenu() => BeginEdit();
     private void CancelEdit() { _editing = false; _editContent = string.Empty; }
 
@@ -182,7 +218,31 @@
             await InvokeAsync(StateHasChanged);
         }
     }
-    private Task DeleteAsync() { _menuOpen = false; return OnDelete.InvokeAsync(Message.Id); }
+    private Task DeleteAsync() { MessageMenus.Close(Message.Id); return OnDelete.InvokeAsync(Message.Id); }
+
+    protected override void OnInitialized() => MessageMenus.Changed += MenuChanged;
+    private void MenuChanged() => _ = InvokeAsync(StateHasChanged);
+    private void MessageEntered() { _messageHovered = true; CancelMenuClose(); }
+    private void MessageLeft() { _messageHovered = false; ScheduleMenuClose(); }
+    private void MenuEntered() { _menuHovered = true; CancelMenuClose(); }
+    private void MenuLeft() { _menuHovered = false; ScheduleMenuClose(); }
+    private void CancelMenuClose() { _menuClose?.Cancel(); _menuClose?.Dispose(); _menuClose = null; }
+    private void ScheduleMenuClose()
+    {
+        CancelMenuClose();
+        if (!_menuOpen || _messageHovered || _menuHovered) return;
+        var source = _menuClose = new CancellationTokenSource();
+        _ = CloseMenuAfterDelayAsync(source);
+    }
+    private async Task CloseMenuAfterDelayAsync(CancellationTokenSource source)
+    {
+        try
+        {
+            await Task.Delay(150, source.Token);
+            if (!_messageHovered && !_menuHovered) MessageMenus.Close(Message.Id);
+        }
+        catch (OperationCanceledException) { }
+    }
     private async Task OpenAuthorProfileAsync(MouseEventArgs args)
     {
         ClearProfile();
@@ -210,6 +270,17 @@
         _profileX = position.X;
         _profileY = position.Y;
     }
+    private void OpenAuthorContext(MouseEventArgs args)
+    {
+        if (CommunityManagement?.Members.FirstOrDefault(value => value.AccountId == Message.Author.AccountId) is not { } member) return;
+        _contextMember = member; _contextX = args.ClientX; _contextY = args.ClientY;
+    }
+    private void CloseAuthorContext() => _contextMember = null;
+    private async Task OpenContextProfileAsync()
+    {
+        if (_contextMember is null) return;
+        await OpenAuthorProfileAsync(new MouseEventArgs { ClientX = _contextX, ClientY = _contextY });
+    }
     private async Task<ProfileCardPosition> ProfilePositionAsync(MouseEventArgs args)
     {
         _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/chat.js");
@@ -225,6 +296,9 @@
 
     public async ValueTask DisposeAsync()
     {
+        MessageMenus.Changed -= MenuChanged;
+        MessageMenus.Close(Message.Id);
+        CancelMenuClose();
         if (_module is not null)
         {
             try { await _module.DisposeAsync(); }

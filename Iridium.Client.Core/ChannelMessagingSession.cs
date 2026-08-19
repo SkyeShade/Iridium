@@ -17,6 +17,12 @@ public sealed class ChannelMessagingSession(
     private Guid? _connectedAccountId;
     private bool _channelReady;
     private bool _directReady;
+    private string? _channelOlderCursor;
+    private string? _directOlderCursor;
+    private bool _channelHasOlder;
+    private bool _directHasOlder;
+    private bool _loadingOlder;
+    private CancellationTokenSource _historyCancellation = new();
     private bool _disposed;
 
     public Guid? CommunityId { get; private set; }
@@ -24,6 +30,10 @@ public sealed class ChannelMessagingSession(
     public IReadOnlyList<ChannelMessageDto> Messages => _messages;
     public Guid? DirectConversationId { get; private set; }
     public IReadOnlyList<DirectMessageDto> DirectMessages => _directMessages;
+    public bool HasOlder => CommunityId is not null ? _channelHasOlder : _directHasOlder;
+    public bool IsLoadingOlder => _loadingOlder;
+    public MessageWindowMode WindowMode { get; private set; } = MessageWindowMode.Latest;
+    public int WindowRevision { get; private set; }
     public bool IsConnected => _connection?.State == HubConnectionState.Connected;
     public event Action? Changed;
 
@@ -38,6 +48,7 @@ public sealed class ChannelMessagingSession(
     public async Task OpenChannelAsync(Guid communityId, Guid channelId, CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
+        CancelHistoryRequests();
         await _lifecycleGate.WaitAsync(cancellationToken);
         try
         {
@@ -55,9 +66,9 @@ public sealed class ChannelMessagingSession(
             NotifyChanged();
 
             await _connection!.InvokeAsync(ChatHubContract.JoinChannel, communityId, channelId, cancellationToken);
-            var history = await nodeSession.AuthorizedClient.GetChannelMessagesAsync(
+            var history = await nodeSession.AuthorizedClient.GetChannelMessagePageAsync(
                 communityId, channelId, cancellationToken: cancellationToken);
-            foreach (var message in history) Upsert(message, notify: false);
+            ApplyChannelPage(history, replace: true);
             _channelReady = true;
             logger.LogDebug("Opened Community {CommunityId} channel {ChannelId} on {NodeAddress}.",
                 communityId, channelId, _connectedNode);
@@ -82,6 +93,7 @@ public sealed class ChannelMessagingSession(
     public async Task OpenDirectConversationAsync(Guid conversationId, CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
+        CancelHistoryRequests();
         await _lifecycleGate.WaitAsync(cancellationToken);
         try
         {
@@ -95,8 +107,8 @@ public sealed class ChannelMessagingSession(
             _directMessages.Clear();
             NotifyChanged();
             await _connection!.InvokeAsync(DirectMessageHubContract.JoinConversation, conversationId, cancellationToken);
-            var history = await nodeSession.AuthorizedClient.GetDirectMessagesAsync(conversationId, cancellationToken: cancellationToken);
-            foreach (var message in history) UpsertDirect(message, notify: false);
+            var history = await nodeSession.AuthorizedClient.GetDirectMessagePageAsync(conversationId, cancellationToken: cancellationToken);
+            ApplyDirectPage(history, replace: true);
             await nodeSession.MarkDirectConversationReadAsync(conversationId, cancellationToken);
             _directReady = true;
             NotifyChanged();
@@ -104,20 +116,136 @@ public sealed class ChannelMessagingSession(
         finally { _lifecycleGate.Release(); }
     }
 
-    public async Task SendDirectAsync(string content, Guid? replyToMessageId = null, CancellationToken cancellationToken = default)
+    public Task LoadOlderAsync(CancellationToken cancellationToken = default) =>
+        CommunityId is not null ? LoadOlderChannelAsync(cancellationToken) : LoadOlderDirectAsync(cancellationToken);
+
+    public async Task ResetToLatestAsync(CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
+        CancelHistoryRequests();
         await _lifecycleGate.WaitAsync(cancellationToken);
         try
         {
-            var conversationId = RequireDirectConversation();
-            var result = await RequireConnection().InvokeAsync<DirectMessageDto>(
-                DirectMessageHubContract.SendMessage, conversationId,
-                new SendDirectMessageRequest(content, replyToMessageId), cancellationToken);
-            UpsertDirect(result);
-            await nodeSession.RefreshDirectConversationsAsync(cancellationToken);
+            if (CommunityId is { } communityId && ChannelId is { } channelId)
+            {
+                var page = await nodeSession.AuthorizedClient.GetChannelMessagePageAsync(
+                    communityId, channelId, cancellationToken: cancellationToken);
+                ApplyChannelPage(page, replace: true);
+            }
+            else if (DirectConversationId is { } conversationId)
+            {
+                var page = await nodeSession.AuthorizedClient.GetDirectMessagePageAsync(
+                    conversationId, cancellationToken: cancellationToken);
+                ApplyDirectPage(page, replace: true);
+            }
+            WindowMode = MessageWindowMode.Latest;
+            WindowRevision++;
+            NotifyChanged();
         }
         finally { _lifecycleGate.Release(); }
+    }
+
+    public async Task OpenChannelAroundAsync(Guid communityId, Guid channelId, Guid messageId,
+        CancellationToken cancellationToken = default)
+    {
+        if (CommunityId != communityId || ChannelId != channelId) await OpenChannelAsync(communityId, channelId, cancellationToken);
+        CancelHistoryRequests();
+        await _lifecycleGate.WaitAsync(cancellationToken);
+        try
+        {
+            var page = await nodeSession.AuthorizedClient.GetChannelMessagePageAsync(
+                communityId, channelId, around: messageId, cancellationToken: cancellationToken);
+            ApplyChannelPage(page, replace: true);
+            WindowMode = MessageWindowMode.SearchTarget;
+            WindowRevision++;
+            NotifyChanged();
+        }
+        finally { _lifecycleGate.Release(); }
+    }
+
+    public async Task OpenDirectAroundAsync(Guid conversationId, Guid messageId,
+        CancellationToken cancellationToken = default)
+    {
+        if (DirectConversationId != conversationId) await OpenDirectConversationAsync(conversationId, cancellationToken);
+        CancelHistoryRequests();
+        await _lifecycleGate.WaitAsync(cancellationToken);
+        try
+        {
+            var page = await nodeSession.AuthorizedClient.GetDirectMessagePageAsync(
+                conversationId, around: messageId, cancellationToken: cancellationToken);
+            ApplyDirectPage(page, replace: true);
+            WindowMode = MessageWindowMode.SearchTarget;
+            WindowRevision++;
+            NotifyChanged();
+        }
+        finally { _lifecycleGate.Release(); }
+    }
+
+    public Guid QueueDirectMessage(string content, Guid? replyToMessageId = null) =>
+        BeginDirectMessage(content, replyToMessageId).ClientMessageId;
+
+    public Task SendDirectAsync(string content, Guid? replyToMessageId = null,
+        CancellationToken cancellationToken = default) =>
+        BeginDirectMessage(content, replyToMessageId, cancellationToken).Completion;
+
+    private OutgoingOperation BeginDirectMessage(
+        string content, Guid? replyToMessageId, CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        var conversationId = RequireDirectConversation();
+        var account = nodeSession.Account ?? throw new InvalidOperationException("An authenticated account is required.");
+        var clientMessageId = Guid.NewGuid();
+        var pending = new DirectMessageDto(
+            clientMessageId, conversationId,
+            new(account.Id, account.Username, account.DisplayName), content, DateTimeOffset.UtcNow,
+            null, false, DirectReply(replyToMessageId), clientMessageId, MessageDeliveryState.Pending);
+        var reloadLatest = AddOptimisticDirect(pending);
+        return new(clientMessageId, CompleteDirectSendAsync(pending, reloadLatest, cancellationToken));
+    }
+
+    private async Task CompleteDirectSendAsync(
+        DirectMessageDto pending, bool reloadLatest = false, CancellationToken cancellationToken = default)
+    {
+        await _lifecycleGate.WaitAsync(cancellationToken);
+        try
+        {
+            var result = await RequireConnection().InvokeAsync<DirectMessageDto>(
+                DirectMessageHubContract.SendMessage, pending.ConversationId,
+                new SendDirectMessageRequest(pending.Content, pending.ReplyTo?.MessageId, pending.ClientMessageId), cancellationToken);
+            if (DirectConversationId == pending.ConversationId) UpsertDirect(result);
+            if (reloadLatest && DirectConversationId == pending.ConversationId)
+            {
+                var page = await nodeSession.AuthorizedClient.GetDirectMessagePageAsync(
+                    pending.ConversationId, cancellationToken: cancellationToken);
+                ApplyDirectPage(page, replace: true);
+                NotifyChanged();
+            }
+            await nodeSession.RefreshDirectConversationsAsync(cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            logger.LogError(exception, "Direct Message {ClientMessageId} failed to send.", pending.ClientMessageId);
+            MarkDirectFailed(pending.ConversationId, pending.ClientMessageId!.Value, exception);
+        }
+        finally { _lifecycleGate.Release(); }
+    }
+
+    public Task RetryDirectAsync(Guid clientMessageId, CancellationToken cancellationToken = default)
+    {
+        DirectMessageDto? pending;
+        lock (_messageSync)
+        {
+            var index = _directMessages.FindIndex(value => value.ClientMessageId == clientMessageId &&
+                value.DeliveryState == MessageDeliveryState.Failed);
+            if (index < 0) return Task.CompletedTask;
+            pending = _directMessages[index] with
+            {
+                DeliveryState = MessageDeliveryState.Pending, DeliveryError = null, CanRetry = false
+            };
+            _directMessages[index] = pending;
+        }
+        NotifyChanged();
+        return CompleteDirectSendAsync(pending, cancellationToken: cancellationToken);
     }
 
     public async Task SendDirectToAsync(
@@ -132,7 +260,7 @@ public sealed class ChannelMessagingSession(
             await EnsureConnectionAsync(cancellationToken);
             var result = await RequireConnection().InvokeAsync<DirectMessageDto>(
                 DirectMessageHubContract.SendMessage, conversationId,
-                new SendDirectMessageRequest(content, null), cancellationToken);
+                new SendDirectMessageRequest(content, null, Guid.NewGuid()), cancellationToken);
             if (DirectConversationId == conversationId) UpsertDirect(result);
             await nodeSession.RefreshDirectConversationsAsync(cancellationToken);
         }
@@ -179,35 +307,97 @@ public sealed class ChannelMessagingSession(
         finally { _lifecycleGate.Release(); }
     }
 
-    public async Task SendAsync(string content, Guid? replyToMessageId = null,
-        IReadOnlyList<CommunityMentionInput>? mentions = null, CancellationToken cancellationToken = default)
+    public Guid QueueMessage(string content, Guid? replyToMessageId = null,
+        IReadOnlyList<CommunityMentionInput>? mentions = null) =>
+        BeginMessage(content, replyToMessageId, mentions).ClientMessageId;
+
+    public Task SendAsync(string content, Guid? replyToMessageId = null,
+        IReadOnlyList<CommunityMentionInput>? mentions = null, CancellationToken cancellationToken = default) =>
+        BeginMessage(content, replyToMessageId, mentions, cancellationToken).Completion;
+
+    private OutgoingOperation BeginMessage(
+        string content, Guid? replyToMessageId, IReadOnlyList<CommunityMentionInput>? mentions,
+        CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
+        var (communityId, channelId) = RequireChannel();
+        var account = nodeSession.Account ?? throw new InvalidOperationException("An authenticated account is required.");
+        var clientMessageId = Guid.NewGuid();
+        var pending = new ChannelMessageDto(
+            clientMessageId, communityId, channelId,
+            new(account.Id, account.Username, account.DisplayName), content, DateTimeOffset.UtcNow,
+            null, false, ChannelReply(replyToMessageId), OptimisticMentions(content, mentions),
+            clientMessageId, MessageDeliveryState.Pending);
+        var reloadLatest = AddOptimisticChannel(pending);
+        return new(clientMessageId, CompleteChannelSendAsync(pending, reloadLatest, cancellationToken));
+    }
+
+    private async Task CompleteChannelSendAsync(
+        ChannelMessageDto pending, bool reloadLatest = false, CancellationToken cancellationToken = default)
+    {
         await _lifecycleGate.WaitAsync(cancellationToken);
         try
         {
-            var (communityId, channelId) = RequireChannel();
             try
             {
                 var result = await RequireConnection().InvokeAsync<ChannelMessageDto>(
                     ChatHubContract.SendMessage,
-                    communityId,
-                    channelId,
-                    new SendChannelMessageRequest(content, replyToMessageId, mentions),
+                    pending.CommunityId,
+                    pending.ChannelId,
+                    new SendChannelMessageRequest(pending.Content, pending.ReplyTo?.MessageId,
+                        pending.Mentions?.Select(value => new CommunityMentionInput(value.Kind, value.TargetId, value.Start, value.Length)).ToArray(),
+                        pending.ClientMessageId),
                     cancellationToken);
-                Upsert(result);
+                if (CommunityId == pending.CommunityId && ChannelId == pending.ChannelId) Upsert(result);
+                if (reloadLatest && CommunityId == pending.CommunityId && ChannelId == pending.ChannelId)
+                {
+                    var page = await nodeSession.AuthorizedClient.GetChannelMessagePageAsync(
+                        pending.CommunityId, pending.ChannelId, cancellationToken: cancellationToken);
+                    ApplyChannelPage(page, replace: true);
+                    NotifyChanged();
+                }
             }
             catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
                 logger.LogError(exception, "Realtime send failed in Community {CommunityId} channel {ChannelId}.",
-                    communityId, channelId);
-                throw;
+                    pending.CommunityId, pending.ChannelId);
+                MarkChannelFailed(pending.CommunityId, pending.ChannelId, pending.ClientMessageId!.Value, exception);
             }
         }
         finally
         {
             _lifecycleGate.Release();
         }
+    }
+
+    public Task RetryAsync(Guid clientMessageId, CancellationToken cancellationToken = default)
+    {
+        ChannelMessageDto? pending;
+        lock (_messageSync)
+        {
+            var index = _messages.FindIndex(value => value.ClientMessageId == clientMessageId &&
+                value.DeliveryState == MessageDeliveryState.Failed);
+            if (index < 0) return Task.CompletedTask;
+            pending = _messages[index] with
+            {
+                DeliveryState = MessageDeliveryState.Pending, DeliveryError = null, CanRetry = false
+            };
+            _messages[index] = pending;
+        }
+        NotifyChanged();
+        return CompleteChannelSendAsync(pending, cancellationToken: cancellationToken);
+    }
+
+    public void RemoveFailedMessage(Guid clientMessageId)
+    {
+        lock (_messageSync)
+        {
+            _messages.RemoveAll(value => value.ClientMessageId == clientMessageId &&
+                value.DeliveryState == MessageDeliveryState.Failed);
+            _directMessages.RemoveAll(value => value.ClientMessageId == clientMessageId &&
+                value.DeliveryState == MessageDeliveryState.Failed);
+        }
+        NotifyChanged();
     }
 
     public async Task EditAsync(Guid messageId, string content, CancellationToken cancellationToken = default)
@@ -273,6 +463,7 @@ public sealed class ChannelMessagingSession(
     public async Task ClearAsync(CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
+        CancelHistoryRequests();
         await _lifecycleGate.WaitAsync(cancellationToken);
         try
         {
@@ -291,6 +482,7 @@ public sealed class ChannelMessagingSession(
     public async Task DisconnectAsync(CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
+        CancelHistoryRequests();
         await _lifecycleGate.WaitAsync(cancellationToken);
         try
         {
@@ -347,15 +539,15 @@ public sealed class ChannelMessagingSession(
         _connection = connection;
 
         connection.On<ChannelMessageDto>(ChatHubContract.MessageCreated,
-            message => ReceiveSafely(ChatHubContract.MessageCreated, () => Receive(message)));
+            message => ReceiveSafely(ChatHubContract.MessageCreated, () => ReceiveCreated(message)));
         connection.On<ChannelMessageDto>(ChatHubContract.MessageUpdated,
-            message => ReceiveSafely(ChatHubContract.MessageUpdated, () => Receive(message)));
+            message => ReceiveSafely(ChatHubContract.MessageUpdated, () => ReceiveUpdated(message)));
         connection.On<ChannelMessageDeletedEvent>(ChatHubContract.MessageDeleted,
             deleted => ReceiveSafely(ChatHubContract.MessageDeleted, () => ReceiveDeleted(deleted)));
         connection.On<DirectMessageDto>(DirectMessageHubContract.MessageCreated,
-            message => ReceiveSafely(DirectMessageHubContract.MessageCreated, () => ReceiveDirect(message, refreshList: true)));
+            message => ReceiveSafely(DirectMessageHubContract.MessageCreated, () => ReceiveDirectCreated(message)));
         connection.On<DirectMessageDto>(DirectMessageHubContract.MessageUpdated,
-            message => ReceiveSafely(DirectMessageHubContract.MessageUpdated, () => ReceiveDirect(message, refreshList: false)));
+            message => ReceiveSafely(DirectMessageHubContract.MessageUpdated, () => ReceiveDirectUpdated(message)));
         connection.On<DirectMessageDeletedEvent>(DirectMessageHubContract.MessageDeleted,
             deleted => ReceiveSafely(DirectMessageHubContract.MessageDeleted, () => ReceiveDirectDeleted(deleted)));
         connection.On<FriendshipChangedEvent>(FriendshipHubContract.RequestReceived,
@@ -379,6 +571,8 @@ public sealed class ChannelMessagingSession(
             }));
         connection.On<CommunityMentionReceivedEvent>(CommunityMentionHubContract.Received,
             mention => ReceiveSafely(CommunityMentionHubContract.Received, () => nodeSession.ApplyCommunityMention(mention)));
+        connection.On<CommunityChannelActivityEvent>(CommunityHubContract.ChannelActivity,
+            activity => _ = ApplyCommunityActivitySafelyAsync(activity));
         connection.Reconnecting += exception =>
         {
             logger.LogWarning(exception, "Realtime connection to {NodeAddress} is reconnecting.", _connectedNode);
@@ -454,12 +648,234 @@ public sealed class ChannelMessagingSession(
         }
     }
 
+    private async Task LoadOlderChannelAsync(CancellationToken cancellationToken)
+    {
+        if (_loadingOlder || !_channelHasOlder || CommunityId is not { } communityId || ChannelId is not { } channelId) return;
+        await _lifecycleGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (_loadingOlder || !_channelHasOlder) return;
+            _loadingOlder = true;
+            NotifyChanged();
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _historyCancellation.Token);
+            var page = await nodeSession.AuthorizedClient.GetChannelMessagePageAsync(
+                communityId, channelId, before: _channelOlderCursor, cancellationToken: linked.Token);
+            if (CommunityId != communityId || ChannelId != channelId) return;
+            ApplyChannelPage(page, replace: false);
+            WindowMode = MessageWindowMode.Historical;
+            NotifyChanged();
+        }
+        catch (OperationCanceledException) { }
+        finally
+        {
+            _loadingOlder = false;
+            _lifecycleGate.Release();
+            NotifyChanged();
+        }
+    }
+
+    private async Task LoadOlderDirectAsync(CancellationToken cancellationToken)
+    {
+        if (_loadingOlder || !_directHasOlder || DirectConversationId is not { } conversationId) return;
+        await _lifecycleGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (_loadingOlder || !_directHasOlder) return;
+            _loadingOlder = true;
+            NotifyChanged();
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _historyCancellation.Token);
+            var page = await nodeSession.AuthorizedClient.GetDirectMessagePageAsync(
+                conversationId, before: _directOlderCursor, cancellationToken: linked.Token);
+            if (DirectConversationId != conversationId) return;
+            ApplyDirectPage(page, replace: false);
+            WindowMode = MessageWindowMode.Historical;
+            NotifyChanged();
+        }
+        catch (OperationCanceledException) { }
+        finally
+        {
+            _loadingOlder = false;
+            _lifecycleGate.Release();
+            NotifyChanged();
+        }
+    }
+
+    private bool AddOptimisticChannel(ChannelMessageDto pending)
+    {
+        var reloadLatest = WindowMode == MessageWindowMode.SearchTarget;
+        lock (_messageSync)
+        {
+            if (reloadLatest) _messages.Clear();
+            TrimConfirmed(_messages);
+            _messages.Add(pending);
+            SortMessages(_messages);
+        }
+        WindowMode = MessageWindowMode.Latest;
+        WindowRevision++;
+        NotifyChanged();
+        return reloadLatest;
+    }
+
+    private bool AddOptimisticDirect(DirectMessageDto pending)
+    {
+        var reloadLatest = WindowMode == MessageWindowMode.SearchTarget;
+        lock (_messageSync)
+        {
+            if (reloadLatest) _directMessages.Clear();
+            TrimConfirmed(_directMessages);
+            _directMessages.Add(pending);
+            SortMessages(_directMessages);
+        }
+        WindowMode = MessageWindowMode.Latest;
+        WindowRevision++;
+        NotifyChanged();
+        return reloadLatest;
+    }
+
+    private static void TrimConfirmed<T>(List<T> messages) where T : notnull
+    {
+        while (messages.Count >= MessageHistoryDefaults.PageSize)
+        {
+            var index = messages.FindIndex(value => value switch
+            {
+                ChannelMessageDto channel => channel.DeliveryState == MessageDeliveryState.Confirmed,
+                DirectMessageDto direct => direct.DeliveryState == MessageDeliveryState.Confirmed,
+                _ => false
+            });
+            if (index < 0) return;
+            messages.RemoveAt(index);
+        }
+    }
+
+    private MessageReplyDto? ChannelReply(Guid? messageId)
+    {
+        if (messageId is not { } id) return null;
+        var original = _messages.FirstOrDefault(value => value.Id == id);
+        return original is null ? null : new(id, original.Author.AccountId, original.Author.DisplayName,
+            original.IsDeleted ? null : Excerpt(original.Content), original.IsDeleted);
+    }
+
+    private MessageReplyDto? DirectReply(Guid? messageId)
+    {
+        if (messageId is not { } id) return null;
+        var original = _directMessages.FirstOrDefault(value => value.Id == id);
+        return original is null ? null : new(id, original.Author.AccountId, original.Author.DisplayName,
+            original.IsDeleted ? null : Excerpt(original.Content), original.IsDeleted);
+    }
+
+    private static IReadOnlyList<CommunityMentionDto> OptimisticMentions(
+        string content, IReadOnlyList<CommunityMentionInput>? mentions) =>
+        mentions?.Where(value => value.Start >= 0 && value.Length > 0 && value.Start + value.Length <= content.Length)
+            .Select(value => new CommunityMentionDto(value.Kind, value.TargetId, value.Start, value.Length,
+                content.Substring(value.Start, value.Length))).ToArray() ?? [];
+
+    private void MarkChannelFailed(Guid communityId, Guid channelId, Guid clientMessageId, Exception exception)
+    {
+        if (CommunityId != communityId || ChannelId != channelId) return;
+        var failure = DeliveryFailure(exception);
+        lock (_messageSync)
+        {
+            var index = _messages.FindIndex(value => value.ClientMessageId == clientMessageId &&
+                value.DeliveryState != MessageDeliveryState.Confirmed);
+            if (index < 0) return;
+            _messages[index] = _messages[index] with
+            {
+                DeliveryState = MessageDeliveryState.Failed,
+                DeliveryError = failure.Message,
+                CanRetry = failure.CanRetry
+            };
+        }
+        NotifyChanged();
+    }
+
+    private void MarkDirectFailed(Guid conversationId, Guid clientMessageId, Exception exception)
+    {
+        if (DirectConversationId != conversationId) return;
+        var failure = DeliveryFailure(exception);
+        lock (_messageSync)
+        {
+            var index = _directMessages.FindIndex(value => value.ClientMessageId == clientMessageId &&
+                value.DeliveryState != MessageDeliveryState.Confirmed);
+            if (index < 0) return;
+            _directMessages[index] = _directMessages[index] with
+            {
+                DeliveryState = MessageDeliveryState.Failed,
+                DeliveryError = failure.Message,
+                CanRetry = failure.CanRetry
+            };
+        }
+        NotifyChanged();
+    }
+
+    private static DeliveryFailureInfo DeliveryFailure(Exception exception)
+    {
+        var detail = exception.GetBaseException().Message;
+        if (detail.Contains("permission", StringComparison.OrdinalIgnoreCase) ||
+            detail.Contains("not a member", StringComparison.OrdinalIgnoreCase))
+            return new("No permission to send", false);
+        if (detail.Contains("channel not found", StringComparison.OrdinalIgnoreCase))
+            return new("Channel no longer exists", false);
+        if (detail.Contains("conversation not found", StringComparison.OrdinalIgnoreCase))
+            return new("Conversation no longer exists", false);
+        if (detail.Contains("authenticated", StringComparison.OrdinalIgnoreCase) ||
+            detail.Contains("unauthorized", StringComparison.OrdinalIgnoreCase))
+            return new("Login required", false);
+        if (detail.Contains("replied to", StringComparison.OrdinalIgnoreCase))
+            return new("Reply target is no longer available", false);
+        return new("Failed to send", true);
+    }
+
+    private void ApplyChannelPage(MessageHistoryPage<ChannelMessageDto> page, bool replace)
+    {
+        var local = replace
+            ? _messages.Where(value => value.DeliveryState != MessageDeliveryState.Confirmed).ToArray()
+            : [];
+        if (replace) _messages.Clear();
+        foreach (var message in page.Messages) Upsert(message, notify: false);
+        foreach (var message in local)
+            if (_messages.All(value => value.ClientMessageId != message.ClientMessageId)) Upsert(message, notify: false);
+        _channelOlderCursor = page.OlderCursor;
+        _channelHasOlder = page.HasOlder;
+        if (replace)
+        {
+            WindowMode = page.IsAroundWindow ? MessageWindowMode.SearchTarget : MessageWindowMode.Latest;
+            WindowRevision++;
+        }
+    }
+
+    private void ApplyDirectPage(MessageHistoryPage<DirectMessageDto> page, bool replace)
+    {
+        var local = replace
+            ? _directMessages.Where(value => value.DeliveryState != MessageDeliveryState.Confirmed).ToArray()
+            : [];
+        if (replace) _directMessages.Clear();
+        foreach (var message in page.Messages) UpsertDirect(message, notify: false);
+        foreach (var message in local)
+            if (_directMessages.All(value => value.ClientMessageId != message.ClientMessageId)) UpsertDirect(message, notify: false);
+        _directOlderCursor = page.OlderCursor;
+        _directHasOlder = page.HasOlder;
+        if (replace)
+        {
+            WindowMode = page.IsAroundWindow ? MessageWindowMode.SearchTarget : MessageWindowMode.Latest;
+            WindowRevision++;
+        }
+    }
+
+    private void CancelHistoryRequests()
+    {
+        _historyCancellation.Cancel();
+        _historyCancellation.Dispose();
+        _historyCancellation = new();
+    }
+
     private void ClearChannelState()
     {
         CommunityId = null;
         ChannelId = null;
         _channelReady = false;
         _messages.Clear();
+        _channelOlderCursor = null;
+        _channelHasOlder = false;
     }
 
     private void ClearDirectState()
@@ -467,11 +883,21 @@ public sealed class ChannelMessagingSession(
         DirectConversationId = null;
         _directReady = false;
         _directMessages.Clear();
+        _directOlderCursor = null;
+        _directHasOlder = false;
     }
 
-    private void Receive(ChannelMessageDto message)
+    private void ReceiveCreated(ChannelMessageDto message)
     {
         if (message.CommunityId != CommunityId || message.ChannelId != ChannelId) return;
+        if (WindowMode == MessageWindowMode.SearchTarget) return;
+        Upsert(message);
+    }
+
+    private void ReceiveUpdated(ChannelMessageDto message)
+    {
+        if (message.CommunityId != CommunityId || message.ChannelId != ChannelId ||
+            _messages.All(value => value.Id != message.Id)) return;
         Upsert(message);
     }
 
@@ -491,12 +917,18 @@ public sealed class ChannelMessagingSession(
         NotifyChanged();
     }
 
-    private void ReceiveDirect(DirectMessageDto message, bool refreshList)
+    private void ReceiveDirectCreated(DirectMessageDto message)
     {
-        if (message.ConversationId == DirectConversationId) UpsertDirect(message);
+        if (message.ConversationId == DirectConversationId && WindowMode != MessageWindowMode.SearchTarget) UpsertDirect(message);
         if (message.ConversationId == DirectConversationId && message.Author.AccountId != nodeSession.Account?.Id)
             _ = MarkDirectReadSafelyAsync(message.ConversationId);
-        if (refreshList) _ = RefreshDirectListSafelyAsync();
+        _ = RefreshDirectListSafelyAsync();
+    }
+
+    private void ReceiveDirectUpdated(DirectMessageDto message)
+    {
+        if (message.ConversationId != DirectConversationId || _directMessages.All(value => value.Id != message.Id)) return;
+        UpsertDirect(message);
     }
 
     private void ReceiveDirectDeleted(DirectMessageDeletedEvent deleted)
@@ -521,6 +953,16 @@ public sealed class ChannelMessagingSession(
         catch (Exception exception)
         {
             logger.LogWarning(exception, "Could not refresh the Direct Message list after a realtime event.");
+        }
+    }
+
+    private async Task ApplyCommunityActivitySafelyAsync(CommunityChannelActivityEvent activity)
+    {
+        try { await nodeSession.ApplyCommunityChannelActivityAsync(activity); }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Could not apply Community channel activity for {CommunityId}/{ChannelId}.",
+                activity.CommunityId, activity.ChannelId);
         }
     }
 
@@ -566,7 +1008,13 @@ public sealed class ChannelMessagingSession(
         lock (_messageSync)
         {
             var index = _messages.FindIndex(value => value.Id == message.Id);
-            if (index < 0) _messages.Add(message); else _messages[index] = message;
+            if (index < 0 && message.ClientMessageId is { } clientMessageId)
+                index = _messages.FindIndex(value => value.ClientMessageId == clientMessageId &&
+                    value.Author.AccountId == message.Author.AccountId);
+            var authoritative = message.DeliveryState == MessageDeliveryState.Confirmed
+                ? message with { DeliveryError = null, CanRetry = false }
+                : message;
+            if (index < 0) _messages.Add(authoritative); else _messages[index] = authoritative;
             var excerpt = message.IsDeleted ? null : Excerpt(message.Content);
             for (var position = 0; position < _messages.Count; position++)
             {
@@ -581,11 +1029,7 @@ public sealed class ChannelMessagingSession(
                     }
                 };
             }
-            _messages.Sort((left, right) =>
-            {
-                var order = left.CreatedAt.CompareTo(right.CreatedAt);
-                return order != 0 ? order : left.Id.CompareTo(right.Id);
-            });
+            SortMessages(_messages);
         }
         if (notify) NotifyChanged();
     }
@@ -595,7 +1039,13 @@ public sealed class ChannelMessagingSession(
         lock (_messageSync)
         {
             var index = _directMessages.FindIndex(value => value.Id == message.Id);
-            if (index < 0) _directMessages.Add(message); else _directMessages[index] = message;
+            if (index < 0 && message.ClientMessageId is { } clientMessageId)
+                index = _directMessages.FindIndex(value => value.ClientMessageId == clientMessageId &&
+                    value.Author.AccountId == message.Author.AccountId);
+            var authoritative = message.DeliveryState == MessageDeliveryState.Confirmed
+                ? message with { DeliveryError = null, CanRetry = false }
+                : message;
+            if (index < 0) _directMessages.Add(authoritative); else _directMessages[index] = authoritative;
             var excerpt = message.IsDeleted ? null : Excerpt(message.Content);
             for (var position = 0; position < _directMessages.Count; position++)
             {
@@ -610,14 +1060,22 @@ public sealed class ChannelMessagingSession(
                     }
                 };
             }
-            _directMessages.Sort((left, right) =>
-            {
-                var order = left.CreatedAt.CompareTo(right.CreatedAt);
-                return order != 0 ? order : left.Id.CompareTo(right.Id);
-            });
+            SortMessages(_directMessages);
         }
         if (notify) NotifyChanged();
     }
+
+    private static void SortMessages(List<ChannelMessageDto> messages) => messages.Sort((left, right) =>
+    {
+        var order = left.CreatedAt.CompareTo(right.CreatedAt);
+        return order != 0 ? order : left.Id.CompareTo(right.Id);
+    });
+
+    private static void SortMessages(List<DirectMessageDto> messages) => messages.Sort((left, right) =>
+    {
+        var order = left.CreatedAt.CompareTo(right.CreatedAt);
+        return order != 0 ? order : left.Id.CompareTo(right.Id);
+    });
 
     private void NotifyChanged()
     {
@@ -632,6 +1090,9 @@ public sealed class ChannelMessagingSession(
             }
         }
     }
+
+    private sealed record DeliveryFailureInfo(string Message, bool CanRetry);
+    private sealed record OutgoingOperation(Guid ClientMessageId, Task Completion);
 
     private static string Excerpt(string content)
     {
@@ -659,6 +1120,8 @@ public sealed class ChannelMessagingSession(
     {
         if (_disposed) return;
         _disposed = true;
+        _historyCancellation.Cancel();
+        _historyCancellation.Dispose();
         await _lifecycleGate.WaitAsync();
         try
         {

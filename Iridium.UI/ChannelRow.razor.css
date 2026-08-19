@@ -4,10 +4,12 @@
 .channel-row.pointer-dragging{opacity:.55;background:var(--surface-active)}.channel-row.pointer-drop-before::before{content:"";position:absolute;z-index:3;inset:-2px .25rem auto;height:2px;border-radius:2px;background:var(--accent-soft);box-shadow:0 0 8px color-mix(in srgb,var(--accent) 65%,transparent)}
 .channel-row:hover { color: var(--text); background: var(--surface-hover); }
 .channel-row.selected { color: var(--text-strong); background: var(--surface-active); }
+.channel-row.unread:not(.selected) { color: var(--text-strong); }
 .channel-row.drop-target::before { content: ""; position: absolute; z-index: 2; inset: -2px .25rem auto; height: 2px; border-radius: 2px; background: var(--accent-soft); box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 65%, transparent); }
 .channel-symbol { width: 1.05rem; height: 1.05rem; display: grid; place-items: center; align-self: center; flex: 0 0 auto; color: var(--text-faint); }
 .channel-symbol ::deep svg { display: block; width: 100%; height: 100%; }
 .channel-name { min-width: 0; min-height: 1.55rem; display: flex; align-items: center; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .9rem; line-height: 1.2; }
+.channel-mention-badge { flex:0 0 auto; min-width:1.7rem; height:1.7rem; display:inline-flex; align-items:center; justify-content:center; padding:0 .3rem; border-radius:999px; color:white; background:var(--danger); font-size:.68rem; font-weight:700; line-height:1; box-sizing:border-box; }
 .channel-settings { width: 1.55rem; height: 1.55rem; display: grid; place-items: center; flex: 0 0 auto; padding: .25rem; border: 0; border-radius: .3rem; color: var(--text-muted); background: transparent; cursor: pointer; opacity: 0; }
 .channel-row:hover .channel-settings, .channel-row.selected .channel-settings { opacity: 1; }
 .channel-settings:hover { color: var(--text-strong); background: #ffffff0c; }

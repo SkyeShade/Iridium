@@ -14,9 +14,12 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
     public DbSet<CommunityBan> CommunityBans => Set<CommunityBan>();
     public DbSet<AccountSession> AccountSessions => Set<AccountSession>();
     public DbSet<Friendship> Friendships => Set<Friendship>();
+    public DbSet<AccountBlock> AccountBlocks => Set<AccountBlock>();
     public DbSet<CommunityCategory> CommunityCategories => Set<CommunityCategory>();
     public DbSet<CommunityChannel> CommunityChannels => Set<CommunityChannel>();
     public DbSet<ChannelMessage> ChannelMessages => Set<ChannelMessage>();
+    public DbSet<CommunityChannelReadState> CommunityChannelReadStates => Set<CommunityChannelReadState>();
+    public DbSet<CommunityMentionNotification> CommunityMentionNotifications => Set<CommunityMentionNotification>();
     public DbSet<DirectConversation> DirectConversations => Set<DirectConversation>();
     public DbSet<DirectConversationState> DirectConversationStates => Set<DirectConversationState>();
     public DbSet<DirectMessage> DirectMessages => Set<DirectMessage>();
@@ -101,6 +104,15 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
         friendship.HasOne(value => value.AddresseeAccount).WithMany().HasForeignKey(value => value.AddresseeAccountId)
             .OnDelete(DeleteBehavior.Restrict);
 
+        var block = modelBuilder.Entity<AccountBlock>();
+        block.HasKey(value => new { value.BlockingAccountId, value.BlockedAccountId });
+        block.Property(value => value.CreatedAt)
+            .HasConversion(value => value.UtcTicks, value => new DateTimeOffset(value, TimeSpan.Zero));
+        block.HasOne(value => value.BlockingAccount).WithMany().HasForeignKey(value => value.BlockingAccountId)
+            .OnDelete(DeleteBehavior.Cascade);
+        block.HasOne(value => value.BlockedAccount).WithMany().HasForeignKey(value => value.BlockedAccountId)
+            .OnDelete(DeleteBehavior.Cascade);
+
         var category = modelBuilder.Entity<CommunityCategory>();
         category.HasKey(value => new { value.CommunityId, value.Id });
         category.Property(value => value.Name).HasMaxLength(100);
@@ -117,6 +129,17 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
             .HasPrincipalKey(value => new { value.CommunityId, value.Id })
             .OnDelete(DeleteBehavior.Restrict);
 
+        var channelRead = modelBuilder.Entity<CommunityChannelReadState>();
+        channelRead.HasKey(value => new { value.CommunityId, value.ChannelId, value.AccountId });
+        channelRead.Property(value => value.LastReadAt)
+            .HasConversion(value => value.UtcTicks, value => new DateTimeOffset(value, TimeSpan.Zero));
+        channelRead.HasIndex(value => new { value.AccountId, value.CommunityId });
+        channelRead.HasOne(value => value.Channel).WithMany(value => value.ReadStates)
+            .HasForeignKey(value => new { value.CommunityId, value.ChannelId })
+            .HasPrincipalKey(value => new { value.CommunityId, value.Id }).OnDelete(DeleteBehavior.Cascade);
+        channelRead.HasOne(value => value.Account).WithMany()
+            .HasForeignKey(value => value.AccountId).OnDelete(DeleteBehavior.Cascade);
+
         var message = modelBuilder.Entity<ChannelMessage>();
         message.HasKey(value => value.Id);
         message.Property(value => value.Content).HasMaxLength(4000);
@@ -131,7 +154,9 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
             .HasConversion(
                 value => value.HasValue ? value.Value.UtcTicks : (long?)null,
                 value => value.HasValue ? new DateTimeOffset(value.Value, TimeSpan.Zero) : null);
-        message.HasIndex(value => new { value.CommunityId, value.ChannelId, value.CreatedAt });
+        message.HasIndex(value => new { value.CommunityId, value.ChannelId, value.CreatedAt, value.Id });
+        message.HasIndex(value => new { value.AuthorAccountId, value.CommunityId, value.ChannelId, value.ClientMessageId })
+            .IsUnique().HasFilter("ClientMessageId IS NOT NULL");
         message.HasOne(value => value.Channel).WithMany(value => value.Messages)
             .HasForeignKey(value => new { value.CommunityId, value.ChannelId })
             .HasPrincipalKey(value => new { value.CommunityId, value.Id })
@@ -142,6 +167,19 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
         message.HasOne(value => value.ReplyToMessage).WithMany(value => value.Replies)
             .HasForeignKey(value => value.ReplyToMessageId)
             .OnDelete(DeleteBehavior.SetNull);
+
+        var mentionNotification = modelBuilder.Entity<CommunityMentionNotification>();
+        mentionNotification.HasKey(value => new { value.MessageId, value.AccountId });
+        mentionNotification.Property(value => value.CreatedAt)
+            .HasConversion(value => value.UtcTicks, value => new DateTimeOffset(value, TimeSpan.Zero));
+        mentionNotification.Property(value => value.ReadAt)
+            .HasConversion(value => value.HasValue ? value.Value.UtcTicks : (long?)null,
+                value => value.HasValue ? new DateTimeOffset(value.Value, TimeSpan.Zero) : null);
+        mentionNotification.HasIndex(value => new { value.AccountId, value.CommunityId, value.ChannelId, value.ReadAt });
+        mentionNotification.HasOne(value => value.Message).WithMany()
+            .HasForeignKey(value => value.MessageId).OnDelete(DeleteBehavior.Cascade);
+        mentionNotification.HasOne(value => value.Account).WithMany()
+            .HasForeignKey(value => value.AccountId).OnDelete(DeleteBehavior.Cascade);
 
         var directConversation = modelBuilder.Entity<DirectConversation>();
         directConversation.HasKey(value => value.Id);
@@ -177,7 +215,9 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
         directMessage.Property(value => value.DeletedAt)
             .HasConversion(value => value.HasValue ? value.Value.UtcTicks : (long?)null,
                 value => value.HasValue ? new DateTimeOffset(value.Value, TimeSpan.Zero) : null);
-        directMessage.HasIndex(value => new { value.ConversationId, value.CreatedAt });
+        directMessage.HasIndex(value => new { value.ConversationId, value.CreatedAt, value.Id });
+        directMessage.HasIndex(value => new { value.AuthorAccountId, value.ConversationId, value.ClientMessageId })
+            .IsUnique().HasFilter("ClientMessageId IS NOT NULL");
         directMessage.HasOne(value => value.Conversation).WithMany(value => value.Messages)
             .HasForeignKey(value => value.ConversationId).OnDelete(DeleteBehavior.Cascade);
         directMessage.HasOne(value => value.AuthorAccount).WithMany()

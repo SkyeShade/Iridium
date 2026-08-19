@@ -20,7 +20,8 @@ public static class DirectMessageMapper
                 message.ReplyToMessage.AuthorAccountId,
                 message.ReplyToMessage.AuthorAccount.DisplayName,
                 message.ReplyToMessage.IsDeleted ? null : Excerpt(message.ReplyToMessage.Content),
-                message.ReplyToMessage.IsDeleted));
+                message.ReplyToMessage.IsDeleted),
+        message.ClientMessageId);
 
     public static DirectConversationDto ConversationToDto(
         DirectConversation conversation,

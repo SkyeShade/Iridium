@@ -31,7 +31,8 @@ internal static class ChannelMessageMapper
             message.EditedAt,
             message.IsDeleted,
             reply,
-            DeserializeMentions(message.MentionsJson));
+            DeserializeMentions(message.MentionsJson),
+            message.ClientMessageId);
     }
 
     private static string Excerpt(string content)

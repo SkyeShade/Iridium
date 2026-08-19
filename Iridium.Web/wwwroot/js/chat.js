@@ -1,6 +1,8 @@
 const composerHandlers = new WeakMap();
 const messageEditorHandlers = new WeakMap();
 const channelSorters = new WeakMap();
+const messageViewports = new WeakMap();
+const searchAutocompleteHandlers = new WeakMap();
 
 export function wireChannelSorter(root, dotNetReference) {
     if (!root || channelSorters.has(root)) return;
@@ -174,6 +176,56 @@ export function focusComposer(textarea) {
     textarea.setSelectionRange(end, end);
 }
 
+export function composerCaret(textarea) {
+    if (!textarea) return 0;
+    return textarea.selectionStart ?? textarea.value.length;
+}
+
+export function focusComposerAt(textarea, position) {
+    if (!textarea) return;
+    textarea.focus({ preventScroll: true });
+    const caret = Math.max(0, Math.min(Number(position) || 0, textarea.value.length));
+    textarea.setSelectionRange(caret, caret);
+}
+
+export function wireSearchAutocomplete(input, dotNetReference) {
+    if (!input || searchAutocompleteHandlers.has(input)) return;
+    const keydown = async event => {
+        const suggestions = input.closest(".message-search")?.querySelector(".search-suggestions");
+        if (event.key === "Escape") {
+            event.preventDefault();
+            await dotNetReference.invokeMethodAsync("HandleSearchKeyAsync", event.key);
+            return;
+        }
+        if (!suggestions || !["ArrowDown", "ArrowUp", "Enter", "Tab"].includes(event.key)) return;
+        event.preventDefault();
+        await dotNetReference.invokeMethodAsync("HandleSearchKeyAsync", event.key);
+    };
+    const shortcut = async event => {
+        if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "f" || !input.isConnected) return;
+        event.preventDefault();
+        input.focus({ preventScroll: true });
+        await dotNetReference.invokeMethodAsync("OpenSearchFromShortcutAsync");
+    };
+    const outside = async event => {
+        if (!input.closest(".message-search")?.contains(event.target))
+            await dotNetReference.invokeMethodAsync("CloseSearchFromOutsideAsync");
+    };
+    input.addEventListener("keydown", keydown);
+    window.addEventListener("keydown", shortcut);
+    document.addEventListener("pointerdown", outside);
+    searchAutocompleteHandlers.set(input, { keydown, shortcut, outside });
+}
+
+export function unwireSearchAutocomplete(input) {
+    const handlers = input ? searchAutocompleteHandlers.get(input) : null;
+    if (!handlers) return;
+    input.removeEventListener("keydown", handlers.keydown);
+    window.removeEventListener("keydown", handlers.shortcut);
+    document.removeEventListener("pointerdown", handlers.outside);
+    searchAutocompleteHandlers.delete(input);
+}
+
 export function profileCardPosition(clientX, clientY, context) {
     const target = document.elementFromPoint(clientX, clientY);
     const rootFontSize = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
@@ -289,6 +341,120 @@ export function scrollToEnd(container, force) {
     if (force || closeToBottom) container.scrollTop = container.scrollHeight;
 }
 
+export function wireMessageViewport(container, dotNetReference) {
+    if (!container || messageViewports.has(container)) return;
+    const state = {
+        isPinnedToLatest: true,
+        shouldShowJumpToLatest: false,
+        programmaticLatest: false,
+        topRequested: false,
+        prependHeight: 0,
+        prependTop: 0
+    };
+    const update = () => {
+        const suppressTopRequest = state.programmaticLatest;
+        const distance = Math.max(0, container.scrollHeight - container.scrollTop - container.clientHeight);
+        const isPinnedToLatest = distance <= 2;
+        const jumpThreshold = Math.max(240, container.clientHeight * 0.35);
+        const shouldShowJumpToLatest = distance >= jumpThreshold;
+        if (isPinnedToLatest !== state.isPinnedToLatest || shouldShowJumpToLatest !== state.shouldShowJumpToLatest) {
+            state.isPinnedToLatest = isPinnedToLatest;
+            state.shouldShowJumpToLatest = shouldShowJumpToLatest;
+            dotNetReference.invokeMethodAsync("ViewportStateChangedAsync", isPinnedToLatest, shouldShowJumpToLatest);
+        }
+        if (state.programmaticLatest && isPinnedToLatest) state.programmaticLatest = false;
+        if (container.scrollTop < 180 && !suppressTopRequest && !state.topRequested) {
+            state.topRequested = true;
+            dotNetReference.invokeMethodAsync("LoadOlderFromScrollAsync").finally(() => state.topRequested = false);
+        }
+    };
+    const cancelProgrammaticLatest = () => { state.programmaticLatest = false; };
+    const scrollEnd = () => {
+        state.programmaticLatest = true;
+        update();
+        state.programmaticLatest = false;
+    };
+    container.addEventListener("scroll", update, { passive: true });
+    container.addEventListener("wheel", cancelProgrammaticLatest, { passive: true });
+    container.addEventListener("pointerdown", cancelProgrammaticLatest, { passive: true });
+    container.addEventListener("touchstart", cancelProgrammaticLatest, { passive: true });
+    container.addEventListener("scrollend", scrollEnd, { passive: true });
+    messageViewports.set(container, { state, update, cancelProgrammaticLatest, scrollEnd });
+}
+
+export function unwireMessageViewport(container) {
+    const wired = container ? messageViewports.get(container) : null;
+    if (!wired) return;
+    container.removeEventListener("scroll", wired.update);
+    container.removeEventListener("wheel", wired.cancelProgrammaticLatest);
+    container.removeEventListener("pointerdown", wired.cancelProgrammaticLatest);
+    container.removeEventListener("touchstart", wired.cancelProgrammaticLatest);
+    container.removeEventListener("scrollend", wired.scrollEnd);
+    messageViewports.delete(container);
+}
+
+export function positionInitialLatest(container) {
+    if (!container) return;
+    const previous = container.style.scrollBehavior;
+    container.style.scrollBehavior = "auto";
+    container.scrollTop = container.scrollHeight;
+    container.style.scrollBehavior = previous;
+    const wired = messageViewports.get(container);
+    if (wired) {
+        wired.state.programmaticLatest = true;
+        wired.update();
+    }
+}
+
+export function capturePrependPosition(container) {
+    const wired = messageViewports.get(container);
+    if (!wired) return;
+    wired.state.prependHeight = container.scrollHeight;
+    wired.state.prependTop = container.scrollTop;
+}
+
+export function restorePrependPosition(container) {
+    const wired = messageViewports.get(container);
+    if (!wired) return;
+    const previous = container.style.scrollBehavior;
+    container.style.scrollBehavior = "auto";
+    container.scrollTop = wired.state.prependTop + (container.scrollHeight - wired.state.prependHeight);
+    container.style.scrollBehavior = previous;
+    wired.update();
+}
+
+export function followRealtimeAppend(container) {
+    const wired = messageViewports.get(container);
+    if (!container || !wired) return;
+    if (wired.state.isPinnedToLatest) {
+        wired.state.programmaticLatest = true;
+        const previous = container.style.scrollBehavior;
+        container.style.scrollBehavior = "auto";
+        container.scrollTop = container.scrollHeight;
+        container.style.scrollBehavior = previous;
+    }
+    wired.update();
+}
+
+export function scrollMessageBottom(container, behavior) {
+    if (!container) return;
+    const wired = messageViewports.get(container);
+    if (behavior === "smooth") {
+        if (wired) wired.state.programmaticLatest = true;
+        container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
+        requestAnimationFrame(() => wired?.update());
+        return;
+    }
+    const previous = container.style.scrollBehavior;
+    if (wired) wired.state.programmaticLatest = true;
+    container.style.scrollBehavior = "auto";
+    container.scrollTop = container.scrollHeight;
+    container.style.scrollBehavior = previous;
+    if (wired) {
+        wired.update();
+    }
+}
+
 export function focusMessage(container, messageId) {
     if (!container) return;
     const row = Array.from(container.querySelectorAll("[data-message-id]"))
@@ -298,4 +464,57 @@ export function focusMessage(container, messageId) {
     row.classList.remove("message-focus");
     void row.offsetWidth;
     row.classList.add("message-focus");
+}
+
+export function focusMessageImmediate(container, messageId) {
+    if (!container) return;
+    const row = container.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`);
+    if (!row) return;
+    const previous = container.style.scrollBehavior;
+    container.style.scrollBehavior = "auto";
+    row.scrollIntoView({ behavior: "auto", block: "center" });
+    container.style.scrollBehavior = previous;
+    row.classList.add("reply-focus");
+    window.setTimeout(() => row.classList.remove("reply-focus"), 1200);
+}
+
+const roleSorters = new WeakMap();
+export function wireRoleSorter(root, dotNetReference) {
+    if (!root || roleSorters.has(root)) return;
+    let candidate = null;
+    let dragging = null;
+    let dropIndex = -1;
+    const clear = () => root.querySelectorAll(".role-drop-before,.role-dragging").forEach(value => value.classList.remove("role-drop-before", "role-dragging"));
+    const down = event => {
+        if (event.button !== 0 || event.target.closest("button.role-row-action")) return;
+        const row = event.target.closest("[data-iridium-role-drag]");
+        if (!row || !root.contains(row)) return;
+        candidate = { row, id: row.dataset.iridiumRoleDrag, pointerId: event.pointerId, startY: event.clientY };
+    };
+    const move = event => {
+        if (!candidate || candidate.pointerId !== event.pointerId) return;
+        if (!dragging && Math.abs(event.clientY - candidate.startY) < 5) return;
+        if (!dragging) { dragging = candidate; dragging.row.setPointerCapture?.(event.pointerId); dragging.row.classList.add("role-dragging"); }
+        event.preventDefault(); clear(); dragging.row.classList.add("role-dragging");
+        const rows = [...root.querySelectorAll("[data-iridium-role-drag]")].filter(value => value !== dragging.row);
+        dropIndex = rows.findIndex(value => event.clientY < value.getBoundingClientRect().top + value.getBoundingClientRect().height / 2);
+        if (dropIndex < 0) dropIndex = rows.length;
+        if (dropIndex < rows.length) rows[dropIndex].classList.add("role-drop-before");
+    };
+    const up = event => {
+        if (!candidate || candidate.pointerId !== event.pointerId) return;
+        const current = dragging; clear(); candidate = null; dragging = null;
+        if (current && dropIndex >= 0) dotNetReference.invokeMethodAsync("CommitRoleDropAsync", current.id, dropIndex);
+        dropIndex = -1;
+    };
+    const cancel = () => { clear(); candidate = null; dragging = null; dropIndex = -1; };
+    root.addEventListener("pointerdown", down); window.addEventListener("pointermove", move, { passive: false });
+    window.addEventListener("pointerup", up); window.addEventListener("pointercancel", cancel);
+    roleSorters.set(root, { down, move, up, cancel });
+}
+export function unwireRoleSorter(root) {
+    const handlers = root && roleSorters.get(root); if (!handlers) return;
+    root.removeEventListener("pointerdown", handlers.down); window.removeEventListener("pointermove", handlers.move);
+    window.removeEventListener("pointerup", handlers.up); window.removeEventListener("pointercancel", handlers.cancel);
+    roleSorters.delete(root);
 }

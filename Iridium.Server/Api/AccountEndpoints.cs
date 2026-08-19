@@ -142,6 +142,18 @@ public static partial class AccountEndpoints
                 value.Community.OwnerAccountId,
                 value.Community.CreatedAt))
             .ToListAsync();
+        for (var index = 0; index < communities.Count; index++)
+        {
+            var community = communities[index];
+            var hasUnread = await db.ChannelMessages.AnyAsync(message =>
+                message.CommunityId == community.Id && message.AuthorAccountId != session.AccountId &&
+                !db.CommunityChannelReadStates.Any(state => state.CommunityId == message.CommunityId &&
+                    state.ChannelId == message.ChannelId && state.AccountId == session.AccountId &&
+                    state.LastReadAt >= message.CreatedAt));
+            var mentionCount = await db.CommunityMentionNotifications.CountAsync(value =>
+                value.AccountId == session.AccountId && value.CommunityId == community.Id && value.ReadAt == null);
+            communities[index] = community with { HasUnread = hasUnread, MentionCount = mentionCount };
+        }
         return Results.Ok(communities);
     }
 

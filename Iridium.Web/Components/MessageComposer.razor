@@ -10,7 +10,7 @@
         {
             <div class="replying"><span>Replying to <strong class="display-name">@ReplyToDisplayName</strong></span><button title="Cancel reply" @onclick="OnCancelReply"><Icon Name="close" /></button></div>
         }
-        <textarea class="iridium-textarea-scrollbar" @ref="_textarea" value="@_content" @oninput="ContentChanged" maxlength="4000" rows="1"
+        <textarea class="iridium-textarea-scrollbar" @ref="_textarea" value="@_content" @oninput="ContentChangedAsync" maxlength="4000" rows="1"
                   placeholder="@ComposerPlaceholder" aria-label="@ComposerPlaceholder"></textarea>
         @if (Suggestions.Count > 0)
         {
@@ -19,7 +19,8 @@
                 {
                     var suggestion = Suggestions[index];
                     <button type="button" class="mention-option @(index == _suggestionIndex ? "active" : null)"
-                            role="option" aria-selected="@(index == _suggestionIndex)" @onclick="() => AcceptSuggestion(suggestion)">
+                            role="option" aria-selected="@(index == _suggestionIndex)"
+                            @onpointerdown:preventDefault="true" @onclick="() => AcceptSuggestionAsync(suggestion)">
                         @if (suggestion.Member is { } member)
                         {
                             <ProfileAvatar DisplayName="@member.DisplayName" Presence="@member.Presence" Size="small" Surface="panel" />
@@ -51,9 +52,11 @@
     private DotNetObjectReference<MessageComposer>? _selfReference;
     private bool _submitting;
     private bool _resizeAfterRender;
+    private int? _focusCaretAfterRender;
     private string? _renderedChannelName;
     private readonly List<CommunityMentionInput> _mentions = [];
     private int _mentionStart = -1;
+    private int _mentionEnd = -1;
     private string _mentionQuery = string.Empty;
     private int _suggestionIndex;
     private string ComposerPlaceholder => PlaceholderText ?? $"Message #{ChannelName}";
@@ -76,9 +79,17 @@
             return;
         }
 
-        if (!_resizeAfterRender || _module is null) return;
-        _resizeAfterRender = false;
-        await _module.InvokeVoidAsync("resizeComposer", _textarea);
+        if (_module is null) return;
+        if (_resizeAfterRender)
+        {
+            _resizeAfterRender = false;
+            await _module.InvokeVoidAsync("resizeComposer", _textarea);
+        }
+        if (_focusCaretAfterRender is { } caret)
+        {
+            _focusCaretAfterRender = null;
+            await _module.InvokeVoidAsync("focusComposerAt", _textarea, caret);
+        }
     }
 
     [JSInvokable]
@@ -117,13 +128,18 @@
         }
     }
 
-    private void ContentChanged(ChangeEventArgs args)
+    private async Task ContentChangedAsync(ChangeEventArgs args)
     {
         _content = args.Value?.ToString() ?? string.Empty;
         _mentions.RemoveAll(value => value.Start < 0 || value.Start + value.Length > _content.Length || _content[value.Start] != '@');
-        var match = System.Text.RegularExpressions.Regex.Match(_content, @"(?:^|\s)@([\p{L}\p{N}_-]*)$");
+        var caret = _module is null
+            ? _content.Length
+            : await _module.InvokeAsync<int>("composerCaret", _textarea);
+        caret = Math.Clamp(caret, 0, _content.Length);
+        var match = System.Text.RegularExpressions.Regex.Match(_content[..caret], @"(?:^|\s)@([\p{L}\p{N}_-]*)$");
         if (!match.Success || CommunityManagement is null) { CloseSuggestions(); return; }
         _mentionStart = match.Index + (char.IsWhiteSpace(_content[match.Index]) ? 1 : 0);
+        _mentionEnd = caret;
         _mentionQuery = match.Groups[1].Value;
         _suggestionIndex = Math.Clamp(_suggestionIndex, 0, Math.Max(0, Suggestions.Count - 1));
     }
@@ -161,33 +177,59 @@
         {
             case "ArrowDown": _suggestionIndex = (_suggestionIndex + 1) % suggestions.Count; break;
             case "ArrowUp": _suggestionIndex = (_suggestionIndex - 1 + suggestions.Count) % suggestions.Count; break;
-            case "Enter": case "Tab": AcceptSuggestion(suggestions[Math.Clamp(_suggestionIndex, 0, suggestions.Count - 1)]); break;
+            case "Enter": case "Tab": await AcceptSuggestionAsync(suggestions[Math.Clamp(_suggestionIndex, 0, suggestions.Count - 1)]); break;
             case "Escape": CloseSuggestions(); break;
         }
         await InvokeAsync(StateHasChanged);
     }
 
-    private void AcceptSuggestion(MentionSuggestion suggestion)
+    private async Task AcceptSuggestionAsync(MentionSuggestion suggestion)
     {
-        if (_mentionStart < 0) return;
+        if (_mentionStart < 0 || _mentionEnd < _mentionStart) return;
         var display = $"@{suggestion.Label}";
-        _content = _content[.._mentionStart] + display + " ";
+        var suffix = _content[_mentionEnd..];
+        var removedSpaces = suffix.Length - suffix.TrimStart(' ').Length;
+        suffix = suffix.TrimStart(' ');
+        var replacedLength = _mentionEnd - _mentionStart + removedSpaces;
+        var delta = display.Length + 1 - replacedLength;
+        for (var index = 0; index < _mentions.Count; index++)
+        {
+            var mention = _mentions[index];
+            if (mention.Start >= _mentionEnd)
+                _mentions[index] = mention with { Start = mention.Start + delta };
+        }
+        _content = _content[.._mentionStart] + display + " " + suffix;
         _mentions.Add(new(suggestion.Kind, suggestion.TargetId, _mentionStart, display.Length));
+        _focusCaretAfterRender = _mentionStart + display.Length + 1;
         CloseSuggestions();
         _resizeAfterRender = true;
+        await InvokeAsync(StateHasChanged);
     }
 
     private string? HighestColor(CommunityMemberDto member) => CommunityManagement?.Roles
         .Where(value => member.RoleIds.Contains(value.Id) && !string.IsNullOrWhiteSpace(value.Color))
         .OrderByDescending(value => value.Position).FirstOrDefault()?.Color;
     private static bool Match(string value, string query) => string.IsNullOrEmpty(query) || value.Contains(query, StringComparison.OrdinalIgnoreCase);
-    private void CloseSuggestions() { _mentionStart = -1; _mentionQuery = string.Empty; _suggestionIndex = 0; }
+    private void CloseSuggestions() { _mentionStart = -1; _mentionEnd = -1; _mentionQuery = string.Empty; _suggestionIndex = 0; }
     private sealed record MentionSuggestion(CommunityMentionKind Kind, Guid? TargetId, string Label, CommunityMemberDto? Member, string? Color);
 
     public async Task FocusAsync()
     {
         _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/chat.js");
         await _module.InvokeVoidAsync("focusComposer", _textarea);
+    }
+
+    public async Task InsertMentionAsync(CommunityMemberDto member)
+    {
+        var prefix = string.IsNullOrEmpty(_content) || char.IsWhiteSpace(_content[^1]) ? string.Empty : " ";
+        var start = _content.Length + prefix.Length;
+        var display = $"@{member.DisplayName}";
+        _content += prefix + display + " ";
+        _mentions.Add(new(CommunityMentionKind.Account, member.AccountId, start, display.Length));
+        CloseSuggestions();
+        _resizeAfterRender = true;
+        await InvokeAsync(StateHasChanged);
+        await FocusAsync();
     }
 
     public async ValueTask DisposeAsync()

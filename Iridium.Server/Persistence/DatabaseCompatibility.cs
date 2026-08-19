@@ -111,6 +111,75 @@ public static class DatabaseCompatibility
     public static Task EnsurePresenceColumnAsync(IridiumDbContext db) =>
         EnsureColumnAsync(db, "Accounts", "PreferredPresence", "INTEGER NOT NULL DEFAULT 0");
 
+    public static Task EnsureCommunityChannelReadStatesAsync(IridiumDbContext db) =>
+        db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS CommunityChannelReadStates (
+                CommunityId TEXT NOT NULL,
+                ChannelId TEXT NOT NULL,
+                AccountId TEXT NOT NULL,
+                LastReadAt INTEGER NOT NULL,
+                CONSTRAINT PK_CommunityChannelReadStates PRIMARY KEY (CommunityId, ChannelId, AccountId),
+                CONSTRAINT FK_CommunityChannelReadStates_CommunityChannels_CommunityId_ChannelId
+                    FOREIGN KEY (CommunityId, ChannelId) REFERENCES CommunityChannels (CommunityId, Id) ON DELETE CASCADE,
+                CONSTRAINT FK_CommunityChannelReadStates_Accounts_AccountId
+                    FOREIGN KEY (AccountId) REFERENCES Accounts (Id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS IX_CommunityChannelReadStates_AccountId_CommunityId
+                ON CommunityChannelReadStates (AccountId, CommunityId);
+            """);
+
+    public static Task EnsureAccountBlocksAsync(IridiumDbContext db) =>
+        db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS AccountBlocks (
+                BlockingAccountId TEXT NOT NULL,
+                BlockedAccountId TEXT NOT NULL,
+                CreatedAt INTEGER NOT NULL,
+                CONSTRAINT PK_AccountBlocks PRIMARY KEY (BlockingAccountId, BlockedAccountId),
+                CONSTRAINT FK_AccountBlocks_Accounts_BlockingAccountId FOREIGN KEY (BlockingAccountId) REFERENCES Accounts (Id) ON DELETE CASCADE,
+                CONSTRAINT FK_AccountBlocks_Accounts_BlockedAccountId FOREIGN KEY (BlockedAccountId) REFERENCES Accounts (Id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS IX_AccountBlocks_BlockedAccountId ON AccountBlocks (BlockedAccountId);
+            """);
+
+    public static Task EnsureCommunityMentionNotificationsAsync(IridiumDbContext db) =>
+        db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS CommunityMentionNotifications (
+                MessageId TEXT NOT NULL,
+                AccountId TEXT NOT NULL,
+                CommunityId TEXT NOT NULL,
+                ChannelId TEXT NOT NULL,
+                CreatedAt INTEGER NOT NULL,
+                ReadAt INTEGER NULL,
+                CONSTRAINT PK_CommunityMentionNotifications PRIMARY KEY (MessageId, AccountId),
+                CONSTRAINT FK_CommunityMentionNotifications_ChannelMessages_MessageId FOREIGN KEY (MessageId) REFERENCES ChannelMessages (Id) ON DELETE CASCADE,
+                CONSTRAINT FK_CommunityMentionNotifications_Accounts_AccountId FOREIGN KEY (AccountId) REFERENCES Accounts (Id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS IX_CommunityMentionNotifications_AccountId_CommunityId_ChannelId_ReadAt
+                ON CommunityMentionNotifications (AccountId, CommunityId, ChannelId, ReadAt);
+            """);
+
+    public static Task EnsureMessageHistoryIndexesAsync(IridiumDbContext db) =>
+        db.Database.ExecuteSqlRawAsync("""
+            CREATE INDEX IF NOT EXISTS IX_ChannelMessages_CommunityId_ChannelId_CreatedAt_Id
+                ON ChannelMessages (CommunityId, ChannelId, CreatedAt, Id);
+            CREATE INDEX IF NOT EXISTS IX_DirectMessages_ConversationId_CreatedAt_Id
+                ON DirectMessages (ConversationId, CreatedAt, Id);
+            """);
+
+    public static async Task EnsureMessageClientIdsAsync(IridiumDbContext db)
+    {
+        await EnsureColumnAsync(db, "ChannelMessages", "ClientMessageId", "TEXT NULL");
+        await EnsureColumnAsync(db, "DirectMessages", "ClientMessageId", "TEXT NULL");
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE UNIQUE INDEX IF NOT EXISTS IX_ChannelMessages_AuthorAccountId_CommunityId_ChannelId_ClientMessageId
+                ON ChannelMessages (AuthorAccountId, CommunityId, ChannelId, ClientMessageId)
+                WHERE ClientMessageId IS NOT NULL;
+            CREATE UNIQUE INDEX IF NOT EXISTS IX_DirectMessages_AuthorAccountId_ConversationId_ClientMessageId
+                ON DirectMessages (AuthorAccountId, ConversationId, ClientMessageId)
+                WHERE ClientMessageId IS NOT NULL;
+            """);
+    }
+
     private static async Task EnsureColumnAsync(IridiumDbContext db, string table, string column, string definition)
     {
         var connection = db.Database.GetDbConnection();

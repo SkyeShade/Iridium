@@ -156,6 +156,33 @@ public sealed class CommunitySession(NodeSession nodeSession)
         _channels.RemoveAll(value => value.Id == channelId);
     }
 
+    public void MarkChannelRead(Guid channelId)
+    {
+        var index = _channels.FindIndex(value => value.Id == channelId);
+        if (index >= 0) _channels[index] = _channels[index] with { UnreadCount = 0, MentionCount = 0 };
+    }
+
+    public void MarkChannelUnread(Guid channelId)
+    {
+        var index = _channels.FindIndex(value => value.Id == channelId);
+        if (index >= 0) _channels[index] = _channels[index] with { UnreadCount = Math.Max(1, _channels[index].UnreadCount + 1) };
+    }
+
+    public CommunityChannelDto? FirstOrderedChannel()
+    {
+        var top = _categories.Select(value => (value.Position, IsCategory: true, value.Id))
+            .Concat(_channels.Where(value => value.CategoryId is null).Select(value => (value.Position, IsCategory: false, value.Id)))
+            .OrderBy(value => value.Position).ThenBy(value => value.IsCategory ? 1 : 0);
+        foreach (var item in top)
+        {
+            if (!item.IsCategory) return _channels.First(value => value.Id == item.Id);
+            var nested = _channels.Where(value => value.CategoryId == item.Id)
+                .OrderBy(value => value.Position).ThenBy(value => value.Name, StringComparer.OrdinalIgnoreCase).FirstOrDefault();
+            if (nested is not null) return nested;
+        }
+        return null;
+    }
+
     public void ApplyPresence(PresenceChangedEvent change)
     {
         if (Management is null) return;
@@ -179,4 +206,10 @@ public interface ICategoryCollapseStore
 {
     Task<IReadOnlySet<Guid>> LoadAsync(Guid accountId, Guid communityId, CancellationToken cancellationToken = default);
     Task SaveAsync(Guid accountId, Guid communityId, IReadOnlySet<Guid> collapsed, CancellationToken cancellationToken = default);
+}
+
+public interface ILastCommunityChannelStore
+{
+    Task<Guid?> LoadAsync(Guid accountId, Guid communityId, CancellationToken cancellationToken = default);
+    Task SaveAsync(Guid accountId, Guid communityId, Guid channelId, CancellationToken cancellationToken = default);
 }

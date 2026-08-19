@@ -6,6 +6,7 @@ public sealed class ChannelMessage
     public Guid CommunityId { get; set; }
     public Guid ChannelId { get; set; }
     public Guid AuthorAccountId { get; set; }
+    public Guid? ClientMessageId { get; set; }
     public required string Content { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset? EditedAt { get; set; }

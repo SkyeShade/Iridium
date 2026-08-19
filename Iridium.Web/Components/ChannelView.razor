@@ -16,10 +16,18 @@
         <div class="channel-error">@_error</div>
     }
     <div class="message-region">
-        <MessageList Messages="Messaging.Messages" CurrentAccountId="CurrentAccountId" CanManage="CanManageMessages"
+        <MessageList @ref="_messageList" Messages="Messaging.Messages" CurrentAccountId="CurrentAccountId" CanManage="CanManageMessages"
                      NodeAuthority="@NodeAuthority" CommunityManagement="CommunityManagement"
                      OnEditProfile="OnEditProfile" OnMessage="OnMessage" OnMemberRolesChanged="OnMemberRolesChanged"
-                     OnReply="BeginReply" Edit="EditMessageAsync" OnDelete="DeleteMessageAsync" />
+                     OnMention="MentionMemberAsync"
+                     OnReply="BeginReply" Edit="EditMessageAsync" OnDelete="DeleteMessageAsync"
+                     OnRetryLocal="RetryMessageAsync" OnRemoveLocal="RemoveLocalMessage"
+                     WindowRevision="Messaging.WindowRevision" TargetMessageId="@(Messaging.WindowMode == MessageWindowMode.SearchTarget ? _loadedTargetMessageId : null)"
+                     OnLoadOlder="LoadOlderAsync" OnViewportStateChanged="ViewportStateChanged" />
+        @if (ShowJumpToLatest)
+        {
+            <button class="jump-latest" @onclick="JumpToLatestAsync">Jump to Latest</button>
+        }
     </div>
     @if (CanSend)
     {
@@ -45,9 +53,14 @@
     [Parameter] public EventCallback OnEditProfile { get; set; }
     [Parameter] public EventCallback<Guid> OnMessage { get; set; }
     [Parameter] public EventCallback<CommunityMemberRolesChange> OnMemberRolesChanged { get; set; }
+    [Parameter] public Guid? TargetMessageId { get; set; }
     private Guid? _loadedChannelId;
     private ChannelMessageDto? _replyTo;
     private MessageComposer? _composer;
+    private MessageList? _messageList;
+    private Guid? _loadedTargetMessageId;
+    private bool _isPinnedToLatest = true;
+    private bool _shouldShowJumpToLatest;
     private bool _loading;
     private bool _sending;
     private bool _disposed;
@@ -57,14 +70,19 @@
 
     protected override async Task OnParametersSetAsync()
     {
-        if (_loadedChannelId == Channel.Id && Messaging.CommunityId == Community.Id && Messaging.ChannelId == Channel.Id) return;
+        if (_loadedChannelId == Channel.Id && Messaging.CommunityId == Community.Id && Messaging.ChannelId == Channel.Id &&
+            _loadedTargetMessageId == TargetMessageId) return;
         _replyTo = null;
         _error = null;
         _loading = true;
         try
         {
             await Messaging.OpenChannelAsync(Community.Id, Channel.Id);
+            if (TargetMessageId is { } target) await Messaging.OpenChannelAroundAsync(Community.Id, Channel.Id, target);
             _loadedChannelId = Channel.Id;
+            _loadedTargetMessageId = TargetMessageId;
+            _isPinnedToLatest = TargetMessageId is null;
+            _shouldShowJumpToLatest = TargetMessageId is not null;
         }
         catch (Exception exception)
         {
@@ -87,6 +105,10 @@
         await RenderAsync();
         if (_composer is not null) await _composer.FocusAsync();
     }
+    private async Task MentionMemberAsync(CommunityMemberDto member)
+    {
+        if (_composer is not null) await _composer.InsertMentionAsync(member);
+    }
 
     private async Task<bool> SendMessageAsync(MessageSubmission submission)
     {
@@ -108,7 +130,9 @@
         await RenderAsync();
         try
         {
-            await Messaging.SendAsync(submission.Content, _replyTo?.Id, submission.Mentions);
+            var smooth = ShowJumpToLatest;
+            _messageList?.PrepareUserLatestTransition(smooth);
+            Messaging.QueueMessage(submission.Content, _replyTo?.Id, submission.Mentions);
             _replyTo = null;
             await RenderAsync();
             if (_composer is not null) await _composer.FocusAsync();
@@ -148,6 +172,24 @@
             Logger.LogError(exception, "Message {MessageId} deletion failed in Community {CommunityId} channel {ChannelId}.", messageId, Community.Id, Channel.Id);
             _error = FailureMessage(exception, "Message deletion failed", "The message could not be deleted.");
         }
+    }
+    private Task RetryMessageAsync(Guid clientMessageId) => Messaging.RetryAsync(clientMessageId);
+    private void RemoveLocalMessage(Guid clientMessageId) => Messaging.RemoveFailedMessage(clientMessageId);
+
+    private bool ShowJumpToLatest => _shouldShowJumpToLatest || Messaging.WindowMode == MessageWindowMode.SearchTarget;
+    private Task LoadOlderAsync() => Messaging.LoadOlderAsync();
+    private void ViewportStateChanged(MessageViewportState state)
+    {
+        _isPinnedToLatest = state.IsPinnedToLatest;
+        _shouldShowJumpToLatest = state.ShouldShowJumpToLatest;
+        _ = RenderAsync();
+    }
+    private async Task JumpToLatestAsync()
+    {
+        _messageList?.PrepareUserLatestTransition(true);
+        await Messaging.ResetToLatestAsync();
+        _loadedTargetMessageId = TargetMessageId;
+        await RenderAsync();
     }
 
     private async Task RenderFromRealtimeAsync()

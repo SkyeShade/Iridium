@@ -4,7 +4,8 @@
 .rail-item { position: relative; flex: 0 0 auto; width: 3rem; height: 3rem; border: 0; border-radius: 50%; color: var(--text); background: var(--surface-raised); font-weight: 750; cursor: pointer; transition: border-radius .16s ease, background .16s ease, color .16s ease; }
 .rail-item:hover, .rail-item.active { border-radius: .95rem; color: white; background: var(--accent); }
 .rail-item.active::before { content: ""; position: absolute; left: -.7rem; top: .55rem; width: .22rem; height: 1.9rem; border-radius: 1rem; background: white; }
+.community-unread-marker{position:absolute;left:-.68rem;top:50%;width:.24rem;height:.58rem;transform:translateY(-50%);border-radius:999px;background:var(--text-strong)}
 .rail-item.add { color: #56c994; }
 .rail-item.add:hover { color: white; background: #31976a; }
-.community-mention-badge{position:absolute;right:-.22rem;bottom:-.18rem;min-width:1.15rem;height:1.15rem;display:inline-flex;align-items:center;justify-content:center;padding:0 .25rem;border:2px solid var(--bg-deep);border-radius:999px;color:white;background:var(--danger);font-size:.56rem;font-weight:700;line-height:1}
+.community-mention-badge{position:absolute;right:-.45rem;bottom:-.38rem;min-width:2.3rem;height:2.3rem;display:inline-flex;align-items:center;justify-content:center;padding:0 .4rem;border:3px solid var(--bg-deep);border-radius:999px;color:white;background:var(--danger);font-size:.72rem;font-weight:700;line-height:1}
 .rail-divider { width: 2rem; height: 1px; background: var(--border); }

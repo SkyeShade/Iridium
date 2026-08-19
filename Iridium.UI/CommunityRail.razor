@@ -27,9 +27,13 @@
                     title="@community.Name"
                     @onclick="() => OnSelected.InvokeAsync(community)">
                 @Initials(community.Name)
-                @if (CommunityMentionCounts.TryGetValue(community.Id, out var count) && count > 0)
+                @if (community.HasUnread)
                 {
-                    <span class="community-mention-badge">@(count > 99 ? "99+" : count)</span>
+                    <span class="community-unread-marker" aria-label="Unread messages"></span>
+                }
+                @if (community.MentionCount > 0)
+                {
+                    <span class="community-mention-badge"><span class="red-notification-count">@(community.MentionCount > 99 ? "99+" : community.MentionCount)</span></span>
                 }
             </button>
         }
@@ -41,7 +45,6 @@
     [Parameter] public IReadOnlyList<CommunityDto> Communities { get; set; } = [];
     [Parameter] public Guid? SelectedCommunityId { get; set; }
     [Parameter] public IReadOnlyList<DirectConversationDto> DirectConversations { get; set; } = [];
-    [Parameter] public IReadOnlyDictionary<Guid, int> CommunityMentionCounts { get; set; } = new Dictionary<Guid, int>();
     [Parameter] public string NodeAuthority { get; set; } = string.Empty;
     [Parameter] public EventCallback<CommunityDto?> OnSelected { get; set; }
     [Parameter] public EventCallback<DirectConversationDto> OnDirectConversationSelected { get; set; }

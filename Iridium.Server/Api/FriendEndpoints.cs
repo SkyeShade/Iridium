@@ -18,6 +18,8 @@ public static class FriendEndpoints
         group.MapPost("/requests", RequestAsync);
         group.MapPost("/requests/{friendshipId:guid}/accept", AcceptAsync);
         group.MapDelete("/{friendshipId:guid}", RemoveAsync);
+        endpoints.MapPut("/api/profiles/{accountId:guid}/block", BlockAsync);
+        endpoints.MapDelete("/api/profiles/{accountId:guid}/block", UnblockAsync);
         return endpoints;
     }
 
@@ -48,9 +50,35 @@ public static class FriendEndpoints
                     : friendship.RequesterAccountId == session.AccountId
                         ? ProfileRelationshipStatus.OutgoingPending
                         : ProfileRelationshipStatus.IncomingPending;
+        var blocked = target.Id != session.AccountId && await db.AccountBlocks.AnyAsync(value =>
+            value.BlockingAccountId == session.AccountId && value.BlockedAccountId == target.Id);
         return Results.Ok(new ResolvedProfileDto(
             target.Id, target.Username, target.DisplayName, target.Pronouns, target.Description,
-            relationship, friendship?.Id, presence.GetPublic(target.Id)));
+            relationship, friendship?.Id, presence.GetPublic(target.Id), blocked));
+    }
+
+    private static async Task<IResult> BlockAsync(Guid accountId, HttpContext context, IridiumDbContext db, SessionService sessions)
+    {
+        var session = await sessions.GetAsync(context, db);
+        if (session is null) return Results.Unauthorized();
+        if (accountId == session.AccountId) return Results.BadRequest(new { message = "You cannot block yourself." });
+        if (!await db.Accounts.AnyAsync(value => value.Id == accountId)) return Results.NotFound();
+        if (!await db.AccountBlocks.AnyAsync(value => value.BlockingAccountId == session.AccountId && value.BlockedAccountId == accountId))
+        {
+            db.AccountBlocks.Add(new AccountBlock { BlockingAccountId = session.AccountId, BlockedAccountId = accountId,
+                CreatedAt = DateTimeOffset.UtcNow, BlockingAccount = null!, BlockedAccount = null! });
+            await db.SaveChangesAsync();
+        }
+        return Results.NoContent();
+    }
+
+    private static async Task<IResult> UnblockAsync(Guid accountId, HttpContext context, IridiumDbContext db, SessionService sessions)
+    {
+        var session = await sessions.GetAsync(context, db);
+        if (session is null) return Results.Unauthorized();
+        var block = await db.AccountBlocks.SingleOrDefaultAsync(value => value.BlockingAccountId == session.AccountId && value.BlockedAccountId == accountId);
+        if (block is not null) { db.AccountBlocks.Remove(block); await db.SaveChangesAsync(); }
+        return Results.NoContent();
     }
 
     private static async Task<IResult> ListAsync(HttpContext context, IridiumDbContext db, SessionService sessions, PresenceTracker presence)

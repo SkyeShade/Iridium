@@ -4,7 +4,7 @@ using Microsoft.JSInterop;
 namespace Iridium.Web.Services;
 
 public sealed class BrowserClientStorage(IJSRuntime js) : ISavedNodeStore, INodeTokenStore, ISavedAccountStore,
-    IActiveAccountSelectionStore, ICategoryCollapseStore, IAsyncDisposable
+    IActiveAccountSelectionStore, ICategoryCollapseStore, ILastCommunityChannelStore, IAsyncDisposable
 {
     private IJSObjectReference? _module;
 
@@ -82,6 +82,21 @@ public sealed class BrowserClientStorage(IJSRuntime js) : ISavedNodeStore, INode
     {
         var module = await ModuleAsync(cancellationToken);
         await module.InvokeVoidAsync("save", cancellationToken, $"iridium.collapsed:{accountId}:{communityId}", collapsed);
+    }
+
+    async Task<Guid?> ILastCommunityChannelStore.LoadAsync(Guid accountId, Guid communityId, CancellationToken cancellationToken)
+    {
+        var module = await ModuleAsync(cancellationToken);
+        var value = await module.InvokeAsync<string?>(
+            "loadGuidValue", cancellationToken, $"iridium.last-channel:{accountId}:{communityId}");
+        return Guid.TryParse(value, out var channelId) ? channelId : null;
+    }
+
+    async Task ILastCommunityChannelStore.SaveAsync(Guid accountId, Guid communityId, Guid channelId, CancellationToken cancellationToken)
+    {
+        var module = await ModuleAsync(cancellationToken);
+        await module.InvokeVoidAsync(
+            "saveGuidValue", cancellationToken, $"iridium.last-channel:{accountId}:{communityId}", channelId.ToString("D"));
     }
 
     private async Task<IJSObjectReference> ModuleAsync(CancellationToken cancellationToken)

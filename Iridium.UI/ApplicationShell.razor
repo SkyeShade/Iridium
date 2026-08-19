@@ -1,9 +1,8 @@
 @using Iridium.Protocol
 
-<div class="app-shell @(ShowRightSidebar ? "has-context-sidebar" : null)">
+<div class="app-shell @(ShowRightSidebar ? "has-context-sidebar" : null)" @onclick="OnBackgroundInteraction">
     <CommunityRail Communities="Communities" SelectedCommunityId="SelectedCommunity?.Id"
                    DirectConversations="DirectConversations" NodeAuthority="@NodeAuthority"
-                   CommunityMentionCounts="CommunityMentionCounts"
                    OnSelected="OnCommunitySelected" OnDirectConversationSelected="OnDirectConversationSelected" OnAdd="OnAddCommunity" />
     <aside class="secondary-sidebar">
         <header class="community-header">
@@ -26,7 +25,6 @@
     [Parameter] public IReadOnlyList<CommunityDto> Communities { get; set; } = [];
     [Parameter] public CommunityDto? SelectedCommunity { get; set; }
     [Parameter] public IReadOnlyList<DirectConversationDto> DirectConversations { get; set; } = [];
-    [Parameter] public IReadOnlyDictionary<Guid, int> CommunityMentionCounts { get; set; } = new Dictionary<Guid, int>();
     [Parameter] public string NodeAuthority { get; set; } = string.Empty;
     [Parameter, EditorRequired] public required string DisplayName { get; set; }
     [Parameter, EditorRequired] public required string PublicIdentity { get; set; }
@@ -41,4 +39,5 @@
     [Parameter] public RenderFragment? ChildContent { get; set; }
     [Parameter] public RenderFragment? RightSidebar { get; set; }
     [Parameter] public bool ShowRightSidebar { get; set; }
+    [Parameter] public EventCallback OnBackgroundInteraction { get; set; }
 }
