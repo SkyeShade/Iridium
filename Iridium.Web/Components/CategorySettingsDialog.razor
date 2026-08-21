@@ -3,12 +3,12 @@
 
 <div class="modal-backdrop" @onclick="OnCancel">
     <section class="settings-dialog" @onclick:stopPropagation="true">
-        <header><div><h2>@(Category is null ? "Create Category" : "Category Settings")</h2><p>Categories organize this Community's channels.</p></div><button class="icon-button" title="Close" @onclick="OnCancel"><Icon Name="close" /></button></header>
+        <header><div><h2>@(Category is null ? (InitialParentCategoryId is null ? "Create Category" : "Create Subcategory") : "Category Settings")</h2><p>@(InitialParentCategoryId is null ? "Categories organize this Community's Channels." : $"in {ParentName}")</p></div><button class="icon-button" title="Close" @onclick="OnCancel"><Icon Name="close" /></button></header>
         <label>Category name<input @bind="_name" maxlength="100" autofocus /></label>
         @if (!string.IsNullOrWhiteSpace(Error)) { <p class="error">@Error</p> }
         @if (_confirmDelete)
         {
-            <div class="confirmation"><strong>Delete @Category!.Name?</strong><span>Its channels will be moved safely to the uncategorized area; they will not be deleted.</span></div>
+            <div class="confirmation"><strong>Delete @Category!.Name?</strong><span>The Category must be empty before it can be deleted.</span></div>
         }
         <footer>
             @if (Category is not null)
@@ -23,6 +23,8 @@
 
 @code {
     [Parameter] public CommunityCategoryDto? Category { get; set; }
+    [Parameter] public Guid? InitialParentCategoryId { get; set; }
+    [Parameter] public string? ParentName { get; set; }
     [Parameter] public bool Busy { get; set; }
     [Parameter] public string? Error { get; set; }
     [Parameter] public bool ConfirmDeleteInitially { get; set; }
@@ -42,7 +44,7 @@
         _name = Category?.Name ?? string.Empty; _confirmDelete = ConfirmDeleteInitially;
     }
 
-    private Task SaveAsync() => OnSave.InvokeAsync(new CategorySettingsSubmission(Category?.Id, _name));
+    private Task SaveAsync() => OnSave.InvokeAsync(new CategorySettingsSubmission(Category?.Id, _name, InitialParentCategoryId));
     private Task DeleteAsync()
     {
         if (!_confirmDelete) { _confirmDelete = true; return Task.CompletedTask; }

@@ -113,14 +113,18 @@ public sealed class NodeClient(Uri nodeAddress)
     public Task<CommunityStructureDto> GetCommunityStructureAsync(Guid communityId, CancellationToken cancellationToken = default) =>
         SendAsync<CommunityStructureDto>(HttpMethod.Get, $"api/communities/{communityId}/structure", null, cancellationToken);
 
-    public Task<CommunityCategoryDto> CreateCategoryAsync(Guid communityId, string name, CancellationToken cancellationToken = default) =>
-        SendAsync<CommunityCategoryDto>(HttpMethod.Post, $"api/communities/{communityId}/categories", new CreateCategoryRequest(name), cancellationToken);
+    public Task<CommunityCategoryDto> CreateCategoryAsync(Guid communityId, string name, Guid? parentCategoryId = null, CancellationToken cancellationToken = default) =>
+        SendAsync<CommunityCategoryDto>(HttpMethod.Post, $"api/communities/{communityId}/categories", new CreateCategoryRequest(name, parentCategoryId), cancellationToken);
 
     public Task<CommunityCategoryDto> UpdateCategoryAsync(Guid communityId, Guid categoryId, string name, CancellationToken cancellationToken = default) =>
         SendAsync<CommunityCategoryDto>(HttpMethod.Patch, $"api/communities/{communityId}/categories/{categoryId}", new UpdateCategoryRequest(name), cancellationToken);
 
-    public Task MoveCategoryAsync(Guid communityId, Guid categoryId, int position, CancellationToken cancellationToken = default) =>
-        SendNoContentAsync(HttpMethod.Post, $"api/communities/{communityId}/categories/{categoryId}/move", new MoveCategoryRequest(position), cancellationToken);
+    public Task MoveCategoryAsync(Guid communityId, Guid categoryId, CommunitySidebarMoveRequest request, CancellationToken cancellationToken = default) =>
+        SendNoContentAsync(HttpMethod.Post, $"api/communities/{communityId}/categories/{categoryId}/move", request, cancellationToken);
+
+    public async Task MoveCategoryAsync(Guid communityId, Guid categoryId, Guid? parentCategoryId, int position,
+        CancellationToken cancellationToken = default) => await MoveSidebarItemByPositionAsync(
+        communityId, categoryId, CommunitySidebarItemType.Category, parentCategoryId, position, cancellationToken);
 
     public Task DeleteCategoryAsync(Guid communityId, Guid categoryId, CancellationToken cancellationToken = default) =>
         SendNoContentAsync(HttpMethod.Delete, $"api/communities/{communityId}/categories/{categoryId}", null, cancellationToken);
@@ -131,8 +135,12 @@ public sealed class NodeClient(Uri nodeAddress)
     public Task<CommunityChannelDto> UpdateChannelAsync(Guid communityId, Guid channelId, string name, Guid? categoryId, CancellationToken cancellationToken = default) =>
         SendAsync<CommunityChannelDto>(HttpMethod.Patch, $"api/communities/{communityId}/channels/{channelId}", new UpdateChannelRequest(name, categoryId), cancellationToken);
 
-    public Task MoveChannelAsync(Guid communityId, Guid channelId, Guid? categoryId, int position, CancellationToken cancellationToken = default) =>
-        SendNoContentAsync(HttpMethod.Post, $"api/communities/{communityId}/channels/{channelId}/move", new MoveChannelRequest(categoryId, position), cancellationToken);
+    public Task MoveChannelAsync(Guid communityId, Guid channelId, CommunitySidebarMoveRequest request, CancellationToken cancellationToken = default) =>
+        SendNoContentAsync(HttpMethod.Post, $"api/communities/{communityId}/channels/{channelId}/move", request, cancellationToken);
+
+    public async Task MoveChannelAsync(Guid communityId, Guid channelId, Guid? categoryId, int position,
+        CancellationToken cancellationToken = default) => await MoveSidebarItemByPositionAsync(
+        communityId, channelId, CommunitySidebarItemType.Channel, categoryId, position, cancellationToken);
 
     public Task DeleteChannelAsync(Guid communityId, Guid channelId, CancellationToken cancellationToken = default) =>
         SendNoContentAsync(HttpMethod.Delete, $"api/communities/{communityId}/channels/{channelId}", null, cancellationToken);
@@ -204,6 +212,69 @@ public sealed class NodeClient(Uri nodeAddress)
 
     public Task MarkCommunityChannelReadAsync(Guid communityId, Guid channelId, CancellationToken cancellationToken = default) =>
         SendNoContentAsync(HttpMethod.Post, $"api/communities/{communityId}/channels/{channelId}/read", null, cancellationToken);
+
+    public async Task<AttachmentUploadDto> UploadAttachmentAsync(Stream content, string fileName, string contentType,
+        bool isSpoiler = false, int? width = null, int? height = null, string? averageColor = null,
+        CancellationToken cancellationToken = default)
+    {
+        using var multipart = new MultipartFormDataContent();
+        using var streamContent = new StreamContent(content);
+        streamContent.Headers.ContentType = new MediaTypeHeaderValue(
+            string.IsNullOrWhiteSpace(contentType) ? "application/octet-stream" : contentType);
+        multipart.Add(streamContent, "file", fileName);
+        multipart.Add(new StringContent(isSpoiler.ToString()), "isSpoiler");
+        if (width is { } imageWidth) multipart.Add(new StringContent(imageWidth.ToString()), "width");
+        if (height is { } imageHeight) multipart.Add(new StringContent(imageHeight.ToString()), "height");
+        if (!string.IsNullOrWhiteSpace(averageColor)) multipart.Add(new StringContent(averageColor), "averageColor");
+        using var request = new HttpRequestMessage(HttpMethod.Post, "api/attachments") { Content = multipart };
+        if (!string.IsNullOrWhiteSpace(AccessToken))
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", AccessToken);
+        using var response = await _http.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+            throw new NodeApiException(response.StatusCode, await ReadErrorAsync(response, cancellationToken));
+        return await response.Content.ReadFromJsonAsync<AttachmentUploadDto>(cancellationToken: cancellationToken)
+            ?? throw new NodeApiException(response.StatusCode, "The node returned an empty response.");
+    }
+
+    public async Task<byte[]> DownloadAttachmentAsync(Guid attachmentId, CancellationToken cancellationToken = default)
+    {
+        using var response = await SendAsync(HttpMethod.Get, $"api/attachments/{attachmentId}", null, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+            throw new NodeApiException(response.StatusCode, await ReadErrorAsync(response, cancellationToken));
+        return await response.Content.ReadAsByteArrayAsync(cancellationToken);
+    }
+
+    public async Task<byte[]> DownloadAttachmentPreviewAsync(Guid attachmentId, CancellationToken cancellationToken = default)
+    {
+        using var response = await SendAsync(HttpMethod.Get, $"api/attachments/{attachmentId}/preview", null, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+            throw new NodeApiException(response.StatusCode, await ReadErrorAsync(response, cancellationToken));
+        return await response.Content.ReadAsByteArrayAsync(cancellationToken);
+    }
+
+    private async Task MoveSidebarItemByPositionAsync(Guid communityId, Guid itemId,
+        CommunitySidebarItemType itemType, Guid? parentCategoryId, int position, CancellationToken cancellationToken)
+    {
+        var structure = await GetCommunityStructureAsync(communityId, cancellationToken);
+        var siblings = structure.Categories.Where(value => value.ParentCategoryId == parentCategoryId)
+            .Select(value => (value.Id, Type: CommunitySidebarItemType.Category, value.Position))
+            .Concat(structure.Channels.Where(value => value.CategoryId == parentCategoryId)
+                .Select(value => (value.Id, Type: CommunitySidebarItemType.Channel, value.Position)))
+            .Where(value => value.Id != itemId || value.Type != itemType)
+            .OrderBy(value => value.Position).ThenBy(value => value.Type).ThenBy(value => value.Id).ToList();
+        CommunitySidebarMoveRequest request;
+        if (position >= siblings.Count)
+            request = new(parentCategoryId, null, null, CommunitySidebarDropIntent.End);
+        else
+        {
+            var target = siblings[Math.Clamp(position, 0, siblings.Count - 1)];
+            request = new(parentCategoryId, target.Id, target.Type, CommunitySidebarDropIntent.Before);
+        }
+        if (itemType == CommunitySidebarItemType.Category)
+            await MoveCategoryAsync(communityId, itemId, request, cancellationToken);
+        else
+            await MoveChannelAsync(communityId, itemId, request, cancellationToken);
+    }
 
     private async Task<T> SendAsync<T>(HttpMethod method, string path, object? body, CancellationToken cancellationToken)
     {

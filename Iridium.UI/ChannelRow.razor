@@ -1,8 +1,9 @@
 @using Iridium.Protocol
 
-<div class="channel-row @(CanManage ? "draggable" : null) @(Selected ? "selected" : null) @(Channel.UnreadCount > 0 ? "unread" : null)"
+<div class="channel-row @(CanManage ? "draggable" : null) @(Selected ? "selected" : null) @(Channel.UnreadCount > 0 ? "unread" : null)" style="--channel-depth:@Depth"
+     data-sidebar-item data-sidebar-kind="channel" data-sidebar-id="@Channel.Id" data-sidebar-parent="@Channel.CategoryId" data-sidebar-depth="@Depth"
      data-iridium-channel-drag="@(CanManage ? Channel.Id : null)"
-     data-channel-category="@(Channel.CategoryId?.ToString() ?? string.Empty)"
+     data-channel-category="@Channel.CategoryId"
      @onclick="SelectAsync"
      @oncontextmenu="OpenMenu"
      @oncontextmenu:preventDefault="true"
@@ -35,6 +36,7 @@
     [Parameter, EditorRequired] public required CommunityChannelDto Channel { get; set; }
     [Parameter] public bool Selected { get; set; }
     [Parameter] public bool CanManage { get; set; }
+    [Parameter] public int Depth { get; set; } = 1;
     [Parameter] public EventCallback<CommunityChannelDto> OnSelect { get; set; }
     [Parameter] public EventCallback<CommunityChannelDto> OnEdit { get; set; }
     [Parameter] public EventCallback<CommunityChannelDto> OnDelete { get; set; }

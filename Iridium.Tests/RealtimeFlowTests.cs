@@ -83,36 +83,135 @@ public sealed class RealtimeFlowTests
 
             var firstCategory = await owner.CreateCategoryAsync(communityA.Id, "Rooms");
             var secondCategory = await owner.CreateCategoryAsync(communityA.Id, "Projects");
+            var treeDepth2 = await owner.CreateCategoryAsync(communityA.Id, "Depth 2", firstCategory.Id);
+            var treeDepth3 = await owner.CreateCategoryAsync(communityA.Id, "Depth 3", treeDepth2.Id);
+            var treeDepth4 = await owner.CreateCategoryAsync(communityA.Id, "Depth 4", treeDepth3.Id);
+            var treeDepth5 = await owner.CreateCategoryAsync(communityA.Id, "Depth 5", treeDepth4.Id);
+            Assert.Equal(treeDepth4.Id, treeDepth5.ParentCategoryId);
+            Assert.Equal(HttpStatusCode.BadRequest, (await Assert.ThrowsAsync<NodeApiException>(() =>
+                owner.CreateCategoryAsync(communityA.Id, "Depth 6", treeDepth5.Id))).StatusCode);
+            Assert.Equal(HttpStatusCode.BadRequest, (await Assert.ThrowsAsync<NodeApiException>(() =>
+                owner.MoveCategoryAsync(communityA.Id, firstCategory.Id, treeDepth5.Id, 0))).StatusCode);
+            await owner.MoveCategoryAsync(communityA.Id, treeDepth5.Id, null, 0);
+            Assert.Null((await owner.GetCommunityStructureAsync(communityA.Id)).Categories
+                .Single(value => value.Id == treeDepth5.Id).ParentCategoryId);
+            await owner.MoveCategoryAsync(communityA.Id, treeDepth5.Id, treeDepth4.Id, 0);
+            // A subtree is moved as one node; its descendants retain their parent links.
+            await owner.MoveCategoryAsync(communityA.Id, treeDepth2.Id, secondCategory.Id, 0);
+            var movedSubtree = await owner.GetCommunityStructureAsync(communityA.Id);
+            Assert.Equal(secondCategory.Id, movedSubtree.Categories.Single(value => value.Id == treeDepth2.Id).ParentCategoryId);
+            Assert.Equal(treeDepth2.Id, movedSubtree.Categories.Single(value => value.Id == treeDepth3.Id).ParentCategoryId);
+            await owner.MoveCategoryAsync(communityA.Id, treeDepth2.Id, firstCategory.Id, 0);
+
+            var nestedA = await owner.CreateCategoryAsync(communityA.Id, "Nested A", firstCategory.Id);
+            var nestedB = await owner.CreateCategoryAsync(communityA.Id, "Nested B", firstCategory.Id);
+            var nestedC = await owner.CreateCategoryAsync(communityA.Id, "Nested C", firstCategory.Id);
+            await owner.MoveCategoryAsync(communityA.Id, nestedC.Id, firstCategory.Id, 1);
+            var nestedOrder = (await owner.GetCommunityStructureAsync(communityA.Id)).Categories
+                .Where(value => value.ParentCategoryId == firstCategory.Id).OrderBy(value => value.Position).ToArray();
+            Assert.Equal(Enumerable.Range(0, nestedOrder.Length), nestedOrder.Select(value => value.Position));
+            Assert.True(Array.IndexOf(nestedOrder.Select(value => value.Id).ToArray(), nestedC.Id) <
+                        Array.IndexOf(nestedOrder.Select(value => value.Id).ToArray(), nestedB.Id));
+
             await owner.UpdateCategoryAsync(communityA.Id, secondCategory.Id, "Topics");
-            await owner.MoveCategoryAsync(communityA.Id, secondCategory.Id, 0);
-            var welcome = await owner.CreateChannelAsync(communityA.Id, "welcome", null);
-            await owner.MoveChannelAsync(communityA.Id, welcome.Id, null, 1);
-            var tail = await owner.CreateChannelAsync(communityA.Id, "tail", null);
+            await owner.MoveCategoryAsync(communityA.Id, secondCategory.Id, null, 0);
+            // Repeated and rapid moves must either serialize or report a conflict, never
+            // leave duplicate/gapped sibling positions behind.
+            for (var iteration = 0; iteration < 3; iteration++)
+            {
+                await owner.MoveCategoryAsync(communityA.Id, firstCategory.Id, null, 0);
+                await owner.MoveCategoryAsync(communityA.Id, secondCategory.Id, null, 0);
+            }
+            var rapidMoves = await Task.WhenAll(
+                CaptureAsync(() => owner.MoveCategoryAsync(communityA.Id, defaultCategory.Id, null, 0)),
+                CaptureAsync(() => secondOwnerSession.MoveCategoryAsync(communityA.Id, firstCategory.Id, null, 0)));
+            Assert.All(rapidMoves, exception => Assert.True(exception is null or NodeApiException
+                { StatusCode: HttpStatusCode.Conflict }));
+            var rootsAfterRapidMoves = (await owner.GetCommunityStructureAsync(communityA.Id)).Categories
+                .Where(value => value.ParentCategoryId is null).OrderBy(value => value.Position).ToArray();
+            Assert.Equal(Enumerable.Range(0, rootsAfterRapidMoves.Length), rootsAfterRapidMoves.Select(value => value.Position));
+            Assert.Equal(rootsAfterRapidMoves.Length, rootsAfterRapidMoves.Select(value => value.Id).Distinct().Count());
+            await owner.MoveCategoryAsync(communityA.Id, firstCategory.Id, null, int.MaxValue);
+            await owner.MoveCategoryAsync(communityA.Id, defaultCategory.Id, null, 1);
+            await owner.MoveCategoryAsync(communityA.Id, secondCategory.Id, null, 0);
+            var welcome = await owner.CreateChannelAsync(communityA.Id, "welcome", defaultCategory.Id);
+            await owner.MoveChannelAsync(communityA.Id, welcome.Id, defaultCategory.Id, 0);
+            var tail = await owner.CreateChannelAsync(communityA.Id, "tail", defaultCategory.Id);
             var unified = await owner.GetCommunityStructureAsync(communityA.Id);
-            var unifiedIds = unified.Categories.Select(value => (value.Position, value.Id))
-                .Concat(unified.Channels.Where(value => value.CategoryId is null).Select(value => (value.Position, value.Id)))
-                .OrderBy(value => value.Position).Select(value => value.Id).ToArray();
-            Assert.Equal([secondCategory.Id, welcome.Id, defaultCategory.Id, firstCategory.Id, tail.Id], unifiedIds);
+            Assert.Equal([secondCategory.Id, defaultCategory.Id, firstCategory.Id], unified.Categories
+                .Where(value => value.ParentCategoryId is null).OrderBy(value => value.Position).Select(value => value.Id));
+            Assert.Equal([welcome.Id, defaultChannel.Id, tail.Id], unified.Channels
+                .Where(value => value.CategoryId == defaultCategory.Id).OrderBy(value => value.Position).Select(value => value.Id));
             var chatChannel = await owner.CreateChannelAsync(communityA.Id, "General Chat", firstCategory.Id);
             var disposable = await owner.CreateChannelAsync(communityA.Id, "Archive", firstCategory.Id);
+            Assert.Equal(HttpStatusCode.Conflict, (await Assert.ThrowsAsync<NodeApiException>(() =>
+                owner.DeleteCategoryAsync(communityA.Id, firstCategory.Id))).StatusCode);
             await owner.UpdateChannelAsync(communityA.Id, chatChannel.Id, "lounge", secondCategory.Id);
-            await owner.MoveChannelAsync(communityA.Id, chatChannel.Id, null, 0);
             await owner.MoveChannelAsync(communityA.Id, chatChannel.Id, secondCategory.Id, 0);
-            await owner.MoveChannelAsync(communityA.Id, chatChannel.Id, null, 0);
-            await owner.DeleteCategoryAsync(communityA.Id, firstCategory.Id);
+            await owner.MoveChannelAsync(communityA.Id, disposable.Id, secondCategory.Id, 1);
+            Assert.Equal(HttpStatusCode.Conflict, (await Assert.ThrowsAsync<NodeApiException>(() =>
+                owner.DeleteCategoryAsync(communityA.Id, firstCategory.Id))).StatusCode);
             var organized = await owner.GetCommunityStructureAsync(communityA.Id);
             Assert.Equal(secondCategory.Id, organized.Categories[0].Id);
             Assert.Equal("Topics", organized.Categories[0].Name);
-            Assert.Null(organized.Channels.Single(value => value.Id == disposable.Id).CategoryId);
-            Assert.Null(organized.Channels.Single(value => value.Id == chatChannel.Id).CategoryId);
-            await owner.MoveChannelAsync(communityA.Id, disposable.Id, null, 0);
+            Assert.Equal(secondCategory.Id, organized.Channels.Single(value => value.Id == disposable.Id).CategoryId);
+            Assert.Equal(secondCategory.Id, organized.Channels.Single(value => value.Id == chatChannel.Id).CategoryId);
+
+            var rootA = await owner.CreateChannelAsync(communityA.Id, "root-a", null);
+            var rootB = await owner.CreateChannelAsync(communityA.Id, "root-b", null);
+            await owner.MoveChannelAsync(communityA.Id, rootA.Id, new(null, firstCategory.Id,
+                CommunitySidebarItemType.Category, CommunitySidebarDropIntent.Before));
+            var mixed = await owner.GetCommunityStructureAsync(communityA.Id);
+            Assert.Null(mixed.Channels.Single(value => value.Id == rootA.Id).CategoryId);
+            AssertMixedPositions(mixed, null);
+
+            await owner.MoveChannelAsync(communityA.Id, rootA.Id, new(firstCategory.Id, firstCategory.Id,
+                CommunitySidebarItemType.Category, CommunitySidebarDropIntent.InsideAtStart));
+            mixed = await owner.GetCommunityStructureAsync(communityA.Id);
+            Assert.Equal(firstCategory.Id, mixed.Channels.Single(value => value.Id == rootA.Id).CategoryId);
+            Assert.Equal(0, mixed.Channels.Single(value => value.Id == rootA.Id).Position);
+            AssertMixedPositions(mixed, firstCategory.Id);
+
+            await owner.MoveChannelAsync(communityA.Id, rootA.Id, new(firstCategory.Id, null, null,
+                CommunitySidebarDropIntent.End));
+            mixed = await owner.GetCommunityStructureAsync(communityA.Id);
+            Assert.Equal(firstCategory.Id, mixed.Channels.Single(value => value.Id == rootA.Id).CategoryId);
+            Assert.Equal(mixed.Categories.Where(value => value.ParentCategoryId == firstCategory.Id).Select(value => value.Position)
+                    .Concat(mixed.Channels.Where(value => value.CategoryId == firstCategory.Id).Select(value => value.Position)).Max(),
+                mixed.Channels.Single(value => value.Id == rootA.Id).Position);
+
+            await owner.MoveChannelAsync(communityA.Id, rootA.Id, new(null, firstCategory.Id,
+                CommunitySidebarItemType.Category, CommunitySidebarDropIntent.After));
+            await owner.MoveCategoryAsync(communityA.Id, secondCategory.Id, new(null, rootA.Id,
+                CommunitySidebarItemType.Channel, CommunitySidebarDropIntent.Before));
+            mixed = await owner.GetCommunityStructureAsync(communityA.Id);
+            Assert.Null(mixed.Channels.Single(value => value.Id == rootA.Id).CategoryId);
+            Assert.True(mixed.Categories.Single(value => value.Id == secondCategory.Id).Position <
+                        mixed.Channels.Single(value => value.Id == rootA.Id).Position);
+            AssertMixedPositions(mixed, null);
+
+            await owner.MoveCategoryAsync(communityA.Id, secondCategory.Id, new(firstCategory.Id, firstCategory.Id,
+                CommunitySidebarItemType.Category, CommunitySidebarDropIntent.InsideAtStart));
+            mixed = await owner.GetCommunityStructureAsync(communityA.Id);
+            Assert.Equal(firstCategory.Id, mixed.Categories.Single(value => value.Id == secondCategory.Id).ParentCategoryId);
+            Assert.Equal(0, mixed.Categories.Single(value => value.Id == secondCategory.Id).Position);
+            await owner.MoveCategoryAsync(communityA.Id, secondCategory.Id, new(firstCategory.Id, null, null,
+                CommunitySidebarDropIntent.End));
+            mixed = await owner.GetCommunityStructureAsync(communityA.Id);
+            Assert.Equal(mixed.Categories.Where(value => value.ParentCategoryId == firstCategory.Id).Select(value => value.Position)
+                    .Concat(mixed.Channels.Where(value => value.CategoryId == firstCategory.Id).Select(value => value.Position)).Max(),
+                mixed.Categories.Single(value => value.Id == secondCategory.Id).Position);
+            await owner.MoveCategoryAsync(communityA.Id, secondCategory.Id,
+                new(null, rootB.Id, CommunitySidebarItemType.Channel, CommunitySidebarDropIntent.Before));
+            await owner.MoveChannelAsync(communityA.Id, disposable.Id, secondCategory.Id, 0);
             Assert.Equal(disposable.Id, (await owner.GetCommunityStructureAsync(communityA.Id)).Channels
-                .Where(value => value.CategoryId is null).OrderBy(value => value.Position).First().Id);
+                .Where(value => value.CategoryId == secondCategory.Id).OrderBy(value => value.Position).First().Id);
             await owner.DeleteChannelAsync(communityA.Id, disposable.Id);
             Assert.DoesNotContain((await owner.GetCommunityStructureAsync(communityA.Id)).Channels, value => value.Id == disposable.Id);
 
             var communityB = await outsider.CreateCommunityAsync(new CreateCommunityRequest("Beta", null));
-            var outsiderChannel = await outsider.CreateChannelAsync(communityB.Id, "private", null);
+            var outsiderDefault = Assert.Single((await outsider.GetCommunityStructureAsync(communityB.Id)).Categories);
+            var outsiderChannel = await outsider.CreateChannelAsync(communityB.Id, "private", outsiderDefault.Id);
             var forbiddenMove = await Assert.ThrowsAsync<NodeApiException>(() =>
                 outsider.MoveChannelAsync(communityA.Id, chatChannel.Id, secondCategory.Id, 0));
             Assert.Equal(HttpStatusCode.Forbidden, forbiddenMove.StatusCode);
@@ -424,6 +523,28 @@ public sealed class RealtimeFlowTests
         .Build();
 
     private static TaskCompletionSource<T> Completion<T>() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private static async Task<Exception?> CaptureAsync(Func<Task> action)
+    {
+        try
+        {
+            await action();
+            return null;
+        }
+        catch (Exception exception)
+        {
+            return exception;
+        }
+    }
+
+    private static void AssertMixedPositions(CommunityStructureDto structure, Guid? parentCategoryId)
+    {
+        var positions = structure.Categories.Where(value => value.ParentCategoryId == parentCategoryId)
+            .Select(value => value.Position)
+            .Concat(structure.Channels.Where(value => value.CategoryId == parentCategoryId)
+                .Select(value => value.Position)).Order().ToArray();
+        Assert.Equal(Enumerable.Range(0, positions.Length), positions);
+    }
 
     private static async Task DeleteDirectoryAsync(string path)
     {

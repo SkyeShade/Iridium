@@ -1,0 +1,214 @@
+@using Iridium.Protocol
+@implements IAsyncDisposable
+@inject NodeSession NodeSession
+@inject ILogger<PostedImage> Logger
+
+<button type="button" class="posted-image @(IsReady ? "image-ready" : null) @(IsCovered ? "spoilered" : null) @(DeliveryState == MessageDeliveryState.Pending ? "pending-image" : null) @(DeliveryState == MessageDeliveryState.Failed ? "failed-image" : null)" style="@ImageStyle" title="@ImageTitle" @onclick="ImageClickedAsync">
+    <span class="image-placeholder" aria-hidden="true"></span>
+    <img src="@(_source ?? string.Empty)" alt="@Attachment.OriginalFileName" @onload="ImageLoaded" @onerror="ImageFailed" />
+    @if (DeliveryState == MessageDeliveryState.Pending)
+    {
+        <span class="upload-spinner" aria-label="Uploading image"></span>
+    }
+    else if (HasFailed)
+    {
+        <span class="image-error">Image unavailable<br /><small>Click to retry</small></span>
+    }
+    @if (IsCovered)
+    {
+        <span class="image-spoiler-cover">Spoiler<br /><small>Click to reveal</small></span>
+    }
+</button>
+
+@if (_viewerOpen)
+{
+    <div class="image-viewer-backdrop" tabindex="-1" @ref="_viewerBackdrop" @onclick="CloseViewer" @onkeydown="ViewerKeyDown">
+        <div class="image-viewer-shell @(_viewerLoaded ? "loaded" : null)" style="@ViewerStyle" @onclick:stopPropagation="true">
+            <span class="viewer-placeholder" aria-hidden="true"></span>
+            @if (_viewerSource is { } viewerSource)
+            {
+                <img src="@viewerSource" alt="@Attachment.OriginalFileName" @onload="ViewerLoaded" @onerror="ViewerFailed" />
+            }
+            @if (_viewerFailed) { <span class="viewer-error">Original image unavailable</span> }
+            <button type="button" class="viewer-close" title="Close image" aria-label="Close image" @onclick="CloseViewer"><Icon Name="close" /></button>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public required AttachmentDto Attachment { get; set; }
+    [Parameter] public MessageDeliveryState DeliveryState { get; set; } = MessageDeliveryState.Confirmed;
+
+    private CancellationTokenSource? _loadCancellation;
+    private CancellationTokenSource? _viewerCancellation;
+    private string? _requestedIdentity;
+    private string? _loadedIdentity;
+    private string? _failedIdentity;
+    private string? _source;
+    private string? _viewerSource;
+    private bool _spoilerRevealed;
+    private bool _viewerOpen;
+    private bool _viewerLoaded;
+    private bool _viewerFailed;
+    private bool _focusViewer;
+    private ElementReference _viewerBackdrop;
+
+    private string ResourceIdentity => DeliveryState == MessageDeliveryState.Confirmed
+        ? $"server:{Attachment.Id:N}:{Attachment.PreviewDownloadUrl}"
+        : Attachment.LocalPreviewUrl is { } local
+            ? $"local:{Attachment.Id:N}:{System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(local)}"
+            : $"pending:{Attachment.Id:N}:{Attachment.DownloadUrl}";
+    private bool IsReady => _loadedIdentity == _requestedIdentity;
+    private bool HasFailed => _failedIdentity == _requestedIdentity;
+    private bool IsCovered => Attachment.IsSpoiler && !_spoilerRevealed;
+    private string ImageTitle => IsCovered ? "Reveal spoiler" : HasFailed ? "Retry image" : "Open image";
+
+    protected override void OnParametersSet()
+    {
+        var identity = ResourceIdentity;
+        if (string.Equals(identity, _requestedIdentity, StringComparison.Ordinal)) return;
+
+        _loadCancellation?.Cancel();
+        _loadCancellation?.Dispose();
+        _loadCancellation = new CancellationTokenSource();
+        _requestedIdentity = identity;
+        _loadedIdentity = null;
+        _failedIdentity = null;
+        _viewerOpen = false;
+        _viewerLoaded = false;
+        _viewerFailed = false;
+        _viewerSource = null;
+        _viewerCancellation?.Cancel();
+        _viewerCancellation?.Dispose();
+        _viewerCancellation = null;
+
+        if (DeliveryState != MessageDeliveryState.Confirmed && Attachment.LocalPreviewUrl is { } local)
+        {
+            _source = local;
+            return;
+        }
+
+        _source = null;
+        if (!string.IsNullOrWhiteSpace(Attachment.DownloadUrl))
+            _ = LoadAuthoritativeImageAsync(identity, _loadCancellation.Token);
+    }
+
+    private async Task LoadAuthoritativeImageAsync(string identity, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var hasPreview = !string.IsNullOrWhiteSpace(Attachment.PreviewDownloadUrl);
+            var bytes = hasPreview
+                ? await NodeSession.DownloadAttachmentPreviewAsync(Attachment.Id, cancellationToken)
+                : await NodeSession.DownloadAttachmentAsync(Attachment.Id, cancellationToken);
+            if (cancellationToken.IsCancellationRequested || !string.Equals(identity, _requestedIdentity, StringComparison.Ordinal)) return;
+            var contentType = hasPreview ? Attachment.PreviewContentType ?? "image/webp" : Attachment.ContentType;
+            _source = $"data:{contentType};base64,{Convert.ToBase64String(bytes)}";
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+        catch (Exception exception)
+        {
+            if (!string.Equals(identity, _requestedIdentity, StringComparison.Ordinal)) return;
+            _failedIdentity = identity;
+            Logger.LogWarning(exception, "Could not load attachment image {AttachmentId}.", Attachment.Id);
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void ImageLoaded()
+    {
+        if (!string.IsNullOrWhiteSpace(_source)) _loadedIdentity = _requestedIdentity;
+    }
+
+    private void ImageFailed()
+    {
+        if (!string.IsNullOrWhiteSpace(_source)) _failedIdentity = _requestedIdentity;
+    }
+
+    private async Task ImageClickedAsync()
+    {
+        if (DeliveryState != MessageDeliveryState.Confirmed) return;
+        if (HasFailed)
+        {
+            _failedIdentity = null;
+            _source = null;
+            _loadCancellation?.Cancel();
+            _loadCancellation?.Dispose();
+            _loadCancellation = new CancellationTokenSource();
+            await LoadAuthoritativeImageAsync(_requestedIdentity!, _loadCancellation.Token);
+            return;
+        }
+        if (IsCovered) { _spoilerRevealed = true; return; }
+        if (!IsReady || string.IsNullOrWhiteSpace(_source)) return;
+        _viewerOpen = true;
+        _viewerLoaded = false;
+        _viewerFailed = false;
+        _focusViewer = true;
+        if (_viewerSource is null)
+        {
+            _viewerCancellation?.Cancel();
+            _viewerCancellation?.Dispose();
+            _viewerCancellation = new CancellationTokenSource();
+            _ = LoadOriginalForViewerAsync(_viewerCancellation.Token);
+        }
+    }
+
+    private async Task LoadOriginalForViewerAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var bytes = await NodeSession.DownloadAttachmentAsync(Attachment.Id, cancellationToken);
+            if (cancellationToken.IsCancellationRequested) return;
+            _viewerSource = $"data:{Attachment.OriginalContentType};base64,{Convert.ToBase64String(bytes)}";
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+        catch (Exception exception)
+        {
+            _viewerFailed = true;
+            Logger.LogWarning(exception, "Could not load original attachment image {AttachmentId}.", Attachment.Id);
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_focusViewer) return;
+        _focusViewer = false;
+        await _viewerBackdrop.FocusAsync(preventScroll: true);
+    }
+
+    private void ViewerLoaded() => _viewerLoaded = true;
+    private void ViewerFailed() => _viewerFailed = true;
+    private void CloseViewer() => _viewerOpen = false;
+    private void ViewerKeyDown(KeyboardEventArgs args)
+    {
+        if (args.Key == "Escape") CloseViewer();
+    }
+
+    private string ImageStyle => CssVariables(viewer: false);
+    private string ViewerStyle => CssVariables(viewer: true);
+    private string CssVariables(bool viewer)
+    {
+        var width = Attachment.Width is > 0 ? Attachment.Width.Value : 320;
+        var height = Attachment.Height is > 0 ? Attachment.Height.Value : 180;
+        var scale = Math.Min(1d, Math.Min(512d / width, 352d / height));
+        var boxWidth = Math.Max(1, Math.Round(width * scale));
+        var color = Attachment.AverageColor is { Length: 7 } value && value[0] == '#' ? value : "#252936";
+        return viewer
+            ? FormattableString.Invariant($"--native-width:{width}px;--image-ratio:{width / (double)height};--image-aspect:{width}/{height};--image-color:{color}")
+            : FormattableString.Invariant($"--image-box-width:{boxWidth}px;--image-aspect:{width}/{height};--image-color:{color}");
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        _loadCancellation?.Cancel();
+        _loadCancellation?.Dispose();
+        _viewerCancellation?.Cancel();
+        _viewerCancellation?.Dispose();
+        _source = null;
+        _viewerSource = null;
+        return ValueTask.CompletedTask;
+    }
+}

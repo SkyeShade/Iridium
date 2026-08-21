@@ -13,7 +13,7 @@ public sealed class MessageSearchParserTests
         var channelId = Guid.NewGuid();
         var member = new CommunityMemberDto(accountId, "skye", "Skye", null, null, null,
             DateTimeOffset.UtcNow, false, PublicPresence.Online, []);
-        var channel = new CommunityChannelDto(channelId, communityId, null, "general", 0, DateTimeOffset.UtcNow);
+        var channel = new CommunityChannelDto(channelId, communityId, Guid.NewGuid(), "general", 0, DateTimeOffset.UtcNow);
         var selected = new Dictionary<string, Guid>(StringComparer.OrdinalIgnoreCase)
         {
             ["from:skye"] = accountId,

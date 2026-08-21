@@ -52,12 +52,14 @@ public sealed record ChannelMessageDto(
     Guid? ClientMessageId = null,
     MessageDeliveryState DeliveryState = MessageDeliveryState.Confirmed,
     string? DeliveryError = null,
-    bool CanRetry = false);
+    bool CanRetry = false,
+    IReadOnlyList<AttachmentDto>? Attachments = null);
 
 public sealed record SendChannelMessageRequest(
     string Content,
     Guid? ReplyToMessageId,
     IReadOnlyList<CommunityMentionInput>? Mentions = null,
-    Guid? ClientMessageId = null);
+    Guid? ClientMessageId = null,
+    IReadOnlyList<Guid>? AttachmentIds = null);
 public sealed record EditChannelMessageRequest(string Content);
 public sealed record ChannelMessageDeletedEvent(Guid CommunityId, Guid ChannelId, Guid MessageId, DateTimeOffset DeletedAt);

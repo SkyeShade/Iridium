@@ -37,12 +37,14 @@ public sealed class CommunityUnreadStateTests
         var reader = Account("reader");
         var community = new Community { Id = Guid.NewGuid(), Name = "Test", OwnerAccountId = owner.Id,
             OwnerAccount = owner, CreatedAt = DateTimeOffset.UtcNow };
+        var category = new CommunityCategory { Id = Guid.NewGuid(), CommunityId = community.Id, Community = community,
+            Name = "TEXT CHANNELS", Position = 0 };
         var channel = new CommunityChannel { Id = Guid.NewGuid(), CommunityId = community.Id, Community = community,
-            Name = "general", Position = 0, CreatedAt = DateTimeOffset.UtcNow };
+            CategoryId = category.Id, Category = category, Name = "general", Position = 0, CreatedAt = DateTimeOffset.UtcNow };
         var createdAt = DateTimeOffset.UtcNow;
         var message = new ChannelMessage { Id = Guid.NewGuid(), CommunityId = community.Id, ChannelId = channel.Id,
             Channel = channel, AuthorAccountId = owner.Id, AuthorAccount = owner, Content = "hello", CreatedAt = createdAt };
-        db.AddRange(owner, reader, community, channel, message);
+        db.AddRange(owner, reader, community, category, channel, message);
         await db.SaveChangesAsync();
 
         Assert.True(await HasUnreadAsync(db, reader.Id, community.Id));

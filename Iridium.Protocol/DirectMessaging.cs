@@ -42,8 +42,10 @@ public sealed record DirectMessageDto(
     Guid? ClientMessageId = null,
     MessageDeliveryState DeliveryState = MessageDeliveryState.Confirmed,
     string? DeliveryError = null,
-    bool CanRetry = false);
+    bool CanRetry = false,
+    IReadOnlyList<AttachmentDto>? Attachments = null);
 
-public sealed record SendDirectMessageRequest(string Content, Guid? ReplyToMessageId, Guid? ClientMessageId = null);
+public sealed record SendDirectMessageRequest(string Content, Guid? ReplyToMessageId, Guid? ClientMessageId = null,
+    IReadOnlyList<Guid>? AttachmentIds = null);
 public sealed record EditDirectMessageRequest(string Content);
 public sealed record DirectMessageDeletedEvent(Guid ConversationId, Guid MessageId, DateTimeOffset DeletedAt);

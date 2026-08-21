@@ -12,6 +12,7 @@ builder.Services.AddScoped(sp => new HttpClient { BaseAddress = new Uri(builder.
 builder.Services.AddScoped<BrowserClientStorage>();
 builder.Services.AddScoped<AppearanceService>();
 builder.Services.AddScoped<MessageMenuCoordinator>();
+builder.Services.AddScoped<IAttachmentComposerService, AttachmentComposerService>();
 builder.Services.AddScoped<ISavedNodeStore>(sp => sp.GetRequiredService<BrowserClientStorage>());
 builder.Services.AddScoped<INodeTokenStore>(sp => sp.GetRequiredService<BrowserClientStorage>());
 builder.Services.AddScoped<ISavedAccountStore>(sp => sp.GetRequiredService<BrowserClientStorage>());

@@ -6,6 +6,8 @@ using Iridium.Server.Security;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
+using Iridium.Server.Configuration;
+using Microsoft.Extensions.Options;
 
 namespace Iridium.Server.Hubs;
 
@@ -14,7 +16,9 @@ public sealed class ChatHub(
     PresenceTracker presence,
     IridiumDbContext db,
     SessionService sessions,
-    CommunityAuthorizationService authorization) : Hub
+    CommunityAuthorizationService authorization,
+    IOptions<NodeOptions> nodeOptions,
+    ICommunityLimitsService limitService) : Hub
 {
     private const string CountedKey = "iridium.connection-counted";
     private const string AccountKey = "iridium.account-id";
@@ -76,12 +80,14 @@ public sealed class ChatHub(
         {
             var existing = await db.ChannelMessages.Include(value => value.AuthorAccount)
                 .Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
+                .Include(value => value.Attachments)
                 .SingleOrDefaultAsync(value => value.AuthorAccountId == session.AccountId &&
                     value.CommunityId == communityId && value.ChannelId == channelId &&
                     value.ClientMessageId == existingClientId);
             if (existing is not null) return ChannelMessageMapper.ToDto(existing);
         }
-        var content = ValidContent(request.Content);
+        var attachments = await ValidateAttachmentsAsync(request.AttachmentIds, session.AccountId);
+        var content = ValidContent(request.Content, attachments.Count > 0, communityId);
         var (mentions, recipients) = await ValidateMentionsAsync(
             communityId, session.AccountId, content, request.Mentions);
 
@@ -108,6 +114,12 @@ public sealed class ChatHub(
             ReplyToMessage = reply,
             MentionsJson = mentions.Count == 0 ? null : JsonSerializer.Serialize(mentions)
         };
+        foreach (var attachment in attachments)
+        {
+            attachment.ChannelMessageId = message.Id;
+            attachment.ChannelMessage = message;
+            message.Attachments.Add(attachment);
+        }
         db.ChannelMessages.Add(message);
         foreach (var recipientId in recipients)
         {
@@ -153,7 +165,7 @@ public sealed class ChatHub(
         if (message.AuthorAccountId != accountId) throw new HubException("You can only edit your own messages.");
         if (message.IsDeleted) throw new HubException("Deleted messages cannot be edited.");
 
-        message.Content = ValidContent(request.Content);
+        message.Content = ValidContent(request.Content, communityId: communityId);
         message.MentionsJson = null;
         message.EditedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync();
@@ -201,10 +213,12 @@ public sealed class ChatHub(
         {
             var existing = await db.DirectMessages.Include(value => value.AuthorAccount)
                 .Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
+                .Include(value => value.Attachments)
                 .SingleOrDefaultAsync(value => value.AuthorAccountId == session.AccountId &&
                     value.ConversationId == conversationId && value.ClientMessageId == existingClientId);
             if (existing is not null) return DirectMessageMapper.ToDto(existing);
         }
+        var attachments = await ValidateAttachmentsAsync(request.AttachmentIds, session.AccountId);
         DirectMessage? reply = null;
         if (request.ReplyToMessageId is { } replyId)
         {
@@ -220,11 +234,17 @@ public sealed class ChatHub(
             AuthorAccountId = session.AccountId,
             ClientMessageId = request.ClientMessageId,
             AuthorAccount = session.Account,
-            Content = ValidContent(request.Content),
+            Content = ValidContent(request.Content, attachments.Count > 0),
             CreatedAt = DateTimeOffset.UtcNow,
             ReplyToMessageId = reply?.Id,
             ReplyToMessage = reply
         };
+        foreach (var attachment in attachments)
+        {
+            attachment.DirectMessageId = message.Id;
+            attachment.DirectMessage = message;
+            message.Attachments.Add(attachment);
+        }
         db.DirectMessages.Add(message);
         await db.SaveChangesAsync();
         var result = DirectMessageMapper.ToDto(message);
@@ -271,6 +291,7 @@ public sealed class ChatHub(
         var message = await db.ChannelMessages
             .Include(value => value.AuthorAccount)
             .Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
+            .Include(value => value.Attachments)
             .SingleOrDefaultAsync(value => value.Id == messageId && value.CommunityId == communityId && value.ChannelId == channelId);
         return message ?? throw new HubException("Message not found in this Community channel.");
     }
@@ -287,6 +308,7 @@ public sealed class ChatHub(
         var message = await db.DirectMessages
             .Include(value => value.AuthorAccount)
             .Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
+            .Include(value => value.Attachments)
             .SingleOrDefaultAsync(value => value.Id == messageId && value.ConversationId == conversationId);
         return message ?? throw new HubException("Direct message not found in this conversation.");
     }
@@ -344,6 +366,7 @@ public sealed class ChatHub(
             if (input.Start < 0 || input.Length < 2 || input.Start + input.Length > content.Length)
                 throw new HubException("A mention does not match the message content.");
             if (content[input.Start] != '@') throw new HubException("A mention must begin with @ in the message content.");
+            if (!MessageText.AllowsMentionAt(content, input.Start)) continue;
             if (!unique.Add((input.Kind, input.TargetId, input.Start))) continue;
 
             switch (input.Kind)
@@ -405,12 +428,33 @@ public sealed class ChatHub(
         return sessions.GetByTokenAsync(token ?? string.Empty, db);
     }
 
-    private static string ValidContent(string? value)
+    private async Task<List<Attachment>> ValidateAttachmentsAsync(IReadOnlyList<Guid>? requested, Guid accountId)
     {
-        if (string.IsNullOrWhiteSpace(value)) throw new HubException("Messages cannot be empty.");
-        var content = value.TrimEnd();
-        if (content.Length > 4000) throw new HubException("Messages cannot exceed 4,000 characters.");
-        return content;
+        if (requested is null || requested.Count == 0) return [];
+        if (requested.Count > nodeOptions.Value.MaxAttachmentsPerMessage)
+            throw new HubException($"Messages may contain at most {nodeOptions.Value.MaxAttachmentsPerMessage} attachments.");
+        if (requested.Count != requested.Distinct().Count()) throw new HubException("An attachment was selected more than once.");
+        var attachments = await db.Attachments.Where(value => requested.Contains(value.Id)).ToListAsync();
+        if (attachments.Count != requested.Count || attachments.Any(value => value.UploaderAccountId != accountId))
+            throw new HubException("One or more attachments are unavailable.");
+        if (attachments.Any(value => value.ChannelMessageId != null || value.DirectMessageId != null))
+            throw new HubException("One or more attachments have already been sent.");
+        if (attachments.Any(value => value.OriginalSizeBytes > nodeOptions.Value.MaxAttachmentBytes))
+            throw new HubException("One or more attachments exceed this Node's file limit.");
+        return requested.Select(id => attachments.Single(value => value.Id == id)).ToList();
+    }
+
+    private string ValidContent(string? value, bool allowEmpty = false, Guid? communityId = null)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            if (allowEmpty) return string.Empty;
+            throw new HubException("Messages cannot be empty.");
+        }
+        var maximum = limitService.GetEffectiveLimits(communityId).MaxMessageCharacters;
+        if (MessageText.CountCharacters(value) > maximum)
+            throw new HubException($"Messages cannot exceed {maximum:N0} characters.");
+        return value;
     }
 
     private static string GroupName(Guid communityId, Guid channelId) => $"community:{communityId:N}:channel:{channelId:N}";

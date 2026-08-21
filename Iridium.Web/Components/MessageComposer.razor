@@ -3,15 +3,52 @@
 @implements IAsyncDisposable
 @inject IJSRuntime JS
 @inject ILogger<MessageComposer> Logger
+@inject IAttachmentComposerService Attachments
 
 <div class="composer-wrap">
-    <div class="composer-shell">
+    <div class="composer-shell" @ref="_composerShell">
         @if (!string.IsNullOrWhiteSpace(ReplyToDisplayName))
         {
             <div class="replying"><span>Replying to <strong class="display-name">@ReplyToDisplayName</strong></span><button title="Cancel reply" @onclick="OnCancelReply"><Icon Name="close" /></button></div>
         }
-        <textarea class="iridium-textarea-scrollbar" @ref="_textarea" value="@_content" @oninput="ContentChangedAsync" maxlength="4000" rows="1"
-                  placeholder="@ComposerPlaceholder" aria-label="@ComposerPlaceholder"></textarea>
+        @if (PendingAttachments.Count > 0)
+        {
+            <div class="attachment-tray" aria-label="Pending attachments">
+                @foreach (var attachment in PendingAttachments)
+                {
+                    <div class="attachment-card @(attachment.IsImage ? "image-card" : "file-card") @(attachment.IsSpoiler ? "spoiler" : null)">
+                        @if (attachment.PreviewUrl is { } preview)
+                        {
+                            <img src="@preview" alt="Preview of @attachment.FileName" />
+                        }
+                        else
+                        {
+                            <span class="file-icon"><Icon Name="file" /></span>
+                        }
+                        <span class="attachment-info"><strong title="@attachment.FileName">@attachment.FileName</strong><small>@AttachmentComposerService.FormatSize(attachment.SizeBytes)@(attachment.State == PendingAttachmentState.Uploading ? " · Uploading" : null)</small></span>
+                        @if (attachment.IsSpoiler && attachment.IsImage) { <span class="spoiler-badge">Spoiler</span> }
+                        <div class="attachment-actions">
+                            <button type="button" class="spoiler-action @(attachment.IsSpoiler ? "active" : null)" title="@(attachment.IsSpoiler ? "Remove spoiler" : "Mark as spoiler")" aria-pressed="@attachment.IsSpoiler" @onclick="() => ToggleSpoiler(attachment.LocalId)"><Icon Name="eye" /></button>
+                            <button type="button" class="remove-attachment" title="Remove @attachment.FileName" @onclick="() => RemoveAttachment(attachment.LocalId)"><Icon Name="close" /></button>
+                        </div>
+                    </div>
+                }
+            </div>
+        }
+        @if (!string.IsNullOrWhiteSpace(_attachmentError))
+        {
+            <div class="attachment-error" role="alert">@_attachmentError</div>
+        }
+        <div class="composer-input-row">
+            <InputFile @key="_inputRevision" id="@FileInputId" style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;pointer-events:none" tabindex="-1" OnChange="FilesSelectedAsync" multiple />
+            <button type="button" class="attachment-button" title="Add files" aria-label="Add files" @onclick="OpenFilePickerAsync">+</button>
+            <div class="composer-editor">
+                <div class="composer-highlight" aria-hidden="true"><ComposerMarkdownPreview Content="@_content" /></div>
+                <textarea class="iridium-textarea-scrollbar" @ref="_textarea" value="@_content" @oninput="ContentChangedAsync" rows="1"
+                          placeholder="@ComposerPlaceholder" aria-label="@ComposerPlaceholder"></textarea>
+            </div>
+            <span class="character-counter @(RemainingCharacters < 0 ? "over-limit" : null)" aria-label="@($"{RemainingCharacters} characters remaining")">@RemainingCharacters</span>
+        </div>
         @if (Suggestions.Count > 0)
         {
             <div class="mention-suggestions" role="listbox" aria-label="Mention suggestions">
@@ -46,26 +83,59 @@
     [Parameter] public Func<MessageSubmission, Task<bool>>? SendRich { get; set; }
     [Parameter] public CommunityManagementDto? CommunityManagement { get; set; }
     [Parameter] public EventCallback OnCancelReply { get; set; }
+    [Parameter, EditorRequired] public required string NodeAuthority { get; set; }
+    [Parameter, EditorRequired] public required Guid AccountId { get; set; }
+    [Parameter, EditorRequired] public required Guid ConversationId { get; set; }
+    [Parameter, EditorRequired] public required string ConversationKind { get; set; }
     private string _content = string.Empty;
     private ElementReference _textarea;
+    private ElementReference _composerShell;
     private IJSObjectReference? _module;
     private DotNetObjectReference<MessageComposer>? _selfReference;
     private bool _submitting;
     private bool _resizeAfterRender;
     private int? _focusCaretAfterRender;
+    private int? _pickerCaret;
     private string? _renderedChannelName;
+    private ComposerAttachmentKey? _attachmentKey;
+    private ComposerAttachmentKey? _loadedLimitsKey;
+    private string? _attachmentError;
+    private int _inputRevision;
+    private int _maxMessageCharacters = 10_000;
     private readonly List<CommunityMentionInput> _mentions = [];
     private int _mentionStart = -1;
     private int _mentionEnd = -1;
     private string _mentionQuery = string.Empty;
     private int _suggestionIndex;
     private string ComposerPlaceholder => PlaceholderText ?? $"Message #{ChannelName}";
+    private string FileInputId => $"attachment-{ConversationKind}-{ConversationId:N}-{_inputRevision}";
+    private IReadOnlyList<PendingAttachment> PendingAttachments => _attachmentKey is { } key ? Attachments.Get(key) : [];
+    private int RemainingCharacters => _maxMessageCharacters - MessageText.CountCharacters(_content);
 
     protected override void OnParametersSet()
     {
+        _attachmentKey = new(NodeAuthority, AccountId, ConversationKind, ConversationId);
         if (string.Equals(_renderedChannelName, ChannelName, StringComparison.Ordinal)) return;
         _renderedChannelName = ChannelName;
         _resizeAfterRender = true;
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_attachmentKey is not { } key || _loadedLimitsKey == key) return;
+        try
+        {
+            var limits = await Attachments.GetLimitsAsync(key);
+            if (_attachmentKey == key)
+            {
+                _maxMessageCharacters = limits.MaxMessageCharacters;
+                _loadedLimitsKey = key;
+            }
+        }
+        catch (Exception exception)
+        {
+            Logger.LogWarning(exception, "Could not load message limits for Node {NodeAuthority}.", NodeAuthority);
+        }
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -74,7 +144,7 @@
         {
             _module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/chat.js");
             _selfReference = DotNetObjectReference.Create(this);
-            await _module.InvokeVoidAsync("wireComposer", _textarea, _selfReference);
+            await _module.InvokeVoidAsync("wireComposer", _textarea, _selfReference, _composerShell);
             _resizeAfterRender = false;
             return;
         }
@@ -100,14 +170,23 @@
             Logger.LogDebug("Ignored a keyboard submission while the composer for channel {ChannelName} was busy.", ChannelName);
             return;
         }
-        if (string.IsNullOrWhiteSpace(_content)) return;
+        if (RemainingCharacters < 0)
+        {
+            _attachmentError = $"Shorten the message by {-RemainingCharacters:N0} characters before sending.";
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(_content) && PendingAttachments.Count == 0) return;
 
         _submitting = true;
         var content = _content;
         try
         {
+            var localAttachments = _attachmentKey is { } key ? Attachments.LocalDtos(key) : [];
+            var uploadOperation = _attachmentKey is { } uploadKey && localAttachments.Count > 0
+                ? Attachments.CreateUploadOperation(uploadKey)
+                : null;
             var succeeded = SendRich is not null
-                ? await SendRich(new(content, _mentions.ToArray()))
+                ? await SendRich(new(content, _mentions.ToArray(), localAttachments, uploadOperation))
                 : Send is not null && await Send(content);
             if (succeeded)
             {
@@ -115,11 +194,14 @@
                 _mentions.Clear();
                 CloseSuggestions();
                 _resizeAfterRender = true;
+                if (_attachmentKey is { } sentKey) Attachments.Clear(sentKey);
+                _attachmentError = null;
             }
         }
         catch (Exception exception)
         {
             Logger.LogError(exception, "Unexpected composer submission failure in channel {ChannelName}.", ChannelName);
+            _attachmentError = exception.GetBaseException().Message;
         }
         finally
         {
@@ -128,17 +210,58 @@
         }
     }
 
+    private async Task FilesSelectedAsync(InputFileChangeEventArgs args)
+    {
+        if (_attachmentKey is not { } key) return;
+        try
+        {
+            _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/chat.js");
+            var metadata = await _module.InvokeAsync<BrowserImageMetadata[]>("analyzeComposerFiles", _composerShell);
+            var result = await Attachments.AddAsync(key, args.GetMultipleFiles(100), metadata);
+            _attachmentError = result.Error;
+        }
+        catch (Exception exception)
+        {
+            Logger.LogWarning(exception, "Could not add selected attachments.");
+            _attachmentError = exception.GetBaseException().Message;
+        }
+        _inputRevision++;
+        _focusCaretAfterRender = _pickerCaret ?? _content.Length;
+        _pickerCaret = null;
+    }
+
+    private void RemoveAttachment(Guid localId)
+    {
+        if (_attachmentKey is { } key) Attachments.Remove(key, localId);
+        _attachmentError = null;
+    }
+
+    private void ToggleSpoiler(Guid localId)
+    {
+        if (_attachmentKey is { } key) Attachments.ToggleSpoiler(key, localId);
+    }
+
+    private async Task OpenFilePickerAsync()
+    {
+        _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/chat.js");
+        _pickerCaret = await _module.InvokeAsync<int>("composerCaret", _textarea);
+        await _module.InvokeVoidAsync("openComposerFilePicker", _composerShell);
+    }
+
     private async Task ContentChangedAsync(ChangeEventArgs args)
     {
         _content = args.Value?.ToString() ?? string.Empty;
+        if (RemainingCharacters >= 0 && _attachmentError?.StartsWith("Shorten the message by ", StringComparison.Ordinal) == true)
+            _attachmentError = null;
         _mentions.RemoveAll(value => value.Start < 0 || value.Start + value.Length > _content.Length || _content[value.Start] != '@');
         var caret = _module is null
             ? _content.Length
             : await _module.InvokeAsync<int>("composerCaret", _textarea);
         caret = Math.Clamp(caret, 0, _content.Length);
-        var match = System.Text.RegularExpressions.Regex.Match(_content[..caret], @"(?:^|\s)@([\p{L}\p{N}_-]*)$");
+        var match = System.Text.RegularExpressions.Regex.Match(_content[..caret],
+            @"(?:^|\s|\*{1,3}|__|~~|\|\|)@([\p{L}\p{N}_-]*)$");
         if (!match.Success || CommunityManagement is null) { CloseSuggestions(); return; }
-        _mentionStart = match.Index + (char.IsWhiteSpace(_content[match.Index]) ? 1 : 0);
+        _mentionStart = match.Groups[1].Index - 1;
         _mentionEnd = caret;
         _mentionQuery = match.Groups[1].Value;
         _suggestionIndex = Math.Clamp(_suggestionIndex, 0, Math.Max(0, Suggestions.Count - 1));

@@ -41,6 +41,21 @@ public sealed class NodeSession(
     public event Action<CommunityMentionReceivedEvent>? CommunityMentionReceived;
     public event Action<CommunityChannelActivityEvent>? CommunityChannelActivity;
 
+    public Task<ServerInfoDto> GetServerInfoAsync(CancellationToken cancellationToken = default) =>
+        AuthorizedClient.GetServerInfoAsync(cancellationToken);
+
+    public Task<AttachmentUploadDto> UploadAttachmentAsync(Stream content, string fileName, string contentType,
+        bool isSpoiler = false, int? width = null, int? height = null, string? averageColor = null,
+        CancellationToken cancellationToken = default) =>
+        AuthorizedClient.UploadAttachmentAsync(content, fileName, contentType, isSpoiler,
+            width, height, averageColor, cancellationToken);
+
+    public Task<byte[]> DownloadAttachmentAsync(Guid attachmentId, CancellationToken cancellationToken = default) =>
+        AuthorizedClient.DownloadAttachmentAsync(attachmentId, cancellationToken);
+
+    public Task<byte[]> DownloadAttachmentPreviewAsync(Guid attachmentId, CancellationToken cancellationToken = default) =>
+        AuthorizedClient.DownloadAttachmentPreviewAsync(attachmentId, cancellationToken);
+
     internal NodeClient AuthorizedClient
     {
         get { EnsureAuthenticated(); return _client!; }

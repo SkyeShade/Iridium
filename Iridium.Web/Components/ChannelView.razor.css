@@ -5,3 +5,4 @@
 .jump-latest{position:absolute;z-index:4;left:50%;bottom:.55rem;transform:translateX(-50%);padding:.42rem .85rem;border:1px solid color-mix(in srgb,var(--accent) 55%,var(--border));border-radius:999px;color:white;background:var(--accent);box-shadow:0 7px 20px #0007;cursor:pointer;font-size:.75rem}.jump-latest:hover{filter:brightness(1.08)}
 .composer-region { grid-row: 4; }
 .composer-region.read-only { padding: .8rem 1rem; color: var(--text-faint); font-size: .75rem; text-align: center; }
+.channel-view.file-drag-over .message-region{box-shadow:inset 0 0 0 2px color-mix(in srgb,var(--accent) 32%,transparent);background:color-mix(in srgb,var(--accent) 4%,transparent)}

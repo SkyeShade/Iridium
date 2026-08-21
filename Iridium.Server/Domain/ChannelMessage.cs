@@ -18,4 +18,5 @@ public sealed class ChannelMessage
     public required NodeAccount AuthorAccount { get; set; }
     public ChannelMessage? ReplyToMessage { get; set; }
     public ICollection<ChannelMessage> Replies { get; set; } = [];
+    public ICollection<Attachment> Attachments { get; set; } = [];
 }

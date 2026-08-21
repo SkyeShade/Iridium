@@ -2,31 +2,17 @@
 @using Iridium.Client.Core
 @using Iridium.Web.Models
 
-<span class="message-text">
-    @foreach (var segment in Segments)
-    {
-        if (segment.Mention is { } mention)
-        {
-            if (mention.Kind == CommunityMentionKind.Account && mention.TargetId is { } accountId)
-            {
-                <button class="mention" @onclick="args => OnProfile.InvokeAsync(new(accountId, args))">@mention.DisplayText</button>
-            }
-            else
-            {
-                <span class="mention">@mention.DisplayText</span>
-            }
-        }
-        else
-        {
-            @segment.Text
-        }
-    }
-</span>
+<div class="message-text">
+    <MessageContentNodeView Nodes="Nodes" RevealedSpoilers="_revealedSpoilers"
+                            OnRevealSpoiler="RevealSpoiler" OnProfile="OnProfile" />
+</div>
 
 @code {
     [Parameter, EditorRequired] public required string Content { get; set; }
     [Parameter] public IReadOnlyList<CommunityMentionDto>? Mentions { get; set; }
     [Parameter] public EventCallback<MentionProfileClick> OnProfile { get; set; }
 
-    private IReadOnlyList<MessageContentSegment> Segments => MessageContentSegments.Parse(Content, Mentions);
+    private IReadOnlyList<MessageContentNode> Nodes => MessageContentSegments.Parse(Content, Mentions);
+    private readonly HashSet<int> _revealedSpoilers = [];
+    private void RevealSpoiler(int spoilerId) => _revealedSpoilers.Add(spoilerId);
 }

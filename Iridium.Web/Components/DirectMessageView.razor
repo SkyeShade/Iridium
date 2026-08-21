@@ -9,9 +9,8 @@
     <header class="dm-header">
         <ProfileAvatar DisplayName="@Conversation.OtherParticipant.DisplayName" Presence="@Conversation.OtherParticipant.Presence" Size="small" Surface="base" />
         <div><strong class="display-name">@Conversation.OtherParticipant.DisplayName</strong><span>@IridiumIdentity.Format(Conversation.OtherParticipant.Username, NodeAuthority)</span></div>
-        <MessageSearch ConversationId="Conversation.Id" ContextName="@Conversation.OtherParticipant.DisplayName"
-                       NodeAuthority="@NodeAuthority"
-                       OnResultSelected="OpenSearchResultAsync" />
+        <button type="button" class="voice-call-button" title="Start Voice Call" aria-label="Start Voice Call"
+                @onclick="OnStartVoiceCall"><Icon Name="phone" /></button>
     </header>
     @if (_loading) { <div class="dm-status">Loading message history…</div> }
     @if (!string.IsNullOrWhiteSpace(_error)) { <div class="dm-error">@_error</div> }
@@ -30,7 +29,8 @@
         <MessageComposer @ref="_composer" ChannelName="@Conversation.OtherParticipant.DisplayName"
                          PlaceholderText="@($"Message {Conversation.OtherParticipant.DisplayName}")"
                          ReplyToDisplayName="@(_replyTo?.Author.DisplayName)" Busy="@(_sending || _loading)"
-                         Send="SendMessageAsync" OnCancelReply="CancelReplyAsync" />
+                         SendRich="SendMessageAsync" OnCancelReply="CancelReplyAsync"
+                         NodeAuthority="@NodeAuthority" AccountId="@CurrentAccountId" ConversationKind="direct" ConversationId="@Conversation.Id" />
     </div>
 </section>
 
@@ -40,6 +40,7 @@
     [Parameter, EditorRequired] public required string NodeAuthority { get; set; }
     [Parameter] public EventCallback OnEditProfile { get; set; }
     [Parameter] public EventCallback<Guid> OnMessage { get; set; }
+    [Parameter] public EventCallback OnStartVoiceCall { get; set; }
     [Parameter] public Guid? TargetMessageId { get; set; }
     private Guid? _loadedConversationId;
     private ChannelMessageDto? _replyTo;
@@ -55,7 +56,7 @@
     private IReadOnlyList<ChannelMessageDto> ProjectedMessages => Messaging.DirectMessages.Select(message =>
         new ChannelMessageDto(message.Id, Guid.Empty, message.ConversationId, message.Author, message.Content,
             message.CreatedAt, message.EditedAt, message.IsDeleted, message.ReplyTo, null,
-            message.ClientMessageId, message.DeliveryState, message.DeliveryError, message.CanRetry)).ToArray();
+            message.ClientMessageId, message.DeliveryState, message.DeliveryError, message.CanRetry, message.Attachments)).ToArray();
 
     protected override void OnInitialized() => Messaging.Changed += MessagesChanged;
     protected override async Task OnParametersSetAsync()
@@ -95,7 +96,7 @@
         await InvokeAsync(StateHasChanged);
         if (_composer is not null) await _composer.FocusAsync();
     }
-    private async Task<bool> SendMessageAsync(string content)
+    private async Task<bool> SendMessageAsync(MessageSubmission submission)
     {
         if (_sending || _loading) return false;
         _sending = true;
@@ -104,7 +105,8 @@
         {
             var smooth = ShowJumpToLatest;
             _messageList?.PrepareUserLatestTransition(smooth);
-            Messaging.QueueDirectMessage(content, _replyTo?.Id);
+            Messaging.QueueDirectMessage(submission.Content, _replyTo?.Id, submission.Attachments,
+                submission.UploadAttachments);
             _replyTo = null;
             await InvokeAsync(StateHasChanged);
             if (_composer is not null) await _composer.FocusAsync();
@@ -140,7 +142,7 @@
         _loadedTargetMessageId = TargetMessageId;
         await InvokeAsync(StateHasChanged);
     }
-    private async Task OpenSearchResultAsync(MessageSearchResultDto result)
+    public async Task OpenSearchResultAsync(MessageSearchResultDto result)
     {
         _loadedTargetMessageId = result.MessageId;
         await Messaging.OpenDirectAroundAsync(Conversation.Id, result.MessageId);

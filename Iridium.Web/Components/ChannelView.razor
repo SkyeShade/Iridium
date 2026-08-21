@@ -33,7 +33,8 @@
     {
         <div class="composer-region">
             <MessageComposer @ref="_composer" ChannelName="@Channel.Name" ReplyToDisplayName="@(_replyTo?.Author.DisplayName)" Busy="@(_sending || _loading)"
-                             CommunityManagement="CommunityManagement" SendRich="SendMessageAsync" OnCancelReply="CancelReplyAsync" />
+                             CommunityManagement="CommunityManagement" SendRich="SendMessageAsync" OnCancelReply="CancelReplyAsync"
+                             NodeAuthority="@NodeAuthority" AccountId="@CurrentAccountId" ConversationKind="channel" ConversationId="@Channel.Id" />
         </div>
     }
     else
@@ -132,7 +133,8 @@
         {
             var smooth = ShowJumpToLatest;
             _messageList?.PrepareUserLatestTransition(smooth);
-            Messaging.QueueMessage(submission.Content, _replyTo?.Id, submission.Mentions);
+            Messaging.QueueMessage(submission.Content, _replyTo?.Id, submission.Mentions, submission.Attachments,
+                submission.UploadAttachments);
             _replyTo = null;
             await RenderAsync();
             if (_composer is not null) await _composer.FocusAsync();

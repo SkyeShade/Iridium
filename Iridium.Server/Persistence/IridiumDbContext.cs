@@ -23,6 +23,7 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
     public DbSet<DirectConversation> DirectConversations => Set<DirectConversation>();
     public DbSet<DirectConversationState> DirectConversationStates => Set<DirectConversationState>();
     public DbSet<DirectMessage> DirectMessages => Set<DirectMessage>();
+    public DbSet<Attachment> Attachments => Set<Attachment>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -116,8 +117,12 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
         var category = modelBuilder.Entity<CommunityCategory>();
         category.HasKey(value => new { value.CommunityId, value.Id });
         category.Property(value => value.Name).HasMaxLength(100);
-        category.HasIndex(value => new { value.CommunityId, value.Position });
+        category.HasIndex(value => new { value.CommunityId, value.ParentCategoryId, value.Position });
         category.HasOne(value => value.Community).WithMany(value => value.Categories).HasForeignKey(value => value.CommunityId);
+        category.HasOne(value => value.ParentCategory).WithMany(value => value.ChildCategories)
+            .HasForeignKey(value => new { value.CommunityId, value.ParentCategoryId })
+            .HasPrincipalKey(value => new { value.CommunityId, value.Id })
+            .OnDelete(DeleteBehavior.Restrict);
 
         var channel = modelBuilder.Entity<CommunityChannel>();
         channel.HasKey(value => new { value.CommunityId, value.Id });
@@ -142,7 +147,7 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
 
         var message = modelBuilder.Entity<ChannelMessage>();
         message.HasKey(value => value.Id);
-        message.Property(value => value.Content).HasMaxLength(4000);
+        message.Property(value => value.Content);
         message.Property(value => value.MentionsJson).HasMaxLength(8000);
         message.Property(value => value.CreatedAt)
             .HasConversion(value => value.UtcTicks, value => new DateTimeOffset(value, TimeSpan.Zero));
@@ -206,7 +211,7 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
 
         var directMessage = modelBuilder.Entity<DirectMessage>();
         directMessage.HasKey(value => value.Id);
-        directMessage.Property(value => value.Content).HasMaxLength(4000);
+        directMessage.Property(value => value.Content);
         directMessage.Property(value => value.CreatedAt)
             .HasConversion(value => value.UtcTicks, value => new DateTimeOffset(value, TimeSpan.Zero));
         directMessage.Property(value => value.EditedAt)
@@ -224,5 +229,30 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
             .HasForeignKey(value => value.AuthorAccountId).OnDelete(DeleteBehavior.Restrict);
         directMessage.HasOne(value => value.ReplyToMessage).WithMany(value => value.Replies)
             .HasForeignKey(value => value.ReplyToMessageId).OnDelete(DeleteBehavior.SetNull);
+
+        var attachment = modelBuilder.Entity<Attachment>();
+        attachment.HasKey(value => value.Id);
+        attachment.Property(value => value.OriginalFileName).HasMaxLength(255);
+        attachment.Property(value => value.OriginalObjectKey).HasColumnName("StoredObjectKey").HasMaxLength(64);
+        attachment.Property(value => value.PreviewObjectKey).HasMaxLength(64);
+        attachment.Property(value => value.OriginalContentType).HasColumnName("ContentType").HasMaxLength(255);
+        attachment.Property(value => value.PreviewContentType).HasMaxLength(255);
+        attachment.Property(value => value.OriginalSizeBytes).HasColumnName("SizeBytes");
+        attachment.Property(value => value.IsSpoiler).HasDefaultValue(false);
+        attachment.Property(value => value.AverageColor).HasMaxLength(7);
+        attachment.Property(value => value.CreatedAt)
+            .HasConversion(value => value.UtcTicks, value => new DateTimeOffset(value, TimeSpan.Zero));
+        attachment.HasIndex(value => value.OriginalObjectKey).IsUnique()
+            .HasDatabaseName("IX_Attachments_StoredObjectKey");
+        attachment.HasIndex(value => value.PreviewObjectKey).IsUnique()
+            .HasFilter("PreviewObjectKey IS NOT NULL");
+        attachment.HasIndex(value => value.ChannelMessageId);
+        attachment.HasIndex(value => value.DirectMessageId);
+        attachment.HasOne(value => value.UploaderAccount).WithMany()
+            .HasForeignKey(value => value.UploaderAccountId).OnDelete(DeleteBehavior.Restrict);
+        attachment.HasOne(value => value.ChannelMessage).WithMany(value => value.Attachments)
+            .HasForeignKey(value => value.ChannelMessageId).OnDelete(DeleteBehavior.Cascade);
+        attachment.HasOne(value => value.DirectMessage).WithMany(value => value.Attachments)
+            .HasForeignKey(value => value.DirectMessageId).OnDelete(DeleteBehavior.Cascade);
     }
 }

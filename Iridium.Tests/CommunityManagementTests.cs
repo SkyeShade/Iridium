@@ -273,8 +273,8 @@ public sealed class CommunityManagementTests
         };
         var topChannel = new CommunityChannel
         {
-            Id = Guid.NewGuid(), CommunityId = community.Id, Community = community, Name = "welcome",
-            CategoryId = null, Position = 0, CreatedAt = DateTimeOffset.UtcNow
+            Id = Guid.NewGuid(), CommunityId = community.Id, Community = community, Category = category, Name = "welcome",
+            CategoryId = category.Id, Position = 8, CreatedAt = DateTimeOffset.UtcNow
         };
         var nestedSecond = new CommunityChannel
         {
@@ -292,11 +292,15 @@ public sealed class CommunityManagementTests
         await DatabaseCompatibility.EnsureUnifiedCommunitySidebarOrderingAsync(fixture.Db);
         await DatabaseCompatibility.EnsureUnifiedCommunitySidebarOrderingAsync(fixture.Db);
 
-        Assert.Equal(0, topChannel.Position);
-        Assert.Equal(1, category.Position);
-        Assert.Equal(0, nestedFirst.Position);
-        Assert.Equal(1, nestedSecond.Position);
-        Assert.Equal(owner.Id, community.OwnerAccountId);
+        var storedCategory = await fixture.Db.CommunityCategories.SingleAsync(value => value.Id == category.Id);
+        var storedChannels = await fixture.Db.CommunityChannels.Where(value => value.CategoryId == category.Id)
+            .ToDictionaryAsync(value => value.Id);
+        var storedCommunity = await fixture.Db.Communities.SingleAsync(value => value.Id == community.Id);
+        Assert.Equal(1, storedChannels[topChannel.Id].Position);
+        Assert.Equal(0, storedCategory.Position);
+        Assert.Equal(0, storedChannels[nestedFirst.Id].Position);
+        Assert.Equal(2, storedChannels[nestedSecond.Id].Position);
+        Assert.Equal(owner.Id, storedCommunity.OwnerAccountId);
         Assert.Empty(await fixture.Db.CommunityMemberRoles.ToListAsync());
     }
 

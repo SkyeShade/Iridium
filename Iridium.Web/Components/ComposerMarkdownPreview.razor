@@ -1,0 +1,32 @@
+@using Iridium.Client.Core
+
+@foreach (var segment in Segments)
+{
+    <span class="@Classes(segment)">@segment.Text</span>
+}
+
+@code {
+    [Parameter, EditorRequired] public required string Content { get; set; }
+    private IReadOnlyList<ComposerMarkdownSegment> Segments => ComposerMarkdownSegments.Parse(Content);
+
+    private static string Classes(ComposerMarkdownSegment segment)
+    {
+        if (segment.IsMarker) return "markdown-marker";
+        var classes = new List<string>(6);
+        if (segment.Style.HasFlag(ComposerMarkdownStyle.Bold)) classes.Add("markdown-bold");
+        if (segment.Style.HasFlag(ComposerMarkdownStyle.Italic)) classes.Add("markdown-italic");
+        if (segment.Style.HasFlag(ComposerMarkdownStyle.Underline)) classes.Add("markdown-underline");
+        if (segment.Style.HasFlag(ComposerMarkdownStyle.Strikethrough)) classes.Add("markdown-strike");
+        if (segment.Style.HasFlag(ComposerMarkdownStyle.InlineCode)) classes.Add("markdown-code");
+        if (segment.Style.HasFlag(ComposerMarkdownStyle.Spoiler)) classes.Add("markdown-spoiler");
+        if (segment.Style.HasFlag(ComposerMarkdownStyle.Heading1)) classes.Add("markdown-heading-1");
+        if (segment.Style.HasFlag(ComposerMarkdownStyle.Heading2)) classes.Add("markdown-heading-2");
+        if (segment.Style.HasFlag(ComposerMarkdownStyle.Heading3)) classes.Add("markdown-heading-3");
+        if (segment.Style.HasFlag(ComposerMarkdownStyle.Subtext)) classes.Add("markdown-subtext");
+        if (segment.Style.HasFlag(ComposerMarkdownStyle.Quote)) classes.Add("markdown-quote");
+        if (segment.Style.HasFlag(ComposerMarkdownStyle.List)) classes.Add("markdown-list");
+        if (segment.Style.HasFlag(ComposerMarkdownStyle.Link)) classes.Add("markdown-link");
+        if (segment.Style.HasFlag(ComposerMarkdownStyle.CodeBlock)) classes.Add("markdown-code-block");
+        return string.Join(' ', classes);
+    }
+}

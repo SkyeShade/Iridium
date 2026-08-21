@@ -178,6 +178,16 @@
                         }
                     }
                 }
+                else if (_section == "Node Limits")
+                {
+                    <div class="section-heading"><div><h1>Node Limits</h1><p>Infrastructure policies applied by the Node hosting this Community.</p></div></div>
+                    <div class="node-limits" aria-label="Read-only Node limits">
+                        <div><span>Maximum message length</span><strong>@management.Limits.MaxMessageCharacters.ToString("N0") characters</strong></div>
+                        <div><span>Maximum file size per upload</span><strong>@AttachmentComposerService.FormatSize(management.Limits.MaxAttachmentBytes)</strong></div>
+                        <div><span>Maximum attachments per message</span><strong>@management.Limits.MaxAttachmentsPerMessage.ToString("N0")</strong></div>
+                    </div>
+                    <p class="muted limit-note">These limits are controlled by the Node and cannot be changed by Community managers.</p>
+                }
                 else if (_section == "Invites")
                 {
                     <div class="section-heading"><div><h1>Invites</h1><p>Invite secrets are shown only once when created.</p></div></div>
@@ -215,7 +225,7 @@
     [Parameter, EditorRequired] public required Guid CurrentAccountId { get; set; }
     [Parameter] public EventCallback OnClose { get; set; }
     [Parameter] public EventCallback<CommunityDto> OnCommunityUpdated { get; set; }
-    private static readonly string[] Sections = ["Overview", "Roles", "Members", "Invites"];
+    private static readonly string[] Sections = ["Overview", "Roles", "Members", "Node Limits", "Invites"];
     private static readonly CommunityPermission[] PermissionOptions =
     [
         CommunityPermission.ViewChannels, CommunityPermission.SendMessages, CommunityPermission.ManageMessages,

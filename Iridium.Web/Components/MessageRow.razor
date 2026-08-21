@@ -56,6 +56,7 @@
                 <MentionedMessageContent Content="@Message.Content" Mentions="Message.Mentions" OnProfile="OpenMentionProfileAsync" />
                 @if (Message.EditedAt is not null) { <span class="edited" title="Edited @Message.EditedAt.Value.ToLocalTime().ToString("g")">(edited)</span> }
                 <InviteEmbed Content="@Message.Content" />
+                <MessageAttachments Attachments="Message.Attachments" DeliveryState="Message.DeliveryState" />
             }
             @if (Message.DeliveryState == MessageDeliveryState.Failed)
             {

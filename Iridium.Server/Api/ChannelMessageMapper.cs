@@ -32,8 +32,15 @@ internal static class ChannelMessageMapper
             message.IsDeleted,
             reply,
             DeserializeMentions(message.MentionsJson),
-            message.ClientMessageId);
+            message.ClientMessageId,
+            Attachments: message.IsDeleted ? [] : message.Attachments.Select(ToAttachment).ToArray());
     }
+
+    internal static AttachmentDto ToAttachment(Attachment value) => new(
+        value.Id, value.OriginalFileName, value.OriginalContentType, value.OriginalSizeBytes,
+        $"api/attachments/{value.Id}", value.Width, value.Height, value.AverageColor, IsSpoiler: value.IsSpoiler,
+        PreviewDownloadUrl: value.PreviewObjectKey is null ? null : $"api/attachments/{value.Id}/preview",
+        PreviewContentType: value.PreviewContentType, PreviewSizeBytes: value.PreviewSizeBytes);
 
     private static string Excerpt(string content)
     {

@@ -278,7 +278,9 @@ public static class DatabaseCompatibility
                 Position INTEGER NOT NULL,
                 ParentCategoryId TEXT NULL,
                 CONSTRAINT PK_CommunityCategories PRIMARY KEY (CommunityId, Id),
-                CONSTRAINT FK_CommunityCategories_Communities_CommunityId FOREIGN KEY (CommunityId) REFERENCES Communities (Id) ON DELETE CASCADE
+                CONSTRAINT FK_CommunityCategories_Communities_CommunityId FOREIGN KEY (CommunityId) REFERENCES Communities (Id) ON DELETE CASCADE,
+                CONSTRAINT FK_CommunityCategories_CommunityCategories_CommunityId_ParentCategoryId
+                    FOREIGN KEY (CommunityId, ParentCategoryId) REFERENCES CommunityCategories (CommunityId, Id) ON DELETE RESTRICT
             );
             CREATE INDEX IF NOT EXISTS IX_CommunityCategories_CommunityId_Position ON CommunityCategories (CommunityId, Position);
             CREATE TABLE IF NOT EXISTS CommunityChannels (
@@ -294,43 +296,113 @@ public static class DatabaseCompatibility
             );
             CREATE INDEX IF NOT EXISTS IX_CommunityChannels_CommunityId_CategoryId_Position ON CommunityChannels (CommunityId, CategoryId, Position);
             """);
+        await EnsureColumnAsync(db, "CommunityCategories", "ParentCategoryId", "TEXT NULL");
+        await EnsureCommunityChannelCategoryNullableAsync(db);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE INDEX IF NOT EXISTS IX_CommunityCategories_CommunityId_ParentCategoryId_Position
+                ON CommunityCategories (CommunityId, ParentCategoryId, Position);
+            """);
     }
 
     public static async Task EnsureUnifiedCommunitySidebarOrderingAsync(IridiumDbContext db)
     {
+        await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
+        // SQLite compares TEXT primary keys case-sensitively. Microsoft.Data.Sqlite writes
+        // Guid values in upper-case, so normalize IDs created by the original raw-SQL
+        // compatibility path before EF starts tracking them. Foreign-key checks are
+        // deferred so references and principals can be updated in one transaction.
+        await db.Database.ExecuteSqlRawAsync("PRAGMA defer_foreign_keys = ON;");
+        await db.Database.ExecuteSqlRawAsync("""
+            UPDATE CommunityChannels
+            SET CategoryId = upper(CategoryId)
+            WHERE CategoryId IS NOT NULL AND CategoryId <> upper(CategoryId);
+
+            UPDATE CommunityCategories
+            SET ParentCategoryId = upper(ParentCategoryId)
+            WHERE ParentCategoryId IS NOT NULL AND ParentCategoryId <> upper(ParentCategoryId);
+
+            UPDATE CommunityCategories
+            SET Id = upper(Id)
+            WHERE Id <> upper(Id);
+
+            """);
+
+        // The SQL above may have changed key values represented by previously tracked
+        // entities when this idempotent compatibility method is exercised more than once.
+        db.ChangeTracker.Clear();
         var communityIds = await db.Communities.Select(value => value.Id).ToListAsync();
         foreach (var communityId in communityIds)
         {
             var categories = await db.CommunityCategories
                 .Where(value => value.CommunityId == communityId).ToListAsync();
-            var uncategorized = await db.CommunityChannels
-                .Where(value => value.CommunityId == communityId && value.CategoryId == null).ToListAsync();
-            var hasLegacyOverlap = categories.Select(value => value.Position)
-                .Intersect(uncategorized.Select(value => value.Position)).Any();
-
-            var topLevel = hasLegacyOverlap
-                ? uncategorized.OrderBy(value => value.Position).ThenBy(value => value.Name)
-                    .Select(value => new SidebarPosition(null, value))
-                    .Concat(categories.OrderBy(value => value.Position).ThenBy(value => value.Name)
-                        .Select(value => new SidebarPosition(value, null))).ToList()
-                : categories.Select(value => new SidebarPosition(value, null))
-                    .Concat(uncategorized.Select(value => new SidebarPosition(null, value)))
-                    .OrderBy(value => value.Position)
-                    .ThenBy(value => value.Category is null ? 0 : 1)
-                    .ThenBy(value => value.Name, StringComparer.OrdinalIgnoreCase).ToList();
-            for (var index = 0; index < topLevel.Count; index++) topLevel[index].SetPosition(index);
-
-            foreach (var group in (await db.CommunityChannels
-                         .Where(value => value.CommunityId == communityId && value.CategoryId != null).ToListAsync())
-                     .GroupBy(value => value.CategoryId))
+            var channels = await db.CommunityChannels.Where(value => value.CommunityId == communityId).ToListAsync();
+            foreach (var parentId in categories.Select(value => (Guid?)value.Id).Append(null))
             {
-                var ordered = group.OrderBy(value => value.Position)
-                    .ThenBy(value => value.Name, StringComparer.OrdinalIgnoreCase).ToList();
-                for (var index = 0; index < ordered.Count; index++) ordered[index].Position = index;
+                var items = categories.Where(value => value.ParentCategoryId == parentId)
+                    .Select(value => new CompatibilitySidebarItem(value.Position, 0, value.Name, value.Id,
+                        position => value.Position = position))
+                    .Concat(channels.Where(value => value.CategoryId == parentId)
+                        .Select(value => new CompatibilitySidebarItem(value.Position, 1, value.Name, value.Id,
+                            position => value.Position = position)))
+                    .OrderBy(value => value.Position).ThenBy(value => value.Kind)
+                    .ThenBy(value => value.Name, StringComparer.OrdinalIgnoreCase).ThenBy(value => value.Id).ToList();
+                for (var index = 0; index < items.Count; index++) items[index].SetPosition(index);
             }
         }
         await db.SaveChangesAsync();
+        await transaction.CommitAsync();
     }
+
+    private static async Task EnsureCommunityChannelCategoryNullableAsync(IridiumDbContext db)
+    {
+        var connection = db.Database.GetDbConnection();
+        if (connection.State != ConnectionState.Open) await connection.OpenAsync();
+        var categoryIsRequired = false;
+        await using (var inspect = connection.CreateCommand())
+        {
+            inspect.CommandText = "PRAGMA table_info('CommunityChannels');";
+            await using var reader = await inspect.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+                if (string.Equals(reader.GetString(1), "CategoryId", StringComparison.OrdinalIgnoreCase))
+                    categoryIsRequired = reader.GetInt32(3) != 0;
+        }
+        if (!categoryIsRequired) return;
+
+        await db.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = OFF;");
+        try
+        {
+            await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
+            await db.Database.ExecuteSqlRawAsync("""
+                DROP TABLE IF EXISTS CommunityChannels_NullableUpgrade;
+                CREATE TABLE CommunityChannels_NullableUpgrade (
+                    CommunityId TEXT NOT NULL,
+                    Id TEXT NOT NULL,
+                    CategoryId TEXT NULL,
+                    Name TEXT NOT NULL,
+                    Position INTEGER NOT NULL,
+                    CreatedAt TEXT NOT NULL,
+                    CONSTRAINT PK_CommunityChannels PRIMARY KEY (CommunityId, Id),
+                    CONSTRAINT FK_CommunityChannels_Communities_CommunityId FOREIGN KEY (CommunityId) REFERENCES Communities (Id) ON DELETE CASCADE,
+                    CONSTRAINT FK_CommunityChannels_CommunityCategories_CommunityId_CategoryId FOREIGN KEY (CommunityId, CategoryId) REFERENCES CommunityCategories (CommunityId, Id) ON DELETE RESTRICT
+                );
+                INSERT INTO CommunityChannels_NullableUpgrade (CommunityId, Id, CategoryId, Name, Position, CreatedAt)
+                    SELECT CommunityId, Id, CategoryId, Name, Position, CreatedAt FROM CommunityChannels;
+                DROP TABLE CommunityChannels;
+                ALTER TABLE CommunityChannels_NullableUpgrade RENAME TO CommunityChannels;
+                CREATE INDEX IX_CommunityChannels_CommunityId_CategoryId_Position
+                    ON CommunityChannels (CommunityId, CategoryId, Position);
+                """);
+            await transaction.CommitAsync();
+        }
+        finally
+        {
+            await db.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = ON;");
+            db.ChangeTracker.Clear();
+        }
+    }
+
+    private sealed record CompatibilitySidebarItem(
+        int Position, int Kind, string Name, Guid Id, Action<int> SetPosition);
 
     public static async Task EnsureChannelMessagesTableAsync(IridiumDbContext db)
     {
@@ -361,14 +433,51 @@ public static class DatabaseCompatibility
         await EnsureColumnAsync(db, "ChannelMessages", "MentionsJson", "TEXT NULL");
     }
 
-    private sealed record SidebarPosition(CommunityCategory? Category, CommunityChannel? Channel)
+    public static async Task EnsureAttachmentsTableAsync(IridiumDbContext db)
     {
-        public int Position => Category?.Position ?? Channel!.Position;
-        public string Name => Category?.Name ?? Channel!.Name;
-        public void SetPosition(int position)
-        {
-            if (Category is not null) Category.Position = position;
-            else Channel!.Position = position;
-        }
+        // Keep table creation separate from index creation. CREATE TABLE IF NOT EXISTS does not
+        // add columns to a legacy table, so every additive column must be ensured first.
+        await db.Database.ExecuteSqlRawAsync("""
+        CREATE TABLE IF NOT EXISTS Attachments (
+            Id TEXT NOT NULL CONSTRAINT PK_Attachments PRIMARY KEY,
+            UploaderAccountId TEXT NOT NULL,
+            ChannelMessageId TEXT NULL,
+            DirectMessageId TEXT NULL,
+            OriginalFileName TEXT NOT NULL,
+            StoredObjectKey TEXT NOT NULL,
+            ContentType TEXT NOT NULL,
+            SizeBytes INTEGER NOT NULL,
+            CreatedAt INTEGER NOT NULL,
+            Width INTEGER NULL,
+            Height INTEGER NULL,
+            IsSpoiler INTEGER NOT NULL DEFAULT 0,
+            AverageColor TEXT NULL,
+            PreviewObjectKey TEXT NULL,
+            PreviewContentType TEXT NULL,
+            PreviewSizeBytes INTEGER NULL,
+            CONSTRAINT FK_Attachments_Accounts_UploaderAccountId FOREIGN KEY (UploaderAccountId) REFERENCES Accounts (Id) ON DELETE RESTRICT,
+            CONSTRAINT FK_Attachments_ChannelMessages_ChannelMessageId FOREIGN KEY (ChannelMessageId) REFERENCES ChannelMessages (Id) ON DELETE CASCADE,
+            CONSTRAINT FK_Attachments_DirectMessages_DirectMessageId FOREIGN KEY (DirectMessageId) REFERENCES DirectMessages (Id) ON DELETE CASCADE
+        );
+        """);
+
+        // The original object key/type/size remain mapped to the legacy physical columns
+        // StoredObjectKey, ContentType, and SizeBytes. Preview data is absent for legacy rows.
+        await EnsureColumnAsync(db, "Attachments", "Width", "INTEGER NULL");
+        await EnsureColumnAsync(db, "Attachments", "Height", "INTEGER NULL");
+        await EnsureColumnAsync(db, "Attachments", "IsSpoiler", "INTEGER NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(db, "Attachments", "AverageColor", "TEXT NULL");
+        await EnsureColumnAsync(db, "Attachments", "PreviewObjectKey", "TEXT NULL");
+        await EnsureColumnAsync(db, "Attachments", "PreviewContentType", "TEXT NULL");
+        await EnsureColumnAsync(db, "Attachments", "PreviewSizeBytes", "INTEGER NULL");
+
+        await db.Database.ExecuteSqlRawAsync("""
+        CREATE UNIQUE INDEX IF NOT EXISTS IX_Attachments_StoredObjectKey ON Attachments (StoredObjectKey);
+        CREATE UNIQUE INDEX IF NOT EXISTS IX_Attachments_PreviewObjectKey
+            ON Attachments (PreviewObjectKey) WHERE PreviewObjectKey IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS IX_Attachments_ChannelMessageId ON Attachments (ChannelMessageId);
+        CREATE INDEX IF NOT EXISTS IX_Attachments_DirectMessageId ON Attachments (DirectMessageId);
+        CREATE INDEX IF NOT EXISTS IX_Attachments_UploaderAccountId ON Attachments (UploaderAccountId);
+        """);
     }
 }

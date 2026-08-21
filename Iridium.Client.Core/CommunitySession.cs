@@ -108,9 +108,9 @@ public sealed class CommunitySession(NodeSession nodeSession)
         await LoadManagementAsync(cancellationToken);
     }
 
-    public async Task<CommunityCategoryDto> CreateCategoryAsync(string name, CancellationToken cancellationToken = default)
+    public async Task<CommunityCategoryDto> CreateCategoryAsync(string name, Guid? parentCategoryId = null, CancellationToken cancellationToken = default)
     {
-        var created = await nodeSession.AuthorizedClient.CreateCategoryAsync(RequireCommunity(), name, cancellationToken);
+        var created = await nodeSession.AuthorizedClient.CreateCategoryAsync(RequireCommunity(), name, parentCategoryId, cancellationToken);
         _categories.Add(created); Sort(); return created;
     }
 
@@ -120,9 +120,9 @@ public sealed class CommunitySession(NodeSession nodeSession)
         ReplaceCategory(updated);
     }
 
-    public async Task MoveCategoryAsync(Guid categoryId, int position, CancellationToken cancellationToken = default)
+    public async Task MoveCategoryAsync(Guid categoryId, CommunitySidebarMoveRequest request, CancellationToken cancellationToken = default)
     {
-        await nodeSession.AuthorizedClient.MoveCategoryAsync(RequireCommunity(), categoryId, position, cancellationToken);
+        await nodeSession.AuthorizedClient.MoveCategoryAsync(RequireCommunity(), categoryId, request, cancellationToken);
         await ReloadAsync(cancellationToken);
     }
 
@@ -144,9 +144,9 @@ public sealed class CommunitySession(NodeSession nodeSession)
         ReplaceChannel(updated);
     }
 
-    public async Task MoveChannelAsync(Guid channelId, Guid? categoryId, int position, CancellationToken cancellationToken = default)
+    public async Task MoveChannelAsync(Guid channelId, CommunitySidebarMoveRequest request, CancellationToken cancellationToken = default)
     {
-        await nodeSession.AuthorizedClient.MoveChannelAsync(RequireCommunity(), channelId, categoryId, position, cancellationToken);
+        await nodeSession.AuthorizedClient.MoveChannelAsync(RequireCommunity(), channelId, request, cancellationToken);
         await ReloadAsync(cancellationToken);
     }
 
@@ -170,17 +170,24 @@ public sealed class CommunitySession(NodeSession nodeSession)
 
     public CommunityChannelDto? FirstOrderedChannel()
     {
-        var top = _categories.Select(value => (value.Position, IsCategory: true, value.Id))
-            .Concat(_channels.Where(value => value.CategoryId is null).Select(value => (value.Position, IsCategory: false, value.Id)))
-            .OrderBy(value => value.Position).ThenBy(value => value.IsCategory ? 1 : 0);
-        foreach (var item in top)
+        return FirstIn(null);
+
+        CommunityChannelDto? FirstIn(Guid? categoryId)
         {
-            if (!item.IsCategory) return _channels.First(value => value.Id == item.Id);
-            var nested = _channels.Where(value => value.CategoryId == item.Id)
-                .OrderBy(value => value.Position).ThenBy(value => value.Name, StringComparer.OrdinalIgnoreCase).FirstOrDefault();
-            if (nested is not null) return nested;
+            var items = _categories.Where(value => value.ParentCategoryId == categoryId)
+                .Select(value => (value.Position, Kind: 1, Category: (CommunityCategoryDto?)value,
+                    Channel: (CommunityChannelDto?)null, value.Id))
+                .Concat(_channels.Where(value => value.CategoryId == categoryId)
+                    .Select(value => (value.Position, Kind: 0, Category: (CommunityCategoryDto?)null,
+                        Channel: (CommunityChannelDto?)value, value.Id)))
+                .OrderBy(value => value.Position).ThenBy(value => value.Kind).ThenBy(value => value.Id);
+            foreach (var item in items)
+            {
+                if (item.Channel is { } direct) return direct;
+                if (item.Category is { } child && FirstIn(child.Id) is { } nested) return nested;
+            }
+            return null;
         }
-        return null;
     }
 
     public void ApplyPresence(PresenceChangedEvent change)

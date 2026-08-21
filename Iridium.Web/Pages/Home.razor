@@ -90,7 +90,7 @@ else
             {
                 @if (_homeView == "dm" && _selectedDirectConversation is not null)
                 {
-                    <DirectMessageView @key="_selectedDirectConversation.Id" Conversation="_selectedDirectConversation"
+                    <DirectMessageView @key="_selectedDirectConversation.Id" @ref="_directMessageView" Conversation="_selectedDirectConversation"
                                        CurrentAccountId="Session.Account!.Id" NodeAuthority="@(Session.SelectedNode!.PublicAuthority)"
                                        OnEditProfile="OpenProfileEditor" OnMessage="OpenDirectMessageAsync" />
                 }
@@ -136,7 +136,8 @@ else
             }
             else if (_selectedCommunity is null && _homeView == "dm" && _selectedDirectConversation is { } direct)
             {
-                <DirectParticipantSidebar Participant="direct.OtherParticipant" NodeAuthority="@(Session.SelectedNode!.PublicAuthority)"
+                <DirectParticipantSidebar Participant="direct.OtherParticipant" ConversationId="direct.Id"
+                    NodeAuthority="@(Session.SelectedNode!.PublicAuthority)" OnSearchResultSelected="OpenDirectSearchResultAsync"
                     Friend="@Session.Friends.FirstOrDefault(value => value.AccountId == direct.OtherParticipant.AccountId)"
                     OnAddFriend="SendFriendRequestAsync" OnRemoveFriend="RemoveFriendAsync" />
             }
@@ -206,6 +207,7 @@ else
     private CommunityChannelDto? _selectedChannel;
     private Guid? _searchTargetMessageId;
     private DirectConversationDto? _selectedDirectConversation;
+    private DirectMessageView? _directMessageView;
     private string? _quickInviteUrl;
     private string? _quickInviteError;
     private static readonly TimeSpan QuickInviteLifetime = TimeSpan.FromHours(24);
@@ -444,6 +446,8 @@ else
         await SelectChannelAsync(channel);
         _searchTargetMessageId = result.MessageId;
     }
+    private Task OpenDirectSearchResultAsync(MessageSearchResultDto result) =>
+        _directMessageView?.OpenSearchResultAsync(result) ?? Task.CompletedTask;
     private void SelectHomeView(string view)
     {
         _homeView = view;

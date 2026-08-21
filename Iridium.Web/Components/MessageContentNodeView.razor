@@ -1,0 +1,87 @@
+@using Iridium.Client.Core
+@using Iridium.Protocol
+@using Iridium.Web.Models
+
+@foreach (var node in Nodes)
+{
+    switch (node)
+    {
+        case MessageTextNode text:
+            @text.Text
+            break;
+        case MessageMentionNode mentionNode:
+            @if (mentionNode.Mention.Kind == CommunityMentionKind.Account && mentionNode.Mention.TargetId is { } accountId)
+            {
+                <button class="mention" @onclick="args => OnProfile.InvokeAsync(new(accountId, args))">@mentionNode.Mention.DisplayText</button>
+            }
+            else
+            {
+                <span class="mention">@mentionNode.Mention.DisplayText</span>
+            }
+            break;
+        case MessageLinkNode link:
+            <a class="masked-link" href="@link.Url" target="_blank" rel="noopener noreferrer"><MessageContentNodeView Nodes="link.Children" RevealedSpoilers="RevealedSpoilers" OnRevealSpoiler="OnRevealSpoiler" OnProfile="OnProfile" /></a>
+            break;
+        case MessageListNode list:
+            <div class="chat-list">
+                @foreach (var item in list.Items)
+                {
+                    <div class="chat-list-item" style="--list-depth:@item.Depth"><span class="list-marker">@item.Marker</span><span><MessageContentNodeView Nodes="item.Children" RevealedSpoilers="RevealedSpoilers" OnRevealSpoiler="OnRevealSpoiler" OnProfile="OnProfile" /></span></div>
+                }
+            </div>
+            break;
+        case MessageContainerNode { Kind: MessageContentKind.Bold } bold:
+            <strong><MessageContentNodeView Nodes="bold.Children" RevealedSpoilers="RevealedSpoilers" OnRevealSpoiler="OnRevealSpoiler" OnProfile="OnProfile" /></strong>
+            break;
+        case MessageContainerNode { Kind: MessageContentKind.Italic } italic:
+            <em><MessageContentNodeView Nodes="italic.Children" RevealedSpoilers="RevealedSpoilers" OnRevealSpoiler="OnRevealSpoiler" OnProfile="OnProfile" /></em>
+            break;
+        case MessageContainerNode { Kind: MessageContentKind.Underline } underline:
+            <u><MessageContentNodeView Nodes="underline.Children" RevealedSpoilers="RevealedSpoilers" OnRevealSpoiler="OnRevealSpoiler" OnProfile="OnProfile" /></u>
+            break;
+        case MessageContainerNode { Kind: MessageContentKind.Strikethrough } strike:
+            <s><MessageContentNodeView Nodes="strike.Children" RevealedSpoilers="RevealedSpoilers" OnRevealSpoiler="OnRevealSpoiler" OnProfile="OnProfile" /></s>
+            break;
+        case MessageContainerNode { Kind: MessageContentKind.InlineCode } inlineCode:
+            <code class="inline-code">@MessageContentSegments.PlainText(inlineCode.Children)</code>
+            break;
+        case MessageContainerNode { Kind: MessageContentKind.CodeBlock } codeBlock:
+            <div class="code-block">
+                @if (!string.IsNullOrWhiteSpace(codeBlock.Language)) { <span class="code-language">@codeBlock.Language</span> }
+                <pre><code>@MessageContentSegments.PlainText(codeBlock.Children)</code></pre>
+            </div>
+            break;
+        case MessageContainerNode { Kind: MessageContentKind.Quote } quote:
+            <blockquote><MessageContentNodeView Nodes="quote.Children" RevealedSpoilers="RevealedSpoilers" OnRevealSpoiler="OnRevealSpoiler" OnProfile="OnProfile" /></blockquote>
+            break;
+        case MessageContainerNode { Kind: MessageContentKind.Heading1 } heading1:
+            <div class="chat-heading heading-1"><MessageContentNodeView Nodes="heading1.Children" RevealedSpoilers="RevealedSpoilers" OnRevealSpoiler="OnRevealSpoiler" OnProfile="OnProfile" /></div>
+            break;
+        case MessageContainerNode { Kind: MessageContentKind.Heading2 } heading2:
+            <div class="chat-heading heading-2"><MessageContentNodeView Nodes="heading2.Children" RevealedSpoilers="RevealedSpoilers" OnRevealSpoiler="OnRevealSpoiler" OnProfile="OnProfile" /></div>
+            break;
+        case MessageContainerNode { Kind: MessageContentKind.Heading3 } heading3:
+            <div class="chat-heading heading-3"><MessageContentNodeView Nodes="heading3.Children" RevealedSpoilers="RevealedSpoilers" OnRevealSpoiler="OnRevealSpoiler" OnProfile="OnProfile" /></div>
+            break;
+        case MessageContainerNode { Kind: MessageContentKind.Subtext } subtext:
+            <div class="chat-subtext"><MessageContentNodeView Nodes="subtext.Children" RevealedSpoilers="RevealedSpoilers" OnRevealSpoiler="OnRevealSpoiler" OnProfile="OnProfile" /></div>
+            break;
+        case MessageContainerNode { Kind: MessageContentKind.Spoiler, SpoilerId: { } spoilerId } spoiler:
+            @if (!RevealedSpoilers.Contains(spoilerId))
+            {
+                <button type="button" class="text-spoiler covered" title="Reveal spoiler" @onclick="() => OnRevealSpoiler.InvokeAsync(spoilerId)">@MessageContentSegments.PlainText(spoiler.Children)</button>
+            }
+            else
+            {
+                <span class="text-spoiler revealed"><MessageContentNodeView Nodes="spoiler.Children" RevealedSpoilers="RevealedSpoilers" OnRevealSpoiler="OnRevealSpoiler" OnProfile="OnProfile" /></span>
+            }
+            break;
+    }
+}
+
+@code {
+    [Parameter, EditorRequired] public required IReadOnlyList<MessageContentNode> Nodes { get; set; }
+    [Parameter, EditorRequired] public required HashSet<int> RevealedSpoilers { get; set; }
+    [Parameter] public EventCallback<int> OnRevealSpoiler { get; set; }
+    [Parameter] public EventCallback<MentionProfileClick> OnProfile { get; set; }
+}

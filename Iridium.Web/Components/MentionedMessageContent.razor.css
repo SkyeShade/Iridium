@@ -1,1 +1,1 @@
-.message-text{white-space:pre-wrap;overflow-wrap:anywhere}.mention{display:inline;padding:.05rem .16rem;border:0;border-radius:.22rem;color:var(--accent-soft);background:color-mix(in srgb,var(--accent) 20%,transparent);font:inherit;line-height:inherit}.mention:is(button){cursor:pointer}.mention:is(button):hover{color:white;background:color-mix(in srgb,var(--accent) 58%,transparent)}
+.message-text{white-space:pre-wrap;overflow-wrap:anywhere}

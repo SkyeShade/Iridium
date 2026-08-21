@@ -8,20 +8,29 @@ using Iridium.Server.Security;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Identity;
 using Iridium.Server.Domain;
+using Iridium.Server.Storage;
 
 var builder = WebApplication.CreateBuilder(args);
+var configuredNodeOptions = builder.Configuration.GetSection(NodeOptions.SectionName).Get<NodeOptions>() ?? new NodeOptions();
+var maximumUploadRequestBytes = checked(configuredNodeOptions.MaxAttachmentBytes + 1024 * 1024);
+builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = maximumUploadRequestBytes);
 
 builder.Services.AddOpenApi();
 builder.Services.AddSignalR();
 builder.Services.AddSingleton<ConnectionCounter>();
 builder.Services.AddSingleton<PresenceTracker>();
 builder.Services.Configure<NodeOptions>(builder.Configuration.GetSection(NodeOptions.SectionName));
+builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(options =>
+    options.MultipartBodyLengthLimit = maximumUploadRequestBytes);
+builder.Services.AddSingleton<ICommunityLimitsService, CommunityLimitsService>();
 builder.Services.AddDbContext<IridiumDbContext>(options =>
     options.UseSqlite(builder.Configuration.GetConnectionString("Iridium")));
 builder.Services.AddSingleton<IPasswordHasher<NodeAccount>, PasswordHasher<NodeAccount>>();
 builder.Services.AddScoped<SessionService>();
 builder.Services.AddScoped<CommunityAuthorizationService>();
 builder.Services.AddScoped<CommunityInviteService>();
+builder.Services.AddSingleton<IAttachmentStorage, LocalAttachmentStorage>();
+builder.Services.AddSingleton<IImagePreviewGenerator, ImagePreviewGenerator>();
 if (builder.Environment.IsDevelopment())
 {
     builder.Services.AddCors(options => options.AddPolicy("DevelopmentClient", policy =>
@@ -51,6 +60,7 @@ await using (var scope = app.Services.CreateAsyncScope())
     await DatabaseCompatibility.EnsureMessageClientIdsAsync(db);
     await DatabaseCompatibility.EnsureMessageHistoryIndexesAsync(db);
     await DatabaseCompatibility.EnsureCommunityManagementSchemaAsync(db);
+    await DatabaseCompatibility.EnsureAttachmentsTableAsync(db);
 }
 
 if (app.Environment.IsDevelopment())
@@ -64,14 +74,21 @@ if (app.Environment.IsDevelopment())
     app.UseCors("DevelopmentClient");
 }
 
-app.MapGet("/api/server-info", (ConnectionCounter connections) =>
+app.MapGet("/api/server-info", (ConnectionCounter connections, ICommunityLimitsService limitService) =>
+    {
+        var limits = limitService.GetEffectiveLimits();
+        return
         new ServerInfoDto(
             "Iridium Server",
             "A self-hosted Iridium chat server",
             ProtocolVersion.Current,
             connections.Count,
             null,
-            null))
+            null,
+            limits.MaxAttachmentBytes,
+            limits.MaxAttachmentsPerMessage,
+            limits.MaxMessageCharacters);
+    })
     .WithName("GetServerInfo");
 
 app.MapHub<ChatHub>("/hubs/chat");
@@ -81,5 +98,6 @@ app.MapCommunityStructureEndpoints();
 app.MapMessageEndpoints();
 app.MapDirectMessageEndpoints();
 app.MapCommunityManagementEndpoints();
+app.MapAttachmentEndpoints();
 
 app.Run();

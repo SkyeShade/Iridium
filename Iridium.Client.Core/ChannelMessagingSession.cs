@@ -12,6 +12,8 @@ public sealed class ChannelMessagingSession(
     private readonly List<DirectMessageDto> _directMessages = [];
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
     private readonly object _messageSync = new();
+    private readonly Dictionary<Guid, Func<CancellationToken, Task<IReadOnlyList<AttachmentDto>>>> _channelAttachmentUploads = [];
+    private readonly Dictionary<Guid, Func<CancellationToken, Task<IReadOnlyList<AttachmentDto>>>> _directAttachmentUploads = [];
     private HubConnection? _connection;
     private Uri? _connectedNode;
     private Guid? _connectedAccountId;
@@ -181,15 +183,20 @@ public sealed class ChannelMessagingSession(
         finally { _lifecycleGate.Release(); }
     }
 
-    public Guid QueueDirectMessage(string content, Guid? replyToMessageId = null) =>
-        BeginDirectMessage(content, replyToMessageId).ClientMessageId;
+    public Guid QueueDirectMessage(string content, Guid? replyToMessageId = null,
+        IReadOnlyList<AttachmentDto>? attachments = null,
+        Func<CancellationToken, Task<IReadOnlyList<AttachmentDto>>>? uploadAttachments = null) =>
+        BeginDirectMessage(content, replyToMessageId, attachments: attachments,
+            uploadAttachments: uploadAttachments).ClientMessageId;
 
     public Task SendDirectAsync(string content, Guid? replyToMessageId = null,
         CancellationToken cancellationToken = default) =>
-        BeginDirectMessage(content, replyToMessageId, cancellationToken).Completion;
+        BeginDirectMessage(content, replyToMessageId, cancellationToken: cancellationToken).Completion;
 
     private OutgoingOperation BeginDirectMessage(
-        string content, Guid? replyToMessageId, CancellationToken cancellationToken = default)
+        string content, Guid? replyToMessageId, IReadOnlyList<AttachmentDto>? attachments = null,
+        Func<CancellationToken, Task<IReadOnlyList<AttachmentDto>>>? uploadAttachments = null,
+        CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
         var conversationId = RequireDirectConversation();
@@ -198,8 +205,10 @@ public sealed class ChannelMessagingSession(
         var pending = new DirectMessageDto(
             clientMessageId, conversationId,
             new(account.Id, account.Username, account.DisplayName), content, DateTimeOffset.UtcNow,
-            null, false, DirectReply(replyToMessageId), clientMessageId, MessageDeliveryState.Pending);
+            null, false, DirectReply(replyToMessageId), clientMessageId, MessageDeliveryState.Pending,
+            Attachments: attachments);
         var reloadLatest = AddOptimisticDirect(pending);
+        if (uploadAttachments is not null) _directAttachmentUploads[clientMessageId] = uploadAttachments;
         return new(clientMessageId, CompleteDirectSendAsync(pending, reloadLatest, cancellationToken));
     }
 
@@ -209,10 +218,17 @@ public sealed class ChannelMessagingSession(
         await _lifecycleGate.WaitAsync(cancellationToken);
         try
         {
+            if (pending.ClientMessageId is { } clientId && _directAttachmentUploads.TryGetValue(clientId, out var upload))
+            {
+                pending = pending with { Attachments = await upload(cancellationToken) };
+                if (DirectConversationId == pending.ConversationId) UpsertDirect(pending);
+            }
             var result = await RequireConnection().InvokeAsync<DirectMessageDto>(
                 DirectMessageHubContract.SendMessage, pending.ConversationId,
-                new SendDirectMessageRequest(pending.Content, pending.ReplyTo?.MessageId, pending.ClientMessageId), cancellationToken);
+                new SendDirectMessageRequest(pending.Content, pending.ReplyTo?.MessageId, pending.ClientMessageId,
+                    pending.Attachments?.Select(value => value.Id).ToArray()), cancellationToken);
             if (DirectConversationId == pending.ConversationId) UpsertDirect(result);
+            if (pending.ClientMessageId is { } completedId) _directAttachmentUploads.Remove(completedId);
             if (reloadLatest && DirectConversationId == pending.ConversationId)
             {
                 var page = await nodeSession.AuthorizedClient.GetDirectMessagePageAsync(
@@ -308,15 +324,19 @@ public sealed class ChannelMessagingSession(
     }
 
     public Guid QueueMessage(string content, Guid? replyToMessageId = null,
-        IReadOnlyList<CommunityMentionInput>? mentions = null) =>
-        BeginMessage(content, replyToMessageId, mentions).ClientMessageId;
+        IReadOnlyList<CommunityMentionInput>? mentions = null, IReadOnlyList<AttachmentDto>? attachments = null,
+        Func<CancellationToken, Task<IReadOnlyList<AttachmentDto>>>? uploadAttachments = null) =>
+        BeginMessage(content, replyToMessageId, mentions, attachments: attachments,
+            uploadAttachments: uploadAttachments).ClientMessageId;
 
     public Task SendAsync(string content, Guid? replyToMessageId = null,
         IReadOnlyList<CommunityMentionInput>? mentions = null, CancellationToken cancellationToken = default) =>
-        BeginMessage(content, replyToMessageId, mentions, cancellationToken).Completion;
+        BeginMessage(content, replyToMessageId, mentions, cancellationToken: cancellationToken).Completion;
 
     private OutgoingOperation BeginMessage(
         string content, Guid? replyToMessageId, IReadOnlyList<CommunityMentionInput>? mentions,
+        IReadOnlyList<AttachmentDto>? attachments = null,
+        Func<CancellationToken, Task<IReadOnlyList<AttachmentDto>>>? uploadAttachments = null,
         CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
@@ -327,8 +347,9 @@ public sealed class ChannelMessagingSession(
             clientMessageId, communityId, channelId,
             new(account.Id, account.Username, account.DisplayName), content, DateTimeOffset.UtcNow,
             null, false, ChannelReply(replyToMessageId), OptimisticMentions(content, mentions),
-            clientMessageId, MessageDeliveryState.Pending);
+            clientMessageId, MessageDeliveryState.Pending, Attachments: attachments);
         var reloadLatest = AddOptimisticChannel(pending);
+        if (uploadAttachments is not null) _channelAttachmentUploads[clientMessageId] = uploadAttachments;
         return new(clientMessageId, CompleteChannelSendAsync(pending, reloadLatest, cancellationToken));
     }
 
@@ -340,15 +361,21 @@ public sealed class ChannelMessagingSession(
         {
             try
             {
+                if (pending.ClientMessageId is { } clientId && _channelAttachmentUploads.TryGetValue(clientId, out var upload))
+                {
+                    pending = pending with { Attachments = await upload(cancellationToken) };
+                    if (CommunityId == pending.CommunityId && ChannelId == pending.ChannelId) Upsert(pending);
+                }
                 var result = await RequireConnection().InvokeAsync<ChannelMessageDto>(
                     ChatHubContract.SendMessage,
                     pending.CommunityId,
                     pending.ChannelId,
                     new SendChannelMessageRequest(pending.Content, pending.ReplyTo?.MessageId,
                         pending.Mentions?.Select(value => new CommunityMentionInput(value.Kind, value.TargetId, value.Start, value.Length)).ToArray(),
-                        pending.ClientMessageId),
+                        pending.ClientMessageId, pending.Attachments?.Select(value => value.Id).ToArray()),
                     cancellationToken);
                 if (CommunityId == pending.CommunityId && ChannelId == pending.ChannelId) Upsert(result);
+                if (pending.ClientMessageId is { } completedId) _channelAttachmentUploads.Remove(completedId);
                 if (reloadLatest && CommunityId == pending.CommunityId && ChannelId == pending.ChannelId)
                 {
                     var page = await nodeSession.AuthorizedClient.GetChannelMessagePageAsync(
@@ -397,6 +424,8 @@ public sealed class ChannelMessagingSession(
             _directMessages.RemoveAll(value => value.ClientMessageId == clientMessageId &&
                 value.DeliveryState == MessageDeliveryState.Failed);
         }
+        _channelAttachmentUploads.Remove(clientMessageId);
+        _directAttachmentUploads.Remove(clientMessageId);
         NotifyChanged();
     }
 

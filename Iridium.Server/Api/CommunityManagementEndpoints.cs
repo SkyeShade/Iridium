@@ -38,7 +38,8 @@ public static class CommunityManagementEndpoints
 
     private static async Task<IResult> GetManagementAsync(
         Guid communityId, HttpContext context, IridiumDbContext db, SessionService sessions,
-        CommunityAuthorizationService authorization, PresenceTracker presence)
+        CommunityAuthorizationService authorization, PresenceTracker presence,
+        ICommunityLimitsService limitService)
     {
         var session = await sessions.GetAsync(context, db);
         if (session is null) return Results.Unauthorized();
@@ -64,7 +65,8 @@ public static class CommunityManagementEndpoints
         var bans = access.Has(CommunityPermission.BanMembers)
             ? await LoadBansAsync(communityId, db)
             : [];
-        return Results.Ok(new CommunityManagementDto(ToDto(community), access, roles, memberDtos, invites, bans));
+        return Results.Ok(new CommunityManagementDto(ToDto(community), access, roles, memberDtos, invites, bans,
+            limitService.GetEffectiveLimits(communityId)));
     }
 
     private static async Task<IResult> UpdateCommunityAsync(

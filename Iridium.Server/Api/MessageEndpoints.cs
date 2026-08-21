@@ -91,6 +91,7 @@ public static class MessageEndpoints
         var newest = await query
             .Include(value => value.AuthorAccount)
             .Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
+            .Include(value => value.Attachments)
             .OrderByDescending(value => value.CreatedAt)
             .ThenByDescending(value => value.Id)
             .Take(take + 1)
@@ -110,6 +111,7 @@ public static class MessageEndpoints
         var target = await db.ChannelMessages.AsNoTracking()
             .Include(value => value.AuthorAccount)
             .Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
+            .Include(value => value.Attachments)
             .SingleOrDefaultAsync(value => value.Id == targetId && value.CommunityId == communityId && value.ChannelId == channelId);
         if (target is null) return Results.NotFound(new { message = "Message not found in this channel." });
         var half = Math.Min(MessageHistoryDefaults.AroundHalfWindow, Math.Max(1, take / 2));
@@ -117,6 +119,7 @@ public static class MessageEndpoints
             .Where(value => value.CommunityId == communityId && value.ChannelId == channelId &&
                             (value.CreatedAt < target.CreatedAt || value.CreatedAt == target.CreatedAt && value.Id.CompareTo(target.Id) < 0))
             .Include(value => value.AuthorAccount).Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
+            .Include(value => value.Attachments)
             .OrderByDescending(value => value.CreatedAt).ThenByDescending(value => value.Id).Take(half + 1).ToListAsync();
         var hasOlder = before.Count > half;
         if (hasOlder) before.RemoveAt(before.Count - 1);
@@ -124,6 +127,7 @@ public static class MessageEndpoints
             .Where(value => value.CommunityId == communityId && value.ChannelId == channelId &&
                             (value.CreatedAt > target.CreatedAt || value.CreatedAt == target.CreatedAt && value.Id.CompareTo(target.Id) > 0))
             .Include(value => value.AuthorAccount).Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
+            .Include(value => value.Attachments)
             .OrderBy(value => value.CreatedAt).ThenBy(value => value.Id).Take(half).ToListAsync();
         var entities = before.OrderBy(value => value.CreatedAt).ThenBy(value => value.Id).Append(target).Concat(after);
         var messages = entities.Select(ChannelMessageMapper.ToDto).ToList();

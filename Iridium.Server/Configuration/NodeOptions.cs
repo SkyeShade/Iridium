@@ -1,3 +1,5 @@
+using Iridium.Protocol;
+
 namespace Iridium.Server.Configuration;
 
 public sealed class NodeOptions
@@ -15,4 +17,12 @@ public sealed class NodeOptions
     public int SessionActivityUpdateMinutes { get; set; } = 15;
 
     public string? PublicAuthority { get; set; }
+
+    public int MaxMessageCharacters { get; set; } = 10_000;
+
+    public long MaxAttachmentBytes { get; set; } = NodeLimitDefaults.MaxAttachmentBytes;
+
+    public int MaxAttachmentsPerMessage { get; set; } = 10;
+
+    public string? AttachmentStoragePath { get; set; } = Path.Combine("data", "attachments");
 }

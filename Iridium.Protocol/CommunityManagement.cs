@@ -75,7 +75,13 @@ public sealed record CommunityManagementDto(
     IReadOnlyList<CommunityRoleDto> Roles,
     IReadOnlyList<CommunityMemberDto> Members,
     IReadOnlyList<CommunityInviteDto> Invites,
-    IReadOnlyList<CommunityBanDto> Bans);
+    IReadOnlyList<CommunityBanDto> Bans,
+    CommunityLimitsDto Limits);
+
+public sealed record CommunityLimitsDto(
+    int MaxMessageCharacters,
+    long MaxAttachmentBytes,
+    int MaxAttachmentsPerMessage);
 
 public sealed record CreateCommunityRoleRequest(string Name, CommunityPermission Permissions, string? Color, bool DisplaySeparately = false, bool IsMentionable = false);
 public sealed record UpdateCommunityRoleRequest(string Name, CommunityPermission Permissions, string? Color, bool DisplaySeparately = false, bool IsMentionable = false);

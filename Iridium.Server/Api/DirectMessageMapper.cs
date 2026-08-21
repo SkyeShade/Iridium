@@ -21,7 +21,8 @@ public static class DirectMessageMapper
                 message.ReplyToMessage.AuthorAccount.DisplayName,
                 message.ReplyToMessage.IsDeleted ? null : Excerpt(message.ReplyToMessage.Content),
                 message.ReplyToMessage.IsDeleted),
-        message.ClientMessageId);
+        message.ClientMessageId,
+        Attachments: message.IsDeleted ? [] : message.Attachments.Select(ChannelMessageMapper.ToAttachment).ToArray());
 
     public static DirectConversationDto ConversationToDto(
         DirectConversation conversation,

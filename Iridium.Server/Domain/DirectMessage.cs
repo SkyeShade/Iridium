@@ -16,4 +16,5 @@ public sealed class DirectMessage
     public required NodeAccount AuthorAccount { get; set; }
     public DirectMessage? ReplyToMessage { get; set; }
     public ICollection<DirectMessage> Replies { get; set; } = [];
+    public ICollection<Attachment> Attachments { get; set; } = [];
 }
