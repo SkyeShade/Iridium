@@ -234,7 +234,17 @@ public sealed class RealtimeFlowTests
             var friendAcceptedOnIntruder = Completion<FriendshipChangedEvent>();
             TaskCompletionSource<PresenceChangedEvent>? outsiderPresenceOnOwner = null;
             var mentionReceived = Completion<CommunityMentionReceivedEvent>();
+            var incomingCall = Completion<IncomingCallEvent>();
+            var callAccepted = Completion<CallStateEvent>();
+            var receivedOffer = Completion<WebRtcDescriptionEvent>();
+            var receivedAnswer = Completion<WebRtcDescriptionEvent>();
+            var receivedIce = Completion<WebRtcIceCandidateEvent>();
+            var participantChanged = Completion<CallParticipantStateEvent>();
+            var speakingChanged = Completion<CallParticipantSpeakingEvent>();
+            var mediaRetryRequested = Completion<CallStateEvent>();
+            var callEnded = Completion<CallStateEvent>();
             var mentionNotificationCount = 0;
+            var answerDeliveryCount = 0;
             secondConnection.On<ChannelMessageDto>(ChatHubContract.MessageCreated, message =>
             {
                 if (message.Content == "hello from tab one") createdOnSecond.TrySetResult(message);
@@ -270,6 +280,22 @@ public sealed class RealtimeFlowTests
                 Interlocked.Increment(ref mentionNotificationCount);
                 mentionReceived.TrySetResult(mention);
             });
+            outsiderConnection.On<IncomingCallEvent>(VoiceCallHubContract.Incoming, value => incomingCall.TrySetResult(value));
+            firstConnection.On<CallStateEvent>(VoiceCallHubContract.Accepted, value => callAccepted.TrySetResult(value));
+            outsiderConnection.On<WebRtcDescriptionEvent>(VoiceCallHubContract.Offer, value => receivedOffer.TrySetResult(value));
+            firstConnection.On<WebRtcDescriptionEvent>(VoiceCallHubContract.Answer, value =>
+            {
+                Interlocked.Increment(ref answerDeliveryCount);
+                receivedAnswer.TrySetResult(value);
+            });
+            outsiderConnection.On<WebRtcIceCandidateEvent>(VoiceCallHubContract.IceCandidate, value => receivedIce.TrySetResult(value));
+            outsiderConnection.On<CallParticipantStateEvent>(VoiceCallHubContract.ParticipantStateChanged,
+                value => participantChanged.TrySetResult(value));
+            outsiderConnection.On<CallParticipantSpeakingEvent>(VoiceCallHubContract.ParticipantSpeakingChanged,
+                value => speakingChanged.TrySetResult(value));
+            firstConnection.On<CallStateEvent>(VoiceCallHubContract.MediaRetryRequested,
+                value => mediaRetryRequested.TrySetResult(value));
+            outsiderConnection.On<CallStateEvent>(VoiceCallHubContract.Ended, value => callEnded.TrySetResult(value));
 
             await Task.WhenAll(firstConnection.StartAsync(), secondConnection.StartAsync(), outsiderConnection.StartAsync(), intruderConnection.StartAsync());
             await firstConnection.InvokeAsync(ChatHubContract.JoinChannel, communityA.Id, chatChannel.Id);
@@ -342,6 +368,59 @@ public sealed class RealtimeFlowTests
             Assert.Equal(0, Assert.Single(await outsider.GetDirectConversationsAsync()).UnreadCount);
             Assert.Equal(1, Assert.Single(await owner.GetDirectConversationsAsync()).UnreadCount);
             Assert.Equal(4, (await outsider.GetDirectMessagesAsync(directConversation.Id)).Count);
+
+            var call = await firstConnection.InvokeAsync<CallSessionDto>(VoiceCallHubContract.Start, directConversation.Id);
+            var incoming = await incomingCall.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(call.Id, incoming.CallId);
+            Assert.Equal(ownerAuth.Account.Id, incoming.CallerAccountId);
+            Assert.Equal("Owner", incoming.CallerDisplayName);
+            await Assert.ThrowsAsync<HubException>(() => secondConnection.InvokeAsync<CallSessionDto>(
+                VoiceCallHubContract.Start, directConversation.Id));
+            await Assert.ThrowsAsync<HubException>(() => intruderConnection.InvokeAsync(
+                VoiceCallHubContract.SendAnswer, call.Id, Guid.NewGuid(), new WebRtcSessionDescription("answer", "intrusion")));
+            var mediaConfiguration = await firstConnection.InvokeAsync<CallMediaConfigurationDto>(
+                VoiceCallHubContract.GetMediaConfiguration, call.Id);
+            Assert.Equal(MediaMode.DirectWebRtc, mediaConfiguration.Mode);
+            await Assert.ThrowsAsync<HubException>(() => intruderConnection.InvokeAsync<CallMediaConfigurationDto>(
+                VoiceCallHubContract.GetMediaConfiguration, call.Id));
+
+            var offer = new WebRtcSessionDescription("offer", "test-offer-sdp");
+            var negotiationId = Guid.NewGuid();
+            await firstConnection.InvokeAsync(VoiceCallHubContract.SendOffer, call.Id, negotiationId, offer);
+            var forwardedOffer = await receivedOffer.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(negotiationId, forwardedOffer.NegotiationId);
+            Assert.Equal(offer, forwardedOffer.Description);
+            await outsiderConnection.InvokeAsync(VoiceCallHubContract.Accept, call.Id);
+            Assert.Equal(CallState.Active, (await callAccepted.Task.WaitAsync(TimeSpan.FromSeconds(5))).State);
+            var answer = new WebRtcSessionDescription("answer", "test-answer-sdp");
+            await outsiderConnection.InvokeAsync(VoiceCallHubContract.SendAnswer, call.Id, negotiationId, answer);
+            var forwardedAnswer = await receivedAnswer.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(negotiationId, forwardedAnswer.NegotiationId);
+            Assert.Equal(answer, forwardedAnswer.Description);
+            await outsiderConnection.InvokeAsync(VoiceCallHubContract.SendAnswer, call.Id, negotiationId, answer);
+            await outsiderConnection.InvokeAsync(VoiceCallHubContract.SendAnswer, call.Id, Guid.NewGuid(), answer);
+            await Task.Delay(250);
+            Assert.Equal(1, Volatile.Read(ref answerDeliveryCount));
+            var candidate = new WebRtcIceCandidate("candidate:test", "audio", 0, "test-fragment");
+            await firstConnection.InvokeAsync(VoiceCallHubContract.SendIceCandidate, call.Id, negotiationId, candidate);
+            var forwardedCandidate = await receivedIce.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(negotiationId, forwardedCandidate.NegotiationId);
+            Assert.Equal(candidate, forwardedCandidate.Candidate);
+            await firstConnection.InvokeAsync(VoiceCallHubContract.SetParticipantState, call.Id,
+                true, false, CallConnectionState.Connected);
+            var participantState = await participantChanged.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.True(participantState.IsMuted);
+            Assert.Equal(ownerAuth.Account.Id, participantState.AccountId);
+            await firstConnection.InvokeAsync(VoiceCallHubContract.SetSpeaking, call.Id, true);
+            var speakingState = await speakingChanged.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.True(speakingState.IsSpeaking);
+            Assert.Equal(ownerAuth.Account.Id, speakingState.AccountId);
+            await Assert.ThrowsAsync<HubException>(() => intruderConnection.InvokeAsync(
+                VoiceCallHubContract.SetSpeaking, call.Id, true));
+            await outsiderConnection.InvokeAsync(VoiceCallHubContract.RequestMediaRetry, call.Id);
+            Assert.Equal(call.Id, (await mediaRetryRequested.Task.WaitAsync(TimeSpan.FromSeconds(5))).CallId);
+            await firstConnection.InvokeAsync(VoiceCallHubContract.HangUp, call.Id);
+            Assert.Equal(CallState.Ended, (await callEnded.Task.WaitAsync(TimeSpan.FromSeconds(5))).State);
 
             outsiderPresenceOnOwner = Completion<PresenceChangedEvent>();
             await outsiderConnection.InvokeAsync(PresenceHubContract.SetPresence, UserPresence.DoNotDisturb);

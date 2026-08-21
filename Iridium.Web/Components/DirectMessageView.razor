@@ -3,6 +3,7 @@
 @using Iridium.Web.Models
 @implements IDisposable
 @inject ChannelMessagingSession Messaging
+@inject CallClientService Calls
 @inject ILogger<DirectMessageView> Logger
 
 <section class="direct-message-view">
@@ -10,11 +11,13 @@
         <ProfileAvatar DisplayName="@Conversation.OtherParticipant.DisplayName" Presence="@Conversation.OtherParticipant.Presence" Size="small" Surface="base" />
         <div><strong class="display-name">@Conversation.OtherParticipant.DisplayName</strong><span>@IridiumIdentity.Format(Conversation.OtherParticipant.Username, NodeAuthority)</span></div>
         <button type="button" class="voice-call-button" title="Start Voice Call" aria-label="Start Voice Call"
-                @onclick="OnStartVoiceCall"><Icon Name="phone" /></button>
+                disabled="@(Calls.CurrentCall is not null || Calls.IncomingCall is not null)" @onclick="StartVoiceCallAsync"><Icon Name="phone" /></button>
     </header>
     @if (_loading) { <div class="dm-status">Loading message history…</div> }
     @if (!string.IsNullOrWhiteSpace(_error)) { <div class="dm-error">@_error</div> }
     <div class="dm-message-region">
+        <DirectVoiceCallStage ConversationId="Conversation.Id" CurrentAccountId="CurrentAccountId" Participant="Conversation.OtherParticipant" />
+        <div class="dm-message-history">
         <MessageList @ref="_messageList" Messages="ProjectedMessages" CurrentAccountId="CurrentAccountId" CanManage="false"
                      DirectParticipant="Conversation.OtherParticipant"
                      NodeAuthority="@NodeAuthority" OnEditProfile="OnEditProfile" OnMessage="OnMessage"
@@ -24,6 +27,7 @@
                      WindowRevision="Messaging.WindowRevision" TargetMessageId="@(Messaging.WindowMode == MessageWindowMode.SearchTarget ? _loadedTargetMessageId : null)"
                      OnLoadOlder="LoadOlderAsync" OnViewportStateChanged="ViewportStateChanged" />
         @if (ShowJumpToLatest) { <button class="jump-latest" @onclick="JumpToLatestAsync">Jump to Latest</button> }
+        </div>
     </div>
     <div class="dm-composer-region">
         <MessageComposer @ref="_composer" ChannelName="@Conversation.OtherParticipant.DisplayName"
@@ -58,7 +62,7 @@
             message.CreatedAt, message.EditedAt, message.IsDeleted, message.ReplyTo, null,
             message.ClientMessageId, message.DeliveryState, message.DeliveryError, message.CanRetry, message.Attachments)).ToArray();
 
-    protected override void OnInitialized() => Messaging.Changed += MessagesChanged;
+    protected override void OnInitialized() { Messaging.Changed += MessagesChanged; Calls.Changed += CallsChanged; }
     protected override async Task OnParametersSetAsync()
     {
         if (_loadedConversationId == Conversation.Id && Messaging.DirectConversationId == Conversation.Id &&
@@ -84,6 +88,7 @@
     }
 
     private void MessagesChanged() => _ = InvokeAsync(StateHasChanged);
+    private void CallsChanged() => _ = InvokeAsync(StateHasChanged);
     private async Task BeginReply(ChannelMessageDto message)
     {
         _replyTo = message;
@@ -142,6 +147,20 @@
         _loadedTargetMessageId = TargetMessageId;
         await InvokeAsync(StateHasChanged);
     }
+    private async Task StartVoiceCallAsync()
+    {
+        _error = null;
+        try
+        {
+            await Calls.StartAsync(Conversation);
+            if (OnStartVoiceCall.HasDelegate) await OnStartVoiceCall.InvokeAsync();
+        }
+        catch (Exception exception)
+        {
+            Logger.LogWarning(exception, "Could not start voice call in Direct Message {ConversationId}.", Conversation.Id);
+            _error = exception.Message;
+        }
+    }
     public async Task OpenSearchResultAsync(MessageSearchResultDto result)
     {
         _loadedTargetMessageId = result.MessageId;
@@ -150,5 +169,5 @@
         _shouldShowJumpToLatest = true;
         await InvokeAsync(StateHasChanged);
     }
-    public void Dispose() => Messaging.Changed -= MessagesChanged;
+    public void Dispose() { Messaging.Changed -= MessagesChanged; Calls.Changed -= CallsChanged; }
 }

@@ -10,6 +10,8 @@
     --surface-raised: #303542;
     --surface-hover: #363b49;
     --surface-active: #3d4353;
+    --popup-surface: var(--bg-deep);
+    --popup-shadow: 0 .8rem 2rem #000a;
     --input-bg: #12151b;
     --border: #424857;
     --border-subtle: #2b2f3a;

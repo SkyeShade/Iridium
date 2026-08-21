@@ -8,6 +8,7 @@ using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
 using Iridium.Server.Configuration;
 using Microsoft.Extensions.Options;
+using Iridium.Server.Calls;
 
 namespace Iridium.Server.Hubs;
 
@@ -18,7 +19,11 @@ public sealed class ChatHub(
     SessionService sessions,
     CommunityAuthorizationService authorization,
     IOptions<NodeOptions> nodeOptions,
-    ICommunityLimitsService limitService) : Hub
+    ICommunityLimitsService limitService,
+    ICallService calls,
+    IMediaService media,
+    DirectCallAuthorizationService callAuthorization,
+    ILogger<ChatHub> logger) : Hub
 {
     private const string CountedKey = "iridium.connection-counted";
     private const string AccountKey = "iridium.account-id";
@@ -36,6 +41,8 @@ public sealed class ChatHub(
         Context.Items[AccountKey] = session.AccountId;
         connections.Connected();
         await Groups.AddToGroupAsync(Context.ConnectionId, AccountGroup(session.AccountId));
+        logger.LogDebug("SignalR connection {ConnectionId} registered for authenticated account {AccountId}.",
+            Context.ConnectionId, session.AccountId);
         await BroadcastPresenceAsync(session.AccountId,
             presence.Connected(session.AccountId, session.Account.PreferredPresence));
         await base.OnConnectedAsync();
@@ -45,7 +52,11 @@ public sealed class ChatHub(
     {
         if (Context.Items.ContainsKey(CountedKey)) connections.Disconnected();
         if (Context.Items.TryGetValue(AccountKey, out var value) && value is Guid accountId)
+        {
+            logger.LogDebug("SignalR connection {ConnectionId} disconnected from authenticated account {AccountId}.",
+                Context.ConnectionId, accountId);
             await BroadcastPresenceAsync(accountId, presence.Disconnected(accountId));
+        }
         await base.OnDisconnectedAsync(exception);
     }
 
@@ -204,6 +215,148 @@ public sealed class ChatHub(
     public Task LeaveDirectConversation(Guid conversationId) =>
         Groups.RemoveFromGroupAsync(Context.ConnectionId, DirectGroup(conversationId));
 
+    public async Task<CallSessionDto> StartDirectVoiceCall(Guid conversationId)
+    {
+        var session = await RequireSessionAsync();
+        var parties = await callAuthorization.AuthorizeStartAsync(conversationId, session.AccountId);
+        var call = calls.CreateDirect(parties.ConversationId, parties.CallerId, parties.CallerDisplayName,
+            parties.CalleeId, parties.CalleeDisplayName);
+        await Clients.Group(AccountGroup(parties.CalleeId)).SendAsync(VoiceCallHubContract.Incoming,
+            new IncomingCallEvent(call.Id, parties.ConversationId, parties.CallerId, parties.CallerDisplayName,
+                call.CreatedAt, call.ExpiresAt));
+        return call;
+    }
+
+    public async Task AcceptVoiceCall(Guid callId)
+    {
+        var accountId = await RequireAccountAsync();
+        var call = calls.Accept(callId, accountId);
+        await OtherCallParticipant(call, accountId).SendAsync(VoiceCallHubContract.Accepted,
+            new CallStateEvent(callId, CallState.Active));
+        await Clients.OthersInGroup(AccountGroup(accountId)).SendAsync(VoiceCallHubContract.Cancelled,
+            new CallStateEvent(callId, CallState.Cancelled, "Answered in another tab"));
+    }
+
+    public async Task RejectVoiceCall(Guid callId)
+    {
+        var accountId = await RequireAccountAsync();
+        var call = calls.Reject(callId, accountId);
+        await OtherCallParticipant(call, accountId).SendAsync(VoiceCallHubContract.Rejected,
+            new CallStateEvent(callId, CallState.Rejected));
+        await Clients.OthersInGroup(AccountGroup(accountId)).SendAsync(VoiceCallHubContract.Cancelled,
+            new CallStateEvent(callId, CallState.Cancelled, "Declined in another tab"));
+    }
+
+    public async Task CancelVoiceCall(Guid callId)
+    {
+        var accountId = await RequireAccountAsync();
+        var call = calls.Cancel(callId, accountId);
+        await OtherCallParticipant(call, accountId).SendAsync(VoiceCallHubContract.Cancelled,
+            new CallStateEvent(callId, CallState.Cancelled));
+        await Clients.OthersInGroup(AccountGroup(accountId)).SendAsync(VoiceCallHubContract.Cancelled,
+            new CallStateEvent(callId, CallState.Cancelled));
+    }
+
+    public async Task HangUpVoiceCall(Guid callId)
+    {
+        var accountId = await RequireAccountAsync();
+        var call = calls.HangUp(callId, accountId);
+        await OtherCallParticipant(call, accountId).SendAsync(VoiceCallHubContract.Ended,
+            new CallStateEvent(callId, call.State));
+        await Clients.OthersInGroup(AccountGroup(accountId)).SendAsync(VoiceCallHubContract.Ended,
+            new CallStateEvent(callId, call.State));
+    }
+
+    public async Task SetCallParticipantState(Guid callId, bool muted, bool deafened, CallConnectionState connectionState)
+    {
+        var accountId = await RequireAccountAsync();
+        var update = calls.SetParticipantState(callId, accountId, muted, deafened, connectionState);
+        var target = calls.OtherParticipants(callId, accountId, CallState.Ringing, CallState.Active).Single();
+        logger.LogDebug("Call {CallId} participant {AccountId} connection state changed to {ConnectionState}.",
+            callId, accountId, connectionState);
+        await Clients.Group(AccountGroup(target)).SendAsync(VoiceCallHubContract.ParticipantStateChanged, update);
+    }
+
+    public async Task SetCallParticipantSpeaking(Guid callId, bool isSpeaking)
+    {
+        var accountId = await RequireAccountAsync();
+        var update = calls.SetParticipantSpeaking(callId, accountId, isSpeaking);
+        var targets = calls.OtherParticipants(callId, accountId, CallState.Ringing, CallState.Active);
+        await Clients.Groups(targets.Select(AccountGroup).ToArray())
+            .SendAsync(VoiceCallHubContract.ParticipantSpeakingChanged, update);
+    }
+
+    public async Task RequestCallMediaRetry(Guid callId)
+    {
+        var accountId = await RequireAccountAsync();
+        var call = calls.RequireParticipant(callId, accountId, CallState.Active);
+        var targets = calls.OtherParticipants(callId, accountId, CallState.Active);
+        logger.LogDebug("Media retry requested for call {CallId} by participant {AccountId}.", callId, accountId);
+        await Clients.Groups(targets.Select(AccountGroup).ToArray()).SendAsync(
+            VoiceCallHubContract.MediaRetryRequested, new CallStateEvent(call.Id, call.State));
+    }
+
+    public async Task<CallMediaConfigurationDto> GetCallMediaConfiguration(Guid callId)
+    {
+        var accountId = await RequireAccountAsync();
+        calls.RequireParticipant(callId, accountId, CallState.Ringing, CallState.Active);
+        return media.GetConfiguration();
+    }
+
+    public async Task<CallSessionDto?> GetCurrentCall()
+    {
+        var accountId = await RequireAccountAsync();
+        return calls.CurrentFor(accountId);
+    }
+
+    public async Task SendWebRtcOffer(Guid callId, Guid negotiationId, WebRtcSessionDescription description)
+    {
+        var sender = await RequireAccountAsync();
+        var route = media.AuthorizeOffer(callId, sender, negotiationId, description);
+        if (!route.ShouldForward)
+        {
+            logger.LogDebug("Call {CallId} negotiation {NegotiationId}: WebRTC offer ignored by server ({IgnoreReason}).",
+                callId, negotiationId, route.IgnoreReason);
+            return;
+        }
+        logger.LogDebug("Call {CallId} negotiation {NegotiationId}: WebRTC offer forwarded once from account {SenderAccountId} on connection {ConnectionId} to account {TargetAccountId}.",
+            callId, negotiationId, sender, Context.ConnectionId, route.TargetAccountId);
+        await Clients.Group(AccountGroup(route.TargetAccountId)).SendAsync(VoiceCallHubContract.Offer,
+            new WebRtcDescriptionEvent(callId, sender, negotiationId, description));
+    }
+
+    public async Task SendWebRtcAnswer(Guid callId, Guid negotiationId, WebRtcSessionDescription description)
+    {
+        var sender = await RequireAccountAsync();
+        var route = media.AuthorizeAnswer(callId, sender, negotiationId, description);
+        if (!route.ShouldForward)
+        {
+            logger.LogDebug("Call {CallId} negotiation {NegotiationId}: WebRTC answer ignored by server ({IgnoreReason}).",
+                callId, negotiationId, route.IgnoreReason);
+            return;
+        }
+        logger.LogDebug("Call {CallId} negotiation {NegotiationId}: WebRTC answer forwarded once from account {SenderAccountId} on connection {ConnectionId} to account {TargetAccountId}.",
+            callId, negotiationId, sender, Context.ConnectionId, route.TargetAccountId);
+        await Clients.Group(AccountGroup(route.TargetAccountId)).SendAsync(VoiceCallHubContract.Answer,
+            new WebRtcDescriptionEvent(callId, sender, negotiationId, description));
+    }
+
+    public async Task SendWebRtcIceCandidate(Guid callId, Guid negotiationId, WebRtcIceCandidate candidate)
+    {
+        var sender = await RequireAccountAsync();
+        var route = media.AuthorizeIceCandidate(callId, sender, negotiationId, candidate);
+        if (!route.ShouldForward)
+        {
+            logger.LogDebug("Call {CallId} negotiation {NegotiationId}: WebRTC ICE candidate ignored by server ({IgnoreReason}).",
+                callId, negotiationId, route.IgnoreReason);
+            return;
+        }
+        logger.LogDebug("Call {CallId} negotiation {NegotiationId}: WebRTC ICE candidate forwarded from account {SenderAccountId} on connection {ConnectionId} to account {TargetAccountId}.",
+            callId, negotiationId, sender, Context.ConnectionId, route.TargetAccountId);
+        await Clients.Group(AccountGroup(route.TargetAccountId)).SendAsync(VoiceCallHubContract.IceCandidate,
+            new WebRtcIceCandidateEvent(callId, sender, negotiationId, candidate));
+    }
+
     public async Task<DirectMessageDto> SendDirectMessage(Guid conversationId, SendDirectMessageRequest request)
     {
         var session = await RequireSessionAsync();
@@ -316,6 +469,9 @@ public sealed class ChatHub(
     private IClientProxy DirectParticipants(DirectConversation conversation) => Clients.Groups(
         AccountGroup(conversation.ParticipantAAccountId),
         AccountGroup(conversation.ParticipantBAccountId));
+
+    private IClientProxy OtherCallParticipant(CallSessionDto call, Guid accountId) => Clients.Group(
+        AccountGroup(call.Participants.Single(value => value.AccountId != accountId).AccountId));
 
     private async Task BroadcastPresenceAsync(Guid accountId, PublicPresence publicPresence)
     {

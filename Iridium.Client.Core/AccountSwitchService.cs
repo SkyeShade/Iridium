@@ -5,12 +5,17 @@ namespace Iridium.Client.Core;
 public sealed class AccountSwitchService(
     NodeSession session,
     CommunitySession communities,
-    ChannelMessagingSession messaging)
+    ChannelMessagingSession messaging,
+    CallClientService? calls = null)
 {
     public async Task InitializeAsync(IReadOnlyList<SavedNode> nodes, CancellationToken cancellationToken = default)
     {
         await session.InitializeAsync(nodes, cancellationToken);
-        if (session.IsAuthenticated) await messaging.ConnectAsync(cancellationToken);
+        if (session.IsAuthenticated)
+        {
+            await messaging.ConnectAsync(cancellationToken);
+            if (calls is not null) await calls.ConnectAsync(cancellationToken);
+        }
     }
 
     public void BeginAuthentication(SavedNode node, SavedAccountKey? reauthenticationKey = null) =>
@@ -23,6 +28,7 @@ public sealed class AccountSwitchService(
         await ResetAccountContextAsync(cancellationToken);
         await session.ActivateSwitchAsync(activation, cancellationToken);
         await messaging.ConnectAsync(cancellationToken);
+        if (calls is not null) await calls.ConnectAsync(cancellationToken);
         return true;
     }
 
@@ -63,10 +69,12 @@ public sealed class AccountSwitchService(
         await ResetAccountContextAsync(cancellationToken);
         await session.AcceptAuthenticationAsync(activation, cancellationToken);
         await messaging.ConnectAsync(cancellationToken);
+        if (calls is not null) await calls.ConnectAsync(cancellationToken);
     }
 
     private async Task ResetAccountContextAsync(CancellationToken cancellationToken)
     {
+        if (calls is not null) await calls.EndForAccountSwitchAsync(cancellationToken);
         await messaging.DisconnectAsync(cancellationToken);
         communities.Clear();
     }

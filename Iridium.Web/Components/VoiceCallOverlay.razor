@@ -1,0 +1,50 @@
+@using Iridium.Protocol
+@implements IDisposable
+@inject CallClientService Calls
+
+@if (Calls.CurrentCall is { } call && call.DirectConversationId != ActiveConversationId)
+{
+    var remote = call.Participants.FirstOrDefault(value => value.AccountId != Calls.AccountId);
+    <section class="call-strip" aria-label="Active voice call controls">
+        <ProfileAvatar DisplayName="@(remote?.DisplayName ?? "Voice call")" Size="small" Surface="elevated" />
+        <div class="call-copy">
+            <strong>@(call.State == CallState.Ringing ? $"Calling {remote?.DisplayName}…" : remote?.DisplayName)</strong>
+            <span>@(Calls.StatusMessage ?? call.State.ToString())</span>
+            @if (remote?.IsMuted == true) { <small>@remote.DisplayName is muted</small> }
+        </div>
+        <div class="call-controls">
+            <button type="button" class="call-control @(Calls.IsMuted ? "selected" : null)" title="@(Calls.IsMuted ? "Unmute" : "Mute")"
+                    aria-pressed="@Calls.IsMuted" @onclick="ToggleMuteAsync"><Icon Name="microphone" /></button>
+            <button type="button" class="call-control @(Calls.IsDeafened ? "selected" : null)" title="@(Calls.IsDeafened ? "Undeafen" : "Deafen")"
+                    aria-pressed="@Calls.IsDeafened" @onclick="ToggleDeafenAsync"><Icon Name="headphones" /></button>
+            @if (Calls.CanRetry) { <button type="button" class="call-control" title="Retry media" @onclick="RetryAsync"><Icon Name="refresh" /></button> }
+            <button type="button" class="call-control hangup" title="Hang up" @onclick="HangUpAsync"><Icon Name="hangup" /></button>
+        </div>
+    </section>
+}
+else if (Calls.CurrentCall is null && Calls.IncomingCall is null &&
+         (!string.IsNullOrWhiteSpace(Calls.StatusMessage) || !string.IsNullOrWhiteSpace(Calls.ErrorMessage)))
+{
+    <section class="call-toast @(Calls.ErrorMessage is null ? null : "error")" role="status">
+        @if (Calls.ErrorMessage is not null)
+        {
+            <span class="call-toast-copy"><strong>Voice connection failed</strong><small>@Calls.ErrorMessage</small></span>
+        }
+        else
+        {
+            <span>@Calls.StatusMessage</span>
+        }
+        <button type="button" aria-label="Dismiss" @onclick="Calls.DismissStatus"><Icon Name="close" /></button>
+    </section>
+}
+
+@code {
+    [Parameter] public Guid? ActiveConversationId { get; set; }
+    protected override void OnInitialized() => Calls.Changed += CallsChanged;
+    private void CallsChanged() => _ = InvokeAsync(StateHasChanged);
+    private Task ToggleMuteAsync() => Calls.ToggleMuteAsync();
+    private Task ToggleDeafenAsync() => Calls.ToggleDeafenAsync();
+    private Task HangUpAsync() => Calls.HangUpAsync();
+    private Task RetryAsync() => Calls.RetryMediaAsync();
+    public void Dispose() => Calls.Changed -= CallsChanged;
+}

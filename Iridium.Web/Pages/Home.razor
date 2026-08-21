@@ -137,7 +137,7 @@ else
             else if (_selectedCommunity is null && _homeView == "dm" && _selectedDirectConversation is { } direct)
             {
                 <DirectParticipantSidebar Participant="direct.OtherParticipant" ConversationId="direct.Id"
-                    NodeAuthority="@(Session.SelectedNode!.PublicAuthority)" OnSearchResultSelected="OpenDirectSearchResultAsync"
+                    CurrentAccountId="Session.Account!.Id" NodeAuthority="@(Session.SelectedNode!.PublicAuthority)" OnSearchResultSelected="OpenDirectSearchResultAsync"
                     Friend="@Session.Friends.FirstOrDefault(value => value.AccountId == direct.OtherParticipant.AccountId)"
                     OnAddFriend="SendFriendRequestAsync" OnRemoveFriend="RemoveFriendAsync" />
             }
@@ -187,6 +187,7 @@ else
         <InvitePeopleModal Friends="Session.Friends" NodeAuthority="@(Session.SelectedNode!.PublicAuthority)" InviteUrl="_quickInviteUrl"
                            Error="@_quickInviteError" Send="SendQuickInviteAsync" OnClose="CloseQuickInvite" />
     }
+    <VoiceCallOverlay ActiveConversationId="@(_selectedCommunity is null && _homeView == "dm" ? _selectedDirectConversation?.Id : null)" />
 }
 
 @code {

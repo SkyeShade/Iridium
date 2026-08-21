@@ -21,6 +21,8 @@ builder.Services.AddScoped<SavedNodeState>();
 builder.Services.AddScoped<NodeSession>();
 builder.Services.AddScoped<CommunitySession>();
 builder.Services.AddScoped<ChannelMessagingSession>();
+builder.Services.AddScoped<ICallMediaService, WebRtcCallMediaService>();
+builder.Services.AddScoped<CallClientService>();
 builder.Services.AddScoped<AccountSwitchService>();
 builder.Services.AddScoped<IIdentityProfileResolver, SameNodeIdentityProfileResolver>();
 builder.Services.AddScoped<ICommunityInviteResolver, CommunityInviteResolver>();

@@ -1,0 +1,86 @@
+@using Iridium.Protocol
+@inject CallClientService Calls
+
+@if (IncomingForConversation is { } incoming)
+{
+    <section class="dm-call-stage incoming" aria-label="Incoming voice call">
+        <div class="single-call-participant">
+            <div class="call-avatar"><ProfileAvatar DisplayName="@incoming.CallerDisplayName" Presence="@Participant.Presence" Size="large" Surface="base" /></div>
+            <strong>@incoming.CallerDisplayName</strong>
+            <span>Incoming voice call</span>
+        </div>
+        @if (!string.IsNullOrWhiteSpace(Calls.ErrorMessage)) { <p class="call-error">@Calls.ErrorMessage</p> }
+        <div class="incoming-actions">
+            <button type="button" class="answer-button" @onclick="AcceptAsync"><Icon Name="phone" /> Answer</button>
+            <button type="button" class="decline-button" @onclick="DeclineAsync"><Icon Name="hangup" /> Decline</button>
+        </div>
+    </section>
+}
+else if (CallForConversation is { } call)
+{
+    var isRinging = call.State == CallState.Ringing;
+    <section class="dm-call-stage @(isRinging ? "outgoing" : "active")" aria-label="@(isRinging ? "Outgoing voice call" : "Active voice call")">
+        @if (isRinging)
+        {
+            <div class="single-call-participant">
+                <div class="call-avatar"><ProfileAvatar DisplayName="@Participant.DisplayName" Presence="@Participant.Presence" Size="large" Surface="base" /></div>
+                <strong>@Participant.DisplayName</strong>
+                <span>Calling…</span>
+            </div>
+            <button type="button" class="leave-button" @onclick="HangUpAsync"><Icon Name="hangup" /> Cancel</button>
+        }
+        else
+        {
+            <div class="call-participants">
+                @foreach (var callParticipant in call.Participants)
+                {
+                    <div class="call-participant">
+                        <div class="call-avatar @(callParticipant.IsSpeaking ? "speaking" : null)">
+                            <ProfileAvatar DisplayName="@callParticipant.DisplayName"
+                                           Presence="@(callParticipant.AccountId == CurrentAccountId ? PublicPresence.Online : Participant.Presence)"
+                                           Size="large" Surface="base" />
+                        </div>
+                        <strong>@callParticipant.DisplayName</strong>
+                        @if (callParticipant.IsMuted) { <span>Muted</span> }
+                    </div>
+                }
+            </div>
+            <div class="media-status @(Calls.MediaConnectionState == CallConnectionState.Failed ? "failed" : null)">
+                <span>@(Calls.StatusMessage ?? MediaStatus)</span>
+                @if (!string.IsNullOrWhiteSpace(Calls.ErrorMessage)) { <small>@Calls.ErrorMessage</small> }
+            </div>
+            <div class="active-call-controls">
+                <button type="button" class="call-control @(Calls.IsMuted ? "selected" : null)" title="@(Calls.IsMuted ? "Unmute microphone" : "Mute microphone")"
+                        aria-pressed="@Calls.IsMuted" @onclick="ToggleMuteAsync"><Icon Name="microphone" /><span>@(Calls.IsMuted ? "Unmute" : "Mute")</span></button>
+                <button type="button" class="call-control @(Calls.IsDeafened ? "selected" : null)" title="@(Calls.IsDeafened ? "Undeafen" : "Deafen")"
+                        aria-pressed="@Calls.IsDeafened" @onclick="ToggleDeafenAsync"><Icon Name="headphones" /><span>@(Calls.IsDeafened ? "Undeafen" : "Deafen")</span></button>
+                @if (Calls.CanRetry)
+                {
+                    <button type="button" class="call-control retry" title="Retry media connection" @onclick="RetryAsync"><Icon Name="refresh" /><span>Retry</span></button>
+                }
+                <button type="button" class="call-control leave" title="Leave call" @onclick="HangUpAsync"><Icon Name="hangup" /><span>Leave</span></button>
+            </div>
+        }
+    </section>
+}
+
+@code {
+    [Parameter, EditorRequired] public required Guid ConversationId { get; set; }
+    [Parameter, EditorRequired] public required Guid CurrentAccountId { get; set; }
+    [Parameter, EditorRequired] public required DirectParticipantDto Participant { get; set; }
+    private IncomingCallEvent? IncomingForConversation => Calls.IncomingCall is { DirectConversationId: var id } incoming && id == ConversationId ? incoming : null;
+    private CallSessionDto? CallForConversation => Calls.CurrentCall is { DirectConversationId: var id } call && id == ConversationId ? call : null;
+    private string MediaStatus => Calls.MediaConnectionState switch
+    {
+        CallConnectionState.Connected => "Connected",
+        CallConnectionState.Failed => "Connection failed",
+        CallConnectionState.Disconnected => "Connection interrupted…",
+        _ => "Connecting media…"
+    };
+    private Task AcceptAsync() => Calls.AcceptAsync();
+    private Task DeclineAsync() => Calls.DeclineAsync();
+    private Task HangUpAsync() => Calls.HangUpAsync();
+    private Task ToggleMuteAsync() => Calls.ToggleMuteAsync();
+    private Task ToggleDeafenAsync() => Calls.ToggleDeafenAsync();
+    private Task RetryAsync() => Calls.RetryMediaAsync();
+}

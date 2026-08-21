@@ -9,6 +9,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Identity;
 using Iridium.Server.Domain;
 using Iridium.Server.Storage;
+using Iridium.Server.Calls;
 
 var builder = WebApplication.CreateBuilder(args);
 var configuredNodeOptions = builder.Configuration.GetSection(NodeOptions.SectionName).Get<NodeOptions>() ?? new NodeOptions();
@@ -20,6 +21,7 @@ builder.Services.AddSignalR();
 builder.Services.AddSingleton<ConnectionCounter>();
 builder.Services.AddSingleton<PresenceTracker>();
 builder.Services.Configure<NodeOptions>(builder.Configuration.GetSection(NodeOptions.SectionName));
+builder.Services.Configure<MediaOptions>(builder.Configuration.GetSection(MediaOptions.SectionName));
 builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(options =>
     options.MultipartBodyLengthLimit = maximumUploadRequestBytes);
 builder.Services.AddSingleton<ICommunityLimitsService, CommunityLimitsService>();
@@ -31,6 +33,11 @@ builder.Services.AddScoped<CommunityAuthorizationService>();
 builder.Services.AddScoped<CommunityInviteService>();
 builder.Services.AddSingleton<IAttachmentStorage, LocalAttachmentStorage>();
 builder.Services.AddSingleton<IImagePreviewGenerator, ImagePreviewGenerator>();
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<ICallService, CallService>();
+builder.Services.AddSingleton<IMediaService, DirectWebRtcMediaService>();
+builder.Services.AddScoped<DirectCallAuthorizationService>();
+builder.Services.AddHostedService<CallTimeoutService>();
 if (builder.Environment.IsDevelopment())
 {
     builder.Services.AddCors(options => options.AddPolicy("DevelopmentClient", policy =>

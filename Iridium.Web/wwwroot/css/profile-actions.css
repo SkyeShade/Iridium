@@ -1,6 +1,6 @@
 .profile-more{position:absolute;z-index:3;top:.55rem;right:.55rem;width:1.7rem;height:1.7rem;display:grid;place-items:center;padding:.35rem;border:0;border-radius:50%;color:white;background:#0006;cursor:pointer}
 .profile-more:hover{background:#000a}.profile-more svg{width:100%;height:100%}
-.profile-action-menu{position:absolute;z-index:4;top:2.45rem;right:.55rem;width:9.5rem;padding:.3rem;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-deep);box-shadow:0 .6rem 1.6rem #0009}
+.profile-action-menu{position:absolute;z-index:4;top:2.45rem;right:.55rem;width:9.5rem;padding:.3rem;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);background:var(--popup-surface);box-shadow:var(--popup-shadow)}
 .profile-action-menu button{width:100%;padding:.45rem .5rem;border:0;border-radius:.25rem;color:var(--text);background:transparent;text-align:left;cursor:pointer}
 .profile-action-menu button:hover{background:var(--surface-hover)}.profile-action-menu button.destructive{color:var(--danger-text)}
 .menu-separator{height:1px;margin:.25rem;background:var(--border)}

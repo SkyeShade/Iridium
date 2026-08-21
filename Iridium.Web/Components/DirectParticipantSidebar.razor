@@ -1,4 +1,5 @@
 @using Iridium.Protocol
+@inject NodeSession Session
 
 <section class="participant-sidebar">
     <header class="participant-search">
@@ -7,6 +8,25 @@
     </header>
     <div class="participant-profile">
         <div class="profile-banner"></div>
+        <button type="button" class="participant-more" title="Participant actions" aria-label="Participant actions"
+                aria-expanded="@_menuOpen" @onclick="ToggleMenu"><Icon Name="more" /></button>
+        @if (_menuOpen)
+        {
+            <div class="participant-menu">
+                <button type="button" @onclick="ViewProfile">View Profile</button>
+                <div class="menu-separator"></div>
+                <button type="button" class="@(_blocked ? null : "destructive")" disabled="@_actionBusy" @onclick="ToggleBlockAsync">@(_blocked ? "Unblock" : "Block")</button>
+                @if (Friend is null)
+                {
+                    <button type="button" disabled="@_actionBusy" @onclick="AddFriendAsync">Add Friend</button>
+                }
+                @if (Friend?.Status == FriendshipStatus.Accepted)
+                {
+                    <div class="menu-separator"></div>
+                    <button type="button" class="destructive" disabled="@_actionBusy" @onclick="RemoveFriendAsync">Remove Friend</button>
+                }
+            </div>
+        }
         <div class="profile-avatar"><ProfileAvatar DisplayName="@Participant.DisplayName" Presence="@Participant.Presence" Size="large" Surface="sidebar" /></div>
         <div class="profile-copy">
             <h2 class="display-name">@Participant.DisplayName</h2>
@@ -14,29 +34,34 @@
             @if (!string.IsNullOrWhiteSpace(Participant.Pronouns)) { <span>@Participant.Pronouns</span> }
             @if (!string.IsNullOrWhiteSpace(Participant.Description)) { <p class="profile-bio">@Participant.Description</p> }
         </div>
-        <div class="profile-section">
-            <h3>Friendship</h3>
-            <p>@RelationshipText</p>
-            @if (Friend is null)
-            {
-                <button class="primary" @onclick="() => OnAddFriend.InvokeAsync(Participant.Username)">Add Friend</button>
-            }
-            else if (Friend.Status == FriendshipStatus.Accepted)
-            {
-                <button class="danger-link" @onclick="() => OnRemoveFriend.InvokeAsync(Friend)">Remove Friend</button>
-            }
-        </div>
+        <div class="profile-section"><h3>Friendship</h3><p>@RelationshipText</p></div>
+        @if (!string.IsNullOrWhiteSpace(_actionError)) { <p class="participant-action-error">@_actionError</p> }
     </div>
 </section>
+@if (_showProfileCard)
+{
+    <AnchoredProfileCard AccountId="Participant.AccountId" CurrentAccountId="CurrentAccountId"
+                         Username="@Participant.Username" DisplayName="@Participant.DisplayName"
+                         Pronouns="@Participant.Pronouns" Description="@Participant.Description"
+                         Presence="Participant.Presence" NodeAuthority="@NodeAuthority" IsBlocked="@_blocked"
+                         X="9999" Y="90" OnClose="CloseProfileCard" />
+}
 
 @code {
     [Parameter, EditorRequired] public required DirectParticipantDto Participant { get; set; }
     [Parameter, EditorRequired] public required Guid ConversationId { get; set; }
     [Parameter, EditorRequired] public required string NodeAuthority { get; set; }
+    [Parameter, EditorRequired] public required Guid CurrentAccountId { get; set; }
     [Parameter] public FriendDto? Friend { get; set; }
     [Parameter] public EventCallback<string> OnAddFriend { get; set; }
     [Parameter] public EventCallback<FriendDto> OnRemoveFriend { get; set; }
     [Parameter] public EventCallback<MessageSearchResultDto> OnSearchResultSelected { get; set; }
+    private Guid? _loadedAccountId;
+    private bool _blocked;
+    private bool _menuOpen;
+    private bool _actionBusy;
+    private bool _showProfileCard;
+    private string? _actionError;
     private string RelationshipText => Friend switch
     {
         { Status: FriendshipStatus.Accepted } => "Friends",
@@ -44,4 +69,46 @@
         { Status: FriendshipStatus.Pending } => "Incoming friend request",
         _ => "Not friends"
     };
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_loadedAccountId == Participant.AccountId) return;
+        _loadedAccountId = Participant.AccountId;
+        _menuOpen = false;
+        _actionError = null;
+        try { _blocked = (await Session.ResolveProfileAsync(Participant.Username)).IsBlockedByCurrentAccount; }
+        catch { _blocked = false; }
+    }
+
+    private void ToggleMenu() { _menuOpen = !_menuOpen; _actionError = null; }
+    private void ViewProfile() { _menuOpen = false; _showProfileCard = true; }
+    private void CloseProfileCard() => _showProfileCard = false;
+    private async Task ToggleBlockAsync()
+    {
+        _actionBusy = true; _actionError = null;
+        try
+        {
+            if (_blocked) await Session.UnblockAccountAsync(Participant.AccountId);
+            else await Session.BlockAccountAsync(Participant.AccountId);
+            _blocked = !_blocked;
+            _menuOpen = false;
+        }
+        catch (Exception exception) { _actionError = exception.Message; }
+        finally { _actionBusy = false; }
+    }
+    private async Task AddFriendAsync()
+    {
+        _actionBusy = true; _actionError = null;
+        try { await OnAddFriend.InvokeAsync(Participant.Username); _menuOpen = false; }
+        catch (Exception exception) { _actionError = exception.Message; }
+        finally { _actionBusy = false; }
+    }
+    private async Task RemoveFriendAsync()
+    {
+        if (Friend is null) return;
+        _actionBusy = true; _actionError = null;
+        try { await OnRemoveFriend.InvokeAsync(Friend); _menuOpen = false; }
+        catch (Exception exception) { _actionError = exception.Message; }
+        finally { _actionBusy = false; }
+    }
 }

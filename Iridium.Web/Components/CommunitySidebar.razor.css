@@ -14,7 +14,7 @@
 .community-sidebar ::deep [data-sidebar-item].pointer-drop-invalid{outline:1px dashed color-mix(in srgb,var(--danger,#d95a63) 75%,transparent);outline-offset:-2px}
 .empty-drop-hint { margin: .2rem .65rem; padding: .35rem; border: 1px dashed var(--border); border-radius: var(--radius-sm); color: var(--text-faint); font-size: .65rem; text-align: center; }
 .first-channel { width: calc(100% - 1rem); margin: .45rem .5rem; border-style: dashed; }
-.sidebar-context-menu { position: absolute; z-index: 30; top: 3rem; right: .45rem; width: 11rem; padding: .35rem; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-deep); box-shadow: 0 12px 30px #0009; }
+.sidebar-context-menu { position: absolute; z-index: 30; top: 3rem; right: .45rem; width: 11rem; padding: .35rem; border: 1px solid var(--border); border-radius: var(--radius-md); color: var(--text); background: var(--popup-surface); box-shadow: var(--popup-shadow); }
 .sidebar-context-menu button { width: 100%; display: flex; align-items: center; gap: .5rem; padding: .5rem .55rem; border: 0; border-radius: .3rem; color: var(--text); background: transparent; text-align: left; cursor: pointer; }
 .sidebar-context-menu button:hover { color: var(--text-strong); background: var(--surface-hover); }
 .sidebar-context-menu ::deep svg { width: .9rem; height: .9rem; }
