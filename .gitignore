@@ -57,3 +57,17 @@ node_modules/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+
+.buildcheck/
+.testruns/
+.buildcheck*
+.testruns*
+.testrun
+
+Iridium.Server/data/
+
+
+*.db
+*.db-shm
+*.db-wal
