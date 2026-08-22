@@ -221,6 +221,10 @@ public static partial class MessageContentSegments
                 {
                     FlushText(); nodes.Add(link); cursor = linkNext; continue;
                 }
+                if (TryAutomaticLink(cursor, end, out var automaticLink, out var automaticNext))
+                {
+                    FlushText(); nodes.Add(automaticLink); cursor = automaticNext; continue;
+                }
 
                 if (TryDelimiter(cursor, end, out var marker, out var kind, out var combined, out var closing))
                 {
@@ -258,6 +262,23 @@ public static partial class MessageContentSegments
             if (!IsSafeLink(url)) { link = null!; next = cursor; return false; }
             link = new(ParseInline(cursor + 1, labelEnd), url);
             next = urlEnd + 1;
+            return true;
+        }
+
+        private bool TryAutomaticLink(int cursor, int end, out MessageLinkNode link, out int next)
+        {
+            link = null!; next = cursor;
+            var remaining = _content.AsSpan(cursor, end - cursor);
+            if (!remaining.StartsWith("https://", StringComparison.OrdinalIgnoreCase) &&
+                !remaining.StartsWith("http://", StringComparison.OrdinalIgnoreCase)) return false;
+            var length = 0;
+            while (length < remaining.Length && !char.IsWhiteSpace(remaining[length])) length++;
+            while (length > 0 && remaining[length - 1] is '.' or ',' or ';' or '!' or '?' or ')' or ']') length--;
+            if (length == 0) return false;
+            var url = remaining[..length].ToString();
+            if (!IsSafeLink(url)) return false;
+            link = new([new MessageTextNode(url)], url);
+            next = cursor + length;
             return true;
         }
 

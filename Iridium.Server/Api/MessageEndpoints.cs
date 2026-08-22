@@ -26,7 +26,7 @@ public static class MessageEndpoints
     {
         var session = await sessions.GetAsync(context, db);
         if (session is null) return Results.Unauthorized();
-        if (!await authorization.HasPermissionAsync(communityId, session.AccountId,
+        if (!await authorization.HasChannelPermissionAsync(communityId, channelId, session.AccountId,
                 CommunityPermission.ViewChannels, db)) return Results.Forbid();
         if (!await db.CommunityChannels.AnyAsync(value => value.CommunityId == communityId && value.Id == channelId &&
                 value.Kind == CommunityChannelKind.Text))
@@ -69,8 +69,9 @@ public static class MessageEndpoints
     {
         var session = await sessions.GetAsync(context, db);
         if (session is null) return Results.Unauthorized();
-        if (!await authorization.HasPermissionAsync(
-                communityId, session.AccountId, CommunityPermission.ViewChannels, db)) return Results.Forbid();
+        var channelAccess = await authorization.GetChannelAccessAsync(communityId, channelId, session.AccountId, db);
+        if (!channelAccess.Has(CommunityPermission.ViewChannels) ||
+            !channelAccess.Has(CommunityPermission.ReadMessageHistory)) return Results.Forbid();
         if (!await db.CommunityChannels.AnyAsync(value => value.CommunityId == communityId && value.Id == channelId &&
                 value.Kind == CommunityChannelKind.Text))
             return Results.NotFound();
@@ -145,12 +146,15 @@ public static class MessageEndpoints
     {
         var session = await sessions.GetAsync(context, db);
         if (session is null) return Results.Unauthorized();
-        if (!await authorization.HasPermissionAsync(communityId, session.AccountId,
-                CommunityPermission.ViewChannels, db)) return Results.Forbid();
+        var communityAccess = await authorization.GetAccessAsync(communityId, session.AccountId, db);
+        if (!communityAccess.IsOwner && !await authorization.IsMemberAsync(communityId, session.AccountId, db))
+            return Results.Forbid();
+        var accessibleChannelIds = await AccessibleTextChannelIdsAsync(communityId, session.AccountId, db, authorization);
+        if (accessibleChannelIds.Count == 0) return Results.Ok(new MessageSearchPageDto([], null, false));
         var channelFilter = context.Request.Query["in"].ToString();
         var take = Math.Clamp(limit ?? MessageHistoryDefaults.SearchPageSize, 1, MessageHistoryDefaults.MaximumPageSize);
         var query = db.ChannelMessages.AsNoTracking()
-            .Where(value => value.CommunityId == communityId && !value.IsDeleted)
+            .Where(value => value.CommunityId == communityId && accessibleChannelIds.Contains(value.ChannelId) && !value.IsDeleted)
             .Include(value => value.AuthorAccount).Include(value => value.Channel).AsQueryable();
         if (!string.IsNullOrWhiteSpace(q))
         {
@@ -191,12 +195,15 @@ public static class MessageEndpoints
     {
         var session = await sessions.GetAsync(context, db);
         if (session is null) return Results.Unauthorized();
-        if (!await authorization.HasPermissionAsync(communityId, session.AccountId,
-                CommunityPermission.ViewChannels, db)) return Results.Forbid();
+        var communityAccess = await authorization.GetAccessAsync(communityId, session.AccountId, db);
+        if (!communityAccess.IsOwner && !await authorization.IsMemberAsync(communityId, session.AccountId, db))
+            return Results.Forbid();
+        var accessibleChannelIds = await AccessibleTextChannelIdsAsync(communityId, session.AccountId, db, authorization);
+        if (accessibleChannelIds.Count == 0) return Results.Ok(new MessageSearchPageDto([], null, false));
         var criteria = request.Query;
         var take = Math.Clamp(request.Limit, 1, MessageHistoryDefaults.MaximumPageSize);
         var query = db.ChannelMessages.AsNoTracking()
-            .Where(value => value.CommunityId == communityId && !value.IsDeleted)
+            .Where(value => value.CommunityId == communityId && accessibleChannelIds.Contains(value.ChannelId) && !value.IsDeleted)
             .Include(value => value.AuthorAccount).Include(value => value.Channel).AsQueryable();
         if (!string.IsNullOrWhiteSpace(criteria.Text))
         {
@@ -239,5 +246,20 @@ public static class MessageEndpoints
             value.Content, value.CreatedAt)).ToArray();
         var next = results.Length == 0 ? null : MessageHistoryCursor.Encode(results[^1].CreatedAt, results[^1].MessageId);
         return Results.Ok(new MessageSearchPageDto(results, next, hasMore));
+    }
+
+    private static async Task<List<Guid>> AccessibleTextChannelIdsAsync(Guid communityId, Guid accountId,
+        IridiumDbContext db, CommunityAuthorizationService authorization)
+    {
+        var ids = await db.CommunityChannels.AsNoTracking().Where(value => value.CommunityId == communityId &&
+            value.Kind == CommunityChannelKind.Text).Select(value => value.Id).ToListAsync();
+        var result = new List<Guid>();
+        foreach (var id in ids)
+        {
+            var access = await authorization.GetChannelAccessAsync(communityId, id, accountId, db);
+            if (access.Has(CommunityPermission.ViewChannels) && access.Has(CommunityPermission.ReadMessageHistory))
+                result.Add(id);
+        }
+        return result;
     }
 }

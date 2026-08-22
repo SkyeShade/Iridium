@@ -9,6 +9,7 @@ namespace Iridium.Client.Core;
 public interface ICommunityVoiceMediaClient : IAsyncDisposable
 {
     event Func<bool, Task>? SpeakingChanged;
+    event Func<string, Task>? ScreenShareEnded;
     event Func<string, Task>? Error;
     event Func<string, Guid, WebRtcSessionDescription, Task>? OfferCreated;
     event Func<string, Guid, WebRtcSessionDescription, Task>? AnswerCreated;
@@ -23,5 +24,13 @@ public interface ICommunityVoiceMediaClient : IAsyncDisposable
     Task HandleAnswerAsync(CommunityVoiceMediaDescriptionEvent answer, CancellationToken cancellationToken = default);
     Task HandleIceCandidateAsync(CommunityVoiceMediaIceCandidateEvent candidate,
         CancellationToken cancellationToken = default);
+    Task<LocalVoiceStreamPublication> StartScreenShareAsync(CancellationToken cancellationToken = default);
+    Task StopScreenShareAsync(string reason, CancellationToken cancellationToken = default);
+    Task AttachStreamViewerAsync(string mediaStreamId, string elementId, bool audioMuted,
+        CancellationToken cancellationToken = default);
+    Task DetachStreamViewerAsync(string elementId, CancellationToken cancellationToken = default);
+    Task SetStreamAudioMutedAsync(string elementId, bool muted, CancellationToken cancellationToken = default);
+    Task RequestStreamFullscreenAsync(string elementId, CancellationToken cancellationToken = default);
+    Task<string?> CaptureStreamThumbnailAsync(string mediaStreamId, CancellationToken cancellationToken = default);
     Task DisconnectAsync(string reason, CancellationToken cancellationToken = default);
 }

@@ -6,10 +6,10 @@
 @inject IJSRuntime JS
 @implements IAsyncDisposable
 
-<ModalShell Title="Edit Banner" Size="extra-large" OnClose="TryCloseAsync">
-    <div class="banner-editor">
+<ModalShell Title="@(IsCommunity ? "Edit Server Banner" : "Edit Banner")" Size="extra-large" OnClose="TryCloseAsync">
+    <div class="banner-editor iridium-message-scrollbar @(IsCommunity ? "community" : "profile")">
         <header class="editor-heading">
-            <div><span>PROFILE BANNER</span><h1>Edit Banner</h1></div>
+            <div><span>@(IsCommunity ? "SERVER BANNER" : "PROFILE BANNER")</span><h1>@(IsCommunity ? "Edit Server Banner" : "Edit Banner")</h1></div>
             <small>PNG, animated GIF, JPEG, or WebP · up to four presets · 25.00 MB maximum</small>
         </header>
         @if (_loading)
@@ -75,11 +75,22 @@
                         </div>
                     </section>
                     <aside class="card-preview">
-                        <span class="preview-label">PROFILE CARD PREVIEW</span>
-                        <ProfileIdentityCard AccountId="Account.Id" AvatarRevision="Account.AvatarRevision"
-                                             BannerRevision="Account.BannerRevision" BannerEditState="_editState"
-                                             DisplayName="@DisplayName" Identity="@PublicIdentity" Pronouns="@Pronouns"
-                                             Description="@Description" Presence="PresenceVisibility.ToPublic(Account.PreferredPresence)" />
+                        <span class="preview-label">@(IsCommunity ? "SERVER HEADER PREVIEW" : "PROFILE CARD PREVIEW")</span>
+                        @if (IsCommunity)
+                        {
+                            <div class="community-banner-preview">
+                                <AvatarCroppedPreview State="_editState" Shape="banner" />
+                                <span class="community-banner-shade"></span>
+                                <strong>@Community!.Name</strong><Icon Name="settings" />
+                            </div>
+                        }
+                        else
+                        {
+                            <ProfileIdentityCard AccountId="Account!.Id" AvatarRevision="Account.AvatarRevision"
+                                                 BannerRevision="Account.BannerRevision" BannerEditState="_editState"
+                                                 DisplayName="@DisplayName" Identity="@PublicIdentity" Pronouns="@Pronouns"
+                                                 Description="@Description" Presence="PresenceVisibility.ToPublic(Account.PreferredPresence)" />
+                        }
                         @if (IsGif) { <small>Animated GIF banners remain animated.</small> }
                     </aside>
                 </div>
@@ -93,7 +104,7 @@
                 <div class="empty-editor">
                     <span class="empty-editor-icon"><Icon Name="upload" Size="26" /></span>
                     <h2>Choose an empty banner preset</h2>
-                    <p>Upload an image to begin positioning your profile banner.</p>
+                    <p>Upload an image to begin positioning your @(IsCommunity ? "Server banner" : "profile banner").</p>
                 </div>
             }
             @if (!string.IsNullOrWhiteSpace(_error)) { <p class="editor-error" role="alert">@_error</p> }
@@ -111,12 +122,14 @@
 </ModalShell>
 
 @code {
-    [Parameter, EditorRequired] public required NodeAccountDto Account { get; set; }
-    [Parameter, EditorRequired] public required string DisplayName { get; set; }
-    [Parameter, EditorRequired] public required string PublicIdentity { get; set; }
+    [Parameter] public NodeAccountDto? Account { get; set; }
+    [Parameter] public CommunityDto? Community { get; set; }
+    [Parameter] public string DisplayName { get; set; } = string.Empty;
+    [Parameter] public string PublicIdentity { get; set; } = string.Empty;
     [Parameter] public string? Pronouns { get; set; }
     [Parameter] public string? Description { get; set; }
     [Parameter] public EventCallback OnClosed { get; set; }
+    [Parameter] public EventCallback OnSaved { get; set; }
     private AccountBannerPresetsDto? _presets;
     private AccountBannerPresetDto? _selectedPreset;
     private byte[]? _pendingBytes;
@@ -128,6 +141,7 @@
     private long? _activePointerId;
     private double _stagePixels = 1;
     private bool _loading = true, _saving, _dragging, _dirty, _confirmClose;
+    private bool IsCommunity => Community is not null;
     private bool IsGif => string.Equals(_pendingContentType ?? _selectedPreset?.ContentType, "image/gif",
         StringComparison.OrdinalIgnoreCase);
 
@@ -135,8 +149,8 @@
     {
         try
         {
-            _presets = await Session.GetBannerPresetsAsync();
-            ProfileMedia.ObserveBanner(Account.Id, _presets.BannerRevision);
+            _presets = IsCommunity ? await Session.GetCommunityBannerPresetsAsync(Community!.Id) : await Session.GetBannerPresetsAsync();
+            if (!IsCommunity) ProfileMedia.ObserveBanner(Account!.Id, _presets.BannerRevision);
             var initial = _presets.Presets.FirstOrDefault(value => value.Id == _presets.ActiveBannerPresetId)
                           ?? _presets.Presets.FirstOrDefault();
             if (initial is not null) SelectPreset(initial);
@@ -226,18 +240,27 @@
             if (_pendingBytes is not null)
             {
                 await using var stream = new MemoryStream(_pendingBytes, false);
-                _presets = await Session.UploadBannerPresetAsync(_selectedSlot, stream, _pendingName ?? "banner",
-                    _pendingContentType ?? "application/octet-stream", _editState.NormalizedOffsetX,
-                    _editState.NormalizedOffsetY, _editState.Zoom);
+                _presets = IsCommunity
+                    ? await Session.UploadCommunityBannerPresetAsync(Community!.Id, _selectedSlot, stream,
+                        _pendingName ?? "community-banner", _pendingContentType ?? "application/octet-stream",
+                        _editState.NormalizedOffsetX, _editState.NormalizedOffsetY, _editState.Zoom)
+                    : await Session.UploadBannerPresetAsync(_selectedSlot, stream, _pendingName ?? "banner",
+                        _pendingContentType ?? "application/octet-stream", _editState.NormalizedOffsetX,
+                        _editState.NormalizedOffsetY, _editState.Zoom);
             }
             else if (_selectedPreset is not null)
             {
-                await Session.UpdateBannerCropAsync(_selectedPreset.Id,
-                    new(_editState.NormalizedOffsetX, _editState.NormalizedOffsetY, _editState.Zoom, true));
-                _presets = await Session.GetBannerPresetsAsync();
+                if (IsCommunity)
+                    await Session.UpdateCommunityBannerCropAsync(Community!.Id, _selectedPreset.Id,
+                        new(_editState.NormalizedOffsetX, _editState.NormalizedOffsetY, _editState.Zoom, true));
+                else
+                    await Session.UpdateBannerCropAsync(_selectedPreset.Id,
+                        new(_editState.NormalizedOffsetX, _editState.NormalizedOffsetY, _editState.Zoom, true));
+                _presets = IsCommunity ? await Session.GetCommunityBannerPresetsAsync(Community!.Id) : await Session.GetBannerPresetsAsync();
             }
-            if (_presets is not null) ProfileMedia.InvalidateBanner(Account.Id, _presets.BannerRevision);
+            if (_presets is not null && !IsCommunity) ProfileMedia.InvalidateBanner(Account!.Id, _presets.BannerRevision);
             _dirty = false; _confirmClose = false;
+            await OnSaved.InvokeAsync();
             await OnClosed.InvokeAsync();
         }
         catch (Exception exception) { _error = exception.Message; }
@@ -250,9 +273,11 @@
         _saving = true; _error = null;
         try
         {
-            await Session.DeleteBannerPresetAsync(_selectedPreset.Id);
-            _presets = await Session.GetBannerPresetsAsync();
-            ProfileMedia.InvalidateBanner(Account.Id, _presets.BannerRevision);
+            if (IsCommunity) await Session.DeleteCommunityMediaPresetAsync(Community!.Id, "banner", _selectedPreset.Id);
+            else await Session.DeleteBannerPresetAsync(_selectedPreset.Id);
+            _presets = IsCommunity ? await Session.GetCommunityBannerPresetsAsync(Community!.Id) : await Session.GetBannerPresetsAsync();
+            if (!IsCommunity) ProfileMedia.InvalidateBanner(Account!.Id, _presets.BannerRevision);
+            await OnSaved.InvokeAsync();
             var next = _presets.Presets.FirstOrDefault(value => value.Id == _presets.ActiveBannerPresetId)
                        ?? _presets.Presets.FirstOrDefault();
             _selectedPreset = null; _pendingBytes = null; _editState = null; _dirty = false;
@@ -268,10 +293,13 @@
         return OnClosed.InvokeAsync();
     }
     private async Task DiscardAsync() { _dirty = false; _confirmClose = false; await OnClosed.InvokeAsync(); }
-    private static ProfileMediaEditState NewState(string source, int width, int height, double zoom = 1,
-        double x = 0, double y = 0) => new(source, width, height, ProfileBannerLimits.CropWidth,
-        ProfileBannerLimits.CropHeight, 1200, 600, zoom, x, y);
-    private static ProfileMediaEditState PresetState(AccountBannerPresetDto preset) =>
+    private ProfileMediaEditState NewState(string source, int width, int height, double zoom = 1,
+        double x = 0, double y = 0) => IsCommunity
+        ? new(source, width, height, CommunityBannerLimits.CropWidth, CommunityBannerLimits.CropHeight,
+            1200, 900, zoom, x, y)
+        : new(source, width, height, ProfileBannerLimits.CropWidth, ProfileBannerLimits.CropHeight,
+            1200, 600, zoom, x, y);
+    private ProfileMediaEditState PresetState(AccountBannerPresetDto preset) =>
         NewState(preset.SourceUrl, preset.Width, preset.Height, preset.Zoom, preset.CropX, preset.CropY);
     private async Task<IJSObjectReference> ModuleAsync() =>
         _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/avatarEditor.js");

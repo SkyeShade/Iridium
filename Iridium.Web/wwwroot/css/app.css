@@ -1,4 +1,5 @@
 :root {
+    --community-banner-aspect: 2 / 1;
     --font-sans: "Inter", "Segoe UI Variable Text", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", sans-serif;
     --iridium-accent: #6677e8;
     --iridium-bg-base: #20232d;
@@ -33,6 +34,9 @@
     --radius-sm: .4rem;
     --radius-md: .65rem;
     --radius-lg: .9rem;
+    --layer-context-menu: 92;
+    --layer-floating-media: 95;
+    --layer-modal: 100;
 }
 
 .display-name {
@@ -54,7 +58,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .iridium-textarea-scrollbar::-webkit-scrollbar-button:vertical:start:decrement,
 .iridium-textarea-scrollbar::-webkit-scrollbar-button:vertical:end:increment { display: none !important; width: 0 !important; height: 0 !important; background: transparent !important; }
 
-/* Accent scrollbar shared by message history and message-search surfaces only. */
+/* Shared accent scrollbar for message history and other primary scroll surfaces. */
 .iridium-message-scrollbar { scrollbar-width: auto; scrollbar-color: color-mix(in srgb, var(--accent) 82%, transparent) transparent; }
 .iridium-message-scrollbar::-webkit-scrollbar { width: .9rem; }
 .iridium-message-scrollbar::-webkit-scrollbar-track,

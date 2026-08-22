@@ -24,6 +24,22 @@ public static class ProfileBannerLimits
     public const int ProcessedHeight = 240;
 }
 
+public static class CommunityMediaLimits
+{
+    public const int MaximumAvatarPresets = ProfileAvatarLimits.MaximumPresets;
+    public const int MaximumBannerPresets = ProfileBannerLimits.MaximumPresets;
+}
+
+/// <summary>The canonical 2:1 geometry used by every Community banner surface.</summary>
+public static class CommunityBannerLimits
+{
+    public const int CropWidth = 1000;
+    public const int CropHeight = 500;
+    public const int ProcessedWidth = 1200;
+    public const int ProcessedHeight = 600;
+    public const double AspectRatio = CropWidth / (double)CropHeight;
+}
+
 public static class FileSizeDisplay
 {
     public static string Megabytes(long bytes) =>

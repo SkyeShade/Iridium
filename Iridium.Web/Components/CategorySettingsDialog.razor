@@ -3,7 +3,7 @@
 
 <div class="modal-backdrop" @onclick="OnCancel">
     <section class="settings-dialog" @onclick:stopPropagation="true">
-        <header><div><h2>@(Category is null ? (InitialParentCategoryId is null ? "Create Category" : "Create Subcategory") : "Category Settings")</h2><p>@(InitialParentCategoryId is null ? "Categories organize this Community's Channels." : $"in {ParentName}")</p></div><button class="icon-button" title="Close" @onclick="OnCancel"><Icon Name="close" /></button></header>
+        <header><div><h2>@(Category is null ? (InitialParentCategoryId is null ? "Create Category" : "Create Subcategory") : "Category Settings")</h2><p>@(InitialParentCategoryId is null ? "Categories organize this Server's channels." : $"in {ParentName}")</p></div><button class="icon-button" title="Close" @onclick="OnCancel"><Icon Name="close" /></button></header>
         <label>Category name<input @bind="_name" maxlength="100" autofocus /></label>
         @if (!string.IsNullOrWhiteSpace(Error)) { <p class="error">@Error</p> }
         @if (_confirmDelete)

@@ -1,0 +1,41 @@
+@using Iridium.Client.Core
+@using Iridium.Protocol
+
+@foreach (var node in Nodes)
+{
+    if (node.Emoji is not null)
+    {
+        <span class="composer-emoji-token" aria-hidden="true"></span>
+    }
+    else if (!string.IsNullOrEmpty(node.Text))
+    {
+        <ComposerMarkdownPreview Content="@node.Text" />
+    }
+}
+
+@code {
+    [Parameter, EditorRequired] public required string Content { get; set; }
+    [Parameter] public IReadOnlyList<CommunityEmojiDraftReference> References { get; set; } = [];
+    [Parameter] public IReadOnlyList<AvailableCommunityEmoji> Available { get; set; } = [];
+
+    private IReadOnlyList<PreviewNode> Nodes
+    {
+        get
+        {
+            var nodes = new List<PreviewNode>();
+            var position = 0;
+            foreach (var reference in References.OrderBy(value => value.Start))
+            {
+                if (reference.Start < position || reference.Start + reference.Length > Content.Length) continue;
+                if (reference.Start > position) nodes.Add(new(Content[position..reference.Start], null));
+                var emoji = Available.FirstOrDefault(value => value.Emoji.Id == reference.EmojiId)?.Emoji;
+                nodes.Add(emoji is null ? new(Content.Substring(reference.Start, reference.Length), null) : new(null, emoji));
+                position = reference.Start + reference.Length;
+            }
+            if (position < Content.Length) nodes.Add(new(Content[position..], null));
+            return nodes;
+        }
+    }
+
+    private sealed record PreviewNode(string? Text, CommunityEmojiDto? Emoji);
+}

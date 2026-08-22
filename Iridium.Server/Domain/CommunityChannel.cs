@@ -11,6 +11,7 @@ public sealed class CommunityChannel
     public CommunityChannelKind Kind { get; set; } = CommunityChannelKind.Text;
     public int Position { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
+    public bool PermissionsSyncedToCategory { get; set; }
     public required Community Community { get; set; }
     public CommunityCategory? Category { get; set; }
     public ICollection<ChannelMessage> Messages { get; set; } = [];

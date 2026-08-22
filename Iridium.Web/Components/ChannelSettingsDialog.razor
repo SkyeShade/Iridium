@@ -16,7 +16,7 @@
         {
             <label class="dialog-field"><span class="field-label">Category</span>
                 <select @bind="_categoryValue">
-                    <option value="">Community root</option>
+                    <option value="">Server root</option>
                     @foreach (var category in Categories.OrderBy(Breadcrumb))
                     {
                         <option value="@category.Id">@Breadcrumb(category)</option>
@@ -53,7 +53,7 @@
     private CommunityChannelKind _kind = CommunityChannelKind.Text;
     private Guid? DestinationId => Channel?.CategoryId ?? InitialCategoryId;
     private CommunityCategoryDto? Destination => Categories.FirstOrDefault(value => value.Id == DestinationId);
-    private string DestinationName => Destination is null ? "Community root" : Breadcrumb(Destination);
+    private string DestinationName => Destination is null ? "Server root" : Breadcrumb(Destination);
     private bool IsValid => Normalize(_name) is not null;
 
     protected override void OnParametersSet()

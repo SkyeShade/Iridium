@@ -1,13 +1,18 @@
 @using Iridium.Web.Models
+@inject IWebAssemblyHostEnvironment HostEnvironment
+@inject ILogger<CommunityCreateDialog> Logger
 
 <div class="modal-backdrop" @onclick="OnCancel">
     <section class="dialog" @onclick:stopPropagation="true">
-        <h2>Create a Community</h2>
-        <p>Communities live entirely on your current server.</p>
-        <label>Name <input @bind="_name" autofocus /></label>
-        <label>Description <textarea @bind="_description" placeholder="Optional"></textarea></label>
-        @if (!string.IsNullOrWhiteSpace(Error)) { <p class="error">@Error</p> }
-        <div class="actions"><button class="secondary" @onclick="OnCancel">Cancel</button><button class="primary" disabled="Busy" @onclick="Submit">Create</button></div>
+        <h2>Create a Server</h2>
+        <p>Servers live entirely on your current Node.</p>
+        <label>Name <input @bind="_name" @bind:event="oninput" autofocus /></label>
+        <label>Description <textarea @bind="_description" @bind:event="oninput" placeholder="Optional"></textarea></label>
+        @if (!string.IsNullOrWhiteSpace(_validationError ?? Error)) { <p class="error">@(_validationError ?? Error)</p> }
+        <div class="actions">
+            <button type="button" class="secondary" @onclick="OnCancel">Cancel</button>
+            <button type="button" class="primary" disabled="@Busy" @onclick="SubmitAsync">@(Busy ? "Creating..." : "Create")</button>
+        </div>
     </section>
 </div>
 
@@ -18,5 +23,35 @@
     [Parameter] public EventCallback OnCancel { get; set; }
     private string _name = string.Empty;
     private string _description = string.Empty;
-    private Task Submit() => OnCreate.InvokeAsync(new CommunitySubmission(_name, _description));
+    private string? _validationError;
+
+    private async Task SubmitAsync()
+    {
+        if (HostEnvironment.IsDevelopment())
+            Logger.LogInformation("CREATE COMMUNITY UI click CanCreate={CanCreate} IsCreating={IsCreating} NameLength={NameLength}",
+                CanCreate, Busy, _name.Trim().Length);
+
+        _validationError = Validate();
+        if (_validationError is not null)
+        {
+            if (HostEnvironment.IsDevelopment())
+                Logger.LogInformation("CREATE COMMUNITY UI validation failed Message={Message}", _validationError);
+            return;
+        }
+
+        if (HostEnvironment.IsDevelopment())
+            Logger.LogInformation("CREATE COMMUNITY UI validation succeeded; invoking client service");
+        await OnCreate.InvokeAsync(new CommunitySubmission(_name.Trim(),
+            string.IsNullOrWhiteSpace(_description) ? null : _description.Trim()));
+    }
+
+    private bool CanCreate => _name.Trim().Length is >= 1 and <= 100 && _description.Trim().Length <= 500;
+    private string? Validate()
+    {
+        if (_name.Trim().Length is < 1 or > 100)
+            return "Server names must be between 1 and 100 characters.";
+        if (_description.Trim().Length > 500)
+            return "Descriptions cannot exceed 500 characters.";
+        return null;
+    }
 }

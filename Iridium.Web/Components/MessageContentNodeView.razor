@@ -7,7 +7,7 @@
     switch (node)
     {
         case MessageTextNode text:
-            @text.Text
+            <EmojiText Text="@text.Text" />
             break;
         case MessageMentionNode mentionNode:
             @if (mentionNode.Mention.Kind == CommunityMentionKind.Account && mentionNode.Mention.TargetId is { } accountId)

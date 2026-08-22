@@ -40,5 +40,6 @@ public sealed class CommunityVoiceCompatibilityTests
         var permissions = (CommunityPermission)(long)(await inspect.ExecuteScalarAsync())!;
         Assert.True((permissions & CommunityPermission.ConnectVoice) != 0);
         Assert.True((permissions & CommunityPermission.SpeakVoice) != 0);
+        Assert.True((permissions & CommunityPermission.ShareScreen) != 0);
     }
 }

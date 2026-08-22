@@ -10,6 +10,7 @@
      @oncontextmenu:stopPropagation="true"
      >
     <span class="channel-symbol"><Icon Name="@(Channel.Kind == CommunityChannelKind.Voice ? "speaker" : "channel")" /></span>
+    @if (Channel.IsPrivate) { <span class="private-lock" title="Private channel"><Icon Name="lock" Size="12" /></span> }
     <span class="channel-name">@Channel.Name</span>
     @if (Room is not null) { <VoiceElapsedTimer StartedAt="Room.StartedAt" /> }
     @if (Channel.MentionCount > 0)
@@ -24,11 +25,12 @@
                 draggable="false" @onpointerdown:stopPropagation="true"
                 @onclick="EditAsync" @onclick:stopPropagation="true"><Icon Name="settings" /></button>
     }
-    @if (_menuOpen && CanManage)
+    @if (_menuOpen && (CanManage || CanManagePermissions))
     {
         <div class="row-menu" @onclick:stopPropagation="true">
-            <button @onclick="EditFromMenuAsync"><Icon Name="edit" /> Edit Channel</button>
-            <button class="destructive" @onclick="DeleteAsync"><Icon Name="trash" /> Delete Channel</button>
+            @if (CanManage) { <button @onclick="EditFromMenuAsync"><Icon Name="edit" /> Channel Settings</button> }
+            @if (CanManagePermissions) { <button @onclick="PermissionsAsync"><Icon Name="settings" /> Permissions</button> }
+            @if (CanManage) { <button class="destructive" @onclick="DeleteAsync"><Icon Name="trash" /> Delete Channel</button> }
         </div>
     }
 </div>
@@ -37,12 +39,17 @@
     <div class="voice-participants" style="--channel-depth:@Depth">
         @foreach (var participant in Room.Participants)
         {
+            var participantStream = PublishedStreams.FirstOrDefault(value =>
+                value.OwnerParticipantId == participant.ParticipantId);
             <div class="voice-participant @(participant.Speaking ? "speaking" : null)" title="@(participant.MediaStatus == CommunityVoiceMediaStatus.MediaUnavailable ? "Voice control connected; media backend unavailable" : participant.MediaStatus.ToString())"
                  @oncontextmenu="() => OpenParticipantMenu(participant)" @oncontextmenu:preventDefault="true" @oncontextmenu:stopPropagation="true">
                 <span class="participant-avatar"><ProfileAvatar AccountId="participant.AccountId" DisplayName="participant.DisplayName" Presence="participant.Presence" Size="tiny" Surface="sidebar" /></span>
                 <span class="display-name">@participant.DisplayName</span>
                 @if (participant.Muted) { <Icon Name="microphone" Size="12" /> }
                 @if (participant.Deafened) { <Icon Name="headphones" Size="12" /> }
+                <ParticipantStreamBadge Stream="participantStream" IsLocal="@(participant.AccountId == CurrentAccountId)"
+                                        ThumbnailUrl="@(participantStream is null ? null : StreamThumbnails.GetValueOrDefault(participantStream.StreamId))"
+                                        OnWatch="OnWatchStream" />
                 @if (_menuParticipant?.ParticipantId == participant.ParticipantId)
                 {
                     <VoiceParticipantMenu AccountId="participant.AccountId" DisplayName="participant.DisplayName"
@@ -57,21 +64,27 @@
     [Parameter, EditorRequired] public required CommunityChannelDto Channel { get; set; }
     [Parameter] public bool Selected { get; set; }
     [Parameter] public bool CanManage { get; set; }
+    [Parameter] public bool CanManagePermissions { get; set; }
     [Parameter] public bool Connected { get; set; }
     [Parameter] public ActiveVoiceRoomDto? Room { get; set; }
     [Parameter] public Guid CurrentAccountId { get; set; }
+    [Parameter] public IReadOnlyList<PublishedVoiceStreamDto> PublishedStreams { get; set; } = [];
+    [Parameter] public IReadOnlyDictionary<Guid, string> StreamThumbnails { get; set; } = new Dictionary<Guid, string>();
     [Parameter] public int Depth { get; set; } = 1;
     [Parameter] public EventCallback<CommunityChannelDto> OnSelect { get; set; }
     [Parameter] public EventCallback<CommunityChannelDto> OnEdit { get; set; }
     [Parameter] public EventCallback<CommunityChannelDto> OnDelete { get; set; }
+    [Parameter] public EventCallback<CommunityChannelDto> OnPermissions { get; set; }
+    [Parameter] public EventCallback<Guid> OnWatchStream { get; set; }
     private bool _menuOpen;
     private VoiceParticipantDto? _menuParticipant;
 
     private Task SelectAsync() { _menuOpen = false; return OnSelect.InvokeAsync(Channel); }
-    private void OpenMenu() { if (CanManage) _menuOpen = true; }
+    private void OpenMenu() { if (CanManage || CanManagePermissions) _menuOpen = true; }
     private void OpenParticipantMenu(VoiceParticipantDto participant) =>
         _menuParticipant = participant.AccountId == CurrentAccountId ? null : participant;
     private Task EditAsync() { _menuOpen = false; return OnEdit.InvokeAsync(Channel); }
     private Task EditFromMenuAsync() => EditAsync();
+    private Task PermissionsAsync() { _menuOpen = false; return OnPermissions.InvokeAsync(Channel); }
     private Task DeleteAsync() { _menuOpen = false; return OnDelete.InvokeAsync(Channel); }
 }

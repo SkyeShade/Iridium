@@ -1,0 +1,140 @@
+@using Iridium.Protocol
+@inject CommunityEmojiService Emojis
+@inject IJSRuntime JS
+@implements IDisposable
+
+<section class="emoji-picker" role="dialog" aria-label="Emoji picker">
+    <header><strong>Emoji</strong><input placeholder="Search emoji..." @bind="_search" @bind:event="oninput" autofocus /></header>
+    <div class="picker-body">
+        <nav aria-label="Emoji sources">
+            @foreach (var group in CommunityGroups)
+            {
+                <button @key="group.Community.Id" title="@group.Community.Name" @onclick="() => ScrollCommunity(group.Community.Id)">
+                    @if (CommunityAvatarState(group.Community) is { } avatar) { <AvatarCroppedPreview State="avatar" /> }
+                    else { <span>@group.Community.Name[0]</span> }
+                </button>
+            }
+            <span class="source-separator"></span>
+            <button title="Standard Emoji" @onclick="ScrollStandard"><Icon Name="emoji" /></button>
+        </nav>
+        <main class="iridium-message-scrollbar">
+            @foreach (var group in CommunityGroups)
+            {
+                var sectionKey = CommunityKey(group.Community.Id);
+                <section id="@CommunitySectionId(group.Community.Id)" @key="sectionKey" class="emoji-section">
+                    <button type="button" class="section-heading" aria-expanded="@IsExpanded(sectionKey)" @onclick="() => Toggle(sectionKey)">
+                        <span class="section-chevron"><Icon Name="chevron" /></span>
+                        @if (CommunityAvatarState(group.Community) is { } sectionAvatar) { <span class="section-avatar"><AvatarCroppedPreview State="sectionAvatar" /></span> }
+                        <span>@group.Community.Name</span>
+                    </button>
+                    @if (IsExpanded(sectionKey) || IsSearching)
+                    {
+                    <div class="emoji-grid custom">
+                    @foreach (var emoji in group.Emojis)
+                    {
+                        <button title=":@emoji.Name: · @group.Community.Name"
+                                @onclick="() => ChooseCustom(group.Community, emoji)"
+                                @oncontextmenu="args => ShowDetailAsync(emoji, args)" @oncontextmenu:preventDefault="true"
+                                @oncontextmenu:stopPropagation="true"><CommunityEmojiImage Emoji="emoji" /></button>
+                    }
+                    </div>
+                    }
+                </section>
+            }
+            <div id="standard-emoji-section"></div>
+            @foreach (var group in StandardGroups)
+            {
+                var sectionKey = StandardKey(group.Key);
+                <section @key="sectionKey" class="emoji-section">
+                    <button type="button" class="section-heading" aria-expanded="@IsExpanded(sectionKey)" @onclick="() => Toggle(sectionKey)">
+                        <span class="section-chevron"><Icon Name="chevron" /></span><span>@group.Key</span>
+                    </button>
+                    @if (IsExpanded(sectionKey) || IsSearching)
+                    {
+                    <div class="emoji-grid">
+                    @foreach (var emoji in group)
+                    {
+                        <button title=":@emoji.Name:" @onclick="() => ChooseStandard(emoji)">
+                            <StandardEmojiArtwork Glyph="@emoji.Glyph" ArtworkKey="@emoji.ArtworkKey" />
+                        </button>
+                    }
+                    </div>
+                    }
+                </section>
+            }
+        </main>
+    </div>
+    @if (_detailEmoji is not null)
+    {
+        <EmojiDetailPopup Emoji="_detailEmoji" X="_detailX" Y="_detailY" OnClose="CloseDetail" />
+    }
+</section>
+
+@code {
+    [Parameter] public CommunityDto? Community { get; set; }
+    [Parameter] public EventCallback<EmojiSelection> OnSelected { get; set; }
+    private string _search = string.Empty;
+    private readonly HashSet<string> _expandedSections = new(StringComparer.Ordinal);
+    private IReadOnlyList<AvailableCommunityEmoji> _available = [];
+    private CommunityEmojiDto? _detailEmoji;
+    private double _detailX, _detailY;
+    private bool IsSearching => !string.IsNullOrWhiteSpace(_search);
+    private IEnumerable<IGrouping<string, StandardEmoji>> StandardGroups => StandardEmojiCatalog.All
+        .Where(value => !IsSearching || Match(value.Name, value.Keywords))
+        .Take(IsSearching ? 240 : int.MaxValue).GroupBy(value => value.Category);
+    private IReadOnlyList<CommunityEmojiGroup> CommunityGroups => CommunityEmojiDraftCodec.Order(_available, Community?.Id)
+        .Where(value => string.IsNullOrWhiteSpace(_search) || value.Emoji.Name.Contains(_search, StringComparison.OrdinalIgnoreCase) ||
+                        value.Community.Name.Contains(_search, StringComparison.OrdinalIgnoreCase))
+        .GroupBy(value => value.Community.Id).Select(values => new CommunityEmojiGroup(values.First().Community,
+            values.Select(value => value.Emoji).OrderBy(value => value.Name, StringComparer.OrdinalIgnoreCase).ToArray()))
+        .Where(value => value.Emojis.Count > 0).ToArray();
+
+    protected override async Task OnInitializedAsync()
+    {
+        Emojis.Changed += OnChanged;
+        _available = await Emojis.GetAvailableAsync();
+        foreach (var group in CommunityGroups) _expandedSections.Add(CommunityKey(group.Community.Id));
+        _expandedSections.Add(StandardKey("Smileys & Emotion"));
+    }
+    private bool Match(string name, IReadOnlyList<string> keywords) => string.IsNullOrWhiteSpace(_search) ||
+        name.Contains(_search, StringComparison.OrdinalIgnoreCase) || keywords.Any(value => value.Contains(_search, StringComparison.OrdinalIgnoreCase));
+    private Task ChooseStandard(StandardEmoji emoji) => OnSelected.InvokeAsync(new(emoji.Glyph, emoji.Name));
+    private Task ChooseCustom(CommunityDto community, CommunityEmojiDto emoji) => OnSelected.InvokeAsync(
+        new($":{emoji.Name}:", emoji.Name, emoji.Id, community.Id));
+    private async Task ScrollCommunity(Guid communityId)
+    {
+        var module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/emojiPicker.js");
+        await module.InvokeVoidAsync("scrollToCommunity", CommunitySectionId(communityId));
+        await module.DisposeAsync();
+    }
+    private async Task ScrollStandard()
+    {
+        var module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/emojiPicker.js");
+        await module.InvokeVoidAsync("scrollToCommunity", "standard-emoji-section");
+        await module.DisposeAsync();
+    }
+    private async Task ShowDetailAsync(CommunityEmojiDto emoji, MouseEventArgs args)
+    {
+        var module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/emojiPicker.js");
+        var position = await module.InvokeAsync<PopupPosition>("detailPosition", args.ClientX, args.ClientY);
+        await module.DisposeAsync();
+        _detailEmoji = emoji; _detailX = position.X; _detailY = position.Y;
+    }
+    private static string CommunitySectionId(Guid id) => $"community-emoji-{id:N}";
+    private static string CommunityKey(Guid id) => $"server:{id:N}";
+    private static string StandardKey(string category) => $"standard:{category}";
+    private bool IsExpanded(string key) => _expandedSections.Contains(key);
+    private void Toggle(string key)
+    {
+        if (!_expandedSections.Add(key)) _expandedSections.Remove(key);
+    }
+    private static ProfileMediaEditState? CommunityAvatarState(CommunityDto community) => community.AvatarUrl is null
+        ? null : new AvatarEditState(community.AvatarUrl, Math.Max(1, community.AvatarWidth), Math.Max(1, community.AvatarHeight),
+            760, 1000, 1000, Math.Max(1, community.AvatarZoom), community.AvatarCropX, community.AvatarCropY);
+    private void CloseDetail() => _detailEmoji = null;
+    private void OnChanged(Guid communityId) => _ = InvokeAsync(async () =>
+    { _available = await Emojis.GetAvailableAsync(); StateHasChanged(); });
+    public void Dispose() => Emojis.Changed -= OnChanged;
+    private sealed record PopupPosition(double X, double Y);
+    private sealed record CommunityEmojiGroup(CommunityDto Community, IReadOnlyList<CommunityEmojiDto> Emojis);
+}

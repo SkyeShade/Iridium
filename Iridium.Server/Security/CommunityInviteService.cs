@@ -27,7 +27,7 @@ public sealed class CommunityInviteService
             throw new CommunityInviteJoinException(status, $"This invite is {status.ToString().ToLowerInvariant()}.");
         if (await db.CommunityBans.AnyAsync(value =>
                 value.CommunityId == invite.CommunityId && value.AccountId == account.Id, cancellationToken))
-            throw new CommunityInviteJoinException(null, "You are banned from this Community.");
+            throw new CommunityInviteJoinException(null, "You are banned from this Server.");
 
         var existing = await db.CommunityMembers.AnyAsync(value =>
             value.CommunityId == invite.CommunityId && value.AccountId == account.Id, cancellationToken);

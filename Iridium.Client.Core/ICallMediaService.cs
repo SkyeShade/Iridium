@@ -70,6 +70,7 @@ public interface ICallMediaService : IAsyncDisposable
     event Func<CallConnectionState, Task>? ConnectionStateChanged;
     event Func<string, Task>? IceConnectionStateChanged;
     event Func<bool, Task>? SpeakingChanged;
+    event Func<string, Task>? ScreenShareEnded;
     event Func<string, Task>? Error;
     event Func<VoiceDiagnosticReport, Task>? DiagnosticGenerated;
 
@@ -86,6 +87,14 @@ public interface ICallMediaService : IAsyncDisposable
         CancellationToken cancellationToken = default);
     Task SetMutedAsync(bool muted, CancellationToken cancellationToken = default);
     Task SetDeafenedAsync(bool deafened, CancellationToken cancellationToken = default);
+    Task<LocalVoiceStreamPublication> StartScreenShareAsync(CancellationToken cancellationToken = default);
+    Task StopScreenShareAsync(string reason, CancellationToken cancellationToken = default);
+    Task AttachStreamViewerAsync(string mediaStreamId, string elementId, bool audioMuted,
+        CancellationToken cancellationToken = default);
+    Task DetachStreamViewerAsync(string elementId, CancellationToken cancellationToken = default);
+    Task SetStreamAudioMutedAsync(string elementId, bool muted, CancellationToken cancellationToken = default);
+    Task RequestStreamFullscreenAsync(string elementId, CancellationToken cancellationToken = default);
+    Task<string?> CaptureStreamThumbnailAsync(string mediaStreamId, CancellationToken cancellationToken = default);
     Task<WebRtcDiagnosticSnapshot?> GetDiagnosticSnapshotAsync(CancellationToken cancellationToken = default);
     Task CleanupAsync(string reason, CancellationToken cancellationToken = default);
 }

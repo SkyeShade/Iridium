@@ -1,0 +1,19 @@
+@using Iridium.Protocol
+
+<div class="emoji-detail-layer" tabindex="-1" autofocus @onclick="Close" @onkeydown="HandleKey">
+    <section class="emoji-detail-popup" role="dialog" aria-label="Emoji details" style="@PositionStyle" @onclick:stopPropagation="true">
+        <CommunityEmojiImage Emoji="Emoji" Class="detail-emoji" />
+        <strong>:@Emoji.Name:</strong>
+        @if (Emoji.IsAnimated) { <small>Animated</small> }
+    </section>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public required CommunityEmojiDto Emoji { get; set; }
+    [Parameter] public double X { get; set; }
+    [Parameter] public double Y { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    private string PositionStyle => FormattableString.Invariant($"--detail-x:{X:0.##}px;--detail-y:{Y:0.##}px");
+    private Task Close() => OnClose.InvokeAsync();
+    private Task HandleKey(KeyboardEventArgs args) => args.Key == "Escape" ? Close() : Task.CompletedTask;
+}

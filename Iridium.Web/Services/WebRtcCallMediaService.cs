@@ -25,6 +25,7 @@ public sealed class WebRtcCallMediaService(
     public event Func<CallConnectionState, Task>? ConnectionStateChanged;
     public event Func<string, Task>? IceConnectionStateChanged;
     public event Func<bool, Task>? SpeakingChanged;
+    public event Func<string, Task>? ScreenShareEnded;
     public event Func<string, Task>? Error;
     public event Func<VoiceDiagnosticReport, Task>? DiagnosticGenerated;
 
@@ -35,7 +36,7 @@ public sealed class WebRtcCallMediaService(
         // Compose at runtime so the WebAssembly static-asset fingerprint rewriter does not
         // turn this dynamic import into a precompressed development asset URL. Chromium can
         // fetch that URL but rejects it as an ES module in the dev server.
-        var modulePath = string.Concat(ModuleDirectoryAndName, ".js?module=ice-v2");
+        var modulePath = string.Concat(ModuleDirectoryAndName, ".js?module=screen-v1");
         _module ??= await js.InvokeAsync<IJSObjectReference>("import", cancellationToken, modulePath);
         _callback = DotNetObjectReference.Create(this);
         _context = context;
@@ -44,7 +45,8 @@ public sealed class WebRtcCallMediaService(
         _sessionId = await _module.InvokeAsync<string>("initialize", cancellationToken,
             _callback, configuration.IceServers, environment.IsDevelopment(), context.CallId, context.LocalAccountId,
             context.Role, context.PeerGeneration, context.NegotiationId, context.NegotiationGeneration,
-            IceInteropProtocolVersion, context.RemoteAccountId, preference);
+            IceInteropProtocolVersion, context.RemoteAccountId, preference,
+            context.RemoteAccountId is { } remoteAccountId && context.LocalAccountId.CompareTo(remoteAccountId) > 0);
         if (!_preferenceSubscribed) { preferences.Changed += PreferenceChanged; _preferenceSubscribed = true; }
     }
 
@@ -71,6 +73,30 @@ public sealed class WebRtcCallMediaService(
 
     public Task SetDeafenedAsync(bool deafened, CancellationToken cancellationToken = default) =>
         InvokeVoidAsync("setDeafened", cancellationToken, deafened);
+
+    public Task<LocalVoiceStreamPublication> StartScreenShareAsync(CancellationToken cancellationToken = default) =>
+        InvokeAsync<LocalVoiceStreamPublication>("startScreenShare", cancellationToken);
+
+    public Task StopScreenShareAsync(string reason, CancellationToken cancellationToken = default) =>
+        InvokeVoidAsync("stopScreenShare", cancellationToken, reason);
+
+    public Task AttachStreamViewerAsync(string mediaStreamId, string elementId, bool audioMuted,
+        CancellationToken cancellationToken = default) =>
+        InvokeVoidAsync("attachStreamViewer", cancellationToken, mediaStreamId, elementId, audioMuted);
+
+    public Task DetachStreamViewerAsync(string elementId, CancellationToken cancellationToken = default) =>
+        InvokeVoidAsync("detachStreamViewer", cancellationToken, elementId);
+
+    public Task SetStreamAudioMutedAsync(string elementId, bool muted,
+        CancellationToken cancellationToken = default) =>
+        InvokeVoidAsync("setStreamAudioMuted", cancellationToken, elementId, muted);
+
+    public Task RequestStreamFullscreenAsync(string elementId, CancellationToken cancellationToken = default) =>
+        InvokeVoidAsync("requestStreamFullscreen", cancellationToken, elementId);
+
+    public Task<string?> CaptureStreamThumbnailAsync(string mediaStreamId,
+        CancellationToken cancellationToken = default) =>
+        InvokeAsync<string?>("captureStreamThumbnail", cancellationToken, mediaStreamId);
 
     public Task<WebRtcDiagnosticSnapshot?> GetDiagnosticSnapshotAsync(CancellationToken cancellationToken = default) =>
         _sessionId is null ? Task.FromResult<WebRtcDiagnosticSnapshot?>(null) :
@@ -146,6 +172,12 @@ public sealed class WebRtcCallMediaService(
     [JSInvokable]
     public Task OnSpeakingChanged(int peerGeneration, bool isSpeaking) =>
         IsCurrent(peerGeneration, "speaking state") ? InvokeHandlersAsync(SpeakingChanged, isSpeaking) : Task.CompletedTask;
+
+    [JSInvokable]
+    public Task OnScreenShareEnded(int peerGeneration, string reason) =>
+        IsCurrent(peerGeneration, "screen share ended")
+            ? InvokeHandlersAsync(ScreenShareEnded, reason)
+            : Task.CompletedTask;
 
     [JSInvokable]
     public Task OnMediaError(int peerGeneration, string message) =>

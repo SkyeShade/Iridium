@@ -1,0 +1,31 @@
+@using Iridium.Protocol
+@inject CommunityEmojiService Emojis
+
+@foreach (var part in Parts)
+{
+    if (part.StandardArtworkKey is { } artworkKey)
+    {
+        <StandardEmojiArtwork ArtworkKey="@artworkKey" Glyph="@(part.StandardGlyph ?? part.Text)" Class="inline-standard-emoji" />
+    }
+    else if (part.EmojiId is { } id)
+    {
+        var emoji = CustomEmojis.FirstOrDefault(value => value.Id == id);
+        if (emoji is not null) { <CommunityEmojiImage Emoji="emoji" Class="inline-custom-emoji" /> }
+        else { <span>:@part.EmojiName:</span> }
+    }
+    else { @part.Text }
+}
+
+@code {
+    [Parameter, EditorRequired] public required string Text { get; set; }
+    [CascadingParameter(Name = "MessageCommunityId")] public Guid? CommunityId { get; set; }
+    private IReadOnlyList<EmojiTextPart> Parts => EmojiMessageParser.Parse(Text);
+    private IReadOnlyList<CommunityEmojiDto> CustomEmojis = [];
+    protected override async Task OnParametersSetAsync()
+    {
+        var emojis = (await Emojis.GetAvailableAsync()).Select(value => value.Emoji).ToDictionary(value => value.Id);
+        foreach (var id in Parts.Where(value => value.EmojiId is not null).Select(value => value.EmojiId!.Value).Distinct())
+            if (!emojis.ContainsKey(id) && await Emojis.ResolveReferenceAsync(id) is { } resolved) emojis[id] = resolved;
+        CustomEmojis = emojis.Values.ToArray();
+    }
+}

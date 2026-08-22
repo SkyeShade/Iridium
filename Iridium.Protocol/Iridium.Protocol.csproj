@@ -8,4 +8,8 @@
     <RootNamespace>Iridium.Protocol</RootNamespace>
   </PropertyGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="emoji-test.txt" LogicalName="Iridium.Protocol.emoji-test.txt" />
+  </ItemGroup>
+
 </Project>

@@ -1,0 +1,12 @@
+@using Iridium.Protocol
+@inject CommunityEmojiService Emojis
+
+@if (_source is not null) { <img class="community-emoji @Class" src="@_source" alt=":@Emoji.Name:" title=":@Emoji.Name:" /> }
+else { <span class="community-emoji-missing @Class">:@Emoji.Name:</span> }
+
+@code {
+    [Parameter, EditorRequired] public required CommunityEmojiDto Emoji { get; set; }
+    [Parameter] public string? Class { get; set; }
+    private string? _source;
+    protected override async Task OnParametersSetAsync() => _source = await Emojis.GetMediaDataUrlAsync(Emoji);
+}

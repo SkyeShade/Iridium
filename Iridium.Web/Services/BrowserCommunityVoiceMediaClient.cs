@@ -14,6 +14,7 @@ public sealed class BrowserCommunityVoiceMediaClient(IJSRuntime js, ILogger<Brow
     private bool _preferenceSubscribed;
 
     public event Func<bool, Task>? SpeakingChanged;
+    public event Func<string, Task>? ScreenShareEnded;
     public event Func<string, Task>? Error;
     public event Func<string, Guid, WebRtcSessionDescription, Task>? OfferCreated;
     public event Func<string, Guid, WebRtcSessionDescription, Task>? AnswerCreated;
@@ -24,7 +25,7 @@ public sealed class BrowserCommunityVoiceMediaClient(IJSRuntime js, ILogger<Brow
     {
         await DisconnectAsync("Community media replacement", cancellationToken);
         _module ??= await js.InvokeAsync<IJSObjectReference>("import", cancellationToken,
-            "./js/communityVoiceMedia.js?module=mesh-v1");
+            "./js/communityVoiceMedia.js?module=screen-v1");
         _callback = DotNetObjectReference.Create(this);
         var remotePreferences = new List<VoiceParticipantPreference>();
         foreach (var participant in room.Participants.Where(value => value.AccountId != localAccountId)
@@ -64,6 +65,33 @@ public sealed class BrowserCommunityVoiceMediaClient(IJSRuntime js, ILogger<Brow
     public Task HandleIceCandidateAsync(CommunityVoiceMediaIceCandidateEvent candidate,
         CancellationToken cancellationToken = default) => InvokeAsync("handleIceCandidate", cancellationToken, candidate);
 
+    public Task<LocalVoiceStreamPublication> StartScreenShareAsync(CancellationToken cancellationToken = default) =>
+        InvokeResultAsync<LocalVoiceStreamPublication>("startScreenShare", cancellationToken);
+
+    public Task StopScreenShareAsync(string reason, CancellationToken cancellationToken = default) =>
+        InvokeAsync("stopScreenShare", cancellationToken, reason);
+
+    public Task AttachStreamViewerAsync(string mediaStreamId, string elementId, bool audioMuted,
+        CancellationToken cancellationToken = default) =>
+        InvokeAsync("attachStreamViewer", cancellationToken, new { mediaStreamId, elementId, audioMuted });
+
+    public Task DetachStreamViewerAsync(string elementId, CancellationToken cancellationToken = default) =>
+        InvokeAsync("detachStreamViewer", cancellationToken, elementId);
+
+    public Task SetStreamAudioMutedAsync(string elementId, bool muted,
+        CancellationToken cancellationToken = default) =>
+        InvokeAsync("setStreamAudioMuted", cancellationToken, new { elementId, muted });
+
+    public Task RequestStreamFullscreenAsync(string elementId, CancellationToken cancellationToken = default) =>
+        InvokeAsync("requestStreamFullscreen", cancellationToken, elementId);
+
+    public Task<string?> CaptureStreamThumbnailAsync(string mediaStreamId,
+        CancellationToken cancellationToken = default)
+    {
+        if (_module is null || _sessionId is null) return Task.FromResult<string?>(null);
+        return _module.InvokeAsync<string?>("captureStreamThumbnail", cancellationToken, _sessionId, mediaStreamId).AsTask();
+    }
+
     public async Task DisconnectAsync(string reason, CancellationToken cancellationToken = default)
     {
         var id = _sessionId;
@@ -79,6 +107,9 @@ public sealed class BrowserCommunityVoiceMediaClient(IJSRuntime js, ILogger<Brow
 
     [JSInvokable]
     public Task OnSpeakingChanged(bool speaking) => InvokeHandlersAsync(SpeakingChanged, speaking);
+
+    [JSInvokable]
+    public Task OnScreenShareEnded(string reason) => InvokeHandlersAsync(ScreenShareEnded, reason);
 
     [JSInvokable]
     public Task OnMediaError(string message) => InvokeHandlersAsync(Error, message);
@@ -104,14 +135,16 @@ public sealed class BrowserCommunityVoiceMediaClient(IJSRuntime js, ILogger<Brow
             "RemoteIce={RemoteIce} RemoteTracks={RemoteTracks} AudioElements={AudioElements} Play={Play} " +
             "PacketsSent={PacketsSent} PacketsReceived={PacketsReceived} BytesSent={BytesSent} BytesReceived={BytesReceived} " +
             "TrackState={TrackState} TrackMuted={TrackMuted} ElementMuted={ElementMuted} ElementVolume={ElementVolume} " +
-            "AudioContext={AudioContext} Gain={Gain} Error={ErrorName}:{ErrorMessage}",
+            "AudioContext={AudioContext} Gain={Gain} FramesEncoded={FramesEncoded} FramesDecoded={FramesDecoded} " +
+            "FramesDropped={FramesDropped} Frame={FrameWidth}x{FrameHeight} Error={ErrorName}:{ErrorMessage}",
             snapshot.Event, snapshot.RemoteParticipantId, snapshot.LocalStreamPresent, snapshot.LocalAudioTracks,
             snapshot.AttachedSenderCount, snapshot.ConnectionState, snapshot.IceConnectionState,
             snapshot.LocalIceGenerated, snapshot.RemoteIceReceived, snapshot.RemoteTrackCount,
             snapshot.RemoteAudioElements, snapshot.RemoteAudioPlaySucceeded, snapshot.PacketsSent,
             snapshot.PacketsReceived, snapshot.BytesSent, snapshot.BytesReceived, snapshot.RemoteTrackReadyState,
             snapshot.RemoteTrackMuted, snapshot.ElementMuted, snapshot.ElementVolume, snapshot.AudioContextState,
-            snapshot.GainValue, snapshot.ErrorName, snapshot.ErrorMessage);
+            snapshot.GainValue, snapshot.FramesEncoded, snapshot.FramesDecoded, snapshot.FramesDropped,
+            snapshot.FrameWidth, snapshot.FrameHeight, snapshot.ErrorName, snapshot.ErrorMessage);
         return Task.CompletedTask;
     }
 
@@ -119,6 +152,13 @@ public sealed class BrowserCommunityVoiceMediaClient(IJSRuntime js, ILogger<Brow
     {
         if (_module is null || _sessionId is null) return;
         await _module.InvokeVoidAsync(method, cancellationToken, _sessionId, argument);
+    }
+
+    private async Task<T> InvokeResultAsync<T>(string method, CancellationToken cancellationToken)
+    {
+        if (_module is null || _sessionId is null)
+            throw new InvalidOperationException("Community voice media is not initialized.");
+        return await _module.InvokeAsync<T>(method, cancellationToken, _sessionId);
     }
 
     private static async Task InvokeHandlersAsync<T>(Func<T, Task>? handlers, T value)

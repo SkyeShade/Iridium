@@ -56,6 +56,7 @@ public sealed class CallClientService(
     private bool _accepting;
     private (bool Muted, bool Deafened, CallConnectionState State)? _lastPublishedParticipantState;
     private bool _disposed;
+    private readonly List<PublishedVoiceStreamDto> _publishedStreams = [];
 
     public CallSessionDto? CurrentCall { get; private set; }
     public IncomingCallEvent? IncomingCall { get; private set; }
@@ -68,6 +69,8 @@ public sealed class CallClientService(
     public bool IsAccepting => _accepting;
     public bool IsSignalingConnected => _connection?.State == HubConnectionState.Connected;
     public Guid? AccountId => _accountId;
+    public IReadOnlyList<PublishedVoiceStreamDto> PublishedStreams => _publishedStreams;
+    public PublishedVoiceStreamDto? WatchedStream { get; private set; }
     public event Action? Changed;
 
     public async Task ConnectAsync(CancellationToken cancellationToken = default)
@@ -264,6 +267,96 @@ public sealed class CallClientService(
         finally { _gate.Release(); }
     }
 
+    public async Task StartScreenShareAsync(CancellationToken cancellationToken = default)
+    {
+        if (CurrentCall?.State != CallState.Active || !_mediaReady || !IsSignalingConnected) return;
+        var publication = await media.StartScreenShareAsync(cancellationToken);
+        PublishedVoiceStreamDto? publishedStream = null;
+        try
+        {
+            await _signalingGate.WaitAsync(cancellationToken);
+            await _gate.WaitAsync(cancellationToken);
+            try
+            {
+                publishedStream = await _connection!.InvokeAsync<PublishedVoiceStreamDto>(VoiceStreamHubContract.Publish,
+                    VoiceMediaSessionKind.DirectCall, CurrentCall.Id,
+                    new PublishVoiceStreamRequest(publication.StreamId, publication.Kind, publication.HasAudio,
+                        publication.MediaStreamId), cancellationToken);
+                ApplyPublishedStream(publishedStream);
+                await StartRenegotiationUnsafeAsync("ScreenTrackAdded", cancellationToken);
+            }
+            finally { _gate.Release(); _signalingGate.Release(); }
+        }
+        catch
+        {
+            await media.StopScreenShareAsync("PublicationRejected", cancellationToken);
+            throw;
+        }
+        await WatchStreamAsync(publishedStream.StreamId, cancellationToken);
+    }
+
+    public async Task StopScreenShareAsync(string reason = "UserStoppedInIridium",
+        CancellationToken cancellationToken = default)
+    {
+        var stream = _publishedStreams.FirstOrDefault(value => value.OwnerAccountId == _accountId &&
+            value.Kind == VoicePublishedStreamKind.ScreenShare);
+        await media.StopScreenShareAsync(reason, cancellationToken);
+        if (stream is null || CurrentCall is null || !IsSignalingConnected) return;
+        await _signalingGate.WaitAsync(cancellationToken);
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            await _connection!.InvokeAsync(VoiceStreamHubContract.StopPublishing,
+                VoiceMediaSessionKind.DirectCall, CurrentCall.Id, stream.StreamId, reason, cancellationToken);
+            ApplyEndedStream(stream.StreamId);
+            await StartRenegotiationUnsafeAsync("ScreenTrackRemoved", cancellationToken);
+        }
+        finally { _gate.Release(); _signalingGate.Release(); }
+    }
+
+    public async Task WatchStreamAsync(Guid streamId, CancellationToken cancellationToken = default)
+    {
+        if (CurrentCall is null || !IsSignalingConnected) return;
+        var stream = _publishedStreams.FirstOrDefault(value => value.StreamId == streamId)
+            ?? throw new InvalidOperationException("That stream is no longer available.");
+        if (WatchedStream is not null) await StopWatchingAsync(cancellationToken);
+        // Local self-preview binds directly to the captured MediaStream. It needs no network
+        // subscription and must never provoke a second negotiation.
+        if (stream.OwnerAccountId != _accountId)
+            await _connection!.InvokeAsync(VoiceStreamHubContract.Watch, VoiceMediaSessionKind.DirectCall,
+                CurrentCall.Id, streamId, cancellationToken);
+        WatchedStream = stream;
+        NotifyChanged();
+    }
+
+    public async Task StopWatchingAsync(CancellationToken cancellationToken = default)
+    {
+        var stream = WatchedStream;
+        WatchedStream = null;
+        if (stream is not null && stream.OwnerAccountId != _accountId && IsSignalingConnected)
+            await _connection!.InvokeAsync(VoiceStreamHubContract.StopWatching, stream.StreamId, cancellationToken);
+        NotifyChanged();
+    }
+
+    public Task AttachWatchedStreamAsync(string elementId, CancellationToken cancellationToken = default) =>
+        WatchedStream is { } stream
+            ? media.AttachStreamViewerAsync(stream.MediaStreamId, elementId, audioMuted: !stream.HasAudio, cancellationToken)
+            : Task.CompletedTask;
+
+    public Task DetachWatchedStreamAsync(string elementId, CancellationToken cancellationToken = default) =>
+        media.DetachStreamViewerAsync(elementId, cancellationToken);
+
+    public Task SetStreamAudioMutedAsync(string elementId, bool muted,
+        CancellationToken cancellationToken = default) =>
+        media.SetStreamAudioMutedAsync(elementId, muted, cancellationToken);
+
+    public Task RequestStreamFullscreenAsync(string elementId, CancellationToken cancellationToken = default) =>
+        media.RequestStreamFullscreenAsync(elementId, cancellationToken);
+
+    public Task<string?> CaptureStreamThumbnailAsync(string mediaStreamId,
+        CancellationToken cancellationToken = default) =>
+        media.CaptureStreamThumbnailAsync(mediaStreamId, cancellationToken);
+
     private async Task EnsureConnectionAsync(CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -294,9 +387,16 @@ public sealed class CallClientService(
             value => RunHandlerAsync(() => ReceiveParticipantSpeaking(value))));
         _handlerRegistrations.Add(connection.On<CallStateEvent>(VoiceCallHubContract.MediaRetryRequested,
             value => RunHandlerAsync(() => ReceiveMediaRetryRequestedAsync(value))));
-        _handlerRegistrations.Add(connection.On<WebRtcDescriptionEvent>(VoiceCallHubContract.Offer, value => RunHandlerAsync(() => ReceiveOfferAsync(value))));
-        _handlerRegistrations.Add(connection.On<WebRtcDescriptionEvent>(VoiceCallHubContract.Answer, value => RunHandlerAsync(() => ReceiveAnswerAsync(value))));
+        _handlerRegistrations.Add(connection.On<WebRtcDescriptionEvent>(VoiceCallHubContract.Offer,
+            value => RunHandlerAsync(() => ReceiveOfferAsync(value), value.NegotiationKind != WebRtcNegotiationKind.Initial)));
+        _handlerRegistrations.Add(connection.On<WebRtcDescriptionEvent>(VoiceCallHubContract.Answer,
+            value => RunHandlerAsync(() => ReceiveAnswerAsync(value), value.NegotiationKind != WebRtcNegotiationKind.Initial)));
         _handlerRegistrations.Add(connection.On<WebRtcIceCandidateEvent>(VoiceCallHubContract.IceCandidate, value => RunHandlerAsync(() => ReceiveIceAsync(value))));
+        _handlerRegistrations.Add(connection.On<VoiceStreamPublishedEvent>(VoiceStreamHubContract.Published,
+            value => RunHandlerAsync(() => { ApplyPublishedStream(value.Stream); return Task.CompletedTask; })));
+        _handlerRegistrations.Add(connection.On<VoiceStreamEndedEvent>(VoiceStreamHubContract.Ended,
+            value => RunHandlerAsync(() => { if (value.SessionKind == VoiceMediaSessionKind.DirectCall)
+                ApplyEndedStream(value.StreamId); return Task.CompletedTask; })));
         VoiceDiagnostic("subscribed to signaling", registrationCount: _handlerRegistrationCount,
             details: $"activeHandlers={_handlerRegistrations.Count}");
         connection.Reconnecting += exception => { StatusMessage = "Signaling reconnecting; audio may continue…"; NotifyChanged(); return Task.CompletedTask; };
@@ -400,7 +500,8 @@ public sealed class CallClientService(
         _offerReceivedCount++;
         var duplicateSignal = !_receivedSignalIds.Add(value.SignalId);
         VoiceDiagnostic("RECEIVED Offer", value.CallId, value.SignalId, value.NegotiationGeneration,
-            details: $"offerReceivedCount={_offerReceivedCount} senderPeerGeneration={value.SenderPeerGeneration} duplicateSignalId={duplicateSignal}");
+            details: $"kind={value.NegotiationKind} offerReceivedCount={_offerReceivedCount} " +
+                     $"senderPeerGeneration={value.SenderPeerGeneration} duplicateSignalId={duplicateSignal}");
         if (duplicateSignal)
         {
             VoiceDiagnostic("SignalId already processed -> ignoring Offer", value.CallId, value.SignalId,
@@ -416,7 +517,26 @@ public sealed class CallClientService(
         }
         logger.LogDebug("Call {CallId} negotiation {NegotiationId} account {AccountId}: offer received from account {SenderAccountId}; active negotiation is {ActiveNegotiationId}.",
             value.CallId, value.NegotiationId, _accountId, value.SenderAccountId, _negotiationId);
-        if (_negotiationId is { } activeNegotiationId && activeNegotiationId != value.NegotiationId)
+        var offerCollision = false;
+        if (_mediaReady && _negotiationId != value.NegotiationId)
+        {
+            var snapshot = await media.GetDiagnosticSnapshotAsync();
+            offerCollision = snapshot?.SignalingState == "have-local-offer";
+            var polite = _accountId is { } localAccount && localAccount.CompareTo(value.SenderAccountId) > 0;
+            VoiceDiagnostic("OfferCollisionEvaluated", value.CallId, value.SignalId, value.NegotiationGeneration,
+                details: $"kind={value.NegotiationKind} polite={polite} offerCollision={offerCollision} " +
+                         $"signalingState={snapshot?.SignalingState}");
+            if (offerCollision && !polite)
+            {
+                logger.LogDebug("Call {CallId}: glare offer {NegotiationId} ignored by deterministic impolite peer.",
+                    value.CallId, value.NegotiationId);
+                VoiceDiagnostic("OfferIgnored", value.CallId, value.SignalId, value.NegotiationGeneration,
+                    details: "polite=false offerCollision=true");
+                return;
+            }
+        }
+        if (!offerCollision && _negotiationId is { } activeNegotiationId &&
+            activeNegotiationId != value.NegotiationId && value.NegotiationGeneration < _negotiationGeneration)
         {
             logger.LogDebug("Call {CallId}: stale offer for negotiation {NegotiationId} ignored; active negotiation is {ActiveNegotiationId}.",
                 value.CallId, value.NegotiationId, activeNegotiationId);
@@ -434,12 +554,12 @@ public sealed class CallClientService(
         }
         _negotiationId = value.NegotiationId;
         _negotiationGeneration = value.NegotiationGeneration;
+        _remoteDescriptionReady = false;
         _pendingOffer = value;
         if (CurrentCall?.State == CallState.Active)
         {
-            if (!_mediaReady || _remoteDescriptionReady)
+            if (!_mediaReady)
             {
-                await ResetMediaAsync("new remote offer replacement");
                 await StartMediaAsync(CancellationToken.None);
                 _negotiationId = value.NegotiationId;
                 _pendingOffer = value;
@@ -598,12 +718,14 @@ public sealed class CallClientService(
         media.ConnectionStateChanged -= MediaConnectionChangedAsync;
         media.IceConnectionStateChanged -= MediaIceConnectionChangedAsync;
         media.SpeakingChanged -= LocalSpeakingChangedAsync;
+        media.ScreenShareEnded -= MediaScreenShareEndedAsync;
         media.Error -= MediaErrorAsync;
         media.DiagnosticGenerated -= ForwardVoiceDiagnosticAsync;
         media.IceCandidateGenerated += SendIceAsync;
         media.ConnectionStateChanged += MediaConnectionChangedAsync;
         media.IceConnectionStateChanged += MediaIceConnectionChangedAsync;
         media.SpeakingChanged += LocalSpeakingChangedAsync;
+        media.ScreenShareEnded += MediaScreenShareEndedAsync;
         media.Error += MediaErrorAsync;
         media.DiagnosticGenerated += ForwardVoiceDiagnosticAsync;
         var accountId = _accountId ?? throw new InvalidOperationException("The active call account is unavailable.");
@@ -706,7 +828,15 @@ public sealed class CallClientService(
     private async Task MediaErrorAsync(string message)
     {
         logger.LogError("Call {CallId}: browser WebRTC error: {MediaError}", CurrentCall?.Id, message);
-        if (CurrentCall?.State == CallState.Active) await FailMediaAsync(message);
+        // An established audio peer remains authoritative. A failed add/remove visual-media
+        // operation is surfaced without disposing that peer; an actual terminal peer failure is
+        // still handled by MediaConnectionChangedAsync.
+        if (CurrentCall?.State == CallState.Active && MediaConnectionState == CallConnectionState.Connected)
+        {
+            ErrorMessage = $"Additional media operation failed: {message}";
+            NotifyChanged();
+        }
+        else if (CurrentCall?.State == CallState.Active) await FailMediaAsync(message);
         else { ErrorMessage = message; NotifyChanged(); }
     }
 
@@ -720,6 +850,8 @@ public sealed class CallClientService(
             catch (Exception exception) { logger.LogWarning(exception, "Call {CallId}: could not send speaking transition.", call.Id); }
         }
     }
+
+    private Task MediaScreenShareEndedAsync(string reason) => StopScreenShareAsync(reason);
 
     private async Task PublishParticipantStateAsync(CancellationToken cancellationToken = default)
     {
@@ -806,8 +938,26 @@ public sealed class CallClientService(
             call.Id, _negotiationId);
         VoiceDiagnostic("SEND Offer", call.Id, signalId, _negotiationGeneration);
         await _connection!.InvokeAsync(VoiceCallHubContract.SendOffer, call.Id, _negotiationId.Value,
-            _negotiationGeneration, _peerGeneration, signalId, offer, cancellationToken);
+            _negotiationGeneration, _peerGeneration, signalId, WebRtcNegotiationKind.Initial, offer, cancellationToken);
         logger.LogDebug("Call {CallId} negotiation {NegotiationId}: offer sent exactly once.", call.Id, _negotiationId);
+    }
+
+    private async Task StartRenegotiationUnsafeAsync(string reason, CancellationToken cancellationToken)
+    {
+        if (CurrentCall?.State != CallState.Active || !_mediaReady || !IsSignalingConnected) return;
+        _negotiationId = Guid.NewGuid();
+        _negotiationGeneration++;
+        _remoteDescriptionReady = false;
+        var signalId = Guid.NewGuid();
+        _createOfferCount++;
+        VoiceDiagnostic("RenegotiationRequested", CurrentCall.Id, signalId, _negotiationGeneration,
+            details: $"kind=Renegotiation reason={reason} makingOffer=true");
+        var offer = await media.CreateOfferAsync(_negotiationId.Value, signalId, cancellationToken);
+        await _connection!.InvokeAsync(VoiceCallHubContract.SendOffer, CurrentCall.Id, _negotiationId.Value,
+            _negotiationGeneration, _peerGeneration, signalId, WebRtcNegotiationKind.Renegotiation,
+            offer, cancellationToken);
+        VoiceDiagnostic("RenegotiationSucceeded", CurrentCall.Id, signalId, _negotiationGeneration,
+            details: $"kind=Renegotiation reason={reason} makingOffer=false");
     }
 
     private async Task RestartOffererAsync(CancellationToken cancellationToken = default)
@@ -1112,6 +1262,21 @@ public sealed class CallClientService(
         NotifyChanged();
     }
 
+    private void ApplyPublishedStream(PublishedVoiceStreamDto stream)
+    {
+        _publishedStreams.RemoveAll(value => value.StreamId == stream.StreamId ||
+            value.OwnerAccountId == stream.OwnerAccountId && value.Kind == stream.Kind);
+        _publishedStreams.Add(stream);
+        NotifyChanged();
+    }
+
+    private void ApplyEndedStream(Guid streamId)
+    {
+        _publishedStreams.RemoveAll(value => value.StreamId == streamId);
+        if (WatchedStream?.StreamId == streamId) WatchedStream = null;
+        NotifyChanged();
+    }
+
     private async Task RestoreCurrentCallAsync()
     {
         if (!IsSignalingConnected) return;
@@ -1145,6 +1310,8 @@ public sealed class CallClientService(
         _mediaReady = false; _remoteDescriptionReady = false; _pendingOffer = null; _pendingSignalingCallId = null; _pendingIce.Clear();
         _negotiationId = null; _negotiationStarted = false; _processedAnswerNegotiations.Clear();
         _lastPublishedParticipantState = null;
+        _publishedStreams.Clear();
+        WatchedStream = null;
         MediaConnectionState = CallConnectionState.Closed;
         CurrentCall = null; IncomingCall = null; IsMuted = false; IsDeafened = false;
         if (clearMessage) { StatusMessage = null; ErrorMessage = null; }
@@ -1171,7 +1338,7 @@ public sealed class CallClientService(
         catch (Exception exception) { logger.LogWarning(exception, "Voice call signaling heartbeat failed."); }
     }
 
-    private async Task RunHandlerAsync(Func<Task> action)
+    private async Task RunHandlerAsync(Func<Task> action, bool preserveCallOnFailure = false)
     {
         await _signalingGate.WaitAsync();
         await _gate.WaitAsync();
@@ -1179,7 +1346,13 @@ public sealed class CallClientService(
         catch (Exception exception)
         {
             logger.LogError(exception, "Voice call event handling failed.");
-            if (CurrentCall?.State == CallState.Active) await FailMediaAsync(MediaErrorMessage(exception));
+            if (CurrentCall?.State == CallState.Active && !preserveCallOnFailure)
+                await FailMediaAsync(MediaErrorMessage(exception));
+            else if (CurrentCall?.State == CallState.Active)
+            {
+                ErrorMessage = $"Screen media negotiation failed: {MediaErrorMessage(exception)}";
+                NotifyChanged();
+            }
             else { ErrorMessage = MediaErrorMessage(exception); NotifyChanged(); }
         }
         finally

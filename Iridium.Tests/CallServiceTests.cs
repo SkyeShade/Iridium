@@ -53,7 +53,8 @@ public sealed class CallServiceTests
         var offer = new WebRtcSessionDescription("offer", "safe-test-sdp");
         var answer = new WebRtcSessionDescription("answer", "safe-test-sdp");
         var negotiationId = Guid.NewGuid();
-        Assert.Throws<HubException>(() => media.AuthorizeOffer(call.Id, caller, CallerConnection, negotiationId, offer));
+        Assert.Throws<HubException>(() => media.AuthorizeOffer(call.Id, caller, CallerConnection, negotiationId,
+            WebRtcNegotiationKind.Initial, offer));
         Assert.Throws<HubException>(() => service.Accept(call.Id, caller, CallerConnection));
 
         service.Accept(call.Id, callee, CalleeConnection);
@@ -61,12 +62,15 @@ public sealed class CallServiceTests
             new WebRtcIceCandidate("candidate:early", "audio", 0, "fragment"));
         Assert.True(earlyIce.ShouldForward);
 
-        var offerRoute = media.AuthorizeOffer(call.Id, caller, CallerConnection, negotiationId, offer);
+        var offerRoute = media.AuthorizeOffer(call.Id, caller, CallerConnection, negotiationId,
+            WebRtcNegotiationKind.Initial, offer);
         Assert.Equal(callee, offerRoute.TargetAccountId);
         Assert.Equal(CalleeConnection, offerRoute.TargetConnectionId);
         Assert.True(offerRoute.ShouldForward);
-        Assert.Equal("duplicate-offer", media.AuthorizeOffer(call.Id, caller, CallerConnection, negotiationId, offer).IgnoreReason);
-        Assert.Throws<HubException>(() => media.AuthorizeOffer(call.Id, callee, CalleeConnection, negotiationId, offer));
+        Assert.Equal("duplicate-offer", media.AuthorizeOffer(call.Id, caller, CallerConnection, negotiationId,
+            WebRtcNegotiationKind.Initial, offer).IgnoreReason);
+        Assert.Throws<HubException>(() => media.AuthorizeOffer(call.Id, callee, CalleeConnection, Guid.NewGuid(),
+            WebRtcNegotiationKind.Initial, offer));
         Assert.Throws<HubException>(() => media.AuthorizeAnswer(call.Id, callee, "other-callee-connection", negotiationId, answer));
 
         var answerRoute = media.AuthorizeAnswer(call.Id, callee, CalleeConnection, negotiationId, answer);
@@ -80,6 +84,23 @@ public sealed class CallServiceTests
         Assert.False(staleAnswer.ShouldForward);
         Assert.Equal("stale-negotiation", staleAnswer.IgnoreReason);
         Assert.Throws<HubException>(() => media.AuthorizeAnswer(call.Id, caller, CallerConnection, negotiationId, answer));
+
+        var callerNegotiationId = Guid.NewGuid();
+        var callerRenegotiation = media.AuthorizeOffer(call.Id, caller, CallerConnection, callerNegotiationId,
+            WebRtcNegotiationKind.Renegotiation, offer);
+        Assert.True(callerRenegotiation.ShouldForward);
+        Assert.Equal(WebRtcNegotiationKind.Renegotiation, callerRenegotiation.NegotiationKind);
+        var calleeNegotiationId = Guid.NewGuid();
+        var calleeRenegotiation = media.AuthorizeOffer(call.Id, callee, CalleeConnection, calleeNegotiationId,
+            WebRtcNegotiationKind.Renegotiation, offer);
+        Assert.True(calleeRenegotiation.ShouldForward);
+        Assert.Equal(caller, calleeRenegotiation.TargetAccountId);
+        Assert.Throws<HubException>(() => media.AuthorizeOffer(call.Id, Guid.NewGuid(), "outsider-connection",
+            Guid.NewGuid(), WebRtcNegotiationKind.Renegotiation, offer));
+        Assert.Throws<HubException>(() => media.AuthorizeOffer(call.Id, callee, "other-callee-connection",
+            Guid.NewGuid(), WebRtcNegotiationKind.Renegotiation, offer));
+        Assert.True(media.AuthorizeAnswer(call.Id, callee, CalleeConnection, callerNegotiationId, answer).ShouldForward);
+        Assert.True(media.AuthorizeAnswer(call.Id, caller, CallerConnection, calleeNegotiationId, answer).ShouldForward);
         Assert.Throws<HubException>(() => media.AuthorizeIceCandidate(call.Id, Guid.NewGuid(), "outsider-connection", negotiationId,
             new WebRtcIceCandidate("candidate", null, null, null)));
         var speaking = service.SetParticipantSpeaking(call.Id, caller, true);

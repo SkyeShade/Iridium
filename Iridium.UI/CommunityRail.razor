@@ -1,8 +1,12 @@
 @using Iridium.Protocol
 @using Iridium.Client.Core
 
-<nav class="community-rail" aria-label="Communities">
-    <button class="rail-item home active" title="Home" @onclick="() => OnSelected.InvokeAsync(null)">I</button>
+<nav class="community-rail" aria-label="Servers">
+    <button class="rail-item home @(SelectedCommunityId is null ? "active" : null)" title="Home"
+            aria-label="Home" @onclick="() => OnSelected.InvokeAsync(null)">
+        @if (SelectedCommunityId is null) { <span class="selected-indicator" aria-hidden="true"></span> }
+        <Icon Name="home" Size="23" />
+    </button>
     @if (NotificationConversations.Count > 0)
     {
         <div class="notification-stack" aria-label="Unread Direct Messages">
@@ -27,10 +31,18 @@
     <div class="community-scroll">
         @foreach (var community in Communities)
         {
-            <button class="rail-item @(community.Id == SelectedCommunityId ? "active" : null)"
+            <button @key="community.Id" class="rail-item community @(community.Id == SelectedCommunityId ? "active" : null)"
                     title="@community.Name"
                     @onclick="() => OnSelected.InvokeAsync(community)">
-                @Initials(community.Name)
+                @if (community.Id == SelectedCommunityId) { <span class="selected-indicator" aria-hidden="true"></span> }
+                @if (!string.IsNullOrWhiteSpace(community.AvatarUrl))
+                {
+                    <AvatarCroppedPreview Class="community-avatar" State="CommunityAvatarState(community)" />
+                }
+                else
+                {
+                    <span>@Initials(community.Name)</span>
+                }
                 @if (community.HasUnread)
                 {
                     <span class="community-unread-marker" aria-label="Unread messages"></span>
@@ -42,7 +54,7 @@
             </button>
         }
     </div>
-    <button class="rail-item add" title="Create Community" @onclick="OnAdd"><Icon Name="plus" /></button>
+    <button class="rail-item add" title="Create Server" @onclick="OnAdd"><Icon Name="plus" /></button>
 </nav>
 
 @code {
@@ -66,4 +78,7 @@
         var words = name.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         return string.Concat(words.Take(2).Select(word => char.ToUpperInvariant(word[0])));
     }
+    private static ProfileMediaEditState CommunityAvatarState(CommunityDto community) => new AvatarEditState(
+        community.AvatarUrl!, Math.Max(1, community.AvatarWidth), Math.Max(1, community.AvatarHeight),
+        760, 1000, 1000, Math.Max(1, community.AvatarZoom), community.AvatarCropX, community.AvatarCropY);
 }

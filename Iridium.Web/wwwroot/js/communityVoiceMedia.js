@@ -49,6 +49,9 @@ async function diagnostic(session, event, peerState = null, values = {}) {
         elementVolume: values.elementVolume ?? null,
         audioContextState: values.audioContextState ?? null,
         gainValue: values.gainValue ?? null,
+        framesEncoded: values.framesEncoded ?? null, framesDecoded: values.framesDecoded ?? null,
+        framesDropped: values.framesDropped ?? null, frameWidth: values.frameWidth ?? null,
+        frameHeight: values.frameHeight ?? null,
         errorName: values.name ?? null,
         errorMessage: values.message ?? null
     };
@@ -110,6 +113,7 @@ function closePeer(session, remoteParticipantId, reason) {
     state.peer.ontrack = null;
     state.peer.close();
     destroyRemoteVoicePlayback(state.playback);
+    for (const stream of state.visualStreams.values()) session.visualStreams.delete(stream.id);
     void diagnostic(session, `PeerClosed: ${reason}`, state);
 }
 
@@ -123,7 +127,8 @@ function createPeer(session, remoteParticipantId, negotiationId) {
     const state = {
         remoteParticipantId, negotiationId, peer, remoteStream: new MediaStream(),
         pendingIce: [], localIceGenerated: 0, remoteIceReceived: 0,
-        remoteAudioPlaySucceeded: false, connectionTimer: null, playback: null,
+        remoteAudioPlaySucceeded: false, connectionTimer: null, playback: null, visualStreams:new Map(),
+        negotiationChain:Promise.resolve(),
         remoteAccountId: session.participantAccounts.get(remoteParticipantId) ?? null
     };
     session.peers.set(remoteParticipantId, state);
@@ -145,6 +150,23 @@ function createPeer(session, remoteParticipantId, negotiationId) {
     peer.oniceconnectionstatechange = () => void diagnostic(session, `IceConnectionState:${peer.iceConnectionState}`, state);
     peer.ontrack = async event => {
         const stream = event.streams?.[0];
+        const visualStream = stream?.getVideoTracks().length > 0 || event.track.kind === "video";
+        if (visualStream) {
+            const value = stream ?? new MediaStream([event.track]);
+            state.visualStreams.set(value.id, value);
+            session.visualStreams.set(value.id, value);
+            void diagnostic(session, event.track.kind === "video" ? "RemoteVideoTrackReceived" :
+                "RemoteScreenAudioTrackReceived", state, { readyState:event.track.readyState, muted:event.track.muted });
+            event.track.onended = () => {
+                if (value.getTracks().every(track => track.readyState === "ended")) {
+                    state.visualStreams.delete(value.id);
+                    session.visualStreams.delete(value.id);
+                }
+                for (const [elementId, viewer] of session.viewers)
+                    if (viewer.mediaStreamId === value.id) detachViewer(session, elementId);
+            };
+            return;
+        }
         if (stream) state.remoteStream = stream;
         else if (!state.remoteStream.getTracks().includes(event.track)) state.remoteStream.addTrack(event.track);
         void diagnostic(session, "RemoteTrackReceived", state, { readyState:event.track.readyState, muted:event.track.muted });
@@ -162,6 +184,13 @@ function createPeer(session, remoteParticipantId, negotiationId) {
         peer.addTrack(track, session.localStream);
         void diagnostic(session, "LocalTrackAdded", state, { trackState: track.readyState });
     }
+    if (session.screenShare)
+        for (const track of session.screenShare.stream.getTracks()) {
+            const sender = peer.addTrack(track, session.screenShare.stream);
+            let senders = session.screenShare.senders.get(remoteParticipantId);
+            if (!senders) session.screenShare.senders.set(remoteParticipantId, senders = []);
+            senders.push(sender);
+        }
     void diagnostic(session, "PeerCreated", state);
     state.connectionTimer = setTimeout(() => {
         if (peer.connectionState !== "connected") {
@@ -183,11 +212,16 @@ async function flushIce(session, state) {
 async function startOffer(session, remoteParticipantId) {
     const negotiationId = crypto.randomUUID();
     const state = createPeer(session, remoteParticipantId, negotiationId);
-    const offer = await state.peer.createOffer();
-    await diagnostic(session, "OfferCreated", state);
-    await state.peer.setLocalDescription(offer);
-    await session.callback.invokeMethodAsync("OnOfferCreated", remoteParticipantId, negotiationId,
-        { type: state.peer.localDescription.type, sdp: state.peer.localDescription.sdp });
+    state.negotiationId = negotiationId;
+    state.negotiationChain = state.negotiationChain.then(async () => {
+        if (state.peer.signalingState !== "stable") return;
+        const offer = await state.peer.createOffer();
+        await diagnostic(session, "OfferCreated", state);
+        await state.peer.setLocalDescription(offer);
+        await session.callback.invokeMethodAsync("OnOfferCreated", remoteParticipantId, negotiationId,
+            { type: state.peer.localDescription.type, sdp: state.peer.localDescription.sdp });
+    }).catch(error => reportError(session, "Renegotiation failed", error));
+    await state.negotiationChain;
 }
 
 function reportError(session, prefix, error) {
@@ -200,18 +234,25 @@ async function collectStats(session) {
     const snapshots = [];
     for (const state of session.peers.values()) {
         let packetsSent = 0, packetsReceived = 0, bytesSent = 0, bytesReceived = 0;
+        let framesEncoded = 0, framesDecoded = 0, framesDropped = 0, frameWidth = null, frameHeight = null;
         const reports = await state.peer.getStats();
         reports.forEach(report => {
-            if (report.type === "outbound-rtp" && report.kind === "audio") {
+            if (report.type === "outbound-rtp") {
                 packetsSent += report.packetsSent ?? 0;
                 bytesSent += report.bytesSent ?? 0;
-            } else if (report.type === "inbound-rtp" && report.kind === "audio") {
+                if (report.kind === "video") { framesEncoded += report.framesEncoded ?? 0;
+                    frameWidth = report.frameWidth ?? frameWidth; frameHeight = report.frameHeight ?? frameHeight; }
+            } else if (report.type === "inbound-rtp") {
                 packetsReceived += report.packetsReceived ?? 0;
                 bytesReceived += report.bytesReceived ?? 0;
+                if (report.kind === "video") { framesDecoded += report.framesDecoded ?? 0;
+                    framesDropped += report.framesDropped ?? 0; frameWidth = report.frameWidth ?? frameWidth;
+                    frameHeight = report.frameHeight ?? frameHeight; }
             }
         });
         await diagnostic(session, "StatsSnapshot", state,
-            { packetsSent, packetsReceived, bytesSent, bytesReceived });
+            { packetsSent, packetsReceived, bytesSent, bytesReceived, framesEncoded, framesDecoded,
+                framesDropped, frameWidth, frameHeight });
         snapshots.push({ remoteParticipantId: state.remoteParticipantId, packetsSent, packetsReceived,
             bytesSent, bytesReceived, remoteTrackCount: state.remoteStream.getAudioTracks().length,
             remoteAudioPlaySucceeded: state.remoteAudioPlaySucceeded });
@@ -241,7 +282,8 @@ export async function connect(callback, mediaSession, room, localAccountId, pref
         vadFrame: null, context: null, source: null, analyser: null,
         diagnostics: mediaSession.diagnosticsEnabled === true, statsTimer: null,
         participantAccounts:new Map((room.participants ?? []).map(value => [value.participantId, value.accountId])),
-        preferences:new Map((preferences ?? []).map(value => [value.remoteAccountId, value]))
+        preferences:new Map((preferences ?? []).map(value => [value.remoteAccountId, value])),
+        visualStreams:new Map(), viewers:new Map(), screenShare:null
     };
     sessions.set(id, session);
     try {
@@ -311,6 +353,14 @@ export async function handleOffer(id, event) {
     const session = requireSession(id);
     const state = createPeer(session, event.sourceParticipantId, event.negotiationId);
     try {
+        if (state.peer.signalingState === "have-local-offer") {
+            if (session.localParticipantId.localeCompare(event.sourceParticipantId) < 0) {
+                await diagnostic(session, "GlareOfferIgnored", state);
+                return;
+            }
+            await state.peer.setLocalDescription({ type:"rollback" });
+        }
+        state.negotiationId = event.negotiationId;
         await state.peer.setRemoteDescription(event.description);
         await diagnostic(session, "OfferReceived", state);
         await flushIce(session, state);
@@ -351,10 +401,151 @@ export async function handleIceCandidate(id, event) {
     }
 }
 
+function detachViewer(session, elementId) {
+    const viewer = session.viewers.get(elementId);
+    const element = document.getElementById(elementId);
+    if (element) {
+        element.pause();
+        element.srcObject = null;
+    }
+    session.viewers.delete(elementId);
+    if (viewer) void diagnostic(session, "StreamViewerDetached", null, { mediaStreamId:viewer.mediaStreamId });
+}
+
+async function waitForVisualStream(session, mediaStreamId) {
+    if (session.screenShare?.stream?.id === mediaStreamId) return session.screenShare.stream;
+    for (let attempt = 0; attempt < 100; attempt++) {
+        const stream = session.visualStreams.get(mediaStreamId);
+        if (stream) return stream;
+        await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    throw new DOMException("The remote screen track did not arrive.", "TimeoutError");
+}
+
+export async function captureStreamThumbnail(id, mediaStreamId) {
+    const session = requireSession(id);
+    return captureThumbnail(await waitForVisualStream(session, mediaStreamId));
+}
+
+async function captureThumbnail(stream) {
+    const video = document.createElement("video");
+    video.muted = true; video.playsInline = true; video.srcObject = stream;
+    try {
+        await video.play();
+        if (!video.videoWidth) await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error("Video frame was not ready.")), 3000);
+            video.onloadeddata = () => { clearTimeout(timer); resolve(); };
+            video.onerror = () => { clearTimeout(timer); reject(new Error("Video preview failed.")); };
+        });
+        const width = Math.min(280, video.videoWidth || 280);
+        const height = Math.max(1, Math.round(width * (video.videoHeight || 158) / (video.videoWidth || 280)));
+        const canvas = document.createElement("canvas");
+        canvas.width = width; canvas.height = height;
+        canvas.getContext("2d", { alpha:false }).drawImage(video, 0, 0, width, height);
+        return canvas.toDataURL("image/webp", .72);
+    } finally { video.pause(); video.srcObject = null; }
+}
+
+export async function startScreenShare(id) {
+    const session = requireSession(id);
+    if (!navigator.mediaDevices?.getDisplayMedia)
+        throw new DOMException("This browser does not support screen capture.", "NotSupportedError");
+    if (session.screenShare) await stopScreenShare(id, "Replaced");
+    await diagnostic(session, "DisplayCaptureStarted");
+    let stream;
+    try {
+        stream = await navigator.mediaDevices.getDisplayMedia({
+            video:{ frameRate:{ ideal:30, max:30 } }, audio:true
+        });
+    } catch (error) {
+        await diagnostic(session, "DisplayCaptureFailed", null, { name:error?.name, message:error?.message });
+        throw error;
+    }
+    const videoTrack = stream.getVideoTracks()[0];
+    if (!videoTrack) {
+        for (const track of stream.getTracks()) track.stop();
+        throw new DOMException("Screen capture did not provide a video track.", "NotFoundError");
+    }
+    const streamId = crypto.randomUUID();
+    const share = { streamId, mediaStreamId:stream.id, stream, senders:new Map(), stopping:false };
+    session.screenShare = share;
+    for (const [participantId, state] of session.peers) {
+        const senders = [];
+        for (const track of stream.getTracks()) {
+            senders.push(state.peer.addTrack(track, stream));
+            await diagnostic(session, track.kind === "video" ? "VideoTrackAdded" : "ScreenAudioTrackAdded", state,
+                { readyState:track.readyState });
+        }
+        share.senders.set(participantId, senders);
+        await startOffer(session, participantId);
+    }
+    videoTrack.addEventListener("ended", () => {
+        if (!session.screenShare || session.screenShare.streamId !== streamId || session.screenShare.stopping) return;
+        session.callback.invokeMethodAsync("OnScreenShareEnded", "BrowserStopSharing").catch(() => {});
+    }, { once:true });
+    await diagnostic(session, "DisplayCaptureSucceeded", null,
+        { readyState:videoTrack.readyState, audioTrackCount:stream.getAudioTracks().length });
+    return { streamId, kind:0, hasAudio:stream.getAudioTracks().length > 0, mediaStreamId:stream.id };
+}
+
+export async function stopScreenShare(id, reason = "UserStoppedInIridium") {
+    const session = requireSession(id);
+    const share = session.screenShare;
+    if (!share) return;
+    session.screenShare = null;
+    share.stopping = true;
+    for (const [participantId, senders] of share.senders) {
+        const state = session.peers.get(participantId);
+        if (!state) continue;
+        for (const sender of senders) {
+            try { state.peer.removeTrack(sender); } catch { }
+        }
+        await startOffer(session, participantId);
+    }
+    for (const track of share.stream.getTracks()) track.stop();
+    await diagnostic(session, "ScreenShareEnded", null, { reason });
+}
+
+export async function attachStreamViewer(id, options) {
+    const session = requireSession(id);
+    const stream = await waitForVisualStream(session, options.mediaStreamId);
+    const element = document.getElementById(options.elementId);
+    if (!element) throw new DOMException("The stream viewer is unavailable.", "NotFoundError");
+    detachViewer(session, options.elementId);
+    element.srcObject = stream;
+    element.muted = !!options.audioMuted || stream.getAudioTracks().length === 0;
+    element.playsInline = true;
+    session.viewers.set(options.elementId, { mediaStreamId:options.mediaStreamId });
+    await diagnostic(session, "VideoPlaybackStarted");
+    await element.play();
+    await diagnostic(session, "VideoPlaybackSucceeded");
+}
+
+export function detachStreamViewer(id, elementId) { detachViewer(requireSession(id), elementId); }
+
+export function setStreamAudioMuted(id, options) {
+    requireSession(id);
+    const element = document.getElementById(options.elementId);
+    if (element) element.muted = !!options.muted;
+}
+
+export async function requestStreamFullscreen(id, elementId) {
+    requireSession(id);
+    const element = document.getElementById(elementId);
+    if (!element?.requestFullscreen) throw new DOMException("Fullscreen is unavailable.", "NotSupportedError");
+    await element.requestFullscreen();
+}
+
 export async function disconnect(id, reason = "unspecified") {
     const session = sessions.get(id);
     if (!session) return;
     sessions.delete(id);
+    for (const elementId of [...session.viewers.keys()]) detachViewer(session, elementId);
+    if (session.screenShare) {
+        session.screenShare.stopping = true;
+        for (const track of session.screenShare.stream.getTracks()) track.stop();
+        session.screenShare = null;
+    }
     if (session.statsTimer !== null) clearInterval(session.statsTimer);
     if (session.vadFrame !== null) cancelAnimationFrame(session.vadFrame);
     publishSpeaking(session, false);

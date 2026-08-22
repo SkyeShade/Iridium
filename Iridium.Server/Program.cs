@@ -27,6 +27,7 @@ builder.Services.AddSingleton<VoiceConnectionRegistry>();
 builder.Services.AddSingleton<VoiceTraceLogger>();
 builder.Services.AddSingleton<CommunityRevisionTracker>();
 builder.Services.AddSingleton<CommunityRealtimePublisher>();
+builder.Services.AddScoped<CommunityVoicePermissionEnforcer>();
 builder.Services.AddSingleton<ProfileRealtimePublisher>();
 builder.Services.Configure<NodeOptions>(builder.Configuration.GetSection(NodeOptions.SectionName));
 builder.Services.Configure<MediaOptions>(builder.Configuration.GetSection(MediaOptions.SectionName));
@@ -51,6 +52,7 @@ if (builder.Environment.IsDevelopment() &&
 else
     builder.Services.AddSingleton<ICommunityVoiceMediaGateway, UnavailableCommunityVoiceMediaGateway>();
 builder.Services.AddSingleton<CommunityVoiceRoomService>();
+builder.Services.AddSingleton<VoiceStreamRegistry>();
 builder.Services.AddScoped<DirectCallAuthorizationService>();
 builder.Services.AddHostedService<CallTimeoutService>();
 if (builder.Environment.IsDevelopment())
@@ -83,8 +85,11 @@ await using (var scope = app.Services.CreateAsyncScope())
     await DatabaseCompatibility.EnsureMessageHistoryIndexesAsync(db);
     await DatabaseCompatibility.EnsureCommunityManagementSchemaAsync(db);
     await DatabaseCompatibility.EnsureCommunityVoiceSchemaAsync(db);
+    await DatabaseCompatibility.EnsureCommunityPermissionOverwriteSchemaAsync(db);
     await DatabaseCompatibility.EnsureAvatarPresetSchemaAsync(db);
     await DatabaseCompatibility.EnsureBannerPresetSchemaAsync(db);
+await DatabaseCompatibility.EnsureCommunityMediaSchemaAsync(db);
+await DatabaseCompatibility.EnsureCommunityEmojiSchemaAsync(db);
     await DatabaseCompatibility.EnsureAttachmentsTableAsync(db);
 }
 
@@ -126,5 +131,7 @@ app.MapCommunityManagementEndpoints();
 app.MapAttachmentEndpoints();
 app.MapAvatarPresetEndpoints();
 app.MapBannerPresetEndpoints();
+app.MapCommunityMediaEndpoints();
+app.MapCommunityEmojiEndpoints();
 
 app.Run();

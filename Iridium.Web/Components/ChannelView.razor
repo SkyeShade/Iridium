@@ -33,13 +33,14 @@
     {
         <div class="composer-region">
             <MessageComposer @ref="_composer" ChannelName="@Channel.Name" ReplyToDisplayName="@(_replyTo?.Author.DisplayName)" Busy="@(_sending || _loading)"
-                             CommunityManagement="CommunityManagement" SendRich="SendMessageAsync" OnCancelReply="CancelReplyAsync"
+                             Community="Community" CommunityManagement="CommunityManagement" SendRich="SendMessageAsync" OnCancelReply="CancelReplyAsync"
+                             CanAttachFiles="CanAttachFiles" CanMentionEveryone="CanMentionEveryone"
                              NodeAuthority="@NodeAuthority" AccountId="@CurrentAccountId" ConversationKind="channel" ConversationId="@Channel.Id" />
         </div>
     }
     else
     {
-        <div class="composer-region read-only">You do not have permission to send messages in this Community.</div>
+        <div class="composer-region read-only">You do not have permission to send messages in this Server.</div>
     }
 </section>
 
@@ -49,6 +50,8 @@
     [Parameter, EditorRequired] public required Guid CurrentAccountId { get; set; }
     [Parameter] public bool CanManageMessages { get; set; }
     [Parameter] public bool CanSend { get; set; } = true;
+    [Parameter] public bool CanAttachFiles { get; set; } = true;
+    [Parameter] public bool CanMentionEveryone { get; set; }
     [Parameter, EditorRequired] public required string NodeAuthority { get; set; }
     [Parameter] public CommunityManagementDto? CommunityManagement { get; set; }
     [Parameter] public EventCallback OnEditProfile { get; set; }

@@ -89,8 +89,8 @@
         .OrderByDescending(value => value.Position).FirstOrDefault();
     private IReadOnlyList<CommunityRoleDto> RolesFor(CommunityMemberDto member) => Management.Roles
         .Where(value => member.RoleIds.Contains(value.Id)).OrderByDescending(value => value.Position).ToArray();
-    private string? HighestColor(CommunityMemberDto member) => RolesFor(member)
-        .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value.Color))?.Color;
+    private string? HighestColor(CommunityMemberDto member) =>
+        CommunityRolePresentation.MemberColor(member, Management.Roles);
     private async Task OpenProfile(CommunityMemberDto member, MouseEventArgs args)
     {
         _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/chat.js");

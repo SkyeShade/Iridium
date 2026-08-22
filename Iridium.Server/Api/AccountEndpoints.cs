@@ -143,11 +143,43 @@ public static partial class AccountEndpoints
                 value.Community.Name,
                 value.Community.Description,
                 value.Community.OwnerAccountId,
-                value.Community.CreatedAt))
+                value.Community.CreatedAt, false, 0,
+                value.Community.ActiveAvatarPresetId, value.Community.AvatarRevision,
+                value.Community.ActiveBannerPresetId, value.Community.BannerRevision,
+                value.Community.ActiveAvatarPresetId == null ? null : $"/api/communities/{value.Community.Id}/avatar?v={value.Community.AvatarRevision}",
+                value.Community.ActiveBannerPresetId == null ? null : $"/api/communities/{value.Community.Id}/banner?v={value.Community.BannerRevision}",
+                value.Community.MediaPresets.Where(preset => preset.Id == value.Community.ActiveAvatarPresetId)
+                    .Select(preset => preset.CropX).FirstOrDefault(),
+                value.Community.MediaPresets.Where(preset => preset.Id == value.Community.ActiveAvatarPresetId)
+                    .Select(preset => preset.CropY).FirstOrDefault(),
+                value.Community.MediaPresets.Where(preset => preset.Id == value.Community.ActiveAvatarPresetId)
+                    .Select(preset => preset.Zoom).FirstOrDefault(),
+                value.Community.MediaPresets.Where(preset => preset.Id == value.Community.ActiveAvatarPresetId)
+                    .Select(preset => preset.Width).FirstOrDefault(),
+                value.Community.MediaPresets.Where(preset => preset.Id == value.Community.ActiveAvatarPresetId)
+                    .Select(preset => preset.Height).FirstOrDefault(),
+                value.Community.MediaPresets.Where(preset => preset.Id == value.Community.ActiveBannerPresetId)
+                    .Select(preset => preset.CropX).FirstOrDefault(),
+                value.Community.MediaPresets.Where(preset => preset.Id == value.Community.ActiveBannerPresetId)
+                    .Select(preset => preset.CropY).FirstOrDefault(),
+                value.Community.MediaPresets.Where(preset => preset.Id == value.Community.ActiveBannerPresetId)
+                    .Select(preset => preset.Zoom).FirstOrDefault(),
+                value.Community.MediaPresets.Where(preset => preset.Id == value.Community.ActiveBannerPresetId)
+                    .Select(preset => preset.Width).FirstOrDefault(),
+                value.Community.MediaPresets.Where(preset => preset.Id == value.Community.ActiveBannerPresetId)
+                    .Select(preset => preset.Height).FirstOrDefault(),
+                value.Community.MediaPresets.Where(preset => preset.Id == value.Community.ActiveBannerPresetId)
+                    .Select(preset => preset.ProcessedObjectKey != null).FirstOrDefault()))
             .ToListAsync();
         for (var index = 0; index < communities.Count; index++)
         {
             var community = communities[index];
+            var origin = $"{context.Request.Scheme}://{context.Request.Host}";
+            community = community with
+            {
+                AvatarUrl = community.AvatarUrl is null ? null : origin + community.AvatarUrl,
+                BannerUrl = community.BannerUrl is null ? null : origin + community.BannerUrl
+            };
             var hasUnread = await db.ChannelMessages.AnyAsync(message =>
                 message.CommunityId == community.Id && message.AuthorAccountId != session.AccountId &&
                 !db.CommunityChannelReadStates.Any(state => state.CommunityId == message.CommunityId &&
@@ -165,82 +197,100 @@ public static partial class AccountEndpoints
         HttpContext context,
         IridiumDbContext db,
         SessionService sessions,
-        IOptions<NodeOptions> options)
+        IOptions<NodeOptions> options,
+        ILoggerFactory loggerFactory)
     {
-        var session = await sessions.GetAsync(context, db);
-        if (session is null) return Results.Unauthorized();
-
-        var name = request.Name.Trim();
-        var description = string.IsNullOrWhiteSpace(request.Description) ? null : request.Description.Trim();
-        var errors = new Dictionary<string, string[]>();
-        if (name.Length is < 1 or > 100) errors[nameof(request.Name)] = ["Community names must be between 1 and 100 characters."];
-        if (description?.Length > 500) errors[nameof(request.Description)] = ["Descriptions cannot exceed 500 characters."];
-        if (errors.Count != 0) return Results.ValidationProblem(errors);
-
-        var ownedCount = await db.Communities.CountAsync(value => value.OwnerAccountId == session.AccountId);
-        if (ownedCount >= options.Value.MaxCommunitiesPerUser)
-            return Results.Problem(
-                $"This node allows each account to own at most {options.Value.MaxCommunitiesPerUser} communities.",
-                statusCode: StatusCodes.Status409Conflict);
-
-        var now = DateTimeOffset.UtcNow;
-        var community = new Community
+        var logger = loggerFactory.CreateLogger("Iridium.Server.CommunityCreation");
+        var stage = "Session";
+        try
         {
-            Id = Guid.NewGuid(),
-            Name = name,
-            Description = description,
-            OwnerAccountId = session.AccountId,
-            OwnerAccount = session.Account,
-            CreatedAt = now
-        };
-        var membership = new CommunityMember
-        {
-            CommunityId = community.Id,
-            Community = community,
-            AccountId = session.AccountId,
-            Account = session.Account,
-            JoinedAt = now
-        };
-        var defaultRole = new CommunityRole
-        {
-            Id = Guid.NewGuid(),
-            CommunityId = community.Id,
-            Community = community,
-            Name = "@everyone",
-            Position = 0,
-            IsDefault = true,
-            Permissions = CommunityPermission.ViewChannels | CommunityPermission.SendMessages |
-                          CommunityPermission.ConnectVoice | CommunityPermission.SpeakVoice
-        };
-        var defaultCategory = new CommunityCategory
-        {
-            Id = Guid.NewGuid(),
-            CommunityId = community.Id,
-            Community = community,
-            Name = "TEXT CHANNELS",
-            Position = 0
-        };
-        var defaultChannel = new CommunityChannel
-        {
-            Id = Guid.NewGuid(),
-            CommunityId = community.Id,
-            Community = community,
-            CategoryId = defaultCategory.Id,
-            Category = defaultCategory,
-            Name = "general",
-            Position = 0,
-            CreatedAt = now
-        };
+            logger.LogInformation("COMMUNITY CREATE Request received");
+            var session = await sessions.GetAsync(context, db);
+            if (session is null)
+            {
+                logger.LogWarning("COMMUNITY CREATE FAILED Stage={Stage} Message=Unauthenticated request", stage);
+                return Results.Unauthorized();
+            }
+            logger.LogInformation("COMMUNITY CREATE Authentication succeeded Account={AccountId}", session.AccountId);
 
-        db.Communities.Add(community);
-        db.CommunityMembers.Add(membership);
-        db.CommunityRoles.Add(defaultRole);
-        db.CommunityCategories.Add(defaultCategory);
-        db.CommunityChannels.Add(defaultChannel);
-        await db.SaveChangesAsync();
+            stage = "Validation";
+            var name = request.Name.Trim();
+            var description = string.IsNullOrWhiteSpace(request.Description) ? null : request.Description.Trim();
+            var errors = new Dictionary<string, string[]>();
+            if (name.Length is < 1 or > 100) errors[nameof(request.Name)] = ["Server names must be between 1 and 100 characters."];
+            if (description?.Length > 500) errors[nameof(request.Description)] = ["Descriptions cannot exceed 500 characters."];
+            if (errors.Count != 0)
+            {
+                logger.LogWarning("COMMUNITY CREATE FAILED Stage={Stage} Message=Validation rejected", stage);
+                return Results.ValidationProblem(errors);
+            }
+            logger.LogInformation("COMMUNITY CREATE Validation succeeded Account={AccountId}", session.AccountId);
 
-        return Results.Created($"/api/communities/{community.Id}", new CommunityDto(
-            community.Id, community.Name, community.Description, community.OwnerAccountId, community.CreatedAt));
+            stage = "OwnershipLimit";
+            var ownedCount = await db.Communities.CountAsync(value => value.OwnerAccountId == session.AccountId);
+            if (ownedCount >= options.Value.MaxCommunitiesPerUser)
+            {
+                logger.LogWarning("COMMUNITY CREATE FAILED Stage={Stage} Account={AccountId} Owned={Owned} Limit={Limit}",
+                    stage, session.AccountId, ownedCount, options.Value.MaxCommunitiesPerUser);
+                return Results.Problem(
+                    $"This Node allows each account to own at most {options.Value.MaxCommunitiesPerUser} Servers.",
+                    statusCode: StatusCodes.Status409Conflict);
+            }
+
+            await using var transaction = await db.Database.BeginTransactionAsync();
+            var now = DateTimeOffset.UtcNow;
+            stage = "Community";
+            var community = new Community { Id = Guid.NewGuid(), Name = name, Description = description,
+                OwnerAccountId = session.AccountId, OwnerAccount = session.Account, CreatedAt = now };
+            db.Communities.Add(community);
+            logger.LogInformation("COMMUNITY CREATE Community row prepared Id={CommunityId}", community.Id);
+
+            stage = "OwnerMembership";
+            db.CommunityMembers.Add(new CommunityMember { CommunityId = community.Id, Community = community,
+                AccountId = session.AccountId, Account = session.Account, JoinedAt = now });
+            logger.LogInformation("COMMUNITY CREATE Owner membership prepared Id={CommunityId}", community.Id);
+
+            stage = "DefaultRole";
+            db.CommunityRoles.Add(new CommunityRole { Id = Guid.NewGuid(), CommunityId = community.Id,
+                Community = community, Name = "@everyone", Position = 0, IsDefault = true,
+                Permissions = CommunityPermission.ViewChannels | CommunityPermission.SendMessages |
+                              CommunityPermission.ConnectVoice | CommunityPermission.SpeakVoice |
+                              CommunityPermission.ShareScreen | CommunityPermission.ReadMessageHistory |
+                              CommunityPermission.AttachFiles | CommunityPermission.EmbedLinks |
+                              CommunityPermission.AddReactions });
+            logger.LogInformation("COMMUNITY CREATE Default role prepared Id={CommunityId}", community.Id);
+
+            stage = "DefaultCategory";
+            var defaultCategory = new CommunityCategory { Id = Guid.NewGuid(), CommunityId = community.Id,
+                Community = community, Name = "TEXT CHANNELS", Position = 0 };
+            db.CommunityCategories.Add(defaultCategory);
+            logger.LogInformation("COMMUNITY CREATE Default category prepared Id={CategoryId}", defaultCategory.Id);
+
+            stage = "GeneralChannel";
+            var defaultChannel = new CommunityChannel { Id = Guid.NewGuid(), CommunityId = community.Id,
+                Community = community, CategoryId = defaultCategory.Id, Category = defaultCategory,
+                Name = "general", Kind = CommunityChannelKind.Text, PermissionsSyncedToCategory = true,
+                Position = 0, CreatedAt = now };
+            db.CommunityChannels.Add(defaultChannel);
+            logger.LogInformation("COMMUNITY CREATE General channel prepared Id={ChannelId}", defaultChannel.Id);
+
+            stage = "Commit";
+            await db.SaveChangesAsync();
+            await transaction.CommitAsync();
+            logger.LogInformation("COMMUNITY CREATE Transaction committed Id={CommunityId}", community.Id);
+
+            logger.LogInformation("COMMUNITY CREATE Response success Id={CommunityId}", community.Id);
+            return Results.Created($"/api/communities/{community.Id}", new CommunityDto(
+                community.Id, community.Name, community.Description, community.OwnerAccountId, community.CreatedAt,
+                AvatarRevision: community.AvatarRevision, BannerRevision: community.BannerRevision));
+        }
+        catch (Exception exception)
+        {
+            logger.LogError(exception, "COMMUNITY CREATE FAILED Stage={Stage} ExceptionType={ExceptionType} Message={Message}",
+                stage, exception.GetType().Name, exception.Message);
+            return Results.Problem("The Community could not be created. No changes were saved.",
+                statusCode: StatusCodes.Status500InternalServerError);
+        }
     }
 
     private static Dictionary<string, string[]> ValidateAccount(string username, string displayName, string password)

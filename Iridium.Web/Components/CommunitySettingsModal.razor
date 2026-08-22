@@ -1,9 +1,10 @@
 @using Iridium.Client.Core
 @using Iridium.Protocol
 @inject IJSRuntime JS
+@inject NodeSession Session
 @implements IAsyncDisposable
 
-<ModalShell Title="Community Settings" Size="extra-large" OnClose="OnClose">
+<ModalShell Title="Server Settings" Size="extra-large" OnClose="OnClose">
     <div class="community-settings">
         <aside>
             <p>@Community.Name</p>
@@ -11,11 +12,13 @@
             {
                 <button class="@(section == _section ? "active" : null)" @onclick="() => SelectSection(section)">@section</button>
             }
+            <p class="settings-group">EXPRESSIONS</p>
+            <button class="@(_section == "Emoji" ? "active" : null)" @onclick='() => SelectSection("Emoji")'>Emoji</button>
         </aside>
         <main>
             @if (_loading)
             {
-                <p class="muted">Loading Community settings...</p>
+                <p class="muted">Loading Server settings...</p>
             }
             else if (!string.IsNullOrWhiteSpace(_error))
             {
@@ -26,7 +29,29 @@
                 @if (_section == "Overview")
                 {
                     <h1>Overview</h1>
-                    <label>Community Name<input @bind="_communityName" maxlength="100" disabled="@(!management.Access.Has(CommunityPermission.ManageCommunity))" /></label>
+                    <section class="community-media-settings" aria-label="Server media">
+                        <div>
+                            <span class="media-label">Server Icon</span>
+                            <button type="button" class="community-icon-edit" disabled="@(!management.Access.Has(CommunityPermission.ManageCommunity))"
+                                    aria-label="Edit Server icon" @onclick="() => _avatarEditorOpen = true">
+                                @if (!string.IsNullOrWhiteSpace(CurrentCommunity.AvatarUrl)) { <AvatarCroppedPreview State="CurrentCommunityAvatarState" /> }
+                                else { <strong>@CommunityInitials(CurrentCommunity.Name)</strong> }
+                                <span class="media-edit-overlay">Edit</span>
+                            </button>
+                        </div>
+                        <div class="community-banner-setting">
+                            <span class="media-label">Server Banner</span>
+                            <button type="button" class="community-banner-edit" disabled="@(!management.Access.Has(CommunityPermission.ManageCommunity))"
+                                    aria-label="Edit Server banner" @onclick="() => _bannerEditorOpen = true">
+                                @if (CurrentCommunity.BannerIsProcessed && !string.IsNullOrWhiteSpace(CurrentCommunity.BannerUrl))
+                                { <img class="community-banner-image" src="@CurrentCommunity.BannerUrl" alt="" /> }
+                                else if (CurrentCommunityBannerState is not null) { <AvatarCroppedPreview State="CurrentCommunityBannerState" Shape="banner" /> }
+                                else { <span class="banner-fallback"></span> }
+                                <span class="media-edit-overlay">Edit</span>
+                            </button>
+                        </div>
+                    </section>
+                    <label>Server Name<input @bind="_communityName" maxlength="100" disabled="@(!management.Access.Has(CommunityPermission.ManageCommunity))" /></label>
                     <label>Description<textarea @bind="_communityDescription" maxlength="500" disabled="@(!management.Access.Has(CommunityPermission.ManageCommunity))"></textarea></label>
                     @if (management.Access.Has(CommunityPermission.ManageCommunity))
                     {
@@ -92,7 +117,9 @@
                                     {
                                         <label><input type="checkbox" checked="@HasRolePermission(permission)"
                                                       disabled="@(!management.Access.Has(CommunityPermission.ManageRoles))"
-                                                      @onchange="args => ToggleRolePermission(permission, args)" /> <span>@PermissionLabel(permission)</span></label>
+                                                      @onchange="args => ToggleRolePermission(permission, args)" />
+                                            <span><strong>@PermissionLabel(permission)</strong><small>@PermissionDescription(permission)</small></span>
+                                        </label>
                                     }
                                 </div>
                                 }
@@ -180,13 +207,13 @@
                 }
                 else if (_section == "Node Limits")
                 {
-                    <div class="section-heading"><div><h1>Node Limits</h1><p>Infrastructure policies applied by the Node hosting this Community.</p></div></div>
+                    <div class="section-heading"><div><h1>Node Limits</h1><p>Infrastructure policies applied by the Node hosting this Server.</p></div></div>
                     <div class="node-limits" aria-label="Read-only Node limits">
                         <div><span>Maximum message length</span><strong>@management.Limits.MaxMessageCharacters.ToString("N0") characters</strong></div>
                         <div><span>Maximum file size per upload</span><strong>@AttachmentComposerService.FormatSize(management.Limits.MaxAttachmentBytes)</strong></div>
                         <div><span>Maximum attachments per message</span><strong>@management.Limits.MaxAttachmentsPerMessage.ToString("N0")</strong></div>
                     </div>
-                    <p class="muted limit-note">These limits are controlled by the Node and cannot be changed by Community managers.</p>
+                    <p class="muted limit-note">These limits are controlled by the Node and cannot be changed by Server managers.</p>
                 }
                 else if (_section == "Invites")
                 {
@@ -213,10 +240,23 @@
                     }
                     else { <p class="muted">You do not have permission to create or manage invites.</p> }
                 }
+                else if (_section == "Emoji")
+                {
+                    <CommunityEmojiSettings Community="CurrentCommunity" CanManage="management.Access.Has(CommunityPermission.ManageExpressions)" />
+                }
             }
         </main>
     </div>
 </ModalShell>
+
+@if (_avatarEditorOpen)
+{
+    <AvatarEditorModal Community="CurrentCommunity" OnSaved="RefreshCommunityMediaAsync" OnClosed="() => _avatarEditorOpen = false" />
+}
+@if (_bannerEditorOpen)
+{
+    <BannerEditorModal Community="CurrentCommunity" OnSaved="RefreshCommunityMediaAsync" OnClosed="() => _bannerEditorOpen = false" />
+}
 
 @code {
     [Parameter, EditorRequired] public required CommunityDto Community { get; set; }
@@ -232,10 +272,16 @@
         CommunityPermission.ManageChannels, CommunityPermission.ManageCommunity, CommunityPermission.ManageRoles,
         CommunityPermission.CreateInvites, CommunityPermission.KickMembers, CommunityPermission.BanMembers,
         CommunityPermission.MentionEveryone, CommunityPermission.ConnectVoice, CommunityPermission.SpeakVoice,
+        CommunityPermission.ShareScreen,
+        CommunityPermission.ManagePermissions, CommunityPermission.ReadMessageHistory,
+        CommunityPermission.AttachFiles, CommunityPermission.EmbedLinks, CommunityPermission.AddReactions,
+        CommunityPermission.MuteMembers, CommunityPermission.DeafenMembers, CommunityPermission.MoveMembers,
+        CommunityPermission.ManageExpressions,
         CommunityPermission.Administrator
     ];
     private string _section = "Overview";
     private bool _loading = true;
+    private bool _avatarEditorOpen, _bannerEditorOpen;
     private string? _error;
     private string _communityName = string.Empty;
     private string? _communityDescription;
@@ -263,6 +309,15 @@
     private IJSObjectReference? _roleSortModule;
     private DotNetObjectReference<CommunitySettingsModal>? _roleSortReference;
     private bool _roleSorterWired;
+    private CommunityDto CurrentCommunity => Session.Communities.FirstOrDefault(value => value.Id == Community.Id) ?? Community;
+    private ProfileMediaEditState? CurrentCommunityAvatarState => string.IsNullOrWhiteSpace(CurrentCommunity.AvatarUrl) ? null : new AvatarEditState(
+        CurrentCommunity.AvatarUrl, Math.Max(1, CurrentCommunity.AvatarWidth), Math.Max(1, CurrentCommunity.AvatarHeight),
+        760, 1000, 1000, Math.Max(1, CurrentCommunity.AvatarZoom), CurrentCommunity.AvatarCropX, CurrentCommunity.AvatarCropY);
+    private ProfileMediaEditState? CurrentCommunityBannerState => string.IsNullOrWhiteSpace(CurrentCommunity.BannerUrl) ||
+        CurrentCommunity.BannerIsProcessed ? null : new(CurrentCommunity.BannerUrl,
+            Math.Max(1, CurrentCommunity.BannerWidth), Math.Max(1, CurrentCommunity.BannerHeight),
+            CommunityBannerLimits.CropWidth, CommunityBannerLimits.CropHeight, 1200, 900,
+            Math.Max(1, CurrentCommunity.BannerZoom), CurrentCommunity.BannerCropX, CurrentCommunity.BannerCropY);
 
     private IReadOnlyList<CommunityRoleDto> FilteredRoles => State.Management?.Roles
         .Where(value => !value.IsDefault && (string.IsNullOrWhiteSpace(_roleSearch) || value.Name.Contains(_roleSearch, StringComparison.OrdinalIgnoreCase)))
@@ -385,6 +440,12 @@
         var updated = await State.UpdateCommunityAsync(_communityName, _communityDescription);
         await OnCommunityUpdated.InvokeAsync(updated);
     });
+    private async Task RefreshCommunityMediaAsync()
+    {
+        await Session.RefreshCommunitiesAsync();
+        if (Session.Communities.FirstOrDefault(value => value.Id == Community.Id) is { } updated)
+            await OnCommunityUpdated.InvokeAsync(updated);
+    }
     private async Task CreateInviteAsync() => await RunAsync(async () =>
     {
         var expires = _inviteLifetime switch { "day" => DateTimeOffset.UtcNow.AddDays(1), "week" => DateTimeOffset.UtcNow.AddDays(7), _ => (DateTimeOffset?)null };
@@ -407,7 +468,15 @@
         await InvokeAsync(StateHasChanged);
     }
     private static string PermissionLabel(CommunityPermission permission) => string.Concat(permission.ToString().Select((character, index) => index > 0 && char.IsUpper(character) ? $" {character}" : character.ToString()));
+    private static string PermissionDescription(CommunityPermission permission) => permission switch
+    {
+        CommunityPermission.ManageChannels => "Create, edit, delete, move and organize channels and categories.",
+        CommunityPermission.ManagePermissions => "Change channel/category permission overrides and private access.",
+        CommunityPermission.ManageExpressions => "Create, rename and delete custom emoji and future Server expression assets.",
+        _ => $"Grants {PermissionLabel(permission).ToLowerInvariant()} across this Server."
+    };
     private static string Expiration(CommunityInviteDto invite) => invite.ExpiresAt is null ? "Never expires" : $"Expires {invite.ExpiresAt.Value.ToLocalTime():g}";
+    private static string CommunityInitials(string name) => string.Concat(name.Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(2).Select(value => char.ToUpperInvariant(value[0])));
     public async ValueTask DisposeAsync()
     {
         if (_roleSortModule is not null)

@@ -114,6 +114,53 @@ public sealed class NodeClient(Uri nodeAddress)
     public Task DeleteBannerPresetAsync(Guid presetId, CancellationToken cancellationToken = default) =>
         SendNoContentAsync(HttpMethod.Delete, $"api/account/banner-presets/{presetId}", null, cancellationToken);
 
+    public Task<AccountAvatarPresetsDto> GetCommunityAvatarPresetsAsync(Guid communityId, CancellationToken cancellationToken = default) =>
+        SendAsync<AccountAvatarPresetsDto>(HttpMethod.Get, $"api/communities/{communityId}/media/avatar-presets", null, cancellationToken);
+    public Task<AccountBannerPresetsDto> GetCommunityBannerPresetsAsync(Guid communityId, CancellationToken cancellationToken = default) =>
+        SendAsync<AccountBannerPresetsDto>(HttpMethod.Get, $"api/communities/{communityId}/media/banner-presets", null, cancellationToken);
+    public Task<AccountAvatarPresetsDto> UploadCommunityAvatarPresetAsync(Guid communityId,int slot,Stream content,string fileName,string contentType,double x,double y,double zoom,CancellationToken ct=default)=>
+        UploadCommunityMediaAsync<AccountAvatarPresetsDto>(communityId,"avatar",slot,content,fileName,contentType,x,y,zoom,ct);
+    public Task<AccountBannerPresetsDto> UploadCommunityBannerPresetAsync(Guid communityId,int slot,Stream content,string fileName,string contentType,double x,double y,double zoom,CancellationToken ct=default)=>
+        UploadCommunityMediaAsync<AccountBannerPresetsDto>(communityId,"banner",slot,content,fileName,contentType,x,y,zoom,ct);
+    public Task<AccountAvatarPresetDto> UpdateCommunityAvatarCropAsync(Guid communityId,Guid presetId,UpdateAvatarCropRequest request,CancellationToken ct=default)=>SendAsync<AccountAvatarPresetDto>(HttpMethod.Patch,$"api/communities/{communityId}/media/avatar/{presetId}",request,ct);
+    public Task<AccountBannerPresetDto> UpdateCommunityBannerCropAsync(Guid communityId,Guid presetId,UpdateBannerCropRequest request,CancellationToken ct=default)=>SendAsync<AccountBannerPresetDto>(HttpMethod.Patch,$"api/communities/{communityId}/media/banner/{presetId}",request,ct);
+    public Task DeleteCommunityMediaPresetAsync(Guid communityId,string kind,Guid presetId,CancellationToken ct=default)=>SendNoContentAsync(HttpMethod.Delete,$"api/communities/{communityId}/media/{kind}/{presetId}",null,ct);
+
+    private async Task<T> UploadCommunityMediaAsync<T>(Guid communityId,string kind,int slot,Stream content,string fileName,string contentType,double x,double y,double zoom,CancellationToken ct)
+    {
+        using var multipart=new MultipartFormDataContent();using var stream=new StreamContent(content);stream.Headers.ContentType=new MediaTypeHeaderValue(contentType);multipart.Add(stream,"file",fileName);multipart.Add(new StringContent(x.ToString(System.Globalization.CultureInfo.InvariantCulture)),"cropX");multipart.Add(new StringContent(y.ToString(System.Globalization.CultureInfo.InvariantCulture)),"cropY");multipart.Add(new StringContent(zoom.ToString(System.Globalization.CultureInfo.InvariantCulture)),"zoom");using var request=new HttpRequestMessage(HttpMethod.Post,$"api/communities/{communityId}/media/{kind}/{slot}"){Content=multipart};if(!string.IsNullOrWhiteSpace(AccessToken))request.Headers.Authorization=new AuthenticationHeaderValue("Bearer",AccessToken);using var response=await _http.SendAsync(request,ct);if(!response.IsSuccessStatusCode)throw new NodeApiException(response.StatusCode,await ReadErrorAsync(response,ct));return await response.Content.ReadFromJsonAsync<T>(cancellationToken:ct)??throw new NodeApiException(response.StatusCode,"The node returned an empty response.");
+    }
+
+    public Task<IReadOnlyList<CommunityEmojiDto>> GetCommunityEmojisAsync(Guid communityId, CancellationToken ct = default) =>
+        SendAsync<IReadOnlyList<CommunityEmojiDto>>(HttpMethod.Get, $"api/communities/{communityId}/emojis", null, ct);
+    public Task<CommunityEmojiDto> GetCommunityEmojiReferenceAsync(Guid emojiId, CancellationToken ct = default) =>
+        SendAsync<CommunityEmojiDto>(HttpMethod.Get, $"api/emojis/{emojiId}", null, ct);
+    public async Task<CommunityEmojiDto> UploadCommunityEmojiAsync(Guid communityId, Stream content, string fileName,
+        string contentType, string name, CancellationToken ct = default)
+    {
+        using var multipart = new MultipartFormDataContent();
+        using var stream = new StreamContent(content);
+        stream.Headers.ContentType = new MediaTypeHeaderValue(contentType);
+        multipart.Add(stream, "file", fileName); multipart.Add(new StringContent(name), "name");
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"api/communities/{communityId}/emojis") { Content = multipart };
+        if (!string.IsNullOrWhiteSpace(AccessToken)) request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", AccessToken);
+        using var response = await _http.SendAsync(request, ct);
+        if (!response.IsSuccessStatusCode) throw new NodeApiException(response.StatusCode, await ReadErrorAsync(response, ct));
+        return await response.Content.ReadFromJsonAsync<CommunityEmojiDto>(cancellationToken: ct) ??
+               throw new NodeApiException(response.StatusCode, "The node returned an empty response.");
+    }
+    public Task<CommunityEmojiDto> RenameCommunityEmojiAsync(Guid communityId, Guid emojiId, string name,
+        CancellationToken ct = default) => SendAsync<CommunityEmojiDto>(HttpMethod.Patch,
+        $"api/communities/{communityId}/emojis/{emojiId}", new RenameCommunityEmojiRequest(name), ct);
+    public Task DeleteCommunityEmojiAsync(Guid communityId, Guid emojiId, CancellationToken ct = default) =>
+        SendNoContentAsync(HttpMethod.Delete, $"api/communities/{communityId}/emojis/{emojiId}", null, ct);
+    public async Task<byte[]> DownloadCommunityEmojiAsync(Guid communityId, Guid emojiId, CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Get, $"api/communities/{communityId}/emojis/{emojiId}/media", null, ct);
+        if (!response.IsSuccessStatusCode) throw new NodeApiException(response.StatusCode, await ReadErrorAsync(response, ct));
+        return await response.Content.ReadAsByteArrayAsync(ct);
+    }
+
     public Task MarkDirectConversationReadAsync(Guid conversationId, CancellationToken cancellationToken = default) =>
         SendNoContentAsync(HttpMethod.Post, $"api/direct-messages/{conversationId}/read", null, cancellationToken);
 
@@ -225,6 +272,31 @@ public sealed class NodeClient(Uri nodeAddress)
     public Task DeleteChannelAsync(Guid communityId, Guid channelId, CancellationToken cancellationToken = default) =>
         SendNoContentAsync(HttpMethod.Delete, $"api/communities/{communityId}/channels/{channelId}", null, cancellationToken);
 
+    public Task<PermissionOverwriteScopeDto> GetPermissionScopeAsync(Guid communityId,
+        PermissionOverwriteScopeType scopeType, Guid scopeId, CancellationToken cancellationToken = default) =>
+        SendAsync<PermissionOverwriteScopeDto>(HttpMethod.Get,
+            $"api/communities/{communityId}/permissions/{scopeType}/{scopeId}", null, cancellationToken);
+
+    public Task SetPermissionOverwriteAsync(Guid communityId, PermissionOverwriteScopeType scopeType, Guid scopeId,
+        SetPermissionOverwriteRequest request, CancellationToken cancellationToken = default) =>
+        SendNoContentAsync(HttpMethod.Put,
+            $"api/communities/{communityId}/permissions/{scopeType}/{scopeId}/overwrites", request, cancellationToken);
+
+    public Task<PermissionOverwriteSaveResultDto> ReplacePermissionOverwritesAsync(Guid communityId, PermissionOverwriteScopeType scopeType, Guid scopeId,
+        ReplacePermissionOverwritesRequest request, CancellationToken cancellationToken = default) =>
+        SendAsync<PermissionOverwriteSaveResultDto>(HttpMethod.Put,
+            $"api/communities/{communityId}/permissions/{scopeType}/{scopeId}", request, cancellationToken);
+
+    public Task RemovePermissionOverwriteAsync(Guid communityId, PermissionOverwriteScopeType scopeType, Guid scopeId,
+        RemovePermissionOverwriteRequest request, CancellationToken cancellationToken = default) =>
+        SendNoContentAsync(HttpMethod.Post,
+            $"api/communities/{communityId}/permissions/{scopeType}/{scopeId}/overwrites/remove", request, cancellationToken);
+
+    public Task SyncChannelPermissionsAsync(Guid communityId, Guid channelId,
+        CancellationToken cancellationToken = default) =>
+        SendNoContentAsync(HttpMethod.Post, $"api/communities/{communityId}/channels/{channelId}/permissions/sync",
+            null, cancellationToken);
+
     public Task<CommunityManagementDto> GetCommunityManagementAsync(Guid communityId, CancellationToken cancellationToken = default) =>
         SendAsync<CommunityManagementDto>(HttpMethod.Get, $"api/communities/{communityId}/management", null, cancellationToken);
 
@@ -248,6 +320,8 @@ public sealed class NodeClient(Uri nodeAddress)
 
     public Task KickCommunityMemberAsync(Guid communityId, Guid accountId, CancellationToken cancellationToken = default) =>
         SendNoContentAsync(HttpMethod.Post, $"api/communities/{communityId}/members/{accountId}/kick", null, cancellationToken);
+    public Task LeaveCommunityAsync(Guid communityId, CancellationToken cancellationToken = default) =>
+        SendNoContentAsync(HttpMethod.Delete, $"api/communities/{communityId}/members/@me", null, cancellationToken);
 
     public Task BanCommunityMemberAsync(Guid communityId, Guid accountId, string? reason, CancellationToken cancellationToken = default) =>
         SendNoContentAsync(HttpMethod.Post, $"api/communities/{communityId}/bans/{accountId}", new BanCommunityMemberRequest(reason), cancellationToken);

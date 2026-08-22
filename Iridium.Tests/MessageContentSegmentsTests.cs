@@ -189,6 +189,16 @@ public sealed class MessageContentSegmentsTests
     }
 
     [Fact]
+    public void PlainHttpAndInviteUrlsBecomeSafeClickableLinks()
+    {
+        var nodes = MessageContentSegments.Parse("Visit https://chat.example/invite/abc and http://example.test.", null);
+        var links = Descendants(nodes).OfType<MessageLinkNode>().ToArray();
+        Assert.Equal(2, links.Length);
+        Assert.Equal("https://chat.example/invite/abc", links[0].Url);
+        Assert.Equal("http://example.test", links[1].Url);
+    }
+
+    [Fact]
     public void EscapedFormattingAndHeadingMarkersRemainLiteral()
     {
         Assert.Equal("**not bold**", MessageContentSegments.PlainText(

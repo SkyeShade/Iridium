@@ -6,7 +6,7 @@
                    RingingCallerAccountId="RingingCallerAccountId"
                    OnSelected="OnCommunitySelected" OnDirectConversationSelected="OnDirectConversationSelected" OnAdd="OnAddCommunity" />
     <aside class="secondary-sidebar">
-        <header class="community-header">
+        <header class="community-header @(SelectedCommunity is not null ? "selected-community-header" : null)">
             @if (SidebarHeader is not null) { @SidebarHeader }
             else { <strong>@(SelectedCommunity?.Name ?? "Iridium")</strong> }
         </header>

@@ -112,8 +112,8 @@ public static class AttachmentEndpoints
         if (attachment is null) return Results.NotFound();
 
         var allowed = attachment.ChannelMessage is { } channelMessage
-            ? await authorization.HasPermissionAsync(channelMessage.CommunityId, session.AccountId,
-                CommunityPermission.ViewChannels, db)
+            ? await authorization.HasChannelPermissionAsync(channelMessage.CommunityId, channelMessage.ChannelId,
+                session.AccountId, CommunityPermission.ViewChannels, db)
             : attachment.DirectMessage?.Conversation is { } conversation
                 ? conversation.ParticipantAAccountId == session.AccountId || conversation.ParticipantBAccountId == session.AccountId
                 : attachment.UploaderAccountId == session.AccountId;

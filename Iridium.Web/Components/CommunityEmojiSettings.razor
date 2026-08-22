@@ -1,0 +1,117 @@
+@using Iridium.Protocol
+@using Microsoft.AspNetCore.Components.Forms
+@inject NodeSession Session
+@inject CommunityEmojiService Emojis
+@inject IJSRuntime JS
+@implements IDisposable
+
+<div class="emoji-settings">
+    <div class="section-heading"><div><h1>Emoji</h1><p>Add custom emoji that members can use in this Server.</p></div><strong>@_items.Count / @CommunityEmojiLimits.MaximumPerCommunity</strong></div>
+    @if (CanManage)
+    {
+        <div class="emoji-upload-panel @(_uploading ? "busy" : null)">
+            <span class="emoji-upload-button"><Icon Name="upload" /> @(_uploading ? "Uploading..." : "Upload Emoji")</span>
+            <span>or drag and drop files here</span>
+            <small>PNG, JPEG, WebP or GIF · 0.50 MB max each</small>
+            <InputFile class="emoji-file-input" style="position:absolute;inset:0;width:100%;height:100%;margin:0;padding:0;opacity:0;font-size:0;cursor:pointer"
+                       aria-label="Upload emoji files" accept="image/png,image/jpeg,image/webp,image/gif" multiple OnChange="UploadAsync" />
+        </div>
+    }
+    @if (!string.IsNullOrWhiteSpace(_error)) { <p class="error" role="alert">@_error</p> }
+    <div class="emoji-list">
+        @foreach (var emoji in _items)
+        {
+            <article @key="emoji.Id" class="emoji-row">
+                <button type="button" class="emoji-preview-button" title="View :@emoji.Name:" @onclick="args => ShowDetailAsync(emoji, args)">
+                    <CommunityEmojiImage Emoji="emoji" />
+                </button>
+                @if (_editingId == emoji.Id)
+                {
+                    <div class="emoji-name-editor">
+                        <input value="@_editingName" maxlength="32" aria-label="Emoji name"
+                               @oninput="args => { _editingName = args.Value?.ToString() ?? string.Empty; _nameError = null; }" />
+                        @if (!string.IsNullOrWhiteSpace(_nameError)) { <small role="alert">@_nameError</small> }
+                    </div>
+                    <button class="primary" @onclick="() => SaveNameAsync(emoji)">Save</button>
+                }
+                else
+                {
+                    <span><strong>:@emoji.Name:</strong><small>@FileSizeDisplay.Megabytes(emoji.SizeBytes)@(emoji.IsAnimated ? " · Animated" : null)</small></span>
+                    @if (CanManage) { <button title="Rename" @onclick="() => BeginRename(emoji)"><Icon Name="edit" /></button><button class="delete" title="Delete" @onclick="() => DeleteAsync(emoji)"><Icon Name="trash" /></button> }
+                }
+            </article>
+        }
+    </div>
+    @if (_detailEmoji is not null)
+    {
+        <EmojiDetailPopup Emoji="_detailEmoji" X="_detailX" Y="_detailY" OnClose="CloseDetail" />
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public required CommunityDto Community { get; set; }
+    [Parameter] public bool CanManage { get; set; }
+    private IReadOnlyList<CommunityEmojiDto> _items = [];
+    private string? _error;
+    private Guid? _editingId;
+    private string _editingName = string.Empty;
+    private string? _nameError;
+    private bool _uploading;
+    private CommunityEmojiDto? _detailEmoji;
+    private double _detailX, _detailY;
+
+    protected override async Task OnInitializedAsync() { Emojis.Changed += OnChanged; await ReloadAsync(); }
+    private async Task ReloadAsync() => _items = await Emojis.GetAsync(Community.Id, true);
+    private async Task UploadAsync(InputFileChangeEventArgs args)
+    {
+        _uploading = true; _error = null;
+        try
+        {
+            foreach (var file in args.GetMultipleFiles(CommunityEmojiLimits.MaximumPerCommunity))
+            {
+                if (file.Size > CommunityEmojiLimits.MaximumUploadBytes)
+                    throw new InvalidOperationException($"This emoji is {FileSizeDisplay.Megabytes(file.Size)}. The maximum size is {FileSizeDisplay.Megabytes(CommunityEmojiLimits.MaximumUploadBytes)}.");
+                var name = CommunityEmojiNames.Normalize(file.Name);
+                await using var stream = file.OpenReadStream(CommunityEmojiLimits.MaximumUploadBytes);
+                await using var buffer = new MemoryStream();
+                await stream.CopyToAsync(buffer);
+                var bytes = buffer.ToArray();
+                var metadata = ImageUploadMetadataDetector.Detect(bytes, file.Name);
+                await using var upload = new MemoryStream(bytes, false);
+                await Session.UploadCommunityEmojiAsync(Community.Id, upload, metadata.FileName, metadata.ContentType, name);
+            }
+            await ReloadAsync();
+        }
+        catch (Exception exception) { _error = exception.Message; }
+        finally { _uploading = false; }
+    }
+    private void BeginRename(CommunityEmojiDto emoji) { _editingId = emoji.Id; _editingName = emoji.Name; _nameError = null; }
+    private async Task SaveNameAsync(CommunityEmojiDto emoji)
+    {
+        var normalized = CommunityEmojiNames.Normalize(_editingName);
+        if (!CommunityEmojiNames.IsValid(normalized))
+        {
+            _nameError = "Use 2–32 letters, numbers, or underscores.";
+            return;
+        }
+        try { await Session.RenameCommunityEmojiAsync(Community.Id, emoji.Id, normalized); _editingId = null; _nameError = null; await ReloadAsync(); }
+        catch (Exception exception) { _nameError = exception.Message; }
+    }
+    private async Task DeleteAsync(CommunityEmojiDto emoji)
+    {
+        try { await Session.DeleteCommunityEmojiAsync(Community.Id, emoji.Id); await ReloadAsync(); }
+        catch (Exception exception) { _error = exception.Message; }
+    }
+    private async Task ShowDetailAsync(CommunityEmojiDto emoji, MouseEventArgs args)
+    {
+        var module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/emojiPicker.js");
+        var position = await module.InvokeAsync<PopupPosition>("detailPosition", args.ClientX, args.ClientY);
+        await module.DisposeAsync();
+        _detailEmoji = emoji; _detailX = position.X; _detailY = position.Y;
+    }
+    private void CloseDetail() => _detailEmoji = null;
+    private void OnChanged(Guid communityId) => _ = InvokeAsync(async () =>
+    { if (communityId != Community.Id) return; _items = await Emojis.GetAsync(Community.Id); StateHasChanged(); });
+    public void Dispose() => Emojis.Changed -= OnChanged;
+    private sealed record PopupPosition(double X, double Y);
+}

@@ -35,13 +35,39 @@ else if (CallForConversation is { } call)
             <div class="call-participants">
                 @foreach (var callParticipant in call.Participants)
                 {
+                    var participantStream = Calls.PublishedStreams.FirstOrDefault(value =>
+                        value.OwnerAccountId == callParticipant.AccountId);
                     <div class="call-participant" @oncontextmenu="() => OpenParticipantMenu(callParticipant)"
                          @oncontextmenu:preventDefault="true" @oncontextmenu:stopPropagation="true">
-                        <div class="call-avatar @(callParticipant.IsSpeaking ? "speaking" : null)">
-                            <ProfileAvatar AccountId="callParticipant.AccountId" DisplayName="@callParticipant.DisplayName"
-                                           Presence="@(callParticipant.AccountId == CurrentAccountId ? PublicPresence.Online : Participant.Presence)"
-                                           Size="large" Surface="base" />
-                        </div>
+                        @if (participantStream is not null)
+                        {
+                            <button type="button" class="dm-participant-stream @(callParticipant.IsSpeaking ? "speaking" : null)"
+                                    title="@(callParticipant.AccountId == CurrentAccountId ? "Preview your screen share" : $"Watch {callParticipant.DisplayName}'s stream")"
+                                    @onclick="() => WatchStreamAsync(participantStream.StreamId)" @onclick:stopPropagation="true">
+                                @if (VoiceSessions.GetStreamThumbnail(participantStream.StreamId) is { Length: > 0 } thumbnail)
+                                {
+                                    <img class="dm-participant-stream-thumbnail" src="@thumbnail" alt="" />
+                                }
+                                else
+                                {
+                                    <span class="dm-participant-stream-placeholder"><Icon Name="screen" /> Screen Share</span>
+                                }
+                                <span class="dm-participant-stream-live">LIVE</span>
+                                <span class="dm-participant-stream-avatar">
+                                    <ProfileAvatar AccountId="callParticipant.AccountId" DisplayName="@callParticipant.DisplayName"
+                                                   Presence="@(callParticipant.AccountId == CurrentAccountId ? PublicPresence.Online : Participant.Presence)"
+                                                   Size="small" Surface="base" />
+                                </span>
+                            </button>
+                        }
+                        else
+                        {
+                            <div class="call-avatar @(callParticipant.IsSpeaking ? "speaking" : null)">
+                                <ProfileAvatar AccountId="callParticipant.AccountId" DisplayName="@callParticipant.DisplayName"
+                                               Presence="@(callParticipant.AccountId == CurrentAccountId ? PublicPresence.Online : Participant.Presence)"
+                                               Size="large" Surface="base" />
+                            </div>
+                        }
                         <strong>@callParticipant.DisplayName</strong>
                         @if (callParticipant.IsMuted) { <span>Muted</span> }
                         @if (_menuRemoteAccountId == callParticipant.AccountId)
@@ -55,12 +81,17 @@ else if (CallForConversation is { } call)
             <div class="media-status @(Calls.MediaConnectionState == CallConnectionState.Failed ? "failed" : null)">
                 <span>@(Calls.StatusMessage ?? MediaStatus)</span>
                 @if (!string.IsNullOrWhiteSpace(Calls.ErrorMessage)) { <small>@Calls.ErrorMessage</small> }
+                @if (!string.IsNullOrWhiteSpace(_shareError)) { <small>@_shareError</small> }
             </div>
             <div class="active-call-controls">
                 <button type="button" class="call-control @(Calls.IsMuted ? "selected" : null)" title="@(Calls.IsMuted ? "Unmute microphone" : "Mute microphone")"
                         aria-pressed="@Calls.IsMuted" @onclick="ToggleMuteAsync"><Icon Name="microphone" /><span>@(Calls.IsMuted ? "Unmute" : "Mute")</span></button>
                 <button type="button" class="call-control @(Calls.IsDeafened ? "selected" : null)" title="@(Calls.IsDeafened ? "Undeafen" : "Deafen")"
                         aria-pressed="@Calls.IsDeafened" @onclick="ToggleDeafenAsync"><Icon Name="headphones" /><span>@(Calls.IsDeafened ? "Undeafen" : "Deafen")</span></button>
+                <button type="button" class="call-control @(IsSharing ? "selected" : null)"
+                        title="@(IsSharing ? "Stop sharing" : "Share screen")" @onclick="ToggleScreenShareAsync">
+                    <Icon Name="screen" /><span>@(IsSharing ? "Stop Sharing" : "Share Screen")</span>
+                </button>
                 @if (Calls.CanRetry)
                 {
                     <button type="button" class="call-control retry" title="Retry media connection" @onclick="RetryAsync"><Icon Name="refresh" /><span>Retry</span></button>
@@ -85,6 +116,9 @@ else if (CallForConversation is { } call)
         _ => "Connecting media…"
     };
     private Guid? _menuRemoteAccountId;
+    private string? _shareError;
+    private bool IsSharing => Calls.PublishedStreams.Any(value => value.OwnerAccountId == CurrentAccountId &&
+        value.Kind == VoicePublishedStreamKind.ScreenShare);
     private void OpenParticipantMenu(CallParticipantDto participant) =>
         _menuRemoteAccountId = participant.AccountId == CurrentAccountId ? null : participant.AccountId;
     private Task AcceptAsync() => VoiceSessions.AcceptIncomingDirectAsync();
@@ -93,4 +127,17 @@ else if (CallForConversation is { } call)
     private Task ToggleMuteAsync() => VoiceSessions.ToggleMuteAsync();
     private Task ToggleDeafenAsync() => VoiceSessions.ToggleDeafenAsync();
     private Task RetryAsync() => Calls.RetryMediaAsync();
+    private Task WatchStreamAsync(Guid streamId) => VoiceSessions.WatchStreamAsync(streamId);
+    private async Task ToggleScreenShareAsync()
+    {
+        try
+        {
+            _shareError = null;
+            if (IsSharing) await VoiceSessions.StopScreenShareAsync();
+            else await VoiceSessions.StartScreenShareAsync();
+        }
+        catch (Exception exception) when (exception.Message.Contains("NotAllowedError", StringComparison.OrdinalIgnoreCase))
+        { _shareError = null; }
+        catch (Exception exception) { _shareError = exception.Message; }
+    }
 }

@@ -5,6 +5,7 @@ using Iridium.Client.Core;
 using Iridium.Protocol;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.AspNetCore.SignalR.Client;
+using Microsoft.Data.Sqlite;
 
 namespace Iridium.Tests;
 
@@ -64,6 +65,9 @@ public sealed class RealtimeFlowTests
             var initialManagement = await owner.GetCommunityManagementAsync(communityA.Id);
             Assert.Empty(initialManagement.Invites);
             Assert.Empty(initialManagement.Bans);
+            var ownerMembership = Assert.Single(initialManagement.Members);
+            Assert.Equal(ownerAuth.Account.Id, ownerMembership.AccountId);
+            Assert.True(ownerMembership.IsOwner);
             var initialRole = Assert.Single(initialManagement.Roles);
             Assert.True(initialRole.IsDefault);
             Assert.Equal("@everyone", initialRole.Name);
@@ -74,13 +78,106 @@ public sealed class RealtimeFlowTests
             Assert.Equal("general", defaultChannel.Name);
             Assert.Equal(CommunityChannelKind.Text, defaultChannel.Kind);
             Assert.Equal(defaultCategory.Id, defaultChannel.CategoryId);
+            Assert.True(defaultChannel.PermissionsSyncedToCategory);
+
+            await using (var failureConnection = new SqliteConnection($"Data Source={databasePath}"))
+            {
+                await failureConnection.OpenAsync();
+                await using var createFailureTrigger = failureConnection.CreateCommand();
+                createFailureTrigger.CommandText = """
+                    CREATE TRIGGER FailCommunityGeneral
+                    BEFORE INSERT ON CommunityChannels
+                    WHEN NEW.Name = 'general'
+                    BEGIN
+                        SELECT RAISE(ABORT, 'forced community creation failure');
+                    END;
+                    """;
+                await createFailureTrigger.ExecuteNonQueryAsync();
+            }
+
+            try
+            {
+                var failedCreation = await Assert.ThrowsAsync<NodeApiException>(() =>
+                    intruder.CreateCommunityAsync(new CreateCommunityRequest("Rollback Check", null)));
+                Assert.Equal(HttpStatusCode.InternalServerError, failedCreation.StatusCode);
+            }
+            finally
+            {
+                await using var failureConnection = new SqliteConnection($"Data Source={databasePath}");
+                await failureConnection.OpenAsync();
+                await using var dropFailureTrigger = failureConnection.CreateCommand();
+                dropFailureTrigger.CommandText = "DROP TRIGGER IF EXISTS FailCommunityGeneral;";
+                await dropFailureTrigger.ExecuteNonQueryAsync();
+            }
+
+            await using (var verificationConnection = new SqliteConnection($"Data Source={databasePath}"))
+            {
+                await verificationConnection.OpenAsync();
+                await using var verifyRollback = verificationConnection.CreateCommand();
+                verifyRollback.CommandText = "SELECT COUNT(*) FROM Communities WHERE OwnerAccountId = $ownerId OR Name = 'Rollback Check';";
+                verifyRollback.Parameters.AddWithValue("$ownerId", intruderAuth.Account.Id.ToString());
+                Assert.Equal(0L, (long)(await verifyRollback.ExecuteScalarAsync())!);
+            }
             var loadedAgain = await owner.GetCommunityStructureAsync(communityA.Id);
             Assert.Equal(defaultCategory.Id, Assert.Single(loadedAgain.Categories).Id);
             Assert.Equal(defaultChannel.Id, Assert.Single(loadedAgain.Channels).Id);
+            await owner.SetPermissionOverwriteAsync(communityA.Id, PermissionOverwriteScopeType.Channel,
+                defaultChannel.Id, new(PermissionOverwriteTargetType.Everyone, null,
+                    CommunityPermission.None, CommunityPermission.AddReactions));
+            Assert.False((await owner.GetPermissionScopeAsync(communityA.Id,
+                PermissionOverwriteScopeType.Channel, defaultChannel.Id)).PermissionsSyncedToCategory);
+            await owner.SyncChannelPermissionsAsync(communityA.Id, defaultChannel.Id);
+            var resyncedDefault = await owner.GetPermissionScopeAsync(communityA.Id,
+                PermissionOverwriteScopeType.Channel, defaultChannel.Id);
+            Assert.True(resyncedDefault.PermissionsSyncedToCategory);
+            Assert.Empty(resyncedDefault.Overwrites);
             var membershipInvite = await owner.CreateCommunityInviteAsync(communityA.Id, new(null, null));
             var membershipToken = CommunityInviteLink.Find(membershipInvite.InviteUrl!)?.Token;
             Assert.NotNull(membershipToken);
             await outsider.JoinCommunityInviteAsync(membershipToken);
+
+            var channelManagerRole = await owner.CreateCommunityRoleAsync(communityA.Id,
+                new("Channel Manager", CommunityPermission.ManageChannels, "#4F8EF7"));
+            var neutralOverwriteSave = await owner.ReplacePermissionOverwritesAsync(communityA.Id,
+                PermissionOverwriteScopeType.Channel, defaultChannel.Id, new([
+                    new(PermissionOverwriteTargetType.Role, channelManagerRole.Id,
+                        CommunityPermission.None, CommunityPermission.None)
+                ]));
+            Assert.True(neutralOverwriteSave.Revision > 0);
+            Assert.Contains(neutralOverwriteSave.Scope.Overwrites, value =>
+                value.TargetType == PermissionOverwriteTargetType.Role && value.TargetId == channelManagerRole.Id &&
+                value.Allow == CommunityPermission.None && value.Deny == CommunityPermission.None);
+            var editedOverwriteSave = await owner.ReplacePermissionOverwritesAsync(communityA.Id,
+                PermissionOverwriteScopeType.Channel, defaultChannel.Id, new([
+                    new(PermissionOverwriteTargetType.Role, channelManagerRole.Id,
+                        CommunityPermission.AddReactions, CommunityPermission.None)
+                ]));
+            Assert.True(editedOverwriteSave.Revision > neutralOverwriteSave.Revision);
+            Assert.Equal(CommunityPermission.AddReactions,
+                Assert.Single(editedOverwriteSave.Scope.Overwrites).Allow);
+            var removedOverwriteSave = await owner.ReplacePermissionOverwritesAsync(communityA.Id,
+                PermissionOverwriteScopeType.Channel, defaultChannel.Id, new([]));
+            Assert.True(removedOverwriteSave.Revision > editedOverwriteSave.Revision);
+            Assert.Empty(removedOverwriteSave.Scope.Overwrites);
+            await owner.SetCommunityMemberRolesAsync(communityA.Id, outsiderAuth.Account.Id, [channelManagerRole.Id]);
+            await outsider.UpdateChannelAsync(communityA.Id, defaultChannel.Id, "general-managed", defaultCategory.Id);
+            Assert.Equal(HttpStatusCode.Forbidden, (await Assert.ThrowsAsync<NodeApiException>(() =>
+                outsider.ReplacePermissionOverwritesAsync(communityA.Id, PermissionOverwriteScopeType.Channel,
+                    defaultChannel.Id, new([])))).StatusCode);
+
+            var permissionManagerRole = await owner.CreateCommunityRoleAsync(communityA.Id,
+                new("Permission Manager", CommunityPermission.ManagePermissions, "#45B97C"));
+            await owner.SetCommunityMemberRolesAsync(communityA.Id, outsiderAuth.Account.Id, [permissionManagerRole.Id]);
+            Assert.Equal(HttpStatusCode.Forbidden, (await Assert.ThrowsAsync<NodeApiException>(() =>
+                outsider.UpdateChannelAsync(communityA.Id, defaultChannel.Id, "should-not-save", defaultCategory.Id))).StatusCode);
+            await outsider.ReplacePermissionOverwritesAsync(communityA.Id, PermissionOverwriteScopeType.Channel,
+                defaultChannel.Id, new([
+                    new(PermissionOverwriteTargetType.Everyone, null, CommunityPermission.None,
+                        CommunityPermission.AddReactions)
+                ]));
+            await owner.SetCommunityMemberRolesAsync(communityA.Id, outsiderAuth.Account.Id, [permissionManagerRole.Id]);
+            await owner.SyncChannelPermissionsAsync(communityA.Id, defaultChannel.Id);
+            await owner.UpdateChannelAsync(communityA.Id, defaultChannel.Id, "general", defaultCategory.Id);
 
             var firstCategory = await owner.CreateCategoryAsync(communityA.Id, "Rooms");
             var secondCategory = await owner.CreateCategoryAsync(communityA.Id, "Projects");
@@ -269,6 +366,7 @@ public sealed class RealtimeFlowTests
             var categoryCreatedOnMember = Completion<CommunityStateChangedEvent>();
             var categoryDeletedOnMember = Completion<CommunityStateChangedEvent>();
             var channelDeletedOnMember = Completion<CommunityStateChangedEvent>();
+            var overwriteChangedOnMember = Completion<CommunityStateChangedEvent>();
             var intruderCommunityChangeCount = 0;
             var participantChanged = Completion<CallParticipantStateEvent>();
             var participantStateChangeCount = 0;
@@ -374,6 +472,7 @@ public sealed class RealtimeFlowTests
                 if (value.Change == "category-created") categoryCreatedOnMember.TrySetResult(value);
                 if (value.Change == "category-deleted") categoryDeletedOnMember.TrySetResult(value);
                 if (value.Change == "channel-deleted") channelDeletedOnMember.TrySetResult(value);
+                if (value.Change == "permissions-updated") overwriteChangedOnMember.TrySetResult(value);
             });
             intruderConnection.On<CommunityStateChangedEvent>(CommunityHubContract.StateChanged, _ =>
                 Interlocked.Increment(ref intruderCommunityChangeCount));
@@ -410,6 +509,51 @@ public sealed class RealtimeFlowTests
                 value => value.Id == realtimeChannel.Id);
             await sharedStateRefreshed.Task.WaitAsync(TimeSpan.FromSeconds(5));
             Assert.Contains(syncedCommunity.Channels, value => value.Id == realtimeChannel.Id);
+
+            var initiatingEcho = Completion<CommunityStateChangedEvent>();
+            syncedSession.CommunityChanged += change =>
+            {
+                if (change.CommunityId == communityA.Id && change.Change == "permissions-updated")
+                    initiatingEcho.TrySetResult(change);
+            };
+            var initiatingSave = await syncedCommunity.ReplacePermissionOverwritesAsync(
+                PermissionOverwriteScopeType.Channel, realtimeChannel.Id, [
+                    new(PermissionOverwriteTargetType.Member, outsiderAuth.Account.Id,
+                        CommunityPermission.None, CommunityPermission.None)
+                ]);
+            var echoedSave = await initiatingEcho.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(initiatingSave.Revision, echoedSave.Revision);
+            Assert.True(syncedCommunity.AppliedRevision >= initiatingSave.Revision);
+            Assert.Contains(initiatingSave.Scope.Overwrites, value =>
+                value.TargetType == PermissionOverwriteTargetType.Member &&
+                value.TargetId == outsiderAuth.Account.Id);
+            var initiatingRemoval = await syncedCommunity.ReplacePermissionOverwritesAsync(
+                PermissionOverwriteScopeType.Channel, realtimeChannel.Id, []);
+            Assert.True(initiatingRemoval.Revision > initiatingSave.Revision);
+            Assert.Empty(initiatingRemoval.Scope.Overwrites);
+
+            overwriteChangedOnMember = Completion<CommunityStateChangedEvent>();
+            sharedStateRefreshed = Completion<bool>();
+            var privatePermissionSave = await owner.ReplacePermissionOverwritesAsync(communityA.Id, PermissionOverwriteScopeType.Channel,
+                realtimeChannel.Id, new([
+                    new(PermissionOverwriteTargetType.Everyone, null,
+                        CommunityPermission.None, CommunityPermission.ViewChannels)
+                ]));
+            await overwriteChangedOnMember.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await sharedStateRefreshed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.True(syncedCommunity.AppliedRevision >= privatePermissionSave.Revision);
+            Assert.True((await owner.GetCommunityStructureAsync(communityA.Id)).Channels
+                .Single(value => value.Id == realtimeChannel.Id).IsPrivate);
+            Assert.DoesNotContain((await outsider.GetCommunityStructureAsync(communityA.Id)).Channels,
+                value => value.Id == realtimeChannel.Id);
+            await Assert.ThrowsAsync<HubException>(() => outsiderConnection.InvokeAsync(
+                ChatHubContract.JoinChannel, communityA.Id, realtimeChannel.Id));
+            overwriteChangedOnMember = Completion<CommunityStateChangedEvent>();
+            await owner.ReplacePermissionOverwritesAsync(communityA.Id, PermissionOverwriteScopeType.Channel,
+                realtimeChannel.Id, new([]));
+            await overwriteChangedOnMember.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Contains((await outsider.GetCommunityStructureAsync(communityA.Id)).Channels,
+                value => value.Id == realtimeChannel.Id);
             await Task.Delay(100);
             Assert.Equal(0, Volatile.Read(ref intruderCommunityChangeCount));
             var realtimeCategory = await owner.CreateCategoryAsync(communityA.Id, "Realtime Category");
@@ -651,7 +795,7 @@ public sealed class RealtimeFlowTests
             var negotiationId = Guid.NewGuid();
             var offerSignalId = Guid.NewGuid();
             await firstConnection.InvokeAsync(VoiceCallHubContract.SendOffer, call.Id, negotiationId,
-                1, 1, offerSignalId, offer);
+                1, 1, offerSignalId, WebRtcNegotiationKind.Initial, offer);
             var forwardedOffer = await receivedOffer.Task.WaitAsync(TimeSpan.FromSeconds(5));
             Assert.Equal(negotiationId, forwardedOffer.NegotiationId);
             Assert.Equal(offerSignalId, forwardedOffer.SignalId);
@@ -885,6 +1029,7 @@ public sealed class RealtimeFlowTests
         {
             if (!server.HasExited) server.Kill(entireProcessTree: true);
             await server.WaitForExitAsync();
+            SqliteConnection.ClearAllPools();
             await DeleteDirectoryAsync(tempDirectory);
         }
     }

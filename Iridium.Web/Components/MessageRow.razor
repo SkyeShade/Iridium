@@ -5,6 +5,7 @@
 @inject ILogger<MessageRow> Logger
 @inject IIdentityProfileResolver ProfileResolver
 @inject Iridium.Web.Services.MessageMenuCoordinator MessageMenus
+@inject CommunityEmojiService Emojis
 
 <article class="message-row @(StartsGroup ? "group-start" : "compact") @(Message.IsDeleted ? "deleted" : null) @DeliveryClass"
          data-message-id="@Message.Id" @onpointerenter="MessageEntered" @onpointerleave="MessageLeft">
@@ -19,7 +20,7 @@
             else
             {
                 <strong class="display-name">@reply.AuthorDisplayName</strong>
-                <span class="reply-excerpt">@reply.Excerpt</span>
+                <span class="reply-excerpt">@CommunityEmojiNames.ToUserFacing(reply.Excerpt ?? string.Empty)</span>
             }
         </button>
     }
@@ -39,7 +40,7 @@
         <div class="message-content">
             @if (_editing)
             {
-                <textarea class="edit-textarea iridium-textarea-scrollbar" @ref="_editTextarea" @bind="_editContent" @bind:event="oninput"
+                <textarea class="edit-textarea iridium-textarea-scrollbar" @ref="_editTextarea" value="@_editContent" @oninput="EditContentChanged"
                           maxlength="4000" rows="1" aria-label="Edit message"></textarea>
                 <div class="edit-help">
                     <span>escape to </span><button type="button" @onclick="CancelEdit">cancel</button>
@@ -53,7 +54,8 @@
             }
             else
             {
-                <MentionedMessageContent Content="@Message.Content" Mentions="Message.Mentions" OnProfile="OpenMentionProfileAsync" />
+                <MentionedMessageContent Content="@Message.Content" Mentions="Message.Mentions"
+                                         CommunityId="@(Message.CommunityId == Guid.Empty ? null : Message.CommunityId)" OnProfile="OpenMentionProfileAsync" />
                 @if (Message.EditedAt is not null) { <span class="edited" title="Edited @Message.EditedAt.Value.ToLocalTime().ToString("g")">(edited)</span> }
                 <InviteEmbed Content="@Message.Content" />
                 <MessageAttachments Attachments="Message.Attachments" DeliveryState="Message.DeliveryState" />
@@ -163,9 +165,24 @@
     private Task ReplyAsync() => OnReply.InvokeAsync(Message);
     private Task ReplyFromMenuAsync() { MessageMenus.Close(Message.Id); return ReplyAsync(); }
     private void ToggleMenu() { CancelMenuClose(); MessageMenus.Toggle(Message.Id); }
-    private void BeginEdit() { MessageMenus.Close(Message.Id); _editContent = Message.Content; _editing = true; _focusEditorAfterRender = true; }
-    private void EditFromMenu() => BeginEdit();
-    private void CancelEdit() { _editing = false; _editContent = string.Empty; }
+    private readonly List<CommunityEmojiDraftReference> _editEmojiReferences = [];
+    private IReadOnlyList<AvailableCommunityEmoji> _editAvailableEmojis = [];
+    private async Task BeginEdit()
+    {
+        MessageMenus.Close(Message.Id);
+        _editAvailableEmojis = await Emojis.GetAvailableAsync();
+        var draft = CommunityEmojiDraftCodec.Deserialize(Message.Content, _editAvailableEmojis);
+        _editContent = draft.Text; _editEmojiReferences.Clear(); _editEmojiReferences.AddRange(draft.References);
+        _editing = true; _focusEditorAfterRender = true;
+    }
+    private Task EditFromMenu() => BeginEdit();
+    private void CancelEdit() { _editing = false; _editContent = string.Empty; _editEmojiReferences.Clear(); }
+    private void EditContentChanged(ChangeEventArgs args)
+    {
+        var next = CommunityEmojiDraftCodec.ToUserFacing(args.Value?.ToString() ?? string.Empty);
+        CommunityEmojiDraftCodec.ReconcileReferences(_editContent, next, _editEmojiReferences);
+        _editContent = next;
+    }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -196,7 +213,8 @@
     private async Task SaveEditAsync()
     {
         if (_savingEdit || string.IsNullOrWhiteSpace(_editContent)) return;
-        var content = _editContent.TrimEnd();
+        var content = CommunityEmojiDraftCodec.Serialize(_editContent.TrimEnd(), _editEmojiReferences,
+            _editAvailableEmojis, Message.CommunityId == Guid.Empty ? null : Message.CommunityId);
         if (string.Equals(content, Message.Content, StringComparison.Ordinal))
         {
             CancelEdit();

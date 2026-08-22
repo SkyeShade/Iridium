@@ -1,0 +1,161 @@
+@using Iridium.Client.Core
+@using Iridium.Protocol
+@implements IAsyncDisposable
+@inject ActiveVoiceSessionCoordinator Voice
+@inject IJSRuntime JS
+
+@if (Voice.WatchedStream is { } stream)
+{
+    <section id="@_containerId" class="voice-stream-viewer @(Floating ? "floating" : null)" aria-label="Watching @stream.OwnerDisplayName's stream">
+        <div class="stream-stage">
+            <video id="@_elementId" autoplay playsinline></video>
+            <div class="stream-toolbar floating-drag-handle">
+                <div><strong>@stream.OwnerDisplayName</strong><span class="live-badge">LIVE</span><small>@KindLabel(stream.Kind)</small></div>
+                <div class="toolbar-actions">
+                    @if (stream.HasAudio)
+                    {
+                        <button type="button" class="@(_audioMuted ? "selected" : null)"
+                                title="@(_audioMuted ? "Unmute stream audio" : "Mute stream audio")"
+                                @onclick="ToggleStreamAudioAsync"><Icon Name="speaker" /></button>
+                    }
+                    else
+                    {
+                        <span class="no-audio" title="This stream has no shared audio"><Icon Name="speaker" /> No audio</span>
+                    }
+                    <button type="button" title="Fullscreen" @onclick="FullscreenAsync"><Icon Name="fullscreen" /></button>
+                    @if (!Floating)
+                    {
+                        <button type="button" title="Minimize to floating viewer" @onclick="MinimizeAsync"><Icon Name="minus" /></button>
+                    }
+                    @if (stream.OwnerAccountId == Voice.LocalAccountId)
+                    {
+                        <button type="button" title="Stop sharing" @onclick="StopSharingAsync"><Icon Name="screen" /></button>
+                    }
+                    <button type="button" title="Stop watching" @onclick="CloseAsync"><Icon Name="close" /></button>
+                </div>
+            </div>
+            @if (!string.IsNullOrWhiteSpace(_error)) { <p class="stream-error">@_error</p> }
+            @if (Floating)
+            {
+                <button type="button" class="floating-expand" title="Expand stream" @onclick="ExpandAsync"><Icon Name="fullscreen" /> Expand</button>
+            }
+        </div>
+        @if (!Floating)
+        {
+        <div class="viewer-participants" aria-label="Voice participants">
+            @if (Voice.Current?.Kind == ActiveVoiceSessionKind.DirectCall)
+            {
+                @foreach (var participant in Voice.DirectCalls.CurrentCall?.Participants ?? [])
+                {
+                    <div class="viewer-participant">
+                        <span class="participant-avatar @(participant.IsSpeaking ? "speaking" : null)">
+                            <ProfileAvatar AccountId="participant.AccountId" DisplayName="participant.DisplayName" Size="medium" Surface="base" />
+                        </span>
+                        <span>@participant.DisplayName</span>
+                    </div>
+                }
+            }
+            else
+            {
+                @foreach (var participant in Voice.CommunityVoice.CurrentRoom?.Participants ?? [])
+                {
+                    <div class="viewer-participant">
+                        <span class="participant-avatar @(participant.Speaking ? "speaking" : null)">
+                            <ProfileAvatar AccountId="participant.AccountId" DisplayName="participant.DisplayName"
+                                           Presence="participant.Presence" Size="medium" Surface="base" />
+                        </span>
+                        <span>@participant.DisplayName</span>
+                    </div>
+                }
+            }
+        </div>
+        <div class="viewer-controls">
+            <button type="button" class="@(Voice.Current?.Muted == true ? "selected" : null)" @onclick="ToggleMuteAsync"><Icon Name="microphone" /> Mute</button>
+            <button type="button" class="@(Voice.Current?.Deafened == true ? "selected" : null)" @onclick="ToggleDeafenAsync"><Icon Name="headphones" /> Deafen</button>
+            <button type="button" @onclick="CloseAsync"><Icon Name="close" /> Stop Watching</button>
+            <button type="button" class="leave" @onclick="LeaveAsync"><Icon Name="hangup" /> Leave Voice</button>
+        </div>
+        }
+    </section>
+}
+
+@code {
+    private readonly string _elementId = $"voice-stream-{Guid.NewGuid():N}";
+    private readonly string _containerId = $"floating-stream-{Guid.NewGuid():N}";
+    private Guid? _attachedStreamId;
+    private bool _audioMuted;
+    private string? _error;
+    private IJSObjectReference? _floatingModule;
+    private IJSObjectReference? _floatingHandle;
+    [Parameter] public bool Floating { get; set; }
+    [Parameter] public EventCallback OnExpand { get; set; }
+    [Parameter] public EventCallback OnMinimize { get; set; }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        var stream = Voice.WatchedStream;
+        if (stream is null || _attachedStreamId == stream.StreamId) return;
+        try
+        {
+            _audioMuted = !stream.HasAudio || Voice.IsStreamAudioMuted(stream.StreamId);
+            await Voice.AttachWatchedStreamAsync(_elementId);
+            _attachedStreamId = stream.StreamId;
+            _error = null;
+            if (Floating && _floatingHandle is null)
+            {
+                _floatingModule ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/floatingStreamViewer.js");
+                _floatingHandle = await _floatingModule.InvokeAsync<IJSObjectReference>("initialize", _containerId);
+            }
+        }
+        catch (Exception exception)
+        {
+            if (exception.Message.Contains("not initialized", StringComparison.OrdinalIgnoreCase) ||
+                exception.Message.Contains("no longer active", StringComparison.OrdinalIgnoreCase))
+            {
+                _error = "Stream is no longer available.";
+                await Voice.StopWatchingAsync();
+            }
+            else _error = $"Stream playback failed: {exception.Message}";
+        }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task ToggleStreamAudioAsync()
+    {
+        _audioMuted = !_audioMuted;
+        await Voice.SetStreamAudioMutedAsync(_elementId, _audioMuted);
+    }
+    private Task FullscreenAsync() => Voice.RequestStreamFullscreenAsync(_elementId);
+    private Task ExpandAsync() => OnExpand.InvokeAsync();
+    private Task MinimizeAsync()
+    {
+        if (OnMinimize.HasDelegate) return OnMinimize.InvokeAsync();
+        Voice.MinimizeWatchedStream();
+        return Task.CompletedTask;
+    }
+    private Task StopSharingAsync() => Voice.StopScreenShareAsync();
+    private Task ToggleMuteAsync() => Voice.ToggleMuteAsync();
+    private Task ToggleDeafenAsync() => Voice.ToggleDeafenAsync();
+    private async Task CloseAsync()
+    {
+        await Voice.DetachWatchedStreamAsync(_elementId);
+        _attachedStreamId = null;
+        await Voice.StopWatchingAsync();
+    }
+    private async Task LeaveAsync()
+    {
+        await Voice.DetachWatchedStreamAsync(_elementId);
+        await Voice.LeaveCurrentVoiceSessionAsync("stream viewer leave");
+    }
+    private static string KindLabel(VoicePublishedStreamKind kind) => kind switch
+    {
+        VoicePublishedStreamKind.Camera => "Camera",
+        _ => "Screen Share"
+    };
+    public async ValueTask DisposeAsync()
+    {
+        try { if (_attachedStreamId is not null) await Voice.DetachWatchedStreamAsync(_elementId); } catch { }
+        if (_floatingHandle is not null) { try { await _floatingHandle.InvokeVoidAsync("dispose"); } catch { } await _floatingHandle.DisposeAsync(); }
+        if (_floatingModule is not null) await _floatingModule.DisposeAsync();
+    }
+}

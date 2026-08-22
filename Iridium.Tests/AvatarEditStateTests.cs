@@ -96,6 +96,28 @@ public sealed class AvatarEditStateTests
         Assert.Equal(ProfileBannerLimits.ProcessedHeight, codec.Info.Height);
     }
 
+    [Fact]
+    public void CommunityBannerUsesTheSameTwoToOneGeometryForTransformAndDerivative()
+    {
+        var editor = new ProfileMediaEditState("community-banner", 1800, 1200,
+            CommunityBannerLimits.CropWidth, CommunityBannerLimits.CropHeight, 1200, 900, 1.8, .6, -.35);
+        Assert.Equal(CommunityBannerLimits.AspectRatio, editor.CropWidth / editor.CropHeight);
+        using var bitmap = new SKBitmap(1800, 1200);
+        bitmap.Erase(SKColors.OrangeRed);
+        using var sourceImage = SKImage.FromBitmap(bitmap);
+        using var encoded = sourceImage.Encode(SKEncodedImageFormat.Png, 100);
+        var processed = BannerImageProcessor.Process(new(encoded.ToArray(), "image/png", 1800, 1200, false),
+            editor.NormalizedOffsetX, editor.NormalizedOffsetY, editor.Zoom,
+            CommunityBannerLimits.CropWidth, CommunityBannerLimits.CropHeight,
+            CommunityBannerLimits.ProcessedWidth, CommunityBannerLimits.ProcessedHeight)!;
+        using var data = SKData.CreateCopy(processed.Content);
+        using var codec = SKCodec.Create(data);
+        Assert.Equal(SKEncodedImageFormat.Webp, codec.EncodedFormat);
+        Assert.Equal(CommunityBannerLimits.ProcessedWidth, codec.Info.Width);
+        Assert.Equal(CommunityBannerLimits.ProcessedHeight, codec.Info.Height);
+        Assert.Equal(CommunityBannerLimits.AspectRatio, codec.Info.Width / (double)codec.Info.Height);
+    }
+
     private static AvatarEditState State(int width, int height) =>
         new("avatar", width, height, 760, 1000, 1000);
 }

@@ -91,6 +91,19 @@ public sealed class NodeSession(
     public Task DeleteBannerPresetAsync(Guid presetId, CancellationToken cancellationToken = default) =>
         AuthorizedClient.DeleteBannerPresetAsync(presetId, cancellationToken);
 
+    public Task<AccountAvatarPresetsDto> GetCommunityAvatarPresetsAsync(Guid communityId,CancellationToken ct=default)=>AuthorizedClient.GetCommunityAvatarPresetsAsync(communityId,ct);
+    public Task<AccountBannerPresetsDto> GetCommunityBannerPresetsAsync(Guid communityId,CancellationToken ct=default)=>AuthorizedClient.GetCommunityBannerPresetsAsync(communityId,ct);
+    public Task<AccountAvatarPresetsDto> UploadCommunityAvatarPresetAsync(Guid communityId,int slot,Stream content,string name,string type,double x,double y,double zoom,CancellationToken ct=default)=>AuthorizedClient.UploadCommunityAvatarPresetAsync(communityId,slot,content,name,type,x,y,zoom,ct);
+    public Task<AccountBannerPresetsDto> UploadCommunityBannerPresetAsync(Guid communityId,int slot,Stream content,string name,string type,double x,double y,double zoom,CancellationToken ct=default)=>AuthorizedClient.UploadCommunityBannerPresetAsync(communityId,slot,content,name,type,x,y,zoom,ct);
+    public Task<AccountAvatarPresetDto> UpdateCommunityAvatarCropAsync(Guid communityId,Guid presetId,UpdateAvatarCropRequest request,CancellationToken ct=default)=>AuthorizedClient.UpdateCommunityAvatarCropAsync(communityId,presetId,request,ct);
+    public Task<AccountBannerPresetDto> UpdateCommunityBannerCropAsync(Guid communityId,Guid presetId,UpdateBannerCropRequest request,CancellationToken ct=default)=>AuthorizedClient.UpdateCommunityBannerCropAsync(communityId,presetId,request,ct);
+    public Task DeleteCommunityMediaPresetAsync(Guid communityId,string kind,Guid presetId,CancellationToken ct=default)=>AuthorizedClient.DeleteCommunityMediaPresetAsync(communityId,kind,presetId,ct);
+    public Task<IReadOnlyList<CommunityEmojiDto>> GetCommunityEmojisAsync(Guid communityId,CancellationToken ct=default)=>AuthorizedClient.GetCommunityEmojisAsync(communityId,ct);
+    public Task<CommunityEmojiDto> UploadCommunityEmojiAsync(Guid communityId,Stream content,string fileName,string contentType,string name,CancellationToken ct=default)=>AuthorizedClient.UploadCommunityEmojiAsync(communityId,content,fileName,contentType,name,ct);
+    public Task<CommunityEmojiDto> RenameCommunityEmojiAsync(Guid communityId,Guid emojiId,string name,CancellationToken ct=default)=>AuthorizedClient.RenameCommunityEmojiAsync(communityId,emojiId,name,ct);
+    public Task DeleteCommunityEmojiAsync(Guid communityId,Guid emojiId,CancellationToken ct=default)=>AuthorizedClient.DeleteCommunityEmojiAsync(communityId,emojiId,ct);
+    public Task<byte[]> DownloadCommunityEmojiAsync(Guid communityId,Guid emojiId,CancellationToken ct=default)=>AuthorizedClient.DownloadCommunityEmojiAsync(communityId,emojiId,ct);
+
     internal NodeClient AuthorizedClient
     {
         get { EnsureAuthenticated(); return _client!; }
@@ -321,7 +334,7 @@ public sealed class NodeSession(
     internal async Task ApplyCommunityChangeAsync(CommunityStateChangedEvent change)
     {
         if (!IsAuthenticated) return;
-        await RefreshCommunitiesAsync();
+        if (change.Change != "expressions-updated") await RefreshCommunitiesAsync();
         CommunityChanged?.Invoke(change);
     }
 

@@ -83,7 +83,7 @@ public sealed class AvatarImageValidator(
             throw new AvatarImageValidationException(
                 $"The decoded {(banner ? "banner" : "avatar")} exceeds the {maximumPixels:N0}-pixel safety limit.");
         return new(content, detectedType, codec.Info.Width, codec.Info.Height,
-            detectedType == "image/gif" && codec.FrameCount > 1);
+            detectedType is "image/gif" or "image/webp" && codec.FrameCount > 1);
     }
 
     private static string? ContentType(SKEncodedImageFormat format) => format switch

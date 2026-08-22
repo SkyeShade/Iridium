@@ -1,0 +1,476 @@
+@using Iridium.Client.Core
+@using Iridium.Protocol
+@using Iridium.Web.Models
+@implements IDisposable
+@inject IWebAssemblyHostEnvironment HostEnvironment
+@inject ILogger<CommunityPermissionEditor> Logger
+
+<div class="scope-settings-shell" role="dialog" aria-modal="true" aria-label="@SettingsTitle"
+     tabindex="0" @onkeydown="HandleKeyDown" @onclick="CloseTargetContext">
+    <aside class="scope-settings-nav">
+        <div class="scope-settings-nav-inner">
+            <small>@SettingsTitle.ToUpperInvariant()</small>
+            <button class="@(_section == SettingsSection.Overview ? "active" : null)" @onclick="() => SetSection(SettingsSection.Overview)">Overview</button>
+            <button class="@(_section == SettingsSection.Permissions ? "active" : null)" @onclick="() => SetSection(SettingsSection.Permissions)">Permissions</button>
+            <div class="scope-settings-nav-separator"></div>
+            <button class="destructive" @onclick="OpenDeleteConfirmation"><Icon Name="trash" Size="15" /> Delete @(IsChannel ? "Channel" : "Category")</button>
+        </div>
+    </aside>
+    <main class="scope-settings-content">
+        <button type="button" class="scope-settings-close" title="Close" aria-label="Close settings" @onclick="RequestClose"><Icon Name="close" /></button>
+        <div class="scope-settings-content-inner">
+            @if (_section == SettingsSection.Overview)
+            {
+                <h1>@(IsChannel ? "Channel Overview" : "Category Overview")</h1>
+                <label class="settings-field"><span>@(IsChannel ? "Channel Name" : "Category Name")</span>
+                    <input value="@_name" maxlength="100" @oninput="NameChanged" />
+                </label>
+                @if (IsChannel)
+                {
+                    <label class="settings-field"><span>Channel Type</span>
+                        <div class="scope-type-readonly"><Icon Name="@(Channel!.Kind == CommunityChannelKind.Voice ? "speaker" : "channel")" /> @Channel.Kind</div>
+                    </label>
+                    <label class="settings-field"><span>Category</span>
+                        <select value="@_categoryValue" @onchange="CategoryChanged">
+                            <option value="">Server root</option>
+                            @foreach (var category in State.Categories.OrderBy(value => value.Position))
+                            { <option value="@category.Id">@category.Name</option> }
+                        </select>
+                    </label>
+                }
+                <p class="settings-help">Changes remain local until you press Save Changes.</p>
+            }
+            else if (_section == SettingsSection.Permissions)
+            {
+                <h1>Permissions</h1>
+                @if (_loading) { <div class="permission-loading">Loading permissions...</div> }
+                else
+                {
+                    <section class="private-scope-card">
+                        <div><strong>Private @(IsChannel ? "Channel" : "Category")</strong><span>Only selected roles and members can view this @(IsChannel ? "channel" : "category").</span></div>
+                        <button type="button" class="iridium-toggle @(_private ? "on" : null)" role="switch" aria-checked="@_private" @onclick="TogglePrivate"><span></span></button>
+                    </section>
+                    @if (_private)
+                    {
+                        <section class="private-access-panel">
+                            <header><div><strong>Who can access this @(IsChannel ? "channel" : "category")?</strong><span>Choose the roles and members who may see this @(IsChannel ? "channel" : "category").</span></div><button class="primary compact" @onclick="OpenAccessPicker"><Icon Name="plus" /> Add members or roles</button></header>
+                            <div class="access-group"><small>OWNER</small>
+                                @if (Owner is { } owner)
+                                { <div class="access-entry"><ProfileAvatar AccountId="owner.AccountId" DisplayName="owner.DisplayName" Size="tiny" Surface="base" /><span><strong>@owner.DisplayName</strong><small>Server Owner</small></span><Icon Name="lock" Size="13" /></div> }
+                            </div>
+                            @foreach (var access in PrivateAccessEntries)
+                            {
+                                <div class="access-entry">
+                                    @if (access.Kind == "Member") { <ProfileAvatar AccountId="access.Id" DisplayName="access.Label" Size="tiny" Surface="base" /> }
+                                    else { <span class="role-dot" style="background:@access.Color"></span> }
+                                    <span><strong style="color:@access.Color">@access.Label</strong><small>@access.Kind</small></span>
+                                    <button class="icon-button" title="Remove access" @onclick="() => RemovePrivateAccess(access.Key)"><Icon Name="close" Size="14" /></button>
+                                </div>
+                            }
+                        </section>
+                    }
+                    @if (IsChannel && _scope?.PermissionsSyncedToCategory == true)
+                    { <div class="sync-note"><Icon Name="lock" /> <span>Permissions are synced with @ParentCategoryName. Saving a change will make this channel independent.</span></div> }
+                    else if (IsChannel && Channel?.CategoryId is not null)
+                    { <button class="sync-button" disabled="@IsDirty" @onclick="SyncAsync">Sync Permissions with @ParentCategoryName</button> }
+
+                    <div class="permission-layout">
+                        <aside class="permission-subjects">
+                            <h2>Roles / Members</h2>
+                            <button class="subject @(_selected == EveryoneKey ? "selected" : null)" @onclick="() => Select(EveryoneKey)">@@everyone</button>
+                            @if (RoleSubjects.Any()) { <small class="subject-section-label">ROLES</small> }
+                            @foreach (var subject in RoleSubjects)
+                            {
+                                <button @key="subject.Key" class="subject @(_selected == subject.Key ? "selected" : null)" @onclick="() => Select(subject.Key)"
+                                        @oncontextmenu="args => OpenTargetContext(subject.Key, args)" @oncontextmenu:preventDefault="true" @oncontextmenu:stopPropagation="true">
+                                    <span class="subject-role"><i style="background:@subject.Color"></i><span style="color:@subject.Color">@subject.Label</span></span>
+                                </button>
+                            }
+                            @if (MemberSubjects.Any()) { <small class="subject-section-label">MEMBERS</small> }
+                            @foreach (var subject in MemberSubjects)
+                            {
+                                <button @key="subject.Key" class="subject member @(_selected == subject.Key ? "selected" : null)" @onclick="() => Select(subject.Key)"
+                                        @oncontextmenu="args => OpenTargetContext(subject.Key, args)" @oncontextmenu:preventDefault="true" @oncontextmenu:stopPropagation="true">
+                                    <ProfileAvatar AccountId="subject.Id" DisplayName="subject.Label" Size="tiny" Surface="sidebar" />
+                                    <span><strong style="color:@subject.Color">@subject.Label</strong><small>@subject.Identity</small></span>
+                                </button>
+                            }
+                            <button class="add-subject-button" @onclick="OpenSubjectPicker"><Icon Name="plus" /> Add Role or Member</button>
+                        </aside>
+                        <section class="permission-values">
+                            <div class="permission-subject-header"><div><small>PERMISSIONS FOR</small><strong style="color:@SelectedColor">@SelectedLabel</strong></div></div>
+                            @foreach (var group in PermissionGroups)
+                            {
+                                <section class="permission-group"><h3>@group.Name</h3>
+                                    @foreach (var permission in group.Permissions)
+                                    {
+                                        <div class="permission-row"><span><strong>@Label(permission)</strong><small>@Description(permission)</small></span>
+                                            <div class="tri-state" role="group" aria-label="@Label(permission)">
+                                                <button class="deny @(Value(permission) == PermissionOverwriteValue.Deny ? "active" : null)" @onclick="() => Set(permission, PermissionOverwriteValue.Deny)" aria-label="Deny" title="Deny"><Icon Name="close" Size="15" /></button>
+                                                <button class="neutral @(Value(permission) == PermissionOverwriteValue.Neutral ? "active" : null)" @onclick="() => Set(permission, PermissionOverwriteValue.Neutral)" aria-label="Neutral" title="Neutral"><Icon Name="minus" Size="15" /></button>
+                                                <button class="allow @(Value(permission) == PermissionOverwriteValue.Allow ? "active" : null)" @onclick="() => Set(permission, PermissionOverwriteValue.Allow)" aria-label="Allow" title="Allow"><Icon Name="check" Size="15" /></button>
+                                            </div>
+                                        </div>
+                                    }
+                                </section>
+                            }
+                        </section>
+                    </div>
+                    @if (_serverStateChanged)
+                    {
+                        <p class="settings-help">Permissions changed on the server. Your local draft is preserved until you save or reset.</p>
+                    }
+                }
+            }
+            @if (!string.IsNullOrWhiteSpace(_error)) { <p class="permission-error">@_error</p> }
+        </div>
+        @if (IsDirty)
+        {
+            <div class="settings-save-bar"><span>Careful - you have unsaved changes.</span><button class="secondary" disabled="@_busy" @onclick="ResetAsync">Reset</button><button class="primary" disabled="@_busy" @onclick="SaveAsync">@(_busy ? "Saving..." : "Save Changes")</button></div>
+        }
+    </main>
+</div>
+
+@if (_targetContextKey is not null)
+{
+    <div class="permission-target-menu" style="left:@($"{_targetContextX}px");top:@($"{_targetContextY}px")"
+         @onclick:stopPropagation="true" @oncontextmenu:preventDefault="true">
+        <button class="destructive" @onclick="RemoveContextTargetAsync"><Icon Name="trash" Size="14" /> Remove</button>
+    </div>
+}
+
+@if (_pickerOpen)
+{
+    <div class="permission-picker-backdrop" @onclick="ClosePicker"><section class="permission-picker" @onclick:stopPropagation="true">
+        <header><strong>Add members or roles</strong><button class="icon-button" @onclick="ClosePicker"><Icon Name="close" /></button></header>
+        <input class="picker-search" placeholder="Search this Server" value="@_search" @oninput="SearchChanged" autofocus />
+        <div class="picker-tabs"><button class="@(_pickerTab == "Roles" ? "active" : null)" @onclick="SelectRolesTab">Roles</button><button class="@(_pickerTab == "Members" ? "active" : null)" @onclick="SelectMembersTab">Members</button></div>
+        <div class="picker-results">
+            @foreach (var option in PickerOptions)
+            {
+                <button @onclick="() => AddSubject(option.Key)">
+                    @if (option.Kind == "Member") { <ProfileAvatar AccountId="option.Id" DisplayName="option.Label" Size="tiny" Surface="base" /> }
+                    else { <span class="role-dot" style="background:@option.Color"></span> }
+                    <span><strong style="color:@option.Color">@option.Label</strong><small>@option.Identity</small></span>
+                </button>
+            }
+        </div>
+    </section></div>
+}
+@if (_confirmClose)
+{
+    <div class="permission-picker-backdrop" tabindex="-1" autofocus @onkeydown="HandleConfirmationKeyDown"><section class="unsaved-confirm" role="alertdialog" aria-modal="true" aria-label="Unsaved Changes">
+        <button class="unsaved-confirm-close" title="Return to editing" aria-label="Close confirmation" @onclick="DismissCloseConfirmation"><Icon Name="close" /></button>
+        <h2>Unsaved Changes</h2><p>You have unsaved permission changes. Do you want to save them before leaving?</p>
+        <div><button class="secondary" @onclick="DiscardAndClose">Discard</button><button class="primary" @onclick="SaveAndCloseAsync">Save</button></div>
+    </section></div>
+}
+@if (_confirmDelete)
+{
+    <div class="permission-picker-backdrop" tabindex="-1" autofocus @onclick="DismissDeleteConfirmation" @onkeydown="HandleDeleteConfirmationKeyDown">
+        <section class="delete-confirm" role="alertdialog" aria-modal="true" aria-label="Delete @(IsChannel ? "Channel" : "Category")" @onclick:stopPropagation="true">
+            <button class="unsaved-confirm-close" title="Cancel" aria-label="Cancel deletion" @onclick="DismissDeleteConfirmation"><Icon Name="close" /></button>
+            <h2>Delete @(IsChannel ? "Channel" : "Category")</h2>
+            <p>Are you sure you want to delete @(IsChannel ? $"#{ScopeName}" : ScopeName)?<br />This cannot be undone.</p>
+            <div><button class="secondary" disabled="@_busy" @onclick="DismissDeleteConfirmation">Cancel</button><button class="danger" disabled="@_busy" @onclick="DeleteAsync">@(_busy ? "Deleting..." : $"Delete {(IsChannel ? "Channel" : "Category")}")</button></div>
+        </section>
+    </div>
+}
+
+@code {
+    private const string EveryoneKey = "everyone";
+    [Parameter, EditorRequired] public required CommunitySession State { get; set; }
+    [Parameter] public CommunityChannelDto? Channel { get; set; }
+    [Parameter] public CommunityCategoryDto? Category { get; set; }
+    [Parameter] public string InitialSection { get; set; } = "Overview";
+    [Parameter] public EventCallback<ChannelSettingsSubmission> OnSaveChannel { get; set; }
+    [Parameter] public EventCallback<CategorySettingsSubmission> OnSaveCategory { get; set; }
+    [Parameter] public EventCallback<Guid> OnDeleteChannel { get; set; }
+    [Parameter] public EventCallback<Guid> OnDeleteCategory { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    private enum SettingsSection { Overview, Permissions }
+    private SettingsSection _section; private PermissionOverwriteScopeDto? _scope;
+    private bool _loading = true, _busy, _pickerOpen, _pickerForAccess, _confirmClose, _confirmDelete;
+    private bool _permissionsDirty, _overviewDirty; private string _selected = EveryoneKey, _search = "", _pickerTab = "Roles";
+    private bool _serverStateChanged, _disposed;
+    private long _deferredRealtimeRevision;
+    private string _name = "", _categoryValue = ""; private string? _error;
+    private string? _targetContextKey; private double _targetContextX, _targetContextY;
+    private readonly Dictionary<string, PermissionOverwriteDto> _drafts = [];
+    private readonly Dictionary<string, PermissionOverwriteDto> _savedDrafts = [];
+    private bool IsChannel => Channel is not null; private Guid ScopeId => Channel?.Id ?? Category!.Id;
+    private string ScopeName => Channel?.Name ?? Category?.Name ?? "Server scope";
+    private string SettingsTitle => $"{(IsChannel ? "Channel" : "Category")} Settings";
+    private PermissionOverwriteScopeType ScopeType => IsChannel ? PermissionOverwriteScopeType.Channel : PermissionOverwriteScopeType.Category;
+    private CommunityManagementDto? Management => State.Management;
+    private CommunityMemberDto? Owner => Management?.Members.FirstOrDefault(value => value.IsOwner);
+    private bool IsDirty => _permissionsDirty || _overviewDirty;
+    private bool _private => _drafts.TryGetValue(EveryoneKey, out var everyone) && (everyone.Deny & CommunityPermission.ViewChannels) != 0;
+    private string ParentCategoryName => State.Categories.FirstOrDefault(value => value.Id == Channel?.CategoryId)?.Name ?? "parent category";
+
+    private static readonly CommunityPermission[] TextPermissions = [CommunityPermission.SendMessages, CommunityPermission.ReadMessageHistory, CommunityPermission.ManageMessages, CommunityPermission.AttachFiles, CommunityPermission.EmbedLinks, CommunityPermission.AddReactions, CommunityPermission.MentionEveryone];
+    private static readonly CommunityPermission[] VoicePermissions = [CommunityPermission.ConnectVoice, CommunityPermission.SpeakVoice, CommunityPermission.ShareScreen, CommunityPermission.MuteMembers, CommunityPermission.DeafenMembers, CommunityPermission.MoveMembers];
+    private IEnumerable<(string Name, IReadOnlyList<CommunityPermission> Permissions)> PermissionGroups { get { yield return ("General", CommunityPermissionCatalog.GeneralOverwritePermissions); if (Channel?.Kind != CommunityChannelKind.Voice) yield return ("Text", TextPermissions); if (Channel?.Kind != CommunityChannelKind.Text) yield return ("Voice", VoicePermissions); if (Category is not null) { yield return ("Text", TextPermissions); yield return ("Voice", VoicePermissions); } } }
+    private IEnumerable<(string Key,string Label,string Kind)> Subjects => _drafts.Keys.Where(value => value != EveryoneKey).Select(Describe).OrderBy(value => value.Kind).ThenBy(value => value.Label);
+    private IEnumerable<(string Key,string Label,string Kind,string? Color,Guid Id)> PrivateAccessEntries => Subjects.Select(value => { var (_, id) = ParseKey(value.Key); return (value.Key, value.Label, value.Kind, TargetColor(value.Key), id!.Value); }).Where(value => (_drafts[value.Key].Allow & CommunityPermission.ViewChannels) != 0);
+    private IEnumerable<(string Key,string Label,string? Color)> RoleSubjects => Subjects.Where(value => value.Kind == "Role")
+        .Select(value => (value.Key, value.Label, TargetColor(value.Key)));
+    private IEnumerable<(string Key,string Label,string Identity,string? Color,Guid Id)> MemberSubjects => Subjects.Where(value => value.Kind == "Member")
+        .Select(value => { var (_, id) = ParseKey(value.Key); var member = Management?.Members.FirstOrDefault(item => item.AccountId == id); return (value.Key, value.Label, member?.Username ?? "Member", TargetColor(value.Key), id!.Value); });
+    private IEnumerable<(string Key,string Label,string Kind,string? Color,Guid Id,string Identity)> PickerOptions =>
+        (_pickerForAccess ? AccessPickerSubjects : AvailableSubjects)
+        .Where(value => value.Kind == (_pickerTab == "Roles" ? "Role" : "Member") &&
+                        (string.IsNullOrWhiteSpace(_search) || value.Label.Contains(_search, StringComparison.OrdinalIgnoreCase)))
+        .Select(value => { var (_, id) = ParseKey(value.Key); var member = Management?.Members.FirstOrDefault(item => item.AccountId == id); return (value.Key,value.Label,value.Kind,TargetColor(value.Key),id!.Value,value.Kind == "Member" ? member?.Username ?? "Member" : "Role"); });
+    private IEnumerable<(string Key,string Label,string Kind)> AvailableSubjects { get { if (Management is null) yield break; foreach (var role in Management.Roles.Where(value => !value.IsDefault)) { var key=$"role:{role.Id}"; if (!_drafts.ContainsKey(key)) yield return(key,role.Name,"Role"); } foreach (var member in Management.Members.Where(value => !value.IsOwner)) { var key=$"member:{member.AccountId}"; if (!_drafts.ContainsKey(key)) yield return(key,member.DisplayName,"Member"); } } }
+    private IEnumerable<(string Key,string Label,string Kind)> AccessPickerSubjects { get { if (Management is null) yield break; foreach (var role in Management.Roles.Where(value => !value.IsDefault)) { var key=$"role:{role.Id}"; if (!_drafts.TryGetValue(key,out var row)||(row.Allow&CommunityPermission.ViewChannels)==0) yield return(key,role.Name,"Role"); } foreach (var member in Management.Members.Where(value => !value.IsOwner)) { var key=$"member:{member.AccountId}"; if (!_drafts.TryGetValue(key,out var row)||(row.Allow&CommunityPermission.ViewChannels)==0) yield return(key,member.DisplayName,"Member"); } } }
+    private string SelectedLabel => _selected == EveryoneKey ? "@everyone" : Describe(_selected).Label;
+    private string? SelectedColor => _selected == EveryoneKey ? null : TargetColor(_selected);
+
+    protected override async Task OnInitializedAsync()
+    {
+        State.Changed += OnCommunityStateChanged;
+        _section = Enum.TryParse<SettingsSection>(InitialSection, true, out var parsed) ? parsed : SettingsSection.Overview;
+        _confirmDelete = string.Equals(InitialSection, "Delete", StringComparison.OrdinalIgnoreCase);
+        _name = ScopeName; _categoryValue = Channel?.CategoryId?.ToString() ?? "";
+        try { if (State.Management is null) await State.LoadManagementAsync(); await LoadPermissionsAsync(); }
+        catch (Exception exception) { _error = exception.Message; }
+        finally { _loading = false; }
+    }
+    private async Task LoadPermissionsAsync() => ApplyScope(await State.GetPermissionScopeAsync(ScopeType, ScopeId));
+    private void ApplyScope(PermissionOverwriteScopeDto scope)
+    {
+        if (HostEnvironment.IsDevelopment())
+            Logger.LogInformation(
+                "PermissionEditorReconcileStarted CommunityId={CommunityId} ScopeId={ScopeId} ScopeType={ScopeType} SelectedTarget={SelectedTarget} Dirty={Dirty} IncomingRevision={Revision}",
+                scope.CommunityId, scope.ScopeId, scope.ScopeType, _selected, IsDirty, State.AppliedRevision);
+        var selectedKey = _selected;
+        _scope = scope;
+        _drafts.Clear();
+        _drafts[EveryoneKey] = new(PermissionOverwriteTargetType.Everyone, null,
+            CommunityPermission.None, CommunityPermission.None);
+        foreach (var row in scope.Overwrites) _drafts[Key(row.TargetType, row.TargetId)] = row;
+        _selected = _drafts.ContainsKey(selectedKey) ? selectedKey : EveryoneKey;
+        SnapshotDrafts();
+        _serverStateChanged = false;
+        if (HostEnvironment.IsDevelopment())
+            Logger.LogInformation(
+                "PermissionEditorReconcileSucceeded CommunityId={CommunityId} ScopeId={ScopeId} ScopeType={ScopeType} SelectedTarget={SelectedTarget} Revision={Revision}",
+                scope.CommunityId, scope.ScopeId, scope.ScopeType, _selected, State.AppliedRevision);
+    }
+    private void SnapshotDrafts(){_savedDrafts.Clear();foreach(var pair in _drafts)_savedDrafts[pair.Key]=pair.Value;_permissionsDirty=false;}
+    private void SetSection(SettingsSection value)
+    {
+        CloseTargetContext();
+        if (value == _section) return;
+        if (IsDirty)
+        {
+            _pendingSection = value;
+            _confirmClose = true;
+            return;
+        }
+        _section = value;
+    }
+    private void NameChanged(ChangeEventArgs args){_name=args.Value?.ToString()??"";_overviewDirty=_name!=ScopeName||_categoryValue!=(Channel?.CategoryId?.ToString()??"");}
+    private void CategoryChanged(ChangeEventArgs args){_categoryValue=args.Value?.ToString()??"";_overviewDirty=_name!=ScopeName||_categoryValue!=(Channel?.CategoryId?.ToString()??"");}
+    private void Select(string key)=>_selected=key;
+    private PermissionOverwriteValue Value(CommunityPermission permission)
+    {
+        if (!_drafts.TryGetValue(_selected, out var row) && !_drafts.TryGetValue(EveryoneKey, out row))
+            return PermissionOverwriteValue.Neutral;
+        return (row.Allow & permission) != 0 ? PermissionOverwriteValue.Allow :
+            (row.Deny & permission) != 0 ? PermissionOverwriteValue.Deny : PermissionOverwriteValue.Neutral;
+    }
+    private void Set(CommunityPermission permission,PermissionOverwriteValue value){var row=_drafts[_selected];var allow=row.Allow&~permission;var deny=row.Deny&~permission;if(value==PermissionOverwriteValue.Allow)allow|=permission;if(value==PermissionOverwriteValue.Deny)deny|=permission;_drafts[_selected]=row with{Allow=allow,Deny=deny};_permissionsDirty=true;}
+    private void TogglePrivate()
+    {
+        var wasPrivate = _private;
+        _selected = EveryoneKey;
+        if (!wasPrivate) { Set(CommunityPermission.ViewChannels, PermissionOverwriteValue.Deny); return; }
+        foreach (var key in _drafts.Keys.ToArray())
+        {
+            var row = _drafts[key];
+            _drafts[key] = row with
+            {
+                Allow = row.Allow & ~CommunityPermission.ViewChannels,
+                Deny = row.Deny & ~CommunityPermission.ViewChannels
+            };
+        }
+        _permissionsDirty = true;
+    }
+    private void OpenSubjectPicker(){_pickerForAccess=false;_pickerOpen=true;_search="";}
+    private void OpenAccessPicker(){_pickerForAccess=true;_pickerOpen=true;_search="";}
+    private void ClosePicker(){_pickerOpen=false;}
+    private void SearchChanged(ChangeEventArgs args)=>_search=args.Value?.ToString()??"";
+    private void SelectRolesTab() => _pickerTab = "Roles";
+    private void SelectMembersTab() => _pickerTab = "Members";
+    private void AddSubject(string key){var(type,id)=ParseKey(key);if(!_drafts.TryGetValue(key,out var row))row=new(type,id,CommunityPermission.None,CommunityPermission.None);if(_pickerForAccess)row=row with{Allow=row.Allow|CommunityPermission.ViewChannels,Deny=row.Deny&~CommunityPermission.ViewChannels};_drafts[key]=row;_selected=key;_permissionsDirty=true;_pickerOpen=false;}
+    private void OpenTargetContext(string key, MouseEventArgs args) { _selected = key; _targetContextKey = key; _targetContextX = args.ClientX; _targetContextY = args.ClientY; }
+    private void CloseTargetContext() => _targetContextKey = null;
+    private Task RemoveContextTargetAsync()
+    {
+        if (_targetContextKey is not { } key || key == EveryoneKey) return Task.CompletedTask;
+        CloseTargetContext();
+        _drafts.Remove(key);
+        if (_selected == key) _selected = EveryoneKey;
+        RecalculatePermissionDirtyState();
+        return Task.CompletedTask;
+    }
+    private void RecalculatePermissionDirtyState()
+    {
+        _permissionsDirty = _drafts.Count != _savedDrafts.Count ||
+                            _drafts.Any(pair => !_savedDrafts.TryGetValue(pair.Key, out var saved) || saved != pair.Value);
+    }
+    private void RemovePrivateAccess(string key){var row=_drafts[key];_drafts[key]=row with{Allow=row.Allow&~CommunityPermission.ViewChannels};_permissionsDirty=true;}
+    private async Task SaveAsync()
+    {
+        _busy = true;
+        _error = null;
+        try
+        {
+            if (_overviewDirty)
+            {
+                if (IsChannel)
+                {
+                    Guid? category = Guid.TryParse(_categoryValue, out var id) ? id : null;
+                    await OnSaveChannel.InvokeAsync(new(Channel!.Id, _name, category, Channel.Kind));
+                }
+                else await OnSaveCategory.InvokeAsync(new(Category!.Id, _name, Category.ParentCategoryId));
+                _overviewDirty = false;
+            }
+            if (_permissionsDirty)
+            {
+                if (HostEnvironment.IsDevelopment())
+                    Logger.LogInformation(
+                        "PermissionSaveStarted CommunityId={CommunityId} ScopeId={ScopeId} ScopeType={ScopeType} SelectedTarget={SelectedTarget} Dirty={Dirty} CurrentRevision={Revision}",
+                        State.CommunityId, ScopeId, ScopeType, _selected, IsDirty, State.AppliedRevision);
+                var result = await State.ReplacePermissionOverwritesAsync(ScopeType, ScopeId, _drafts.Values.ToArray());
+                ApplyScope(result.Scope);
+                if (_deferredRealtimeRevision > result.Revision)
+                    await ReconcileRealtimeAsync(_deferredRealtimeRevision);
+                _deferredRealtimeRevision = 0;
+            }
+        }
+        catch (Exception exception)
+        {
+            _error = exception.Message;
+            if (HostEnvironment.IsDevelopment())
+                Logger.LogError(exception,
+                    "PermissionSaveResponseFailed CommunityId={CommunityId} ScopeId={ScopeId} ScopeType={ScopeType} SelectedTarget={SelectedTarget}",
+                    State.CommunityId, ScopeId, ScopeType, _selected);
+        }
+        finally { _busy = false; }
+    }
+    private async Task ResetAsync()
+    {
+        _name = ScopeName;
+        _categoryValue = Channel?.CategoryId?.ToString() ?? "";
+        _overviewDirty = false;
+        if (_serverStateChanged)
+        {
+            _permissionsDirty = false;
+            await ReconcileRealtimeAsync(_deferredRealtimeRevision);
+            _deferredRealtimeRevision = 0;
+            return;
+        }
+        _drafts.Clear();
+        foreach (var pair in _savedDrafts) _drafts[pair.Key] = pair.Value;
+        _selected = _drafts.ContainsKey(_selected) ? _selected : EveryoneKey;
+        _permissionsDirty = false;
+    }
+    private async Task SyncAsync(){try{await State.SyncChannelPermissionsAsync(Channel!.Id);await LoadPermissionsAsync();}catch(Exception exception){_error=exception.Message;}}
+    private async Task DeleteAsync(){_busy=true;_error=null;try{if(IsChannel)await OnDeleteChannel.InvokeAsync(Channel!.Id);else await OnDeleteCategory.InvokeAsync(Category!.Id);}catch(Exception exception){_error=exception.Message;_confirmDelete=false;}finally{_busy=false;}}
+    private void OpenDeleteConfirmation(){CloseTargetContext();_confirmDelete=true;}
+    private void DismissDeleteConfirmation()=>_confirmDelete=false;
+    private void RequestClose(){CloseTargetContext();if(IsDirty){_pendingClose=true;_confirmClose=true;}else _=OnClose.InvokeAsync();}
+    private void DismissCloseConfirmation() { _confirmClose = false; _pendingClose = false; _pendingSection = null; }
+    private bool _pendingClose; private SettingsSection? _pendingSection;
+    private async Task DiscardAndClose()
+    {
+        await ResetAsync();
+        _confirmClose = false;
+        await CompletePendingActionAsync();
+    }
+    private async Task SaveAndCloseAsync(){await SaveAsync();if(IsDirty){_confirmClose=false;return;}_confirmClose=false;await CompletePendingActionAsync();}
+    private async Task CompletePendingActionAsync()
+    {
+        if (_pendingSection is { } section)
+        {
+            _pendingSection = null;
+            _section = section;
+            return;
+        }
+        if (_pendingClose)
+        {
+            _pendingClose = false;
+            await OnClose.InvokeAsync();
+        }
+    }
+    private void HandleKeyDown(KeyboardEventArgs args){if(args.Key=="Escape"){if(_targetContextKey is not null)CloseTargetContext();else if(_pickerOpen)ClosePicker();else if(_confirmDelete)DismissDeleteConfirmation();else if(_confirmClose)DismissCloseConfirmation();else RequestClose();}}
+    private void HandleConfirmationKeyDown(KeyboardEventArgs args) { if (args.Key == "Escape") DismissCloseConfirmation(); }
+    private void HandleDeleteConfirmationKeyDown(KeyboardEventArgs args) { if (args.Key == "Escape") DismissDeleteConfirmation(); }
+    private void OnCommunityStateChanged() => _ = InvokeAsync(async () =>
+    {
+        if (_disposed) return;
+        var revision = State.AppliedRevision;
+        if (_busy || IsDirty)
+        {
+            _deferredRealtimeRevision = Math.Max(_deferredRealtimeRevision, revision);
+            if (!_busy) _serverStateChanged = true;
+            if (HostEnvironment.IsDevelopment())
+                Logger.LogInformation(
+                    "PermissionEditorReconcileDeferred CommunityId={CommunityId} ScopeId={ScopeId} ScopeType={ScopeType} SelectedTarget={SelectedTarget} Dirty={Dirty} IncomingRevision={Revision}",
+                    State.CommunityId, ScopeId, ScopeType, _selected, IsDirty, revision);
+            StateHasChanged();
+            return;
+        }
+        await ReconcileRealtimeAsync(revision);
+    });
+    private async Task ReconcileRealtimeAsync(long revision)
+    {
+        if (_disposed) return;
+        try
+        {
+            if (HostEnvironment.IsDevelopment())
+                Logger.LogInformation(
+                    "PermissionEditorReconcileStarted CommunityId={CommunityId} ScopeId={ScopeId} ScopeType={ScopeType} SelectedTarget={SelectedTarget} Dirty={Dirty} IncomingRevision={Revision}",
+                    State.CommunityId, ScopeId, ScopeType, _selected, IsDirty, revision);
+            var scope = await State.GetPermissionScopeAsync(ScopeType, ScopeId);
+            if (_disposed) return;
+            if (IsDirty)
+            {
+                _serverStateChanged = true;
+                _deferredRealtimeRevision = Math.Max(_deferredRealtimeRevision, revision);
+                return;
+            }
+            ApplyScope(scope);
+        }
+        catch (Exception exception)
+        {
+            _error = exception.Message;
+            if (HostEnvironment.IsDevelopment())
+                Logger.LogError(exception,
+                    "PermissionEditorReconcileFailed CommunityId={CommunityId} ScopeId={ScopeId} ScopeType={ScopeType} SelectedTarget={SelectedTarget} IncomingRevision={Revision}",
+                    State.CommunityId, ScopeId, ScopeType, _selected, revision);
+        }
+    }
+    private (string Key,string Label,string Kind) Describe(string key){var(type,id)=ParseKey(key);return type==PermissionOverwriteTargetType.Role?(key,Management?.Roles.FirstOrDefault(value=>value.Id==id)?.Name??"Deleted role","Role"):(key,Management?.Members.FirstOrDefault(value=>value.AccountId==id)?.DisplayName??"Former member","Member");}
+    private string? TargetColor(string key)
+    {
+        var (type, id) = ParseKey(key);
+        if (id is null || Management is null) return null;
+        if (type == PermissionOverwriteTargetType.Role)
+            return CommunityRolePresentation.RoleColor(id.Value, Management.Roles);
+        var member = Management.Members.FirstOrDefault(value => value.AccountId == id);
+        return member is null ? null : CommunityRolePresentation.MemberColor(member, Management.Roles);
+    }
+    private static string Key(PermissionOverwriteTargetType type,Guid? id)=>type==PermissionOverwriteTargetType.Everyone?EveryoneKey:$"{type.ToString().ToLowerInvariant()}:{id}";
+    private static (PermissionOverwriteTargetType Type,Guid? Id) ParseKey(string key){if(key==EveryoneKey)return(PermissionOverwriteTargetType.Everyone,null);var parts=key.Split(':',2);return(Enum.Parse<PermissionOverwriteTargetType>(parts[0],true),Guid.Parse(parts[1]));}
+    private static string Label(CommunityPermission permission)=>string.Concat(permission.ToString().Select((c,i)=>i>0&&char.IsUpper(c)?$" {c}":c.ToString()));
+    private static string Description(CommunityPermission permission)=>permission switch{CommunityPermission.ManageChannels=>"Allows editing channel or category settings.",CommunityPermission.ManagePermissions=>"Allows editing permission overwrites.",CommunityPermission.SendMessages=>"Allows sending messages in text channels.",CommunityPermission.ReadMessageHistory=>"Allows loading messages sent previously.",CommunityPermission.ConnectVoice=>"Allows joining voice channels.",CommunityPermission.SpeakVoice=>"Allows transmitting microphone audio.",CommunityPermission.ShareScreen=>"Allows publishing a screen stream.",_=>$"Controls {Label(permission).ToLowerInvariant()} in this scope."};
+    public void Dispose()
+    {
+        _disposed = true;
+        State.Changed -= OnCommunityStateChanged;
+    }
+}

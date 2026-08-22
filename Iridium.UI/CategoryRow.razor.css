@@ -8,6 +8,7 @@
 .chevron.collapsed { transform: rotate(-90deg); }
 .chevron ::deep svg { display: block; width: 100%; height: 100%; }
 .category-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .68rem; font-weight: 750; letter-spacing: .07em; text-transform: uppercase; }
+.private-lock{display:grid;place-items:center;flex:0 0 auto;color:var(--text-faint)}.private-lock ::deep svg{display:block}.category-settings{width:1.45rem;height:1.45rem;display:grid;place-items:center;flex:0 0 auto;padding:.3rem;border:0;border-radius:.3rem;color:var(--text-faint);background:transparent;cursor:pointer;opacity:0}.category-heading:hover .category-settings{opacity:1}.category-settings:hover{color:var(--text-strong);background:var(--surface-hover)}.category-settings ::deep svg{width:100%;height:100%}
 .create-channel{width:1.45rem;height:1.45rem;display:grid;place-items:center;flex:0 0 auto;padding:.3rem;border:0;border-radius:.3rem;color:var(--text-faint);background:transparent;cursor:pointer}.create-channel:hover{color:var(--text-strong);background:var(--surface-hover)}.create-channel ::deep svg{width:100%;height:100%}.category-block.has-unread>.category-heading{color:var(--text)}
 .drop-label { flex: 0 0 auto; color: var(--accent-soft); font-size: .62rem; font-weight: 650; letter-spacing: 0; text-transform: none; }
 .category-block.drop-target > .category-heading { color: var(--accent-soft); }

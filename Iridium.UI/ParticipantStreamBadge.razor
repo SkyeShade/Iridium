@@ -1,0 +1,18 @@
+@using Iridium.Protocol
+
+@if (Stream is not null)
+{
+    <button type="button" class="participant-stream-badge @(IsLocal ? "local" : null)"
+            title="@(IsLocal ? "Preview your screen share" : $"Watch {Stream.OwnerDisplayName}'s screen")"
+            @onclick="() => OnWatch.InvokeAsync(Stream.StreamId)" @onclick:stopPropagation="true">
+        @if (!string.IsNullOrWhiteSpace(ThumbnailUrl)) { <img src="@ThumbnailUrl" alt="" /> }
+        <span class="stream-badge-overlay"><b>LIVE</b><Icon Name="screen" /> @(IsLocal ? "Preview" : "Watch")</span>
+    </button>
+}
+
+@code {
+    [Parameter] public PublishedVoiceStreamDto? Stream { get; set; }
+    [Parameter] public bool IsLocal { get; set; }
+    [Parameter] public string? ThumbnailUrl { get; set; }
+    [Parameter] public EventCallback<Guid> OnWatch { get; set; }
+}

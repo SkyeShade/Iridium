@@ -8,49 +8,51 @@ namespace Iridium.Server.Calls;
 
 public sealed class DirectWebRtcMediaService(ICallService calls, IOptions<MediaOptions> options) : IMediaService
 {
-    private sealed class NegotiationState(Guid negotiationId, string offerSdp)
+    private sealed class NegotiationState(Guid negotiationId, Guid offererAccountId,
+        WebRtcNegotiationKind kind, string offerSdp)
     {
         public Guid NegotiationId { get; } = negotiationId;
         public string OfferSdp { get; } = offerSdp;
+        public Guid OffererAccountId { get; } = offererAccountId;
+        public WebRtcNegotiationKind Kind { get; } = kind;
         public bool AnswerForwarded { get; set; }
         public DateTimeOffset LastActivity { get; set; } = DateTimeOffset.UtcNow;
     }
 
-    private readonly ConcurrentDictionary<Guid, NegotiationState> _negotiations = [];
+    // Multiple negotiation identifiers may briefly coexist during offer glare. Keeping them
+    // separately lets the polite peer roll back and answer the winning offer without a later
+    // colliding offer invalidating that answer at the server.
+    private readonly ConcurrentDictionary<(Guid CallId, Guid NegotiationId), NegotiationState> _negotiations = [];
 
     public CallMediaConfigurationDto GetConfiguration() => new(options.Value.Mode,
         options.Value.IceServers.Where(value => value.Urls.Count > 0)
             .Select(value => new IceServerDto(value.Urls, value.Username, value.Credential)).ToList());
 
     public MediaSignalRoute AuthorizeOffer(Guid callId, Guid senderAccountId, string senderConnectionId,
-        Guid negotiationId, WebRtcSessionDescription description)
+        Guid negotiationId, WebRtcNegotiationKind negotiationKind, WebRtcSessionDescription description)
     {
         ValidateNegotiationId(negotiationId);
         ValidateDescription(description, "offer");
-        var call = calls.RequireParticipant(callId, senderAccountId, CallState.Ringing, CallState.Active);
-        if (call.CallerAccountId != senderAccountId) throw new HubException("Only the caller can send the WebRTC offer.");
+        var call = calls.RequireParticipant(callId, senderAccountId, CallState.Active);
+        if (negotiationKind == WebRtcNegotiationKind.Initial && call.CallerAccountId != senderAccountId)
+            throw new HubException("Only the caller can send the initial WebRTC offer.");
         var target = calls.RequireSignalingRoute(callId, senderAccountId, senderConnectionId, CallState.Active);
         PruneExpiredNegotiations();
-        while (true)
+        var key = (callId, negotiationId);
+        var proposed = new NegotiationState(negotiationId, senderAccountId, negotiationKind, description.Sdp);
+        if (_negotiations.TryAdd(key, proposed))
+            return new MediaSignalRoute(target.TargetAccountId, target.TargetConnectionId, true,
+                NegotiationKind: negotiationKind);
+        var existing = _negotiations[key];
+        lock (existing)
         {
-            if (!_negotiations.TryGetValue(callId, out var existing))
-            {
-                if (_negotiations.TryAdd(callId, new NegotiationState(negotiationId, description.Sdp)))
-                    return new MediaSignalRoute(target.TargetAccountId, target.TargetConnectionId, true);
-                continue;
-            }
-            lock (existing)
-            {
-                if (existing.NegotiationId == negotiationId)
-                {
-                    existing.LastActivity = DateTimeOffset.UtcNow;
-                    if (!string.Equals(existing.OfferSdp, description.Sdp, StringComparison.Ordinal))
-                        throw new HubException("A WebRTC negotiation identifier cannot be reused for a different offer.");
-                    return new MediaSignalRoute(target.TargetAccountId, target.TargetConnectionId, false, "duplicate-offer");
-                }
-                if (_negotiations.TryUpdate(callId, new NegotiationState(negotiationId, description.Sdp), existing))
-                    return new MediaSignalRoute(target.TargetAccountId, target.TargetConnectionId, true);
-            }
+            existing.LastActivity = DateTimeOffset.UtcNow;
+            if (!string.Equals(existing.OfferSdp, description.Sdp, StringComparison.Ordinal))
+                throw new HubException("A WebRTC negotiation identifier cannot be reused for a different offer.");
+            if (existing.OffererAccountId != senderAccountId || existing.Kind != negotiationKind)
+                throw new HubException("A WebRTC negotiation identifier cannot be reused by another participant or negotiation kind.");
+            return new MediaSignalRoute(target.TargetAccountId, target.TargetConnectionId, false,
+                "duplicate-offer", negotiationKind);
         }
     }
 
@@ -59,17 +61,20 @@ public sealed class DirectWebRtcMediaService(ICallService calls, IOptions<MediaO
     {
         ValidateNegotiationId(negotiationId);
         ValidateDescription(description, "answer");
-        var call = calls.RequireParticipant(callId, senderAccountId, CallState.Active);
-        if (call.CallerAccountId == senderAccountId) throw new HubException("Only the callee can send the WebRTC answer.");
+        calls.RequireParticipant(callId, senderAccountId, CallState.Active);
         var target = calls.RequireSignalingRoute(callId, senderAccountId, senderConnectionId, CallState.Active);
-        if (!_negotiations.TryGetValue(callId, out var negotiation) || negotiation.NegotiationId != negotiationId)
+        if (!_negotiations.TryGetValue((callId, negotiationId), out var negotiation))
             return new MediaSignalRoute(target.TargetAccountId, target.TargetConnectionId, false, "stale-negotiation");
         lock (negotiation)
         {
+            if (negotiation.OffererAccountId == senderAccountId)
+                throw new HubException("The WebRTC offerer cannot answer its own negotiation.");
             negotiation.LastActivity = DateTimeOffset.UtcNow;
-            if (negotiation.AnswerForwarded) return new MediaSignalRoute(target.TargetAccountId, target.TargetConnectionId, false, "duplicate-answer");
+            if (negotiation.AnswerForwarded) return new MediaSignalRoute(target.TargetAccountId, target.TargetConnectionId,
+                false, "duplicate-answer", negotiation.Kind);
             negotiation.AnswerForwarded = true;
-            return new MediaSignalRoute(target.TargetAccountId, target.TargetConnectionId, true);
+            return new MediaSignalRoute(target.TargetAccountId, target.TargetConnectionId, true,
+                NegotiationKind: negotiation.Kind);
         }
     }
 
@@ -84,7 +89,7 @@ public sealed class DirectWebRtcMediaService(ICallService calls, IOptions<MediaO
         // ICE can be raised by setLocalDescription before the caller's SendOffer invocation
         // reaches the hub. Forward it with its negotiation identity; the receiving client
         // buffers current-generation ICE and discards stale-generation ICE.
-        if (_negotiations.TryGetValue(callId, out var negotiation) && negotiation.NegotiationId == negotiationId)
+        if (_negotiations.TryGetValue((callId, negotiationId), out var negotiation))
             negotiation.LastActivity = DateTimeOffset.UtcNow;
         return new MediaSignalRoute(target.TargetAccountId, target.TargetConnectionId, true);
     }

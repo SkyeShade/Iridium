@@ -327,21 +327,118 @@ export function syncComposerPreview(textarea) {
 export function focusComposer(textarea) {
     if (!textarea) return;
     textarea.focus({ preventScroll: true });
-    const end = textarea.value.length;
-    textarea.setSelectionRange(end, end);
+    setComposerCaret(textarea, composerSnapshot(textarea).content.length);
 }
 
 export function composerCaret(textarea) {
     if (!textarea) return 0;
-    return textarea.selectionStart ?? textarea.value.length;
+    return composerSelectionOffset(textarea);
 }
 
 export function focusComposerAt(textarea, position) {
     if (!textarea) return;
     textarea.focus({ preventScroll: true });
-    const caret = Math.max(0, Math.min(Number(position) || 0, textarea.value.length));
-    textarea.setSelectionRange(caret, caret);
+    setComposerCaret(textarea, position);
 }
+
+export function updateComposerEmojiRanges(textarea, ranges) {
+    // Compatibility no-op. Custom emoji are now real contenteditable=false nodes, not text ranges.
+}
+
+const composerObjectCharacter = "\uFFFC";
+
+function isComposerEmoji(node) { return node?.nodeType === Node.ELEMENT_NODE && node.classList?.contains("composer-inline-emoji"); }
+function composerNodeLength(node) {
+    if (!node) return 0;
+    if (node.nodeType === Node.TEXT_NODE) return node.data.length;
+    if (isComposerEmoji(node)) return 1;
+    if (node.nodeName === "BR") return 1;
+    return Array.from(node.childNodes).reduce((sum, child) => sum + composerNodeLength(child), 0);
+}
+function appendComposerSnapshot(node, result) {
+    if (node.nodeType === Node.TEXT_NODE) { result.content += node.data; return; }
+    if (isComposerEmoji(node)) {
+        result.tokens.push({ start: result.content.length, emojiId: node.dataset.emojiId, name: node.dataset.name, communityId: node.dataset.communityId });
+        result.content += composerObjectCharacter;
+        return;
+    }
+    if (node.nodeName === "BR") { result.content += "\n"; return; }
+    for (const child of node.childNodes) appendComposerSnapshot(child, result);
+}
+function composerSnapshot(editor) {
+    const result = { content: "", caret: 0, tokens: [] };
+    if (!editor) return result;
+    for (const child of editor.childNodes) appendComposerSnapshot(child, result);
+    result.caret = composerSelectionOffset(editor);
+    return result;
+}
+function composerOffsetWithin(root, target, targetOffset) {
+    let total = 0, found = false;
+    const visit = node => {
+        if (found) return;
+        if (node === target) {
+            if (node.nodeType === Node.TEXT_NODE) total += Math.min(targetOffset, node.data.length);
+            else for (let i = 0; i < Math.min(targetOffset, node.childNodes.length); i++) total += composerNodeLength(node.childNodes[i]);
+            found = true; return;
+        }
+        if (node.nodeType === Node.TEXT_NODE || isComposerEmoji(node) || node.nodeName === "BR") { total += composerNodeLength(node); return; }
+        for (const child of node.childNodes) visit(child);
+    };
+    visit(root);
+    return total;
+}
+function composerSelectionOffset(editor) {
+    const selection = window.getSelection();
+    if (!selection?.rangeCount || !editor.contains(selection.focusNode)) return composerNodeLength(editor);
+    return composerOffsetWithin(editor, selection.focusNode, selection.focusOffset);
+}
+function composerPoint(editor, requested) {
+    let remaining = Math.max(0, Math.min(Number(requested) || 0, composerNodeLength(editor)));
+    const find = node => {
+        if (node.nodeType === Node.TEXT_NODE) {
+            if (remaining <= node.data.length) return { node, offset: remaining };
+            remaining -= node.data.length; return null;
+        }
+        if (isComposerEmoji(node) || node.nodeName === "BR") {
+            const parent = node.parentNode, index = Array.prototype.indexOf.call(parent.childNodes, node);
+            if (remaining === 0) return { node: parent, offset: index };
+            if (remaining === 1) return { node: parent, offset: index + 1 };
+            remaining--; return null;
+        }
+        for (const child of node.childNodes) { const point = find(child); if (point) return point; }
+        return null;
+    };
+    return find(editor) || { node: editor, offset: editor.childNodes.length };
+}
+function setComposerCaret(editor, position) {
+    const point = composerPoint(editor, position), selection = window.getSelection(), range = document.createRange();
+    range.setStart(point.node, point.offset); range.collapse(true); selection.removeAllRanges(); selection.addRange(range);
+}
+function createComposerEmoji(token) {
+    const span = document.createElement("span");
+    span.className = "composer-inline-emoji"; span.contentEditable = "false";
+    span.dataset.emojiId = token.emojiId; span.dataset.name = token.name; span.dataset.communityId = token.communityId;
+    span.setAttribute("role", "img"); span.setAttribute("aria-label", `:${token.name}:`);
+    const image = document.createElement("img"); image.src = token.mediaUrl; image.alt = `:${token.name}:`; image.draggable = false;
+    span.appendChild(image); return span;
+}
+function replaceComposerRange(editor, start, end, replacement) {
+    const first = composerPoint(editor, start), last = composerPoint(editor, end), range = document.createRange();
+    const replacementLength = composerNodeLength(replacement);
+    range.setStart(first.node, first.offset); range.setEnd(last.node, last.offset); range.deleteContents();
+    range.insertNode(replacement); setComposerCaret(editor, start + replacementLength);
+    editor.normalize(); resizeComposer(editor); return composerSnapshot(editor);
+}
+export function insertComposerEmoji(editor, token, start = null, end = null, addSpace = true) {
+    const caret = composerSelectionOffset(editor), from = start === null ? caret : start, to = end === null ? caret : end;
+    const fragment = document.createDocumentFragment(); fragment.appendChild(createComposerEmoji(token));
+    if (addSpace) fragment.appendChild(document.createTextNode(" "));
+    return replaceComposerRange(editor, from, to, fragment);
+}
+export function replaceComposerText(editor, start, end, text) {
+    return replaceComposerRange(editor, start, end, document.createTextNode(text));
+}
+export function clearComposer(editor) { if (editor) editor.replaceChildren(); resizeComposer(editor); }
 
 export function wireSearchAutocomplete(input, dotNetReference) {
     if (!input || searchAutocompleteHandlers.has(input)) return;
@@ -407,11 +504,34 @@ function resizeMessageEditor(textarea) {
 export function wireComposer(textarea, dotNetReference, composerRoot) {
     if (!textarea || composerHandlers.has(textarea)) return;
     let submitting = false;
+    const state = {};
     const keydown = async event => {
+        const selection = window.getSelection();
+        if (selection?.isCollapsed && textarea.contains(selection.focusNode)) {
+            const caret = composerSelectionOffset(textarea), snapshot = composerSnapshot(textarea);
+            const before = snapshot.tokens.find(token => token.start + 1 === caret);
+            const after = snapshot.tokens.find(token => token.start === caret);
+            if ((event.key === "Backspace" && before) || (event.key === "Delete" && after)) {
+                event.preventDefault();
+                const token = event.key === "Backspace" ? before : after;
+                replaceComposerRange(textarea, token.start, token.start + 1, document.createTextNode(""));
+                await dotNetReference.invokeMethodAsync("ComposerDocumentChangedAsync", composerSnapshot(textarea));
+                return;
+            }
+            if (event.key === "ArrowLeft" && before) { event.preventDefault(); setComposerCaret(textarea, before.start); return; }
+            if (event.key === "ArrowRight" && after) { event.preventDefault(); setComposerCaret(textarea, after.start + 1); return; }
+        }
         const mentionMenu = textarea.closest(".composer-shell")?.querySelector(".mention-suggestions");
         if (mentionMenu && ["ArrowDown", "ArrowUp", "Enter", "Tab", "Escape"].includes(event.key)) {
             event.preventDefault();
             await dotNetReference.invokeMethodAsync("HandleMentionKeyAsync", event.key);
+            return;
+        }
+        if (event.key === "Enter" && event.shiftKey && !event.isComposing) {
+            event.preventDefault();
+            const caret = composerSelectionOffset(textarea);
+            replaceComposerRange(textarea, caret, caret, document.createTextNode("\n"));
+            await dotNetReference.invokeMethodAsync("ComposerDocumentChangedAsync", composerSnapshot(textarea));
             return;
         }
         if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) return;
@@ -428,7 +548,35 @@ export function wireComposer(textarea, dotNetReference, composerRoot) {
             requestAnimationFrame(() => resizeComposer(textarea));
         }
     };
-    const input = () => resizeComposer(textarea);
+    const input = async () => {
+        resizeComposer(textarea);
+        await dotNetReference.invokeMethodAsync("ComposerDocumentChangedAsync", composerSnapshot(textarea));
+    };
+    const copy = event => {
+        const selection = window.getSelection();
+        if (!selection?.rangeCount || selection.isCollapsed || !textarea.contains(selection.anchorNode)) return;
+        const start = composerOffsetWithin(textarea, selection.getRangeAt(0).startContainer, selection.getRangeAt(0).startOffset);
+        const end = composerOffsetWithin(textarea, selection.getRangeAt(0).endContainer, selection.getRangeAt(0).endOffset);
+        const snapshot = composerSnapshot(textarea);
+        let plain = snapshot.content.slice(start, end);
+        for (const token of snapshot.tokens.filter(value => value.start >= start && value.start < end).sort((a,b) => b.start-a.start)) {
+            const offset = token.start - start; plain = plain.slice(0, offset) + `:${token.name}:` + plain.slice(offset + 1);
+        }
+        event.preventDefault(); event.clipboardData.setData("text/plain", plain);
+    };
+    const paste = async event => {
+        event.preventDefault();
+        const text = event.clipboardData?.getData("text/plain") || "";
+        const selection = window.getSelection();
+        let start = composerSelectionOffset(textarea), end = start;
+        if (selection?.rangeCount && !selection.isCollapsed) {
+            const range = selection.getRangeAt(0);
+            start = composerOffsetWithin(textarea, range.startContainer, range.startOffset);
+            end = composerOffsetWithin(textarea, range.endContainer, range.endOffset);
+        }
+        replaceComposerRange(textarea, start, end, document.createTextNode(text));
+        await dotNetReference.invokeMethodAsync("ComposerDocumentChangedAsync", composerSnapshot(textarea));
+    };
     const scroll = () => syncComposerPreview(textarea);
     const preview = textarea.closest(".composer-editor")?.querySelector(".composer-highlight");
     const highlightObserver = preview && typeof MutationObserver !== "undefined"
@@ -474,9 +622,12 @@ export function wireComposer(textarea, dotNetReference, composerRoot) {
         input.dispatchEvent(new Event("change", { bubbles: true }));
     };
 
-    composerHandlers.set(textarea, { keydown, input, scroll, observer, highlightObserver, composerRoot, dropRegion, dragenter, dragover, dragleave, drop });
+    Object.assign(state, { keydown, input, copy, paste, scroll, observer, highlightObserver, composerRoot, dropRegion, dragenter, dragover, dragleave, drop });
+    composerHandlers.set(textarea, state);
     textarea.addEventListener("keydown", keydown);
     textarea.addEventListener("input", input);
+    textarea.addEventListener("copy", copy);
+    textarea.addEventListener("paste", paste);
     textarea.addEventListener("scroll", scroll, { passive: true });
     observer?.observe(observedViewport);
     highlightObserver?.observe(preview, { childList: true, subtree: true, characterData: true });
@@ -492,6 +643,8 @@ export function unwireComposer(textarea) {
     if (!handlers) return;
     textarea.removeEventListener("keydown", handlers.keydown);
     textarea.removeEventListener("input", handlers.input);
+    textarea.removeEventListener("copy", handlers.copy);
+    textarea.removeEventListener("paste", handlers.paste);
     textarea.removeEventListener("scroll", handlers.scroll);
     handlers.observer?.disconnect();
     handlers.highlightObserver?.disconnect();

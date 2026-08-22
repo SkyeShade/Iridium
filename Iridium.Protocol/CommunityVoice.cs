@@ -66,6 +66,11 @@ public sealed record CommunityVoiceMediaDiagnosticDto(
     double? ElementVolume = null,
     string? AudioContextState = null,
     double? GainValue = null,
+    long? FramesEncoded = null,
+    long? FramesDecoded = null,
+    long? FramesDropped = null,
+    int? FrameWidth = null,
+    int? FrameHeight = null,
     string? ErrorName = null,
     string? ErrorMessage = null);
 

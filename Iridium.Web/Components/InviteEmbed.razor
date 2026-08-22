@@ -11,17 +11,23 @@
         }
         else if (_preview is { Status: CommunityInviteStatus.Valid } preview)
         {
-            <div class="invite-banner"></div>
+            <div class="invite-banner @(preview.CommunityBannerUrl is null ? null : "has-media")">
+                @if (preview.CommunityBannerUrl is not null)
+                {
+                    @if (preview.BannerIsProcessed) { <img class="invite-banner-image" src="@preview.CommunityBannerUrl" alt="" /> }
+                    else { <AvatarCroppedPreview State="BannerState(preview)" Shape="banner" /> }
+                }
+            </div>
             <div class="invite-details">
-                <div class="invite-icon">@Initials(preview.CommunityName)</div>
-                <div><span>IRIDIUM COMMUNITY</span><h3>@preview.CommunityName</h3><p>@preview.MemberCount members - hosted on @preview.NodeAuthority</p></div>
+                <div class="invite-icon">@if (preview.CommunityIconUrl is not null) { <AvatarCroppedPreview State="AvatarState(preview)" /> } else { @Initials(preview.CommunityName) }</div>
+                <div><span>IRIDIUM SERVER</span><h3>@preview.CommunityName</h3><p>@preview.MemberCount members - hosted on @preview.NodeAuthority</p></div>
             </div>
             <button class="join" disabled="@_joining" @onclick="JoinAsync">@JoinLabel(preview)</button>
             @if (!string.IsNullOrWhiteSpace(_error)) { <p class="error">@_error</p> }
         }
         else if (_preview is { Status: CommunityInviteStatus.AuthenticationRequiredOnTargetNode } remote)
         {
-            <div class="invite-state"><strong>Community invite on @remote.NodeAuthority</strong><span>Sign in with an account on that Node to resolve and join it.</span></div>
+            <div class="invite-state"><strong>Server invite on @remote.NodeAuthority</strong><span>Sign in with an account on that Node to resolve and join it.</span></div>
         }
         else
         {
@@ -67,7 +73,7 @@
         finally { _joining = false; }
     }
 
-    private static string JoinLabel(CommunityInvitePreviewDto preview) => preview.AlreadyMember ? "Open Community" : "Join Community";
+    private static string JoinLabel(CommunityInvitePreviewDto preview) => preview.AlreadyMember ? "Open Server" : "Join Server";
     private static string StatusText(CommunityInviteStatus? status) => status switch
     {
         CommunityInviteStatus.Expired => "This invite has expired.",
@@ -77,4 +83,11 @@
     };
     private static string Initials(string? name) => string.IsNullOrWhiteSpace(name) ? "?" :
         string.Concat(name.Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(2).Select(value => char.ToUpperInvariant(value[0])));
+    private static ProfileMediaEditState AvatarState(CommunityInvitePreviewDto preview) => new AvatarEditState(
+        preview.CommunityIconUrl!, Math.Max(1, preview.AvatarWidth), Math.Max(1, preview.AvatarHeight),
+        760, 1000, 1000, Math.Max(1, preview.AvatarZoom), preview.AvatarCropX, preview.AvatarCropY);
+    private static ProfileMediaEditState BannerState(CommunityInvitePreviewDto preview) => new(
+        preview.CommunityBannerUrl!, Math.Max(1, preview.BannerWidth), Math.Max(1, preview.BannerHeight),
+        CommunityBannerLimits.CropWidth, CommunityBannerLimits.CropHeight, 1200, 900,
+        Math.Max(1, preview.BannerZoom), preview.BannerCropX, preview.BannerCropY);
 }

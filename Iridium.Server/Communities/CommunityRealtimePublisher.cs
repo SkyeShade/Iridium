@@ -42,7 +42,7 @@ public sealed class CommunityRealtimePublisher(
         }
     }
 
-    public async Task PublishAsync(
+    public async Task<long> PublishAsync(
         Guid communityId,
         string change,
         IridiumDbContext db,
@@ -56,7 +56,7 @@ public sealed class CommunityRealtimePublisher(
                 .Select(value => value.AccountId)
                 .Distinct()
                 .ToArrayAsync(cancellationToken);
-            if (accountIds.Length == 0) return;
+            if (accountIds.Length == 0) return revision;
             await hub.Clients.Groups(accountIds.Select(ChatHub.AccountGroup).ToArray()).SendAsync(
                 CommunityHubContract.StateChanged,
                 new CommunityStateChangedEvent(communityId, change, revision),
@@ -73,5 +73,6 @@ public sealed class CommunityRealtimePublisher(
                 "Could not publish Community mutation {Mutation} for {CommunityId} at revision {Revision}.",
                 change, communityId, revision);
         }
+        return revision;
     }
 }

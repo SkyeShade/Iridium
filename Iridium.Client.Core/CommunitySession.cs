@@ -1,10 +1,12 @@
 using Iridium.Protocol;
+using Microsoft.Extensions.Logging;
 
 namespace Iridium.Client.Core;
 
 public sealed class CommunitySession : IDisposable
 {
     private readonly NodeSession _nodeSession;
+    private readonly ILogger<CommunitySession>? _logger;
     private readonly List<CommunityCategoryDto> _categories = [];
     private readonly List<CommunityChannelDto> _channels = [];
     private readonly object _realtimeGate = new();
@@ -13,10 +15,12 @@ public sealed class CommunitySession : IDisposable
     private long _generation;
     private bool _realtimeRefreshRunning;
     private bool _managementRefreshRequested;
+    private bool _permissionSaveInProgress;
 
-    public CommunitySession(NodeSession nodeSession)
+    public CommunitySession(NodeSession nodeSession, ILogger<CommunitySession>? logger = null)
     {
         _nodeSession = nodeSession;
+        _logger = logger;
         nodeSession.CommunityChanged += OnCommunityChanged;
         nodeSession.RealtimeReconnected += OnRealtimeReconnected;
     }
@@ -28,9 +32,11 @@ public sealed class CommunitySession : IDisposable
     public bool CanManage { get; private set; }
     public CommunityPermission EffectivePermissions { get; private set; }
     public bool IsOwner { get; private set; }
+    public bool CanManagePermissions { get; private set; }
     public CommunityManagementDto? Management { get; private set; }
     public IReadOnlyList<CommunityCategoryDto> Categories => _categories;
     public IReadOnlyList<CommunityChannelDto> Channels => _channels;
+    public long AppliedRevision { get { lock (_realtimeGate) return _appliedRevision; } }
 
     public async Task LoadAsync(Guid communityId, CancellationToken cancellationToken = default)
     {
@@ -47,6 +53,7 @@ public sealed class CommunitySession : IDisposable
         CanManage = structure.CanManage;
         EffectivePermissions = structure.EffectivePermissions;
         IsOwner = structure.IsOwner;
+        CanManagePermissions = structure.CanManagePermissions;
         Replace(structure);
     }
 
@@ -60,6 +67,7 @@ public sealed class CommunitySession : IDisposable
         EffectivePermissions = Management.Access.Permissions;
         IsOwner = Management.Access.IsOwner;
         CanManage = HasPermission(CommunityPermission.ManageChannels);
+        CanManagePermissions = HasPermission(CommunityPermission.ManagePermissions);
         return Management;
     }
 
@@ -106,6 +114,9 @@ public sealed class CommunitySession : IDisposable
         await _nodeSession.AuthorizedClient.KickCommunityMemberAsync(RequireCommunity(), accountId, cancellationToken);
         await LoadManagementAsync(cancellationToken);
     }
+
+    public Task LeaveAsync(CancellationToken cancellationToken = default) =>
+        _nodeSession.AuthorizedClient.LeaveCommunityAsync(RequireCommunity(), cancellationToken);
 
     public async Task BanMemberAsync(Guid accountId, string? reason, CancellationToken cancellationToken = default)
     {
@@ -183,6 +194,90 @@ public sealed class CommunitySession : IDisposable
         _channels.RemoveAll(value => value.Id == channelId);
     }
 
+    public Task<PermissionOverwriteScopeDto> GetPermissionScopeAsync(PermissionOverwriteScopeType scopeType,
+        Guid scopeId, CancellationToken cancellationToken = default) =>
+        _nodeSession.AuthorizedClient.GetPermissionScopeAsync(RequireCommunity(), scopeType, scopeId, cancellationToken);
+
+    public async Task SetPermissionOverwriteAsync(PermissionOverwriteScopeType scopeType, Guid scopeId,
+        SetPermissionOverwriteRequest request, CancellationToken cancellationToken = default)
+    {
+        await _nodeSession.AuthorizedClient.SetPermissionOverwriteAsync(RequireCommunity(), scopeType, scopeId,
+            request, cancellationToken);
+        await ReloadAsync(cancellationToken);
+    }
+
+    public async Task<PermissionOverwriteSaveResultDto> ReplacePermissionOverwritesAsync(PermissionOverwriteScopeType scopeType, Guid scopeId,
+        IReadOnlyList<PermissionOverwriteDto> overwrites, CancellationToken cancellationToken = default)
+    {
+        var communityId = RequireCommunity();
+        lock (_realtimeGate)
+        {
+            if (_permissionSaveInProgress)
+                throw new InvalidOperationException("A permission save is already in progress.");
+            _permissionSaveInProgress = true;
+        }
+        _logger?.LogDebug(
+            "PermissionSaveRequestSent CommunityId={CommunityId} ScopeId={ScopeId} ScopeType={ScopeType} CurrentRevision={Revision}",
+            communityId, scopeId, scopeType, AppliedRevision);
+        try
+        {
+            var result = await _nodeSession.AuthorizedClient.ReplacePermissionOverwritesAsync(communityId, scopeType,
+                scopeId, new(overwrites), cancellationToken);
+            _logger?.LogDebug(
+                "PermissionSaveResponseSucceeded CommunityId={CommunityId} ScopeId={ScopeId} ScopeType={ScopeType} IncomingRevision={Revision}",
+                communityId, scopeId, scopeType, result.Revision);
+
+            var structure = await _nodeSession.AuthorizedClient.GetCommunityStructureAsync(communityId, cancellationToken);
+            bool refreshDeferred;
+            lock (_realtimeGate)
+            {
+                if (CommunityId == communityId)
+                {
+                    CanManage = structure.CanManage;
+                    EffectivePermissions = structure.EffectivePermissions;
+                    IsOwner = structure.IsOwner;
+                    CanManagePermissions = structure.CanManagePermissions;
+                    Replace(structure);
+                }
+                _appliedRevision = Math.Max(_appliedRevision, result.Revision);
+                _permissionSaveInProgress = false;
+                refreshDeferred = _requestedRevision > _appliedRevision;
+                if (!refreshDeferred) _managementRefreshRequested = false;
+            }
+            Changed?.Invoke();
+            if (refreshDeferred) QueueRealtimeRefresh(_requestedRevision, _managementRefreshRequested);
+            return result;
+        }
+        catch (Exception exception)
+        {
+            bool refreshDeferred;
+            lock (_realtimeGate)
+            {
+                _permissionSaveInProgress = false;
+                refreshDeferred = _requestedRevision > _appliedRevision;
+            }
+            _logger?.LogError(exception,
+                "PermissionSaveResponseFailed CommunityId={CommunityId} ScopeId={ScopeId} ScopeType={ScopeType}",
+                communityId, scopeId, scopeType);
+            if (refreshDeferred) QueueRealtimeRefresh(_requestedRevision, _managementRefreshRequested);
+            throw;
+        }
+    }
+
+    public async Task RemovePermissionOverwriteAsync(PermissionOverwriteScopeType scopeType, Guid scopeId,
+        PermissionOverwriteTargetType targetType, Guid? targetId, CancellationToken cancellationToken = default)
+    {
+        await _nodeSession.AuthorizedClient.RemovePermissionOverwriteAsync(RequireCommunity(), scopeType, scopeId,
+            new(targetType, targetId), cancellationToken);
+        await ReloadAsync(cancellationToken);
+    }
+
+    public async Task SyncChannelPermissionsAsync(Guid channelId, CancellationToken cancellationToken = default)
+    {
+        await _nodeSession.AuthorizedClient.SyncChannelPermissionsAsync(RequireCommunity(), channelId, cancellationToken);
+        await ReloadAsync(cancellationToken);
+    }
+
     public void MarkChannelRead(Guid channelId)
     {
         var index = _channels.FindIndex(value => value.Id == channelId);
@@ -232,6 +327,7 @@ public sealed class CommunitySession : IDisposable
         CanManage = false;
         EffectivePermissions = CommunityPermission.None;
         IsOwner = false;
+        CanManagePermissions = false;
         Management = null;
         _categories.Clear();
         _channels.Clear();
@@ -247,6 +343,19 @@ public sealed class CommunitySession : IDisposable
     private void OnCommunityChanged(CommunityStateChangedEvent change)
     {
         if (CommunityId != change.CommunityId) return;
+        if (change.Change == "expressions-updated") return;
+        lock (_realtimeGate)
+        {
+            _logger?.LogDebug(
+                "PermissionRealtimeReceived CommunityId={CommunityId} Mutation={Mutation} CurrentRevision={CurrentRevision} IncomingRevision={IncomingRevision} SaveInProgress={SaveInProgress}",
+                change.CommunityId, change.Change, _appliedRevision, change.Revision, _permissionSaveInProgress);
+            if (_permissionSaveInProgress && change.Change == "permissions-updated")
+            {
+                _requestedRevision = Math.Max(_requestedRevision, change.Revision);
+                _managementRefreshRequested = true;
+                return;
+            }
+        }
         QueueRealtimeRefresh(change.Revision, RequiresManagementRefresh(change.Change));
     }
 
@@ -294,6 +403,9 @@ public sealed class CommunitySession : IDisposable
             var refreshed = false;
             try
             {
+                _logger?.LogDebug(
+                    "CommunityReloadStarted CommunityId={CommunityId} CurrentRevision={CurrentRevision} IncomingRevision={IncomingRevision}",
+                    communityId, AppliedRevision, targetRevision);
                 var structure = await _nodeSession.AuthorizedClient.GetCommunityStructureAsync(communityId);
                 var management = reloadManagement
                     ? await _nodeSession.AuthorizedClient.GetCommunityManagementAsync(communityId)
@@ -308,6 +420,7 @@ public sealed class CommunitySession : IDisposable
                     CanManage = structure.CanManage;
                     EffectivePermissions = structure.EffectivePermissions;
                     IsOwner = structure.IsOwner;
+                    CanManagePermissions = structure.CanManagePermissions;
                     Replace(structure);
                     if (management is not null)
                     {
@@ -315,13 +428,20 @@ public sealed class CommunitySession : IDisposable
                         EffectivePermissions = management.Access.Permissions;
                         IsOwner = management.Access.IsOwner;
                         CanManage = HasPermission(CommunityPermission.ManageChannels);
+                        CanManagePermissions = HasPermission(CommunityPermission.ManagePermissions);
                     }
                 }
                 refreshed = true;
                 Changed?.Invoke();
+                _logger?.LogDebug(
+                    "CommunityReloadSucceeded CommunityId={CommunityId} IncomingRevision={IncomingRevision}",
+                    communityId, targetRevision);
             }
             catch (Exception exception)
             {
+                _logger?.LogError(exception,
+                    "CommunityReloadFailed CommunityId={CommunityId} IncomingRevision={IncomingRevision}",
+                    communityId, targetRevision);
                 RealtimeRefreshFailed?.Invoke(exception);
             }
 
@@ -350,11 +470,12 @@ public sealed class CommunitySession : IDisposable
     private static bool RequiresManagementRefresh(string change) =>
         change.StartsWith("role", StringComparison.Ordinal) ||
         change.StartsWith("member", StringComparison.Ordinal) ||
+        change.StartsWith("permission", StringComparison.Ordinal) ||
         change.StartsWith("invite", StringComparison.Ordinal) ||
         change is "overview";
 
     private async Task ReloadAsync(CancellationToken cancellationToken) => await LoadAsync(RequireCommunity(), cancellationToken);
-    private Guid RequireCommunity() => CommunityId ?? throw new InvalidOperationException("Select a Community first.");
+    private Guid RequireCommunity() => CommunityId ?? throw new InvalidOperationException("Select a Server first.");
     private void Replace(CommunityStructureDto structure) { _categories.Clear(); _categories.AddRange(structure.Categories); _channels.Clear(); _channels.AddRange(structure.Channels); Sort(); }
     private void ReplaceCategory(CommunityCategoryDto value) { _categories.RemoveAll(item => item.Id == value.Id); _categories.Add(value); Sort(); }
     private void ReplaceChannel(CommunityChannelDto value) { _channels.RemoveAll(item => item.Id == value.Id); _channels.Add(value); Sort(); }

@@ -23,12 +23,13 @@
 
 @if (_confirm is not null)
 {
-    <ModalShell Title="@(_confirm == "ban" ? "Ban member" : "Kick member")" Size="medium" OnClose="CancelConfirm">
+    <ModalShell Title="@(_confirm == "ban" ? $"Ban {Target.DisplayName}?" : $"Kick {Target.DisplayName}?")" Size="compact" OnClose="CancelConfirm">
         <div class="moderation-confirm">
-            <p>@(_confirm == "ban" ? $"Ban {Target.DisplayName} from this Community? They cannot rejoin until unbanned." : $"Kick {Target.DisplayName}? They may rejoin with a valid invite.")</p>
+            <h2>@(_confirm == "ban" ? $"Ban {Target.DisplayName}?" : $"Kick {Target.DisplayName}?")</h2>
+            <p>@(_confirm == "ban" ? "They will not be able to rejoin until unbanned." : "They may rejoin with a valid invite.")</p>
             @if (_confirm == "ban") { <label>Reason (optional)<textarea @bind="_reason" maxlength="500"></textarea></label> }
             @if (!string.IsNullOrWhiteSpace(_error)) { <p class="error">@_error</p> }
-            <div><button @onclick="CancelConfirm">Cancel</button><button class="danger" disabled="@_busy" @onclick="ConfirmAsync">Confirm @(_confirm == "ban" ? "Ban" : "Kick")</button></div>
+            <div><button @onclick="CancelConfirm">Cancel</button><button class="danger" disabled="@_busy" @onclick="ConfirmAsync">@(_confirm == "ban" ? "Ban" : "Kick")</button></div>
         </div>
     </ModalShell>
 }

@@ -22,23 +22,31 @@
             {
                 if (item.Channel is { } rootChannel)
                 {
-                    <ChannelRow @key="item.Id" Channel="rootChannel" CanManage="State.CanManage" Depth="1"
+                    <ChannelRow @key="item.Id" Channel="rootChannel" CanManage="State.CanManage" CanManagePermissions="@CanManagePermissions(rootChannel.EffectivePermissions)" Depth="1"
                                 Selected="@(SelectedChannel?.Id == rootChannel.Id)" OnSelect="SelectChannelAsync"
                                 Room="@Voice.Room(rootChannel.Id)" Connected="@(Voice.CurrentRoom?.ChannelId == rootChannel.Id)"
                                 CurrentAccountId="AccountId"
-                                OnEdit="EditChannel" OnDelete="RequestDeleteChannel" />
+                                PublishedStreams="Voice.PublishedStreams" OnWatchStream="WatchStreamAsync"
+                                StreamThumbnails="VoiceSessions.StreamThumbnails"
+                                OnEdit="EditChannel" OnDelete="RequestDeleteChannel"
+                                OnPermissions="OpenChannelPermissions" />
                 }
                 else if (item.Category is { } category)
                 {
                     <CommunityCategoryTreeNode @key="item.Id" Category="category" Categories="State.Categories"
                                                Channels="State.Channels" Collapsed="_collapsed" CanManage="State.CanManage"
+                                               CanManagePermissions="State.CanManagePermissions"
                                                VoiceRooms="Voice.Rooms" ConnectedVoiceChannelId="Voice.CurrentRoom?.ChannelId"
                                                CurrentAccountId="AccountId"
+                                               PublishedStreams="Voice.PublishedStreams" OnWatchStream="WatchStreamAsync"
+                                               StreamThumbnails="VoiceSessions.StreamThumbnails"
                                                SelectedChannelId="SelectedChannel?.Id" OnToggle="ToggleCategoryAsync"
                                                OnEdit="EditCategory" OnCreateChannel="OpenChannelDialog"
                                                OnCreateSubcategory="OpenSubcategoryDialog" OnDelete="RequestDeleteCategory"
                                                OnSelectChannel="SelectChannelAsync" OnEditChannel="EditChannel"
-                                               OnDeleteChannel="RequestDeleteChannel" />
+                                               OnDeleteChannel="RequestDeleteChannel"
+                                               OnChannelPermissions="OpenChannelPermissions"
+                                               OnCategoryPermissions="OpenCategoryPermissions" />
                 }
             }
         </div>
@@ -71,6 +79,14 @@
                             ConfirmDeleteInitially="_confirmCategoryDelete" OnSave="SaveCategoryAsync"
                             OnDelete="DeleteCategoryAsync" OnCancel="CloseCategoryDialog" />
 }
+@if (_permissionChannel is not null || _permissionCategory is not null)
+{
+    <CommunityPermissionEditor State="State" Channel="_permissionChannel" Category="_permissionCategory"
+                               InitialSection="@_settingsInitialSection"
+                               OnSaveChannel="SaveSettingsChannelAsync" OnSaveCategory="SaveSettingsCategoryAsync"
+                               OnDeleteChannel="DeleteSettingsChannelAsync" OnDeleteCategory="DeleteSettingsCategoryAsync"
+                               OnClose="ClosePermissionEditor" />
+}
 
 @code {
     [Parameter, EditorRequired] public required CommunitySession State { get; set; }
@@ -84,6 +100,8 @@
     private bool _showChannelDialog; private bool _showCategoryDialog; private bool _showSidebarContextMenu;
     private bool _confirmChannelDelete; private bool _confirmCategoryDelete; private bool _busy;
     private CommunityChannelDto? _editingChannel; private CommunityCategoryDto? _editingCategory;
+    private CommunityChannelDto? _permissionChannel; private CommunityCategoryDto? _permissionCategory;
+    private string _settingsInitialSection = "Overview";
     private Guid? _newChannelCategoryId; private Guid? _newCategoryParentId;
     private string? _error; private string? _dialogError;
     private ElementReference _sidebar; private IJSObjectReference? _dragModule;
@@ -94,6 +112,9 @@
         .Concat(State.Channels.Where(value => value.CategoryId is null).Select(CommunitySidebarVisualItem.From))
         .OrderBy(value => value.Position).ThenBy(value => value.Type).ThenBy(value => value.Id);
     private string? ParentCategoryName => State.Categories.FirstOrDefault(value => value.Id == _newCategoryParentId)?.Name;
+    private bool CanManagePermissions(CommunityPermission permissions) => State.IsOwner ||
+        (permissions & CommunityPermission.Administrator) != 0 ||
+        (permissions & CommunityPermission.ManagePermissions) != 0;
 
     protected override async Task OnParametersSetAsync()
     {
@@ -146,15 +167,21 @@
         await OnChannelSelected.InvokeAsync(channel);
     }
     private void OnVoiceChanged() => _ = InvokeAsync(StateHasChanged);
-    private void EditChannel(CommunityChannelDto channel) { _editingChannel = channel; _newChannelCategoryId = channel.CategoryId; _confirmChannelDelete = false; _dialogError = null; _showChannelDialog = true; }
-    private void RequestDeleteChannel(CommunityChannelDto channel) { EditChannel(channel); _confirmChannelDelete = true; }
+    private Task WatchStreamAsync(Guid streamId) => VoiceSessions.WatchStreamAsync(streamId);
+    private void EditChannel(CommunityChannelDto channel) { _permissionChannel = channel; _permissionCategory = null; _settingsInitialSection = "Overview"; }
+    private void RequestDeleteChannel(CommunityChannelDto channel) { _permissionChannel = channel; _permissionCategory = null; _settingsInitialSection = "Delete"; }
+    private void OpenChannelPermissions(CommunityChannelDto channel) { _permissionChannel = channel; _permissionCategory = null; _settingsInitialSection = "Permissions"; }
     private void OpenChannelDialog(CommunityCategoryDto category) { _editingChannel = null; _newChannelCategoryId = category.Id; _confirmChannelDelete = false; _dialogError = null; _showChannelDialog = true; }
     private void OpenRootChannelDialog() { _editingChannel = null; _newChannelCategoryId = null; _confirmChannelDelete = false; _dialogError = null; _showChannelDialog = true; }
+    public void BeginCreateChannel() { OpenRootChannelDialog(); StateHasChanged(); }
     private void CloseChannelDialog() { _showChannelDialog = false; _editingChannel = null; _dialogError = null; }
-    private void EditCategory(CommunityCategoryDto category) { _editingCategory = category; _newCategoryParentId = null; _confirmCategoryDelete = false; _dialogError = null; _showCategoryDialog = true; }
-    private void RequestDeleteCategory(CommunityCategoryDto category) { EditCategory(category); _confirmCategoryDelete = true; }
+    private void EditCategory(CommunityCategoryDto category) { _permissionCategory = category; _permissionChannel = null; _settingsInitialSection = "Overview"; }
+    private void RequestDeleteCategory(CommunityCategoryDto category) { _permissionCategory = category; _permissionChannel = null; _settingsInitialSection = "Delete"; }
+    private void OpenCategoryPermissions(CommunityCategoryDto category) { _permissionCategory = category; _permissionChannel = null; _settingsInitialSection = "Permissions"; }
+    private void ClosePermissionEditor() { _permissionChannel = null; _permissionCategory = null; }
     private void OpenSubcategoryDialog(CommunityCategoryDto parent) { _editingCategory = null; _newCategoryParentId = parent.Id; _confirmCategoryDelete = false; _dialogError = null; _showCategoryDialog = true; }
     private void OpenCategoryDialog() { _editingCategory = null; _newCategoryParentId = null; _confirmCategoryDelete = false; _dialogError = null; _showCategoryDialog = true; }
+    public void BeginCreateCategory() { OpenCategoryDialog(); StateHasChanged(); }
     private void CloseCategoryDialog() { _showCategoryDialog = false; _editingCategory = null; _newCategoryParentId = null; _dialogError = null; }
     private void OpenSidebarContextMenu(MouseEventArgs _) { if (State.CanManage) _showSidebarContextMenu = true; }
     private void CloseSidebarContextMenu() => _showSidebarContextMenu = false;
@@ -183,6 +210,35 @@
     {
         await State.DeleteCategoryAsync(categoryId); _collapsed.Remove(categoryId); CloseCategoryDialog();
     });
+    private async Task SaveSettingsChannelAsync(ChannelSettingsSubmission submission)
+    {
+        await State.UpdateChannelAsync(submission.ChannelId!.Value, submission.Name, submission.CategoryId, submission.Kind);
+        _permissionChannel = State.Channels.FirstOrDefault(value => value.Id == submission.ChannelId) ?? _permissionChannel;
+    }
+    private async Task SaveSettingsCategoryAsync(CategorySettingsSubmission submission)
+    {
+        await State.UpdateCategoryAsync(submission.CategoryId!.Value, submission.Name);
+        _permissionCategory = State.Categories.FirstOrDefault(value => value.Id == submission.CategoryId) ?? _permissionCategory;
+    }
+    private async Task DeleteSettingsChannelAsync(Guid channelId)
+    {
+        await State.DeleteChannelAsync(channelId); ClosePermissionEditor();
+        if (SelectedChannel?.Id == channelId)
+            await OnChannelSelected.InvokeAsync(State.Channels
+                .Where(value => value.Kind == CommunityChannelKind.Text)
+                .OrderBy(value => value.Position)
+                .FirstOrDefault());
+    }
+    private async Task DeleteSettingsCategoryAsync(Guid categoryId)
+    {
+        var selectedChannelId = SelectedChannel?.Id;
+        await State.DeleteCategoryAsync(categoryId); _collapsed.Remove(categoryId); ClosePermissionEditor();
+        if (selectedChannelId is not null && State.Channels.All(value => value.Id != selectedChannelId))
+            await OnChannelSelected.InvokeAsync(State.Channels
+                .Where(value => value.Kind == CommunityChannelKind.Text)
+                .OrderBy(value => value.Position)
+                .FirstOrDefault());
+    }
     private async Task RunDialogAsync(Func<Task> action)
     {
         _busy = true; _dialogError = null;

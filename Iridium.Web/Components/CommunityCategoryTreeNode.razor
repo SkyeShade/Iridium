@@ -3,31 +3,39 @@
 
 <div class="category-tree-node" data-sidebar-item data-sidebar-kind="category" data-sidebar-id="@Category.Id"
      data-sidebar-parent="@Category.ParentCategoryId" data-sidebar-depth="@Depth" data-category-node="@Category.Id">
-    <CategoryRow Category="Category" CanManage="CanManage" Depth="Depth" Collapsed="Collapsed.Contains(Category.Id)"
+    <CategoryRow Category="Category" CanManage="CanManage" CanManagePermissions="@MayManagePermissions(Category.EffectivePermissions)" Depth="Depth" Collapsed="Collapsed.Contains(Category.Id)"
                  CanCreateSubcategory="@(Depth < 5)" HasUnreadDescendants="HasUnread"
                  OnToggle="OnToggle" OnEdit="OnEdit" OnCreateChannel="OnCreateChannel"
-                 OnCreateSubcategory="OnCreateSubcategory" OnDelete="OnDelete">
+                 OnCreateSubcategory="OnCreateSubcategory" OnDelete="OnDelete"
+                 OnPermissions="OnCategoryPermissions">
         @foreach (var item in DirectItems)
         {
             if (item.Channel is { } channel)
             {
-                <ChannelRow @key="item.Id" Channel="channel" CanManage="CanManage" Depth="@(Depth + 1)"
+                <ChannelRow @key="item.Id" Channel="channel" CanManage="CanManage" CanManagePermissions="@MayManagePermissions(channel.EffectivePermissions)" Depth="@(Depth + 1)"
                             Selected="@(SelectedChannelId == channel.Id)" OnSelect="OnSelectChannel"
                             Room="@VoiceRooms.FirstOrDefault(value => value.ChannelId == channel.Id)"
                             Connected="@(ConnectedVoiceChannelId == channel.Id)"
                             CurrentAccountId="CurrentAccountId"
-                            OnEdit="OnEditChannel" OnDelete="OnDeleteChannel" />
+                            PublishedStreams="PublishedStreams" OnWatchStream="OnWatchStream"
+                            StreamThumbnails="StreamThumbnails"
+                            OnEdit="OnEditChannel" OnDelete="OnDeleteChannel"
+                            OnPermissions="OnChannelPermissions" />
             }
             else if (item.Category is { } child)
             {
                 <CommunityCategoryTreeNode @key="item.Id" Category="child" Categories="Categories" Channels="Channels"
-                                           Depth="@(Depth + 1)" CanManage="CanManage" Collapsed="Collapsed"
+                                           Depth="@(Depth + 1)" CanManage="CanManage" CanManagePermissions="CanManagePermissions" Collapsed="Collapsed"
                                            VoiceRooms="VoiceRooms" ConnectedVoiceChannelId="ConnectedVoiceChannelId"
                                            CurrentAccountId="CurrentAccountId"
+                                           PublishedStreams="PublishedStreams" OnWatchStream="OnWatchStream"
+                                           StreamThumbnails="StreamThumbnails"
                                            SelectedChannelId="SelectedChannelId" OnToggle="OnToggle" OnEdit="OnEdit"
                                            OnCreateChannel="OnCreateChannel" OnCreateSubcategory="OnCreateSubcategory"
                                            OnDelete="OnDelete" OnSelectChannel="OnSelectChannel"
-                                           OnEditChannel="OnEditChannel" OnDeleteChannel="OnDeleteChannel" />
+                                           OnEditChannel="OnEditChannel" OnDeleteChannel="OnDeleteChannel"
+                                           OnChannelPermissions="OnChannelPermissions"
+                                           OnCategoryPermissions="OnCategoryPermissions" />
             }
         }
     </CategoryRow>
@@ -41,9 +49,13 @@
     [Parameter] public Guid? SelectedChannelId { get; set; }
     [Parameter] public int Depth { get; set; } = 1;
     [Parameter] public bool CanManage { get; set; }
+    [Parameter] public bool CanManagePermissions { get; set; }
     [Parameter] public IReadOnlyCollection<ActiveVoiceRoomDto> VoiceRooms { get; set; } = [];
     [Parameter] public Guid? ConnectedVoiceChannelId { get; set; }
     [Parameter] public Guid CurrentAccountId { get; set; }
+    [Parameter] public IReadOnlyList<PublishedVoiceStreamDto> PublishedStreams { get; set; } = [];
+    [Parameter] public IReadOnlyDictionary<Guid, string> StreamThumbnails { get; set; } = new Dictionary<Guid, string>();
+    [Parameter] public EventCallback<Guid> OnWatchStream { get; set; }
     [Parameter] public EventCallback<CommunityCategoryDto> OnToggle { get; set; }
     [Parameter] public EventCallback<CommunityCategoryDto> OnEdit { get; set; }
     [Parameter] public EventCallback<CommunityCategoryDto> OnCreateChannel { get; set; }
@@ -52,6 +64,8 @@
     [Parameter] public EventCallback<CommunityChannelDto> OnSelectChannel { get; set; }
     [Parameter] public EventCallback<CommunityChannelDto> OnEditChannel { get; set; }
     [Parameter] public EventCallback<CommunityChannelDto> OnDeleteChannel { get; set; }
+    [Parameter] public EventCallback<CommunityChannelDto> OnChannelPermissions { get; set; }
+    [Parameter] public EventCallback<CommunityCategoryDto> OnCategoryPermissions { get; set; }
 
     private IEnumerable<CommunitySidebarVisualItem> DirectItems => Categories
         .Where(value => value.ParentCategoryId == Category.Id).Select(CommunitySidebarVisualItem.From)
@@ -73,4 +87,7 @@
                                          (value.UnreadCount > 0 || value.MentionCount > 0));
         }
     }
+    private bool MayManagePermissions(CommunityPermission permissions) =>
+        (permissions & CommunityPermission.Administrator) != 0 ||
+        (permissions & CommunityPermission.ManagePermissions) != 0;
 }

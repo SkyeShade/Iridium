@@ -13,6 +13,7 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
     private bool _disposed;
     private bool _mediaConnected;
     private bool _mediaEventsWired;
+    private readonly List<PublishedVoiceStreamDto> _publishedStreams = [];
 
     public event Action? Changed;
     public IReadOnlyCollection<ActiveVoiceRoomDto> Rooms => _rooms.Values;
@@ -22,6 +23,8 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
     public bool IsJoined => CurrentRoom is not null;
     public string? MediaError { get; private set; }
     public CommunityVoiceMediaSessionDto? MediaSession { get; private set; }
+    public IReadOnlyList<PublishedVoiceStreamDto> PublishedStreams => _publishedStreams;
+    public PublishedVoiceStreamDto? WatchedStream { get; private set; }
 
     public ActiveVoiceRoomDto? Room(Guid channelId) => _rooms.GetValueOrDefault(channelId);
 
@@ -53,6 +56,9 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
         CurrentRoom = room;
         MediaSession = await connection.InvokeAsync<CommunityVoiceMediaSessionDto>(
             CommunityVoiceHubContract.GetMediaSession, cancellationToken);
+        _publishedStreams.Clear();
+        _publishedStreams.AddRange(await connection.InvokeAsync<IReadOnlyList<PublishedVoiceStreamDto>>(
+            VoiceStreamHubContract.GetPublished, VoiceMediaSessionKind.CommunityVoice, channelId, cancellationToken));
         _rooms[channelId] = room;
         Muted = room.Participants.FirstOrDefault(value => value.ParticipantId == connection.ConnectionId)?.Muted ?? false;
         Deafened = room.Participants.FirstOrDefault(value => value.ParticipantId == connection.ConnectionId)?.Deafened ?? false;
@@ -99,6 +105,8 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
         MediaSession = null;
         MediaError = null;
         Muted = Deafened = false;
+        _publishedStreams.Clear();
+        WatchedStream = null;
         Changed?.Invoke();
     }
 
@@ -130,6 +138,83 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
             ? _connection.InvokeAsync(CommunityVoiceHubContract.SetSpeaking, speaking, cancellationToken)
             : Task.CompletedTask;
 
+    public async Task StartScreenShareAsync(CancellationToken cancellationToken = default)
+    {
+        if (_connection?.State != HubConnectionState.Connected || CurrentRoom is null || !_mediaConnected) return;
+        var publication = await media.StartScreenShareAsync(cancellationToken);
+        PublishedVoiceStreamDto? publishedStream = null;
+        try
+        {
+            publishedStream = await _connection.InvokeAsync<PublishedVoiceStreamDto>(VoiceStreamHubContract.Publish,
+                VoiceMediaSessionKind.CommunityVoice, CurrentRoom.ChannelId,
+                new PublishVoiceStreamRequest(publication.StreamId, publication.Kind, publication.HasAudio,
+                    publication.MediaStreamId), cancellationToken);
+            ApplyPublishedStream(publishedStream);
+        }
+        catch
+        {
+            await media.StopScreenShareAsync("PublicationRejected", cancellationToken);
+            throw;
+        }
+        await WatchStreamAsync(publishedStream.StreamId, cancellationToken);
+    }
+
+    public async Task StopScreenShareAsync(string reason = "UserStoppedInIridium",
+        CancellationToken cancellationToken = default)
+    {
+        if (CurrentRoom is null) return;
+        var accountId = nodeSession.Account?.Id;
+        var stream = _publishedStreams.FirstOrDefault(value => value.OwnerAccountId == accountId &&
+            value.Kind == VoicePublishedStreamKind.ScreenShare);
+        await media.StopScreenShareAsync(reason, cancellationToken);
+        if (stream is null || _connection?.State != HubConnectionState.Connected) return;
+        await _connection.InvokeAsync(VoiceStreamHubContract.StopPublishing,
+            VoiceMediaSessionKind.CommunityVoice, CurrentRoom.ChannelId, stream.StreamId, reason, cancellationToken);
+        ApplyEndedStream(stream.StreamId);
+    }
+
+    public async Task WatchStreamAsync(Guid streamId, CancellationToken cancellationToken = default)
+    {
+        if (_connection?.State != HubConnectionState.Connected || CurrentRoom is null) return;
+        var stream = _publishedStreams.FirstOrDefault(value => value.StreamId == streamId)
+            ?? throw new InvalidOperationException("That stream is no longer available.");
+        if (WatchedStream is not null) await StopWatchingAsync(cancellationToken);
+        if (stream.OwnerAccountId != nodeSession.Account?.Id)
+            await _connection.InvokeAsync(VoiceStreamHubContract.Watch, VoiceMediaSessionKind.CommunityVoice,
+                CurrentRoom.ChannelId, streamId, cancellationToken);
+        WatchedStream = stream;
+        Changed?.Invoke();
+    }
+
+    public async Task StopWatchingAsync(CancellationToken cancellationToken = default)
+    {
+        var stream = WatchedStream;
+        WatchedStream = null;
+        if (stream is not null && stream.OwnerAccountId != nodeSession.Account?.Id &&
+            _connection?.State == HubConnectionState.Connected)
+            await _connection.InvokeAsync(VoiceStreamHubContract.StopWatching, stream.StreamId, cancellationToken);
+        Changed?.Invoke();
+    }
+
+    public Task AttachWatchedStreamAsync(string elementId, CancellationToken cancellationToken = default) =>
+        WatchedStream is { } stream
+            ? media.AttachStreamViewerAsync(stream.MediaStreamId, elementId, audioMuted: !stream.HasAudio, cancellationToken)
+            : Task.CompletedTask;
+
+    public Task DetachWatchedStreamAsync(string elementId, CancellationToken cancellationToken = default) =>
+        media.DetachStreamViewerAsync(elementId, cancellationToken);
+
+    public Task SetStreamAudioMutedAsync(string elementId, bool muted,
+        CancellationToken cancellationToken = default) =>
+        media.SetStreamAudioMutedAsync(elementId, muted, cancellationToken);
+
+    public Task RequestStreamFullscreenAsync(string elementId, CancellationToken cancellationToken = default) =>
+        media.RequestStreamFullscreenAsync(elementId, cancellationToken);
+
+    public Task<string?> CaptureStreamThumbnailAsync(string mediaStreamId,
+        CancellationToken cancellationToken = default) =>
+        media.CaptureStreamThumbnailAsync(mediaStreamId, cancellationToken);
+
     private void Wire(HubConnection connection)
     {
         if (ReferenceEquals(_connection, connection)) return;
@@ -151,6 +236,8 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
                 if (CurrentRoom?.ChannelId == value.ChannelId)
                     CurrentRoom = value.ParticipantId == connection.ConnectionId ? null : value.Room;
                 if (_mediaConnected) await media.ParticipantLeftAsync(value.ParticipantId);
+                foreach (var stream in _publishedStreams.Where(item => item.OwnerParticipantId == value.ParticipantId)
+                             .Select(item => item.StreamId).ToArray()) ApplyEndedStream(stream);
                 Changed?.Invoke();
             }));
         _handlers.Add(connection.On<VoiceParticipantStateChangedEvent>(CommunityVoiceHubContract.ParticipantStateChanged,
@@ -166,6 +253,10 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
             value => media.HandleAnswerAsync(value)));
         _handlers.Add(connection.On<CommunityVoiceMediaIceCandidateEvent>(CommunityVoiceHubContract.MediaIceCandidate,
             value => media.HandleIceCandidateAsync(value)));
+        _handlers.Add(connection.On<VoiceStreamPublishedEvent>(VoiceStreamHubContract.Published,
+            value => { ApplyPublishedStream(value.Stream); }));
+        _handlers.Add(connection.On<VoiceStreamEndedEvent>(VoiceStreamHubContract.Ended,
+            value => { if (value.SessionKind == VoiceMediaSessionKind.CommunityVoice) ApplyEndedStream(value.StreamId); }));
         connection.Reconnected += async _ =>
         {
             var previous = CurrentRoom;
@@ -186,6 +277,8 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
             _mediaConnected = false;
             CurrentRoom = null;
             MediaSession = null;
+            _publishedStreams.Clear();
+            WatchedStream = null;
             Changed?.Invoke();
         };
     }
@@ -199,6 +292,7 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
         media.OfferCreated += MediaOfferCreatedAsync;
         media.AnswerCreated += MediaAnswerCreatedAsync;
         media.IceCandidateGenerated += MediaIceCandidateGeneratedAsync;
+        media.ScreenShareEnded += MediaScreenShareEndedAsync;
     }
 
     private async Task MediaSpeakingChangedAsync(bool speaking)
@@ -213,6 +307,8 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
         Changed?.Invoke();
         return Task.CompletedTask;
     }
+
+    private Task MediaScreenShareEndedAsync(string reason) => StopScreenShareAsync(reason);
 
     private Task MediaOfferCreatedAsync(string targetParticipantId, Guid negotiationId,
         WebRtcSessionDescription description) =>
@@ -236,6 +332,21 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
         Changed?.Invoke();
     }
 
+    private void ApplyPublishedStream(PublishedVoiceStreamDto stream)
+    {
+        _publishedStreams.RemoveAll(value => value.StreamId == stream.StreamId ||
+            value.OwnerAccountId == stream.OwnerAccountId && value.Kind == stream.Kind);
+        _publishedStreams.Add(stream);
+        Changed?.Invoke();
+    }
+
+    private void ApplyEndedStream(Guid streamId)
+    {
+        _publishedStreams.RemoveAll(value => value.StreamId == streamId);
+        if (WatchedStream?.StreamId == streamId) WatchedStream = null;
+        Changed?.Invoke();
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (_disposed) return;
@@ -248,6 +359,7 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
         media.OfferCreated -= MediaOfferCreatedAsync;
         media.AnswerCreated -= MediaAnswerCreatedAsync;
         media.IceCandidateGenerated -= MediaIceCandidateGeneratedAsync;
+        media.ScreenShareEnded -= MediaScreenShareEndedAsync;
         await media.DisposeAsync();
     }
 }

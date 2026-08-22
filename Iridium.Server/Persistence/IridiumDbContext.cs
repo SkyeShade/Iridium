@@ -1,3 +1,4 @@
+using Iridium.Protocol;
 using Iridium.Server.Domain;
 using Microsoft.EntityFrameworkCore;
 
@@ -17,6 +18,7 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
     public DbSet<AccountBlock> AccountBlocks => Set<AccountBlock>();
     public DbSet<CommunityCategory> CommunityCategories => Set<CommunityCategory>();
     public DbSet<CommunityChannel> CommunityChannels => Set<CommunityChannel>();
+    public DbSet<CommunityPermissionOverwrite> CommunityPermissionOverwrites => Set<CommunityPermissionOverwrite>();
     public DbSet<ChannelMessage> ChannelMessages => Set<ChannelMessage>();
     public DbSet<CommunityChannelReadState> CommunityChannelReadStates => Set<CommunityChannelReadState>();
     public DbSet<CommunityMentionNotification> CommunityMentionNotifications => Set<CommunityMentionNotification>();
@@ -26,6 +28,8 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
     public DbSet<Attachment> Attachments => Set<Attachment>();
     public DbSet<AccountAvatarPreset> AccountAvatarPresets => Set<AccountAvatarPreset>();
     public DbSet<AccountBannerPreset> AccountBannerPresets => Set<AccountBannerPreset>();
+    public DbSet<CommunityMediaPreset> CommunityMediaPresets => Set<CommunityMediaPreset>();
+    public DbSet<CommunityEmoji> CommunityEmojis => Set<CommunityEmoji>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -72,6 +76,30 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
             .WithMany(value => value.OwnedCommunities)
             .HasForeignKey(value => value.OwnerAccountId)
             .OnDelete(DeleteBehavior.Restrict);
+
+        var communityMedia = modelBuilder.Entity<CommunityMediaPreset>();
+        communityMedia.HasKey(value => value.Id);
+        communityMedia.Property(value => value.OriginalObjectKey).HasMaxLength(64);
+        communityMedia.Property(value => value.ProcessedObjectKey).HasMaxLength(64);
+        communityMedia.Property(value => value.ContentType).HasMaxLength(64);
+        communityMedia.Property(value => value.CreatedAt)
+            .HasConversion(value => value.UtcTicks, value => new DateTimeOffset(value, TimeSpan.Zero));
+        communityMedia.Property(value => value.UpdatedAt)
+            .HasConversion(value => value.UtcTicks, value => new DateTimeOffset(value, TimeSpan.Zero));
+        communityMedia.HasIndex(value => new { value.CommunityId, value.Kind, value.SlotIndex }).IsUnique();
+        communityMedia.HasOne(value => value.Community).WithMany(value => value.MediaPresets)
+            .HasForeignKey(value => value.CommunityId).OnDelete(DeleteBehavior.Cascade);
+
+        var communityEmoji = modelBuilder.Entity<CommunityEmoji>();
+        communityEmoji.HasKey(value => value.Id);
+        communityEmoji.Property(value => value.Name).HasMaxLength(CommunityEmojiLimits.MaximumNameLength);
+        communityEmoji.Property(value => value.ObjectKey).HasMaxLength(64);
+        communityEmoji.Property(value => value.ContentType).HasMaxLength(64);
+        communityEmoji.Property(value => value.CreatedAt)
+            .HasConversion(value => value.UtcTicks, value => new DateTimeOffset(value, TimeSpan.Zero));
+        communityEmoji.HasIndex(value => new { value.CommunityId, value.Name }).IsUnique();
+        communityEmoji.HasOne(value => value.Community).WithMany(value => value.Emojis)
+            .HasForeignKey(value => value.CommunityId).OnDelete(DeleteBehavior.Cascade);
 
         var member = modelBuilder.Entity<CommunityMember>();
         member.HasKey(value => new { value.CommunityId, value.AccountId });
@@ -156,12 +184,23 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
         channel.HasKey(value => new { value.CommunityId, value.Id });
         channel.Property(value => value.Name).HasMaxLength(100);
         channel.Property(value => value.Kind).HasDefaultValue(Iridium.Protocol.CommunityChannelKind.Text);
+        channel.Property(value => value.PermissionsSyncedToCategory).HasDefaultValue(false);
         channel.HasIndex(value => new { value.CommunityId, value.CategoryId, value.Position });
         channel.HasOne(value => value.Community).WithMany(value => value.Channels).HasForeignKey(value => value.CommunityId);
         channel.HasOne(value => value.Category).WithMany(value => value.Channels)
             .HasForeignKey(value => new { value.CommunityId, value.CategoryId })
             .HasPrincipalKey(value => new { value.CommunityId, value.Id })
             .OnDelete(DeleteBehavior.Restrict);
+
+        var overwrite = modelBuilder.Entity<CommunityPermissionOverwrite>();
+        overwrite.HasKey(value => value.Id);
+        overwrite.HasIndex(value => new
+        {
+            value.CommunityId, value.ScopeType, value.ScopeId, value.TargetType, value.TargetId
+        }).IsUnique();
+        overwrite.HasIndex(value => new { value.CommunityId, value.ScopeType, value.ScopeId });
+        overwrite.HasOne(value => value.Community).WithMany()
+            .HasForeignKey(value => value.CommunityId).OnDelete(DeleteBehavior.Cascade);
 
         var channelRead = modelBuilder.Entity<CommunityChannelReadState>();
         channelRead.HasKey(value => new { value.CommunityId, value.ChannelId, value.AccountId });

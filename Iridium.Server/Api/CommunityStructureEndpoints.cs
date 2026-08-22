@@ -13,6 +13,13 @@ namespace Iridium.Server.Api;
 public static partial class CommunityStructureEndpoints
 {
     internal const int MaximumCategoryDepth = 5;
+    private const CommunityPermission ChannelPermissions = CommunityPermission.ViewChannels |
+        CommunityPermission.SendMessages | CommunityPermission.ManageMessages | CommunityPermission.ManageChannels |
+        CommunityPermission.ManagePermissions | CommunityPermission.CreateInvites |
+        CommunityPermission.ReadMessageHistory | CommunityPermission.AttachFiles | CommunityPermission.EmbedLinks |
+        CommunityPermission.AddReactions | CommunityPermission.MentionEveryone | CommunityPermission.ConnectVoice |
+        CommunityPermission.SpeakVoice | CommunityPermission.ShareScreen | CommunityPermission.MuteMembers |
+        CommunityPermission.DeafenMembers | CommunityPermission.MoveMembers;
 
     public static IEndpointRouteBuilder MapCommunityStructureEndpoints(this IEndpointRouteBuilder endpoints)
     {
@@ -26,6 +33,11 @@ public static partial class CommunityStructureEndpoints
         group.MapPatch("/channels/{channelId:guid}", UpdateChannelAsync);
         group.MapPost("/channels/{channelId:guid}/move", MoveChannelAsync);
         group.MapDelete("/channels/{channelId:guid}", DeleteChannelAsync);
+        group.MapGet("/permissions/{scopeType}/{scopeId:guid}", GetPermissionScopeAsync);
+        group.MapPut("/permissions/{scopeType}/{scopeId:guid}", ReplacePermissionOverwritesAsync);
+        group.MapPut("/permissions/{scopeType}/{scopeId:guid}/overwrites", SetPermissionOverwriteAsync);
+        group.MapPost("/permissions/{scopeType}/{scopeId:guid}/overwrites/remove", RemovePermissionOverwriteAsync);
+        group.MapPost("/channels/{channelId:guid}/permissions/sync", SyncChannelPermissionsAsync);
         return endpoints;
     }
 
@@ -35,14 +47,63 @@ public static partial class CommunityStructureEndpoints
         var session = await sessions.GetAsync(context, db);
         if (session is null) return Results.Unauthorized();
         var access = await authorization.GetAccessAsync(communityId, session.AccountId, db);
-        if (!access.Has(CommunityPermission.ViewChannels)) return Results.Forbid();
+        if (!access.IsOwner && !await authorization.IsMemberAsync(communityId, session.AccountId, db))
+            return Results.Forbid();
 
-        var categories = await db.CommunityCategories.AsNoTracking().Where(value => value.CommunityId == communityId)
+        var categoryEntities = await db.CommunityCategories.AsNoTracking().Where(value => value.CommunityId == communityId)
             .OrderBy(value => value.ParentCategoryId).ThenBy(value => value.Position).ThenBy(value => value.Name)
-            .Select(value => ToDto(value)).ToListAsync();
-        var channels = await db.CommunityChannels.AsNoTracking().Where(value => value.CommunityId == communityId)
+            .ToListAsync();
+        var channelEntities = await db.CommunityChannels.AsNoTracking().Where(value => value.CommunityId == communityId)
             .OrderBy(value => value.CategoryId).ThenBy(value => value.Position).ThenBy(value => value.Name)
-            .Select(value => ToDto(value)).ToListAsync();
+            .ToListAsync();
+        var overwriteRows = await db.CommunityPermissionOverwrites.AsNoTracking()
+            .Where(value => value.CommunityId == communityId).ToListAsync();
+        var overwriteCategoryIds = overwriteRows.Where(value => value.ScopeType == PermissionOverwriteScopeType.Category)
+            .Select(value => value.ScopeId).Distinct().ToHashSet();
+        var privateCategoryIds = overwriteRows.Where(value => value.ScopeType == PermissionOverwriteScopeType.Category &&
+                value.TargetType == PermissionOverwriteTargetType.Everyone &&
+                (value.Deny & CommunityPermission.ViewChannels) != 0)
+            .Select(value => value.ScopeId).ToHashSet();
+        var privateChannelIds = overwriteRows.Where(value => value.ScopeType == PermissionOverwriteScopeType.Channel &&
+                value.TargetType == PermissionOverwriteTargetType.Everyone &&
+                (value.Deny & CommunityPermission.ViewChannels) != 0)
+            .Select(value => value.ScopeId).ToHashSet();
+        var categories = categoryEntities.Select(value => ToDto(value) with
+            {
+                HasPermissionOverwrites = overwriteCategoryIds.Contains(value.Id),
+                IsPrivate = privateCategoryIds.Contains(value.Id)
+            }).ToList();
+        var categoryVisibility = new Dictionary<Guid, bool>();
+        for (var index = 0; index < categories.Count; index++)
+        {
+            var categoryAccess = await authorization.GetCategoryAccessAsync(communityId, categories[index].Id,
+                session.AccountId, db);
+            categories[index] = categories[index] with { EffectivePermissions = categoryAccess.Permissions };
+            categoryVisibility[categories[index].Id] = categoryAccess.Has(CommunityPermission.ViewChannels);
+        }
+        var channels = new List<CommunityChannelDto>();
+        foreach (var entity in channelEntities)
+        {
+            var channelAccess = await authorization.GetChannelAccessAsync(communityId, entity.Id, session.AccountId, db);
+            if (!channelAccess.Has(CommunityPermission.ViewChannels)) continue;
+            if (entity.CategoryId is { } categoryId && !AncestorsVisible(categoryId, categoryVisibility, categoryEntities))
+                continue;
+            var isPrivate = entity.PermissionsSyncedToCategory && entity.CategoryId is { } syncedCategoryId
+                ? privateCategoryIds.Contains(syncedCategoryId)
+                : privateChannelIds.Contains(entity.Id);
+            channels.Add(ToDto(entity) with { EffectivePermissions = channelAccess.Permissions, IsPrivate = isPrivate });
+        }
+        var visibleCategories = new HashSet<Guid>(channels.Where(value => value.CategoryId.HasValue)
+            .Select(value => value.CategoryId!.Value));
+        var added = true;
+        while (added)
+        {
+            added = false;
+            foreach (var category in categories.Where(value => visibleCategories.Contains(value.Id) && value.ParentCategoryId.HasValue))
+                added |= visibleCategories.Add(category.ParentCategoryId!.Value);
+        }
+        if (!access.IsOwner && !access.Has(CommunityPermission.Administrator))
+            categories.RemoveAll(value => !visibleCategories.Contains(value.Id));
         var readStates = await db.CommunityChannelReadStates.AsNoTracking()
             .Where(value => value.CommunityId == communityId && value.AccountId == session.AccountId)
             .ToDictionaryAsync(value => value.ChannelId, value => value.LastReadAt);
@@ -57,7 +118,21 @@ public static partial class CommunityStructureEndpoints
             channels[index] = channel with { UnreadCount = unread, MentionCount = mentions };
         }
         return Results.Ok(new CommunityStructureDto(communityId, access.Has(CommunityPermission.ManageChannels),
-            categories, channels, access.Permissions, access.IsOwner));
+            categories, channels, access.Permissions, access.IsOwner,
+            access.Has(CommunityPermission.ManagePermissions)));
+    }
+
+    private static bool AncestorsVisible(Guid categoryId, IReadOnlyDictionary<Guid, bool> visibility,
+        IReadOnlyList<CommunityCategory> categories)
+    {
+        var currentId = (Guid?)categoryId;
+        var visited = new HashSet<Guid>();
+        while (currentId is { } id && visited.Add(id))
+        {
+            if (!visibility.GetValueOrDefault(id)) return false;
+            currentId = categories.FirstOrDefault(value => value.Id == id)?.ParentCategoryId;
+        }
+        return true;
     }
 
     private static async Task<IResult> CreateCategoryAsync(Guid communityId, CreateCategoryRequest request,
@@ -72,7 +147,7 @@ public static partial class CommunityStructureEndpoints
         if (request.ParentCategoryId is { } parentId)
         {
             var parent = categories.SingleOrDefault(value => value.Id == parentId);
-            if (parent is null) return Invalid("The parent Category does not belong to this Community.");
+            if (parent is null) return Invalid("The parent Category does not belong to this Server.");
             if (Depth(parent, categories) >= MaximumCategoryDepth)
                 return Invalid($"Categories may be nested at most {MaximumCategoryDepth} levels deep.");
         }
@@ -126,7 +201,7 @@ public static partial class CommunityStructureEndpoints
             if (destination.ParentCategoryId is { } parentId)
             {
                 var parent = categories.SingleOrDefault(value => value.Id == parentId);
-                if (parent is null) return Invalid("The destination Category does not belong to this Community.");
+                if (parent is null) return Invalid("The destination Category does not belong to this Server.");
                 if (Descendants(category.Id, categories).Contains(parentId))
                     return Invalid("A Category cannot be moved into one of its descendants.");
                 var destinationDepth = Depth(parent, categories) + 1;
@@ -168,6 +243,9 @@ public static partial class CommunityStructureEndpoints
             await db.CommunityCategories.AnyAsync(value => value.CommunityId == communityId && value.ParentCategoryId == categoryId))
             return Results.Conflict(new { message = "Move or delete this Category's channels and subcategories first." });
         var parent = category.ParentCategoryId;
+        var permissionRows = await db.CommunityPermissionOverwrites.Where(value => value.CommunityId == communityId &&
+            value.ScopeType == PermissionOverwriteScopeType.Category && value.ScopeId == categoryId).ToListAsync();
+        db.CommunityPermissionOverwrites.RemoveRange(permissionRows);
         db.CommunityCategories.Remove(category);
         await db.SaveChangesAsync();
         await NormalizeSidebarPositionsAsync(communityId, parent, db);
@@ -191,7 +269,7 @@ public static partial class CommunityStructureEndpoints
         {
             category = await db.CommunityCategories.SingleOrDefaultAsync(value =>
                 value.CommunityId == communityId && value.Id == categoryId);
-            if (category is null) return Invalid("The selected Category does not belong to this Community.");
+            if (category is null) return Invalid("The selected Category does not belong to this Server.");
         }
         var channel = new CommunityChannel
         {
@@ -200,6 +278,7 @@ public static partial class CommunityStructureEndpoints
             Position = await db.CommunityChannels.CountAsync(value => value.CommunityId == communityId && value.CategoryId == request.CategoryId) +
                        await db.CommunityCategories.CountAsync(value => value.CommunityId == communityId && value.ParentCategoryId == request.CategoryId),
             CreatedAt = DateTimeOffset.UtcNow, Community = null!
+            , PermissionsSyncedToCategory = request.CategoryId.HasValue
         };
         db.CommunityChannels.Add(channel);
         await db.SaveChangesAsync();
@@ -217,7 +296,7 @@ public static partial class CommunityStructureEndpoints
         var name = NormalizeChannelName(request.Name);
         if (name is null) return Invalid("Enter a valid Channel name.");
         if (request.CategoryId is { } categoryId && !await CategoryExistsAsync(communityId, categoryId, db))
-            return Invalid("The selected Category does not belong to this Community.");
+            return Invalid("The selected Category does not belong to this Server.");
         var channel = await db.CommunityChannels.SingleOrDefaultAsync(value =>
             value.CommunityId == communityId && value.Id == channelId);
         if (channel is null) return Results.NotFound();
@@ -225,6 +304,8 @@ public static partial class CommunityStructureEndpoints
         channel.Kind = request.Kind;
         if (channel.CategoryId != request.CategoryId)
         {
+            if (channel.PermissionsSyncedToCategory && request.CategoryId is null)
+                channel.PermissionsSyncedToCategory = false;
             var categories = await LoadCategoriesAsync(communityId, db);
             var channels = await LoadChannelsAsync(communityId, db);
             ApplySidebarMove(SidebarItems(categories, channels), new SidebarItem(channel),
@@ -252,6 +333,8 @@ public static partial class CommunityStructureEndpoints
             if (ResolveDestination(items, new SidebarItem(channel), request) is not { } destination)
                 return Invalid("The requested Channel destination is no longer available.");
             ApplySidebarMove(items, new SidebarItem(channel), destination);
+            if (channel.PermissionsSyncedToCategory && destination.ParentCategoryId is null)
+                channel.PermissionsSyncedToCategory = false;
             await db.SaveChangesAsync();
             await transaction.CommitAsync();
             await realtime.PublishAsync(communityId, "channel-moved", db);
@@ -273,6 +356,9 @@ public static partial class CommunityStructureEndpoints
             value.CommunityId == communityId && value.Id == channelId);
         if (channel is null) return Results.NotFound();
         var categoryId = channel.CategoryId;
+        var permissionRows = await db.CommunityPermissionOverwrites.Where(value => value.CommunityId == communityId &&
+            value.ScopeType == PermissionOverwriteScopeType.Channel && value.ScopeId == channelId).ToListAsync();
+        db.CommunityPermissionOverwrites.RemoveRange(permissionRows);
         db.CommunityChannels.Remove(channel);
         await db.SaveChangesAsync();
         await NormalizeSidebarPositionsAsync(communityId, categoryId, db);
@@ -281,6 +367,223 @@ public static partial class CommunityStructureEndpoints
         await realtime.PublishAsync(communityId, "channel-deleted", db);
         return Results.NoContent();
     }
+
+    private static async Task<IResult> GetPermissionScopeAsync(Guid communityId, string scopeType, Guid scopeId,
+        HttpContext context, IridiumDbContext db, SessionService sessions, CommunityAuthorizationService authorization)
+    {
+        var session = await sessions.GetAsync(context, db);
+        if (session is null) return Results.Unauthorized();
+        if (!TryScope(scopeType, out var type) || !await ScopeExistsAsync(communityId, type, scopeId, db))
+            return Results.NotFound();
+        if (!await CanManagePermissionsAsync(communityId, type, scopeId, session.AccountId, db, authorization))
+            return Results.StatusCode(StatusCodes.Status403Forbidden);
+        var queryType = type;
+        var queryScopeId = scopeId;
+        var synced = false;
+        if (type == PermissionOverwriteScopeType.Channel)
+        {
+            var channelScope = await db.CommunityChannels.AsNoTracking().Where(value =>
+                    value.CommunityId == communityId && value.Id == scopeId)
+                .Select(value => new { value.CategoryId, value.PermissionsSyncedToCategory }).SingleAsync();
+            synced = channelScope.PermissionsSyncedToCategory && channelScope.CategoryId.HasValue;
+            if (synced) { queryType = PermissionOverwriteScopeType.Category; queryScopeId = channelScope.CategoryId!.Value; }
+        }
+        var rows = await db.CommunityPermissionOverwrites.AsNoTracking()
+            .Where(value => value.CommunityId == communityId && value.ScopeType == queryType && value.ScopeId == queryScopeId)
+            .OrderBy(value => value.TargetType).ThenBy(value => value.TargetId)
+            .Select(value => new PermissionOverwriteDto(value.TargetType, value.TargetId, value.Allow, value.Deny))
+            .ToListAsync();
+        return Results.Ok(new PermissionOverwriteScopeDto(communityId, type, scopeId, synced, rows));
+    }
+
+    private static async Task<IResult> SetPermissionOverwriteAsync(Guid communityId, string scopeType, Guid scopeId,
+        SetPermissionOverwriteRequest request, HttpContext context, IridiumDbContext db, SessionService sessions,
+        CommunityAuthorizationService authorization, CommunityRealtimePublisher realtime,
+        CommunityVoicePermissionEnforcer voicePermissions)
+    {
+        var session = await sessions.GetAsync(context, db);
+        if (session is null) return Results.Unauthorized();
+        if (!TryScope(scopeType, out var type) || !await ScopeExistsAsync(communityId, type, scopeId, db))
+            return Results.NotFound();
+        if (!await CanManagePermissionsAsync(communityId, type, scopeId, session.AccountId, db, authorization))
+            return Results.StatusCode(StatusCodes.Status403Forbidden);
+        if ((request.Allow & request.Deny) != 0 || (request.Allow | request.Deny) != ((request.Allow | request.Deny) & ChannelPermissions))
+            return Invalid("An overwrite contains invalid or conflicting permission values.");
+        if (!await ValidateTargetAsync(communityId, request.TargetType, request.TargetId, db))
+            return Invalid("The overwrite target is not a role or member of this Server.");
+        var actor = type == PermissionOverwriteScopeType.Channel
+            ? await authorization.GetChannelAccessAsync(communityId, scopeId, session.AccountId, db)
+            : await authorization.GetCategoryAccessAsync(communityId, scopeId, session.AccountId, db);
+        if (!actor.IsOwner && !actor.Has(CommunityPermission.Administrator) &&
+            (request.Allow & ~actor.Permissions) != 0)
+            return Results.StatusCode(StatusCodes.Status403Forbidden);
+        if (request.TargetType == PermissionOverwriteTargetType.Role && request.TargetId is { } roleId &&
+            !await authorization.CanManageRoleAsync(communityId, session.AccountId, roleId, db))
+            return Results.StatusCode(StatusCodes.Status403Forbidden);
+
+        await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
+        if (type == PermissionOverwriteScopeType.Channel)
+            await UnsyncChannelAsync(communityId, scopeId, db);
+        var row = await db.CommunityPermissionOverwrites.SingleOrDefaultAsync(value => value.CommunityId == communityId &&
+            value.ScopeType == type && value.ScopeId == scopeId && value.TargetType == request.TargetType &&
+            value.TargetId == request.TargetId);
+        if (request.Allow == CommunityPermission.None && request.Deny == CommunityPermission.None)
+        {
+            if (row is not null) db.CommunityPermissionOverwrites.Remove(row);
+        }
+        else if (row is null)
+            db.CommunityPermissionOverwrites.Add(new CommunityPermissionOverwrite
+            {
+                Id = Guid.NewGuid(), CommunityId = communityId, ScopeType = type, ScopeId = scopeId,
+                TargetType = request.TargetType, TargetId = request.TargetId,
+                Allow = request.Allow, Deny = request.Deny, Community = null!
+            });
+        else { row.Allow = request.Allow; row.Deny = request.Deny; }
+        await db.SaveChangesAsync();
+        await transaction.CommitAsync();
+        await voicePermissions.EnforceAsync(communityId, db);
+        await realtime.PublishAsync(communityId, "permissions-updated", db);
+        return Results.NoContent();
+    }
+
+    private static async Task<IResult> ReplacePermissionOverwritesAsync(Guid communityId, string scopeType, Guid scopeId,
+        ReplacePermissionOverwritesRequest request, HttpContext context, IridiumDbContext db, SessionService sessions,
+        CommunityAuthorizationService authorization, CommunityRealtimePublisher realtime,
+        CommunityVoicePermissionEnforcer voicePermissions)
+    {
+        var session = await sessions.GetAsync(context, db);
+        if (session is null) return Results.Unauthorized();
+        if (!TryScope(scopeType, out var type) || !await ScopeExistsAsync(communityId, type, scopeId, db))
+            return Results.NotFound();
+        if (!await CanManagePermissionsAsync(communityId, type, scopeId, session.AccountId, db, authorization))
+            return Results.StatusCode(StatusCodes.Status403Forbidden);
+        if (request.Overwrites.Count > 256) return Invalid("Too many permission overwrite targets.");
+
+        var duplicateTarget = request.Overwrites.GroupBy(value => (value.TargetType, value.TargetId))
+            .Any(group => group.Count() > 1);
+        if (duplicateTarget) return Invalid("A role or member may only have one overwrite at this scope.");
+        var actor = type == PermissionOverwriteScopeType.Channel
+            ? await authorization.GetChannelAccessAsync(communityId, scopeId, session.AccountId, db)
+            : await authorization.GetCategoryAccessAsync(communityId, scopeId, session.AccountId, db);
+        foreach (var row in request.Overwrites.Where(value =>
+                     value.TargetType != PermissionOverwriteTargetType.Everyone ||
+                     value.Allow != CommunityPermission.None || value.Deny != CommunityPermission.None))
+        {
+            if ((row.Allow & row.Deny) != 0 || (row.Allow | row.Deny) != ((row.Allow | row.Deny) & ChannelPermissions))
+                return Invalid("An overwrite contains invalid or conflicting permission values.");
+            if (!await ValidateTargetAsync(communityId, row.TargetType, row.TargetId, db))
+                return Invalid("An overwrite target is not a role or member of this Server.");
+            if (!actor.IsOwner && !actor.Has(CommunityPermission.Administrator) &&
+                (row.Allow & ~actor.Permissions) != 0) return Results.StatusCode(StatusCodes.Status403Forbidden);
+            if (row.TargetType == PermissionOverwriteTargetType.Role && row.TargetId is { } roleId &&
+                !await authorization.CanManageRoleAsync(communityId, session.AccountId, roleId, db))
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+        }
+
+        await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
+        if (type == PermissionOverwriteScopeType.Channel) await UnsyncChannelAsync(communityId, scopeId, db);
+        var existing = await db.CommunityPermissionOverwrites.Where(value => value.CommunityId == communityId &&
+            value.ScopeType == type && value.ScopeId == scopeId).ToListAsync();
+        db.CommunityPermissionOverwrites.RemoveRange(existing);
+        foreach (var row in request.Overwrites)
+            db.CommunityPermissionOverwrites.Add(new CommunityPermissionOverwrite
+            {
+                Id = Guid.NewGuid(), CommunityId = communityId, ScopeType = type, ScopeId = scopeId,
+                TargetType = row.TargetType, TargetId = row.TargetId, Allow = row.Allow, Deny = row.Deny,
+                Community = null!
+            });
+        await db.SaveChangesAsync();
+        await transaction.CommitAsync();
+        await voicePermissions.EnforceAsync(communityId, db);
+        var revision = await realtime.PublishAsync(communityId, "permissions-updated", db);
+        var canonicalRows = await db.CommunityPermissionOverwrites.AsNoTracking()
+            .Where(value => value.CommunityId == communityId && value.ScopeType == type && value.ScopeId == scopeId)
+            .OrderBy(value => value.TargetType).ThenBy(value => value.TargetId)
+            .Select(value => new PermissionOverwriteDto(value.TargetType, value.TargetId, value.Allow, value.Deny))
+            .ToListAsync();
+        return Results.Ok(new PermissionOverwriteSaveResultDto(
+            new(communityId, type, scopeId, PermissionsSyncedToCategory: false, canonicalRows), revision));
+    }
+
+    private static async Task<IResult> RemovePermissionOverwriteAsync(Guid communityId, string scopeType, Guid scopeId,
+        RemovePermissionOverwriteRequest request, HttpContext context, IridiumDbContext db, SessionService sessions,
+        CommunityAuthorizationService authorization, CommunityRealtimePublisher realtime,
+        CommunityVoicePermissionEnforcer voicePermissions)
+    {
+        return await SetPermissionOverwriteAsync(communityId, scopeType, scopeId,
+            new(request.TargetType, request.TargetId, CommunityPermission.None, CommunityPermission.None),
+            context, db, sessions, authorization, realtime, voicePermissions);
+    }
+
+    private static async Task<IResult> SyncChannelPermissionsAsync(Guid communityId, Guid channelId,
+        HttpContext context, IridiumDbContext db, SessionService sessions, CommunityAuthorizationService authorization,
+        CommunityRealtimePublisher realtime, CommunityVoicePermissionEnforcer voicePermissions)
+    {
+        var session = await sessions.GetAsync(context, db);
+        if (session is null) return Results.Unauthorized();
+        var channel = await db.CommunityChannels.SingleOrDefaultAsync(value =>
+            value.CommunityId == communityId && value.Id == channelId);
+        if (channel is null) return Results.NotFound();
+        if (channel.CategoryId is null) return Invalid("Root channels cannot sync category permissions.");
+        if (!await CanManagePermissionsAsync(communityId, PermissionOverwriteScopeType.Channel, channelId,
+                session.AccountId, db, authorization)) return Results.Forbid();
+        var ownRows = await db.CommunityPermissionOverwrites.Where(value => value.CommunityId == communityId &&
+            value.ScopeType == PermissionOverwriteScopeType.Channel && value.ScopeId == channelId).ToListAsync();
+        db.CommunityPermissionOverwrites.RemoveRange(ownRows);
+        channel.PermissionsSyncedToCategory = true;
+        await db.SaveChangesAsync();
+        await voicePermissions.EnforceAsync(communityId, db);
+        await realtime.PublishAsync(communityId, "permissions-synced", db);
+        return Results.NoContent();
+    }
+
+    private static async Task UnsyncChannelAsync(Guid communityId, Guid channelId, IridiumDbContext db)
+    {
+        var channel = await db.CommunityChannels.SingleAsync(value => value.CommunityId == communityId && value.Id == channelId);
+        if (!channel.PermissionsSyncedToCategory || channel.CategoryId is null) return;
+        var categoryRows = await db.CommunityPermissionOverwrites.AsNoTracking().Where(value =>
+            value.CommunityId == communityId && value.ScopeType == PermissionOverwriteScopeType.Category &&
+            value.ScopeId == channel.CategoryId).ToListAsync();
+        foreach (var source in categoryRows)
+            db.CommunityPermissionOverwrites.Add(new CommunityPermissionOverwrite
+            {
+                Id = Guid.NewGuid(), CommunityId = communityId, ScopeType = PermissionOverwriteScopeType.Channel,
+                ScopeId = channelId, TargetType = source.TargetType, TargetId = source.TargetId,
+                Allow = source.Allow, Deny = source.Deny, Community = null!
+            });
+        channel.PermissionsSyncedToCategory = false;
+    }
+
+    private static bool TryScope(string value, out PermissionOverwriteScopeType type) =>
+        Enum.TryParse(value, true, out type) && Enum.IsDefined(type);
+    private static Task<bool> ScopeExistsAsync(Guid communityId, PermissionOverwriteScopeType type, Guid scopeId,
+        IridiumDbContext db) => type == PermissionOverwriteScopeType.Channel
+        ? db.CommunityChannels.AnyAsync(value => value.CommunityId == communityId && value.Id == scopeId)
+        : db.CommunityCategories.AnyAsync(value => value.CommunityId == communityId && value.Id == scopeId);
+    private static async Task<bool> CanManagePermissionsAsync(Guid communityId, PermissionOverwriteScopeType type,
+        Guid scopeId, Guid accountId, IridiumDbContext db, CommunityAuthorizationService authorization)
+    {
+        var baseAccess = await authorization.GetAccessAsync(communityId, accountId, db);
+        if (baseAccess.IsOwner || baseAccess.Has(CommunityPermission.Administrator)) return true;
+        if (type == PermissionOverwriteScopeType.Channel)
+        {
+            var access = await authorization.GetChannelAccessAsync(communityId, scopeId, accountId, db);
+            return access.Has(CommunityPermission.ViewChannels) && access.Has(CommunityPermission.ManagePermissions);
+        }
+        var categoryAccess = await authorization.GetCategoryAccessAsync(communityId, scopeId, accountId, db);
+        return categoryAccess.Has(CommunityPermission.ViewChannels) &&
+               categoryAccess.Has(CommunityPermission.ManagePermissions);
+    }
+    private static async Task<bool> ValidateTargetAsync(Guid communityId, PermissionOverwriteTargetType type,
+        Guid? targetId, IridiumDbContext db) => type switch
+    {
+        PermissionOverwriteTargetType.Everyone => targetId is null,
+        PermissionOverwriteTargetType.Role => targetId.HasValue && await db.CommunityRoles.AnyAsync(value =>
+            value.CommunityId == communityId && value.Id == targetId && !value.IsDefault),
+        PermissionOverwriteTargetType.Member => targetId.HasValue && await db.CommunityMembers.AnyAsync(value =>
+            value.CommunityId == communityId && value.AccountId == targetId),
+        _ => false
+    };
 
     internal static int Depth(CommunityCategory category, IReadOnlyList<CommunityCategory> categories)
     {
@@ -437,7 +740,7 @@ public static partial class CommunityStructureEndpoints
         new(value.Id, value.CommunityId, value.Name, value.Position, value.ParentCategoryId);
     private static CommunityChannelDto ToDto(CommunityChannel value) =>
         new(value.Id, value.CommunityId, value.CategoryId, value.Name, value.Position, value.CreatedAt,
-            Kind: value.Kind);
+            Kind: value.Kind, PermissionsSyncedToCategory: value.PermissionsSyncedToCategory);
 
     [GeneratedRegex("^[a-z0-9_-]+$", RegexOptions.CultureInvariant)]
     private static partial Regex ChannelNamePattern();

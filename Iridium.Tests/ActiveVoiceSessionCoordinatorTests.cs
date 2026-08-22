@@ -84,6 +84,52 @@ public sealed class ActiveVoiceSessionCoordinatorTests
     }
 
     [Fact]
+    public async Task ScreenShareAndWatchControlsTargetOnlyActiveSessionWithoutCreatingAnotherVoiceSession()
+    {
+        var order = new List<string>();
+        var direct = new FakeDirect(order);
+        var community = new FakeCommunity(order) { CurrentRoom = Room(Guid.NewGuid()) };
+        await using var coordinator = new ActiveVoiceSessionCoordinator(direct, community);
+        var streamId = Guid.NewGuid();
+
+        await coordinator.StartScreenShareAsync();
+        await coordinator.WatchStreamAsync(streamId);
+        Assert.Equal(StreamViewerMode.Full, coordinator.ViewerMode);
+        coordinator.MinimizeWatchedStream();
+        Assert.Equal(StreamViewerMode.Floating, coordinator.ViewerMode);
+        coordinator.ShowWatchedStreamFull();
+        Assert.Equal(StreamViewerMode.Full, coordinator.ViewerMode);
+        await coordinator.StopWatchingAsync();
+        Assert.Equal(StreamViewerMode.None, coordinator.ViewerMode);
+        await coordinator.StopScreenShareAsync();
+
+        Assert.Equal(["community-share", $"community-watch:{streamId}", "community-stop-watch",
+            "community-stop-share:UserStoppedInIridium"], order);
+        Assert.Equal(ActiveVoiceSessionKind.CommunityVoiceChannel, coordinator.Current?.Kind);
+    }
+
+    [Fact]
+    public void FloatingViewerDefinesExactlySixSnapPositions()
+    {
+        Assert.Equal(6, Enum.GetValues<FloatingStreamPosition>().Length);
+        Assert.Contains(FloatingStreamPosition.TopMiddle, Enum.GetValues<FloatingStreamPosition>());
+        Assert.Contains(FloatingStreamPosition.BottomMiddle, Enum.GetValues<FloatingStreamPosition>());
+    }
+
+    [Fact]
+    public async Task WatchingOwnPublishedStreamDefaultsItsScreenAudioToMuted()
+    {
+        var direct = new FakeDirect([]) { CurrentCall = DirectCall() };
+        await using var coordinator = new ActiveVoiceSessionCoordinator(direct, new FakeCommunity([]));
+        var streamId = Guid.NewGuid();
+
+        await coordinator.WatchStreamAsync(streamId);
+
+        Assert.Equal(StreamViewerMode.Full, coordinator.ViewerMode);
+        Assert.True(coordinator.IsStreamAudioMuted(streamId));
+    }
+
+    [Fact]
     public void RingingCallerProjectionReusesUnreadEntryAndIncludesCallOnlyEntryOnce()
     {
         var caller = Guid.NewGuid();
@@ -115,6 +161,8 @@ public sealed class ActiveVoiceSessionCoordinatorTests
         public bool IsMuted { get; private set; }
         public bool IsDeafened { get; private set; }
         public CallConnectionState MediaConnectionState => CurrentCall is null ? CallConnectionState.Closed : CallConnectionState.Connected;
+        public IReadOnlyList<PublishedVoiceStreamDto> PublishedStreams { get; } = [];
+        public PublishedVoiceStreamDto? WatchedStream { get; private set; }
         public Task StartAsync(DirectConversationDto conversation, CancellationToken cancellationToken = default)
         { order.Add("direct-start"); CurrentCall = DirectCall(); Changed?.Invoke(); return Task.CompletedTask; }
         public Task AcceptAsync(CancellationToken cancellationToken = default)
@@ -127,6 +175,19 @@ public sealed class ActiveVoiceSessionCoordinatorTests
         { IsMuted = !IsMuted; Changed?.Invoke(); return Task.CompletedTask; }
         public Task ToggleDeafenAsync(CancellationToken cancellationToken = default)
         { IsDeafened = !IsDeafened; Changed?.Invoke(); return Task.CompletedTask; }
+        public Task StartScreenShareAsync(CancellationToken cancellationToken = default)
+        { order.Add("direct-share"); return Task.CompletedTask; }
+        public Task StopScreenShareAsync(string reason = "UserStoppedInIridium", CancellationToken cancellationToken = default)
+        { order.Add($"direct-stop-share:{reason}"); return Task.CompletedTask; }
+        public Task WatchStreamAsync(Guid streamId, CancellationToken cancellationToken = default)
+        { order.Add($"direct-watch:{streamId}"); WatchedStream = TestStream(streamId, AccountId!.Value); Changed?.Invoke(); return Task.CompletedTask; }
+        public Task StopWatchingAsync(CancellationToken cancellationToken = default)
+        { order.Add("direct-stop-watch"); WatchedStream = null; Changed?.Invoke(); return Task.CompletedTask; }
+        public Task AttachWatchedStreamAsync(string elementId, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task DetachWatchedStreamAsync(string elementId, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task SetStreamAudioMutedAsync(string elementId, bool muted, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task RequestStreamFullscreenAsync(string elementId, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task<string?> CaptureStreamThumbnailAsync(string mediaStreamId, CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
     }
 
     private sealed class FakeCommunity(List<string> order) : ICommunityVoiceControlSession
@@ -136,6 +197,8 @@ public sealed class ActiveVoiceSessionCoordinatorTests
         public CommunityVoiceMediaSessionDto? MediaSession { get; } = new(CommunityVoiceMediaStatus.MediaUnavailable, "test");
         public bool Muted { get; private set; }
         public bool Deafened { get; private set; }
+        public IReadOnlyList<PublishedVoiceStreamDto> PublishedStreams { get; } = [];
+        public PublishedVoiceStreamDto? WatchedStream { get; private set; }
         public Task JoinAsync(Guid communityId, Guid channelId, CancellationToken cancellationToken = default)
         { order.Add($"community-join:{channelId}"); CurrentRoom = new(communityId, channelId, DateTimeOffset.UtcNow, [], "Community", "Voice"); Changed?.Invoke(); return Task.CompletedTask; }
         public Task LeaveAsync(CancellationToken cancellationToken = default)
@@ -144,5 +207,23 @@ public sealed class ActiveVoiceSessionCoordinatorTests
         { Muted = muted; Changed?.Invoke(); return Task.CompletedTask; }
         public Task SetDeafenedAsync(bool deafened, CancellationToken cancellationToken = default)
         { Deafened = deafened; Changed?.Invoke(); return Task.CompletedTask; }
+        public Task StartScreenShareAsync(CancellationToken cancellationToken = default)
+        { order.Add("community-share"); return Task.CompletedTask; }
+        public Task StopScreenShareAsync(string reason = "UserStoppedInIridium", CancellationToken cancellationToken = default)
+        { order.Add($"community-stop-share:{reason}"); return Task.CompletedTask; }
+        public Task WatchStreamAsync(Guid streamId, CancellationToken cancellationToken = default)
+        { order.Add($"community-watch:{streamId}"); WatchedStream = TestStream(streamId, Guid.NewGuid()); Changed?.Invoke(); return Task.CompletedTask; }
+        public Task StopWatchingAsync(CancellationToken cancellationToken = default)
+        { order.Add("community-stop-watch"); WatchedStream = null; Changed?.Invoke(); return Task.CompletedTask; }
+        public Task AttachWatchedStreamAsync(string elementId, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task DetachWatchedStreamAsync(string elementId, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task SetStreamAudioMutedAsync(string elementId, bool muted, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task RequestStreamFullscreenAsync(string elementId, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task<string?> CaptureStreamThumbnailAsync(string mediaStreamId, CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
     }
+
+
+    private static PublishedVoiceStreamDto TestStream(Guid streamId, Guid ownerAccountId) =>
+        new(streamId, VoiceMediaSessionKind.CommunityVoice, Guid.NewGuid(), ownerAccountId, "participant", "Skye",
+            VoicePublishedStreamKind.ScreenShare, true, "media-stream", DateTimeOffset.UtcNow);
 }

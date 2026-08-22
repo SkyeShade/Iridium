@@ -35,6 +35,7 @@ public enum CallKind { DirectVoice, CommunityVoice }
 public enum CallState { Ringing, Active, Ended, Rejected, Cancelled }
 public enum CallConnectionState { New, Connecting, Connected, Disconnected, Failed, Closed }
 public enum MediaMode { DirectWebRtc, NodeSfu }
+public enum WebRtcNegotiationKind { Initial, Renegotiation, IceRestart }
 
 public sealed record CallParticipantDto(
     Guid AccountId,
@@ -83,7 +84,8 @@ public sealed record WebRtcDescriptionEvent(
     int NegotiationGeneration,
     int SenderPeerGeneration,
     Guid SignalId,
-    WebRtcSessionDescription Description);
+    WebRtcSessionDescription Description,
+    WebRtcNegotiationKind NegotiationKind = WebRtcNegotiationKind.Initial);
 public sealed record WebRtcIceCandidateEvent(
     Guid CallId,
     Guid SenderAccountId,
@@ -157,7 +159,12 @@ public sealed record VoiceDiagnosticReport(
     long? PacketsReceived = null,
     long? PacketsLost = null,
     long? BytesSent = null,
-    long? BytesReceived = null);
+    long? BytesReceived = null,
+    long? FramesEncoded = null,
+    long? FramesDecoded = null,
+    long? FramesDropped = null,
+    int? FrameWidth = null,
+    int? FrameHeight = null);
 
 public sealed record IceServerDto(IReadOnlyList<string> Urls, string? Username = null, string? Credential = null);
 public sealed record CallMediaConfigurationDto(MediaMode Mode, IReadOnlyList<IceServerDto> IceServers);

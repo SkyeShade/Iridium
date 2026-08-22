@@ -16,10 +16,60 @@ public enum CommunityPermission : long
     MentionEveryone = 1L << 9,
     ConnectVoice = 1L << 10,
     SpeakVoice = 1L << 11,
+    ShareScreen = 1L << 12,
+    ManagePermissions = 1L << 13,
+    ReadMessageHistory = 1L << 14,
+    AttachFiles = 1L << 15,
+    EmbedLinks = 1L << 16,
+    AddReactions = 1L << 17,
+    MuteMembers = 1L << 18,
+    DeafenMembers = 1L << 19,
+    MoveMembers = 1L << 20,
+    ManageExpressions = 1L << 21,
     Administrator = 1L << 62,
     All = ViewChannels | SendMessages | ManageMessages | ManageChannels | ManageCommunity |
-          ManageRoles | CreateInvites | KickMembers | BanMembers | MentionEveryone | ConnectVoice | SpeakVoice
+          ManageRoles | CreateInvites | KickMembers | BanMembers | MentionEveryone | ConnectVoice | SpeakVoice |
+          ShareScreen | ManagePermissions | ReadMessageHistory | AttachFiles | EmbedLinks | AddReactions |
+          MuteMembers | DeafenMembers | MoveMembers | ManageExpressions
 }
+
+public enum PermissionOverwriteScopeType { Category, Channel }
+public enum PermissionOverwriteTargetType { Everyone, Role, Member }
+public enum PermissionOverwriteValue { Neutral, Allow, Deny }
+
+public static class CommunityPermissionCatalog
+{
+    // ViewChannels is intentionally edited only through the private access experience.
+    public static IReadOnlyList<CommunityPermission> GeneralOverwritePermissions { get; } =
+    [CommunityPermission.ManageChannels, CommunityPermission.ManagePermissions, CommunityPermission.CreateInvites];
+}
+
+public sealed record PermissionOverwriteDto(
+    PermissionOverwriteTargetType TargetType,
+    Guid? TargetId,
+    CommunityPermission Allow,
+    CommunityPermission Deny);
+
+public sealed record PermissionOverwriteScopeDto(
+    Guid CommunityId,
+    PermissionOverwriteScopeType ScopeType,
+    Guid ScopeId,
+    bool PermissionsSyncedToCategory,
+    IReadOnlyList<PermissionOverwriteDto> Overwrites);
+
+public sealed record SetPermissionOverwriteRequest(
+    PermissionOverwriteTargetType TargetType,
+    Guid? TargetId,
+    CommunityPermission Allow,
+    CommunityPermission Deny);
+
+public sealed record ReplacePermissionOverwritesRequest(IReadOnlyList<PermissionOverwriteDto> Overwrites);
+
+public sealed record PermissionOverwriteSaveResultDto(
+    PermissionOverwriteScopeDto Scope,
+    long Revision);
+
+public sealed record RemovePermissionOverwriteRequest(PermissionOverwriteTargetType TargetType, Guid? TargetId);
 
 public sealed record CommunityAccessDto(bool IsOwner, CommunityPermission Permissions)
 {
@@ -111,7 +161,18 @@ public sealed record CommunityInvitePreviewDto(
     int MemberCount,
     string NodeAuthority,
     bool AlreadyMember,
-    Guid? CommunityId);
+    Guid? CommunityId,
+    double AvatarCropX = 0,
+    double AvatarCropY = 0,
+    double AvatarZoom = 1,
+    int AvatarWidth = 0,
+    int AvatarHeight = 0,
+    double BannerCropX = 0,
+    double BannerCropY = 0,
+    double BannerZoom = 1,
+    int BannerWidth = 0,
+    int BannerHeight = 0,
+    bool BannerIsProcessed = false);
 
 public sealed record JoinCommunityInviteResultDto(
     CommunityDto Community,

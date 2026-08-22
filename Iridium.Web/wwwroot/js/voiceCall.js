@@ -97,7 +97,9 @@ function voiceDiagnosticReport(session, event, details) {
         nominatedPairExists: "nominatedPairExists", selectedPairExists: "selectedPairExists", pairState: "pairState",
         localCandidateType: "localCandidateType", remoteCandidateType: "remoteCandidateType",
         packetsSent: "packetsSent", packetsReceived: "packetsReceived", packetsLost: "packetsLost",
-        bytesSent: "bytesSent", bytesReceived: "bytesReceived", remoteTrackReceived: "remoteTrackReceived",
+        bytesSent: "bytesSent", bytesReceived: "bytesReceived", framesEncoded:"framesEncoded",
+        framesDecoded:"framesDecoded", framesDropped:"framesDropped", frameWidth:"frameWidth", frameHeight:"frameHeight",
+        remoteTrackReceived: "remoteTrackReceived",
         remoteAudioPlaySucceeded: "remoteAudioPlaySucceeded", mediaTrafficDetected: "mediaTrafficDetected"
     };
     for (const [source, target] of Object.entries(mappings))
@@ -275,19 +277,28 @@ async function iceStatsSummary(session, event) {
         const pairs = [];
         let selectedCandidatePairId = null;
         let packetsSent = 0, packetsReceived = 0, packetsLost = 0, bytesSent = 0, bytesReceived = 0;
+        let framesEncoded = 0, framesDecoded = 0, framesDropped = 0, frameWidth = null, frameHeight = null;
         for (const report of stats.values()) {
             if (report.type === "local-candidate") localCandidates.set(report.id, report);
             else if (report.type === "remote-candidate") remoteCandidates.set(report.id, report);
             else if (report.type === "candidate-pair") pairs.push(report);
             else if (report.type === "transport" && report.selectedCandidatePairId)
                 selectedCandidatePairId = report.selectedCandidatePairId;
-            else if (report.type === "outbound-rtp" && report.kind === "audio" && !report.isRemote) {
+            else if (report.type === "outbound-rtp" && !report.isRemote) {
                 packetsSent += report.packetsSent ?? 0;
                 bytesSent += report.bytesSent ?? 0;
-            } else if (report.type === "inbound-rtp" && report.kind === "audio" && !report.isRemote) {
+                if (report.kind === "video") {
+                    framesEncoded += report.framesEncoded ?? 0;
+                    frameWidth = report.frameWidth ?? frameWidth; frameHeight = report.frameHeight ?? frameHeight;
+                }
+            } else if (report.type === "inbound-rtp" && !report.isRemote) {
                 packetsReceived += report.packetsReceived ?? 0;
                 packetsLost += report.packetsLost ?? 0;
                 bytesReceived += report.bytesReceived ?? 0;
+                if (report.kind === "video") {
+                    framesDecoded += report.framesDecoded ?? 0; framesDropped += report.framesDropped ?? 0;
+                    frameWidth = report.frameWidth ?? frameWidth; frameHeight = report.frameHeight ?? frameHeight;
+                }
             }
         }
         const pairSummaries = pairs.map(pair => {
@@ -311,7 +322,8 @@ async function iceStatsSummary(session, event) {
             candidatePairCount: pairs.length,
             succeededCandidatePairCount: pairs.filter(pair => pair.state === "succeeded").length,
             nominatedPairExists: Boolean(nominatedPair), selectedPairExists: explicitlySelectedIndex >= 0, pairSummaries,
-            packetsSent, packetsReceived, packetsLost, bytesSent, bytesReceived
+            packetsSent, packetsReceived, packetsLost, bytesSent, bytesReceived,
+            framesEncoded, framesDecoded, framesDropped, frameWidth, frameHeight
         };
         diagnostic(session, event, {
             localCandidateCountStats: localCandidates.size, remoteCandidateCountStats: remoteCandidates.size,
@@ -485,7 +497,7 @@ async function startVoiceActivityDetection(session) {
 
 export async function initialize(callback, iceServers, diagnostics = false, callId = null, localAccountId = null,
     role = "unknown", peerGeneration = 0, negotiationId = null, negotiationGeneration = 0,
-    iceInteropProtocolVersion = null, remoteAccountId = null, participantPreference = null) {
+    iceInteropProtocolVersion = null, remoteAccountId = null, participantPreference = null, polite = false) {
     if (iceInteropProtocolVersion !== 2) {
         console.error("[Iridium Voice] ICE interop protocol mismatch", {
             expected: 2, received: iceInteropProtocolVersion, peerGeneration
@@ -531,7 +543,9 @@ export async function initialize(callback, iceServers, diagnostics = false, call
             pendingRemoteCandidates: [], speaking: false, vadFrame: null, audioContext: null,
             audioSource: null, analyser: null,
             remoteAccountId, participantPreference: participantPreference ?? { volumePercent:100, locallyMuted:false },
-            remotePlayback: null, deafened: false,
+            remotePlayback: null, deafened: false, visualStreams:new Map(), viewers:new Map(), screenShare:null,
+            polite,
+            makingOffer:false, ignoreOffer:false, isSettingRemoteAnswerPending:false,
             states: {
                 signalingState: peer.signalingState,
                 iceGatheringState: peer.iceGatheringState,
@@ -611,8 +625,9 @@ export async function initialize(callback, iceServers, diagnostics = false, call
         diagnostic(session, "IceHandlerRegistered");
         peer.onnegotiationneeded = () => {
             session.negotiationNeededCount++;
-            diagnostic(session, "negotiationneeded observed; accepted caller path remains sole offer authority", {
-                negotiationNeededCount: session.negotiationNeededCount
+            diagnostic(session, "negotiationneeded observed; serialized coordinator owns offer creation", {
+                negotiationNeededCount: session.negotiationNeededCount, polite:session.polite,
+                makingOffer:session.makingOffer
             });
         };
         for (const track of localStream.getAudioTracks()) {
@@ -662,6 +677,19 @@ export async function initialize(callback, iceServers, diagnostics = false, call
             event.track.onended = () => diagnostic(session, "RemoteTrackEnded", {
                 kind: event.track.kind, readyState: event.track.readyState, muted: event.track.muted });
             const stream = event.streams?.[0];
+            const visualStream = stream?.getVideoTracks().length > 0 || event.track.kind === "video";
+            if (visualStream) {
+                const value = stream ?? new MediaStream([event.track]);
+                session.visualStreams.set(value.id, value);
+                diagnostic(session, event.track.kind === "video" ? "RemoteVideoTrackReceived" : "RemoteScreenAudioTrackReceived",
+                    { kind:event.track.kind, readyState:event.track.readyState, streamId:value.id });
+                event.track.onended = () => {
+                    if (value.getTracks().every(track => track.readyState === "ended")) session.visualStreams.delete(value.id);
+                    for (const [elementId, viewer] of session.viewers)
+                        if (viewer.mediaStreamId === value.id) detachViewer(session, elementId);
+                };
+                return;
+            }
             if (stream) session.remoteStream = stream;
             else session.remoteStream.addTrack(event.track);
             destroyRemoteVoicePlayback(session.remotePlayback);
@@ -689,13 +717,16 @@ export async function initialize(callback, iceServers, diagnostics = false, call
 
 export async function createOffer(id, negotiationId, signalId) {
     const session = requireSession(id);
+    session.makingOffer = true;
     try {
-        if (session.negotiationId && session.negotiationId !== negotiationId)
-            throw new DOMException("The peer already belongs to a different WebRTC negotiation.", "InvalidStateError");
+        if (session.peer.signalingState !== "stable")
+            throw new DOMException(`Cannot create an offer while signalingState is ${session.peer.signalingState}.`, "InvalidStateError");
         if (session.negotiationId !== negotiationId) session.negotiationGeneration++;
         session.negotiationId = negotiationId;
+        session.appliedAnswerNegotiationId = null;
         session.createOfferCount++;
-        diagnostic(session, "createOffer started", { signalId, createOfferCount: session.createOfferCount });
+        diagnostic(session, "RenegotiationMakingOffer", { signalId, createOfferCount: session.createOfferCount,
+            makingOffer:true, polite:session.polite, signalingStateBefore:session.peer.signalingState });
         const offer = await session.peer.createOffer();
         diagnostic(session, "createOffer completed", { signalId, ...descriptionMetadata(offer) });
         await setDescription(session, "setLocalDescription", offer, signalId);
@@ -703,16 +734,22 @@ export async function createOffer(id, negotiationId, signalId) {
     } catch (error) {
         reportOperationError(session, "create/set local offer", error);
         throw error;
-    }
+    } finally { session.makingOffer = false; }
 }
 
 export async function acceptOffer(id, negotiationId, offerSignalId, answerSignalId, offer) {
     const session = requireSession(id);
     try {
-        if (session.negotiationId && session.negotiationId !== negotiationId)
-            throw new DOMException("The offer belongs to a different WebRTC negotiation.", "InvalidStateError");
+        if (session.peer.signalingState === "have-local-offer") {
+            diagnostic(session, "RenegotiationGlareRollback", { signalId:offerSignalId, polite:session.polite,
+                offerCollision:true, rollbackPerformed:true, signalingStateBefore:session.peer.signalingState });
+            await session.peer.setLocalDescription({ type:"rollback" });
+        }
+        if (session.peer.signalingState !== "stable")
+            throw new DOMException(`Cannot accept an offer while signalingState is ${session.peer.signalingState}.`, "InvalidStateError");
         if (session.negotiationId !== negotiationId) session.negotiationGeneration++;
         session.negotiationId = negotiationId;
+        session.appliedAnswerNegotiationId = null;
         await setDescription(session, "setRemoteDescription", browserDescription(session, offer, "offer"), offerSignalId);
         await flushRemoteCandidates(session);
         session.createAnswerCount++;
@@ -729,6 +766,7 @@ export async function acceptOffer(id, negotiationId, offerSignalId, answerSignal
 
 export async function applyAnswer(id, negotiationId, signalId, answer) {
     const session = requireSession(id);
+    session.isSettingRemoteAnswerPending = true;
     try {
         const stateBefore = session.peer.signalingState;
         session.answersReceived++;
@@ -766,7 +804,7 @@ export async function applyAnswer(id, negotiationId, signalId, answer) {
     } catch (error) {
         reportOperationError(session, "set remote answer", error);
         throw error;
-    }
+    } finally { session.isSettingRemoteAnswerPending = false; }
 }
 
 export async function addIceCandidate(id, signalId, candidate) {
@@ -875,10 +913,142 @@ export function setParticipantPreference(id, preference) {
     updateRemoteVoicePlayback(session.remotePlayback, preference);
 }
 
+function detachViewer(session, elementId) {
+    const viewer = session.viewers.get(elementId);
+    const element = document.getElementById(elementId);
+    if (element) {
+        element.pause();
+        element.srcObject = null;
+    }
+    session.viewers.delete(elementId);
+    if (viewer) diagnostic(session, "StreamViewerDetached", { streamId:viewer.mediaStreamId });
+}
+
+async function waitForVisualStream(session, mediaStreamId) {
+    if (session.screenShare?.stream?.id === mediaStreamId) return session.screenShare.stream;
+    for (let attempt = 0; attempt < 100; attempt++) {
+        const stream = session.visualStreams.get(mediaStreamId);
+        if (stream) return stream;
+        await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    throw new DOMException("The remote screen track did not arrive.", "TimeoutError");
+}
+
+export async function captureStreamThumbnail(id, mediaStreamId) {
+    const session = requireSession(id);
+    return captureThumbnail(await waitForVisualStream(session, mediaStreamId));
+}
+
+async function captureThumbnail(stream) {
+    const video = document.createElement("video");
+    video.muted = true; video.playsInline = true; video.srcObject = stream;
+    try {
+        await video.play();
+        if (!video.videoWidth) await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error("Video frame was not ready.")), 3000);
+            video.onloadeddata = () => { clearTimeout(timer); resolve(); };
+            video.onerror = () => { clearTimeout(timer); reject(new Error("Video preview failed.")); };
+        });
+        const width = Math.min(280, video.videoWidth || 280);
+        const height = Math.max(1, Math.round(width * (video.videoHeight || 158) / (video.videoWidth || 280)));
+        const canvas = document.createElement("canvas");
+        canvas.width = width; canvas.height = height;
+        canvas.getContext("2d", { alpha:false }).drawImage(video, 0, 0, width, height);
+        return canvas.toDataURL("image/webp", .72);
+    } finally { video.pause(); video.srcObject = null; }
+}
+
+export async function startScreenShare(id) {
+    const session = requireSession(id);
+    if (!navigator.mediaDevices?.getDisplayMedia)
+        throw new DOMException("This browser does not support screen capture.", "NotSupportedError");
+    if (session.screenShare) await stopScreenShare(id, "Replaced");
+    diagnostic(session, "DisplayCaptureStarted");
+    let stream;
+    try {
+        stream = await navigator.mediaDevices.getDisplayMedia({
+            video:{ frameRate:{ ideal:30, max:30 } }, audio:true
+        });
+    } catch (error) {
+        diagnostic(session, "DisplayCaptureFailed", { name:error?.name, message:error?.message });
+        throw error;
+    }
+    const videoTrack = stream.getVideoTracks()[0];
+    if (!videoTrack) {
+        for (const track of stream.getTracks()) track.stop();
+        throw new DOMException("Screen capture did not provide a video track.", "NotFoundError");
+    }
+    const streamId = crypto.randomUUID();
+    const senders = [];
+    for (const track of stream.getTracks()) {
+        senders.push(session.peer.addTrack(track, stream));
+        diagnostic(session, track.kind === "video" ? "VideoTrackAdded" : "ScreenAudioTrackAdded",
+            { kind:track.kind, readyState:track.readyState, streamId:stream.id });
+    }
+    session.screenShare = { streamId, mediaStreamId:stream.id, stream, senders, stopping:false };
+    videoTrack.addEventListener("ended", () => {
+        if (!session.screenShare || session.screenShare.streamId !== streamId || session.screenShare.stopping) return;
+        session.callback.invokeMethodAsync("OnScreenShareEnded", session.peerGeneration, "BrowserStopSharing")
+            .catch(() => {});
+    }, { once:true });
+    diagnostic(session, "DisplayCaptureSucceeded", { streamId:stream.id,
+        audioTrackCount:stream.getAudioTracks().length, trackReadyState:videoTrack.readyState });
+    return { streamId, kind:0, hasAudio:stream.getAudioTracks().length > 0, mediaStreamId:stream.id };
+}
+
+export async function stopScreenShare(id, reason = "UserStoppedInIridium") {
+    const session = requireSession(id);
+    const share = session.screenShare;
+    if (!share) return;
+    session.screenShare = null;
+    share.stopping = true;
+    for (const sender of share.senders) {
+        try { session.peer.removeTrack(sender); } catch { }
+    }
+    for (const track of share.stream.getTracks()) track.stop();
+    diagnostic(session, "ScreenShareEnded", { reason, streamId:share.mediaStreamId });
+}
+
+export async function attachStreamViewer(id, mediaStreamId, elementId, audioMuted) {
+    const session = requireSession(id);
+    const stream = await waitForVisualStream(session, mediaStreamId);
+    const element = document.getElementById(elementId);
+    if (!element) throw new DOMException("The stream viewer is unavailable.", "NotFoundError");
+    detachViewer(session, elementId);
+    element.srcObject = stream;
+    element.muted = !!audioMuted || stream.getAudioTracks().length === 0;
+    element.playsInline = true;
+    session.viewers.set(elementId, { mediaStreamId });
+    diagnostic(session, "VideoPlaybackStarted", { streamId:mediaStreamId });
+    await element.play();
+    diagnostic(session, "VideoPlaybackSucceeded", { streamId:mediaStreamId });
+}
+
+export function detachStreamViewer(id, elementId) { detachViewer(requireSession(id), elementId); }
+
+export function setStreamAudioMuted(id, elementId, muted) {
+    requireSession(id);
+    const element = document.getElementById(elementId);
+    if (element) element.muted = !!muted;
+}
+
+export async function requestStreamFullscreen(id, elementId) {
+    requireSession(id);
+    const element = document.getElementById(elementId);
+    if (!element?.requestFullscreen) throw new DOMException("Fullscreen is unavailable.", "NotSupportedError");
+    await element.requestFullscreen();
+}
+
 export async function cleanup(id, reason = "unspecified cleanup") {
     const session = sessions.get(id);
     if (!session) return;
     sessions.delete(id);
+    for (const elementId of [...session.viewers.keys()]) detachViewer(session, elementId);
+    if (session.screenShare) {
+        session.screenShare.stopping = true;
+        for (const track of session.screenShare.stream.getTracks()) track.stop();
+        session.screenShare = null;
+    }
     if (session.vadFrame !== null) cancelAnimationFrame(session.vadFrame);
     setSpeaking(session, false);
     if (session.iceCandidateHandler)

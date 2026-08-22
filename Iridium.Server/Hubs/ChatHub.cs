@@ -28,6 +28,7 @@ public sealed class ChatHub(
     VoiceTraceLogger voiceTrace,
     CommunityVoiceRoomService communityVoice,
     ICommunityVoiceMediaGateway communityVoiceMedia,
+    VoiceStreamRegistry voiceStreams,
     IHostEnvironment environment,
     ILogger<ChatHub> logger) : Hub
 {
@@ -60,6 +61,7 @@ public sealed class ChatHub(
         if (Context.Items.ContainsKey(CountedKey)) connections.Disconnected();
         if (Context.Items.TryGetValue(AccountKey, out var value) && value is Guid accountId)
         {
+            voiceStreams.RemoveConnection(Context.ConnectionId, "ParticipantDisconnected");
             if (await communityVoice.LeaveAsync(Context.ConnectionId) is { } voiceLeave)
                 await BroadcastVoiceAsync(voiceLeave.CommunityId, CommunityVoiceHubContract.ParticipantLeft,
                     new VoiceParticipantLeftEvent(voiceLeave.CommunityId, voiceLeave.ChannelId,
@@ -109,14 +111,22 @@ public sealed class ChatHub(
         var accountId = await RequireAccountAsync();
         var access = await authorization.GetAccessAsync(communityId, accountId, db);
         if (!access.Has(CommunityPermission.ViewChannels))
-            throw new HubException("You do not have permission to view this Community's voice rooms.");
-        return communityVoice.GetRooms(communityId);
+            throw new HubException("You do not have permission to view this Server's voice rooms.");
+        var rooms = communityVoice.GetRooms(communityId);
+        var visible = new List<ActiveVoiceRoomDto>();
+        foreach (var room in rooms)
+            if (await authorization.HasChannelPermissionAsync(communityId, room.ChannelId, accountId,
+                    CommunityPermission.ViewChannels, db)) visible.Add(room);
+        return visible;
     }
 
     public async Task<ActiveVoiceRoomDto> JoinVoiceChannel(Guid communityId, Guid channelId)
     {
         var session = await RequireSessionAsync();
         await RequireVoiceChannelAsync(communityId, channelId, session.AccountId, CommunityPermission.ConnectVoice);
+        if (communityVoice.RoomFor(Context.ConnectionId) is { } currentRoom &&
+            currentRoom != (communityId, channelId))
+            voiceStreams.RemoveConnection(Context.ConnectionId, "SessionSwitched");
         var existingRoom = communityVoice.GetRooms(communityId).FirstOrDefault(value => value.ChannelId == channelId);
         if (communityVoiceMedia.MaximumParticipants is { } maximum &&
             existingRoom is not null && existingRoom.Participants.All(value => value.ParticipantId != Context.ConnectionId) &&
@@ -127,7 +137,7 @@ public sealed class ChatHub(
         var joined = await communityVoice.JoinAsync(communityId, channelId, session.AccountId, Context.ConnectionId,
             session.Account.DisplayName, session.Account.Username, presence.GetPublic(session.AccountId),
             names.CommunityName, names.ChannelName);
-        var voiceAccess = await authorization.GetAccessAsync(communityId, session.AccountId, db);
+        var voiceAccess = await authorization.GetChannelAccessAsync(communityId, channelId, session.AccountId, db);
         if (!voiceAccess.Has(CommunityPermission.SpeakVoice) &&
             await communityVoice.SetStateAsync(Context.ConnectionId, true, false) is { } initialState)
         {
@@ -147,7 +157,11 @@ public sealed class ChatHub(
     public async Task LeaveVoiceChannel()
     {
         await RequireAccountAsync();
+        var endedStreams = voiceStreams.RemoveConnection(Context.ConnectionId, "VoiceSessionEnded");
         if (await communityVoice.LeaveAsync(Context.ConnectionId) is not { } left) return;
+        foreach (var ended in endedStreams)
+            await Clients.Clients(left.Room?.Participants.Select(value => value.ParticipantId) ?? [])
+                .SendAsync(VoiceStreamHubContract.Ended, ended);
         await BroadcastVoiceAsync(left.CommunityId, CommunityVoiceHubContract.ParticipantLeft,
             new VoiceParticipantLeftEvent(left.CommunityId, left.ChannelId, left.Participant.AccountId,
                 left.Participant.ParticipantId, left.Room));
@@ -191,6 +205,55 @@ public sealed class ChatHub(
         CommunityVoiceDiagnostic("IceGenerated", targetParticipantId, negotiationId);
         await Clients.Client(targetParticipantId).SendAsync(CommunityVoiceHubContract.MediaIceCandidate,
             new CommunityVoiceMediaIceCandidateEvent(Context.ConnectionId, negotiationId, candidate));
+    }
+
+    public async Task<IReadOnlyList<PublishedVoiceStreamDto>> GetPublishedVoiceStreams(
+        VoiceMediaSessionKind sessionKind, Guid sessionId)
+    {
+        await RequireVoiceStreamSessionAsync(sessionKind, sessionId, publishing: false);
+        return voiceStreams.Get(sessionKind, sessionId);
+    }
+
+    public async Task<PublishedVoiceStreamDto> PublishVoiceStream(VoiceMediaSessionKind sessionKind,
+        Guid sessionId, PublishVoiceStreamRequest request)
+    {
+        var authorizationResult = await RequireVoiceStreamSessionAsync(sessionKind, sessionId, publishing: true);
+        VoiceStreamPublishResult result;
+        try
+        {
+            result = voiceStreams.Publish(sessionKind, sessionId, authorizationResult.AccountId,
+                authorizationResult.DisplayName, Context.ConnectionId, request);
+        }
+        catch (InvalidOperationException exception) { throw new HubException(exception.Message); }
+        if (result.Replaced is not null)
+            await Clients.Clients(authorizationResult.OtherParticipantIds)
+                .SendAsync(VoiceStreamHubContract.Ended, result.Replaced);
+        await Clients.Clients(authorizationResult.OtherParticipantIds)
+            .SendAsync(VoiceStreamHubContract.Published, new VoiceStreamPublishedEvent(result.Stream));
+        return result.Stream;
+    }
+
+    public async Task StopPublishedVoiceStream(VoiceMediaSessionKind sessionKind, Guid sessionId,
+        Guid streamId, string reason = "UserStoppedInIridium")
+    {
+        var authorizationResult = await RequireVoiceStreamSessionAsync(sessionKind, sessionId, publishing: false);
+        var ended = voiceStreams.Stop(sessionKind, sessionId, streamId, Context.ConnectionId,
+            string.IsNullOrWhiteSpace(reason) ? "UserStoppedInIridium" : reason);
+        if (ended is null) return;
+        await Clients.Clients(authorizationResult.OtherParticipantIds).SendAsync(VoiceStreamHubContract.Ended, ended);
+    }
+
+    public async Task WatchVoiceStream(VoiceMediaSessionKind sessionKind, Guid sessionId, Guid streamId)
+    {
+        await RequireVoiceStreamSessionAsync(sessionKind, sessionId, publishing: false);
+        if (!voiceStreams.Watch(Context.ConnectionId, sessionKind, sessionId, streamId))
+            throw new HubException("That stream is no longer available.");
+    }
+
+    public async Task StopWatchingVoiceStream(Guid streamId)
+    {
+        await RequireAccountAsync();
+        voiceStreams.StopWatching(Context.ConnectionId, streamId);
     }
 
     public async Task SetVoiceParticipantState(bool muted, bool deafened)
@@ -238,9 +301,11 @@ public sealed class ChatHub(
             if (existing is not null) return ChannelMessageMapper.ToDto(existing);
         }
         var attachments = await ValidateAttachmentsAsync(request.AttachmentIds, session.AccountId);
+        if (attachments.Count > 0)
+            await RequireChannelAsync(communityId, channelId, session.AccountId, CommunityPermission.AttachFiles);
         var content = ValidContent(request.Content, attachments.Count > 0, communityId);
         var (mentions, recipients) = await ValidateMentionsAsync(
-            communityId, session.AccountId, content, request.Mentions);
+            communityId, channelId, session.AccountId, content, request.Mentions);
 
         ChannelMessage? reply = null;
         if (request.ReplyToMessageId is { } replyId)
@@ -291,6 +356,9 @@ public sealed class ChatHub(
         var communityRecipients = await db.CommunityMembers
             .Where(value => value.CommunityId == communityId && value.AccountId != session.AccountId)
             .Select(value => value.AccountId).ToListAsync();
+        foreach (var recipient in communityRecipients.ToArray())
+            if (!await authorization.HasChannelPermissionAsync(communityId, channelId, recipient,
+                    CommunityPermission.ViewChannels, db)) communityRecipients.Remove(recipient);
         if (communityRecipients.Count > 0)
             await Clients.Groups(communityRecipients.Select(AccountGroup).ToArray()).SendAsync(
                 CommunityHubContract.ChannelActivity,
@@ -330,8 +398,8 @@ public sealed class ChatHub(
         var accountId = await RequireAccountAsync();
         await RequireChannelAsync(communityId, channelId, accountId, CommunityPermission.ViewChannels);
         var message = await MessageInContextAsync(communityId, channelId, messageId);
-        var mayModerate = await authorization.HasPermissionAsync(
-            communityId, accountId, CommunityPermission.ManageMessages, db);
+        var mayModerate = await authorization.HasChannelPermissionAsync(
+            communityId, channelId, accountId, CommunityPermission.ManageMessages, db);
         if (message.AuthorAccountId != accountId && !mayModerate)
             throw new HubException("You do not have permission to delete this message.");
         if (message.IsDeleted) return;
@@ -439,6 +507,7 @@ public sealed class ChatHub(
         VoiceDiagnostic("HangupRequested", callId, accountId, null, null, null, null);
         var route = calls.RequireSignalingRoute(callId, accountId, Context.ConnectionId, CallState.Active);
         var call = calls.HangUp(callId, accountId);
+        voiceStreams.RemoveSession(VoiceMediaSessionKind.DirectCall, callId, "VoiceSessionEnded");
         VoiceDiagnostic("CallEnded", callId, accountId, route.TargetAccountId, null, null, null,
             route.TargetConnectionId);
         await Clients.Client(route.TargetConnectionId).SendAsync(VoiceCallHubContract.Ended,
@@ -523,13 +592,18 @@ public sealed class ChatHub(
     }
 
     public async Task SendWebRtcOffer(Guid callId, Guid negotiationId, int negotiationGeneration,
-        int peerGeneration, Guid signalId, WebRtcSessionDescription description)
+        int peerGeneration, Guid signalId, WebRtcNegotiationKind negotiationKind,
+        WebRtcSessionDescription description)
     {
         var sender = await RequireAccountAsync();
         ValidateDiagnosticSignal(signalId, negotiationGeneration, peerGeneration);
         // TODO: Remove temporary voice-call diagnostics once WebRTC calls are stable.
         VoiceDiagnostic("OfferReceivedByServer", callId, sender, null, negotiationGeneration, peerGeneration, signalId);
-        var route = media.AuthorizeOffer(callId, sender, Context.ConnectionId, negotiationId, description);
+        var route = media.AuthorizeOffer(callId, sender, Context.ConnectionId, negotiationId, negotiationKind, description);
+        var authorizedCall = calls.RequireParticipant(callId, sender, CallState.Active);
+        logger.LogDebug("Call {CallId} negotiation {NegotiationId}: authorized {NegotiationKind} offer from {SenderRole} participant {SenderAccountId}.",
+            callId, negotiationId, negotiationKind,
+            authorizedCall.CallerAccountId == sender ? "caller" : "callee", sender);
         if (!route.ShouldForward)
         {
             VoiceDiagnostic("OfferIgnoredByServer", callId, sender, route.TargetAccountId,
@@ -541,7 +615,8 @@ public sealed class ChatHub(
         VoiceDiagnostic("OfferForwarded", callId, sender, route.TargetAccountId,
             negotiationGeneration, peerGeneration, signalId, route.TargetConnectionId);
         await Clients.Client(route.TargetConnectionId).SendAsync(VoiceCallHubContract.Offer,
-            new WebRtcDescriptionEvent(callId, sender, negotiationId, negotiationGeneration, peerGeneration, signalId, description));
+            new WebRtcDescriptionEvent(callId, sender, negotiationId, negotiationGeneration, peerGeneration, signalId,
+                description, route.NegotiationKind));
     }
 
     public async Task SendWebRtcAnswer(Guid callId, Guid negotiationId, int negotiationGeneration,
@@ -563,7 +638,8 @@ public sealed class ChatHub(
         VoiceDiagnostic("AnswerForwarded", callId, sender, route.TargetAccountId,
             negotiationGeneration, peerGeneration, signalId, route.TargetConnectionId);
         await Clients.Client(route.TargetConnectionId).SendAsync(VoiceCallHubContract.Answer,
-            new WebRtcDescriptionEvent(callId, sender, negotiationId, negotiationGeneration, peerGeneration, signalId, description));
+            new WebRtcDescriptionEvent(callId, sender, negotiationId, negotiationGeneration, peerGeneration, signalId,
+                description, route.NegotiationKind));
     }
 
     public async Task SendWebRtcIceCandidate(Guid callId, Guid negotiationId, int negotiationGeneration,
@@ -680,7 +756,7 @@ public sealed class ChatHub(
             .Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
             .Include(value => value.Attachments)
             .SingleOrDefaultAsync(value => value.Id == messageId && value.CommunityId == communityId && value.ChannelId == channelId);
-        return message ?? throw new HubException("Message not found in this Community channel.");
+        return message ?? throw new HubException("Message not found in this Server channel.");
     }
 
     private async Task<DirectConversation> RequireDirectConversationAsync(Guid conversationId, Guid accountId)
@@ -725,27 +801,27 @@ public sealed class ChatHub(
     private async Task RequireChannelAsync(
         Guid communityId, Guid channelId, Guid accountId, CommunityPermission permission)
     {
-        var access = await authorization.GetAccessAsync(communityId, accountId, db);
+        var access = await authorization.GetChannelAccessAsync(communityId, channelId, accountId, db);
         if (!access.IsOwner && !await authorization.IsMemberAsync(communityId, accountId, db))
-            throw new HubException("You are not a member of this Community.");
+            throw new HubException("You are not a member of this Server.");
         if (!access.Has(permission))
-            throw new HubException("You do not have permission to use this Community channel.");
+            throw new HubException("You do not have permission to use this Server channel.");
         if (!await db.CommunityChannels.AnyAsync(value => value.CommunityId == communityId && value.Id == channelId &&
                 value.Kind == CommunityChannelKind.Text))
-            throw new HubException("Text channel not found in this Community.");
+            throw new HubException("Text channel not found in this Server.");
     }
 
     private async Task RequireVoiceChannelAsync(Guid communityId, Guid channelId, Guid accountId,
         CommunityPermission permission)
     {
-        var access = await authorization.GetAccessAsync(communityId, accountId, db);
+        var access = await authorization.GetChannelAccessAsync(communityId, channelId, accountId, db);
         if (!access.IsOwner && !await authorization.IsMemberAsync(communityId, accountId, db))
-            throw new HubException("You are not a member of this Community.");
+            throw new HubException("You are not a member of this Server.");
         if (!access.Has(CommunityPermission.ViewChannels) || !access.Has(permission))
-            throw new HubException("You do not have permission to use this Community voice channel.");
+            throw new HubException("You do not have permission to use this Server voice channel.");
         if (!await db.CommunityChannels.AnyAsync(value => value.CommunityId == communityId &&
                 value.Id == channelId && value.Kind == CommunityChannelKind.Voice))
-            throw new HubException("Voice channel not found in this Community.");
+            throw new HubException("Voice channel not found in this Server.");
     }
 
     private async Task BroadcastVoiceAsync(Guid communityId, string method, object payload)
@@ -761,6 +837,7 @@ public sealed class ChatHub(
 
     private async Task<(IReadOnlyList<CommunityMentionDto> Mentions, HashSet<Guid> Recipients)> ValidateMentionsAsync(
         Guid communityId,
+        Guid channelId,
         Guid senderAccountId,
         string content,
         IReadOnlyList<CommunityMentionInput>? requested)
@@ -768,7 +845,7 @@ public sealed class ChatHub(
         if (requested is null || requested.Count == 0) return ([], []);
         if (requested.Count > 16) throw new HubException("A message cannot contain more than 16 mention targets.");
 
-        var access = await authorization.GetAccessAsync(communityId, senderAccountId, db);
+        var access = await authorization.GetChannelAccessAsync(communityId, channelId, senderAccountId, db);
         var memberIds = await db.CommunityMembers.Where(value => value.CommunityId == communityId)
             .Select(value => value.AccountId).ToListAsync();
         var roles = await db.CommunityRoles.Where(value => value.CommunityId == communityId).ToListAsync();
@@ -788,17 +865,17 @@ public sealed class ChatHub(
             {
                 case CommunityMentionKind.Account when input.TargetId is { } accountId:
                 {
-                    if (!memberIds.Contains(accountId)) throw new HubException("Mentioned account is not a member of this Community.");
+                    if (!memberIds.Contains(accountId)) throw new HubException("Mentioned account is not a member of this Server.");
                     var account = await db.Accounts.AsNoTracking().SingleAsync(value => value.Id == accountId);
                     result.Add(new(input.Kind, accountId, input.Start, input.Length, $"@{account.DisplayName}"));
-                    if (accountId != senderAccountId && await authorization.HasPermissionAsync(
-                            communityId, accountId, CommunityPermission.ViewChannels, db)) recipients.Add(accountId);
+                    if (accountId != senderAccountId && await authorization.HasChannelPermissionAsync(
+                            communityId, channelId, accountId, CommunityPermission.ViewChannels, db)) recipients.Add(accountId);
                     break;
                 }
                 case CommunityMentionKind.Role when input.TargetId is { } roleId:
                 {
                     var role = roles.SingleOrDefault(value => value.Id == roleId)
-                        ?? throw new HubException("Mentioned role does not belong to this Community.");
+                        ?? throw new HubException("Mentioned role does not belong to this Server.");
                     if (!role.IsMentionable && !access.Has(CommunityPermission.MentionEveryone))
                         throw new HubException("You do not have permission to mention that role.");
                     result.Add(new(input.Kind, roleId, input.Start, input.Length, $"@{role.Name.TrimStart('@')}"));
@@ -806,7 +883,7 @@ public sealed class ChatHub(
                         .Where(value => value.CommunityId == communityId && value.RoleId == roleId)
                         .Select(value => value.AccountId).ToListAsync();
                     foreach (var accountId in roleMembers.Where(value => value != senderAccountId))
-                        if (await authorization.HasPermissionAsync(communityId, accountId, CommunityPermission.ViewChannels, db))
+                        if (await authorization.HasChannelPermissionAsync(communityId, channelId, accountId, CommunityPermission.ViewChannels, db))
                             recipients.Add(accountId);
                     break;
                 }
@@ -815,7 +892,7 @@ public sealed class ChatHub(
                         throw new HubException("You do not have permission to mention everyone.");
                     result.Add(new(input.Kind, null, input.Start, input.Length, "@everyone"));
                     foreach (var accountId in memberIds.Where(value => value != senderAccountId))
-                        if (await authorization.HasPermissionAsync(communityId, accountId, CommunityPermission.ViewChannels, db))
+                        if (await authorization.HasChannelPermissionAsync(communityId, channelId, accountId, CommunityPermission.ViewChannels, db))
                             recipients.Add(accountId);
                     break;
                 default:
@@ -887,6 +964,36 @@ public sealed class ChatHub(
         var targetRoom = communityVoice.RoomFor(targetParticipantId);
         if (targetRoom is null || targetRoom.Value != sourceRoom)
             throw new HubException("The media target is not in your Community voice room.");
+    }
+
+    private sealed record VoiceStreamAuthorization(Guid AccountId, string DisplayName,
+        IReadOnlyList<string> OtherParticipantIds);
+
+    private async Task<VoiceStreamAuthorization> RequireVoiceStreamSessionAsync(
+        VoiceMediaSessionKind sessionKind, Guid sessionId, bool publishing)
+    {
+        if (!Enum.IsDefined(sessionKind)) throw new HubException("That voice session kind is not supported.");
+        var session = await RequireSessionAsync();
+        if (sessionKind == VoiceMediaSessionKind.DirectCall)
+        {
+            var call = calls.RequireParticipant(sessionId, session.AccountId, CallState.Active);
+            var route = calls.RequireSignalingRoute(sessionId, session.AccountId, Context.ConnectionId,
+                CallState.Active);
+            return new(session.AccountId, session.Account.DisplayName, [route.TargetConnectionId]);
+        }
+
+        var roomKey = communityVoice.RoomFor(Context.ConnectionId)
+            ?? throw new HubException("Join a Community voice channel before using its streams.");
+        if (roomKey.ChannelId != sessionId)
+            throw new HubException("That stream does not belong to your active Community voice channel.");
+        if (publishing)
+            await RequireVoiceChannelAsync(roomKey.CommunityId, roomKey.ChannelId, session.AccountId,
+                CommunityPermission.ShareScreen);
+        var room = communityVoice.GetRooms(roomKey.CommunityId)
+            .Single(value => value.ChannelId == roomKey.ChannelId);
+        return new(session.AccountId, session.Account.DisplayName,
+            room.Participants.Where(value => value.ParticipantId != Context.ConnectionId)
+                .Select(value => value.ParticipantId).ToArray());
     }
 
     // TODO: Remove temporary Community voice diagnostics once voice channels are stable.

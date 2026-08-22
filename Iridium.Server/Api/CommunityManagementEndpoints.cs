@@ -24,6 +24,7 @@ public static class CommunityManagementEndpoints
         group.MapPost("/roles/{roleId:guid}/move", MoveRoleAsync);
         group.MapDelete("/roles/{roleId:guid}", DeleteRoleAsync);
         group.MapPut("/members/{accountId:guid}/roles", SetMemberRolesAsync);
+        group.MapDelete("/members/@me", LeaveCommunityAsync);
         group.MapPost("/members/{accountId:guid}/kick", KickMemberAsync);
         group.MapPost("/bans/{accountId:guid}", BanMemberAsync);
         group.MapDelete("/bans/{accountId:guid}", UnbanMemberAsync);
@@ -77,7 +78,7 @@ public static class CommunityManagementEndpoints
         if (actor.Error is not null) return actor.Error;
         var name = request.Name.Trim();
         var description = string.IsNullOrWhiteSpace(request.Description) ? null : request.Description.Trim();
-        if (name.Length is < 1 or > 100) return Validation(nameof(request.Name), "Community names must be between 1 and 100 characters.");
+        if (name.Length is < 1 or > 100) return Validation(nameof(request.Name), "Server names must be between 1 and 100 characters.");
         if (description?.Length > 500) return Validation(nameof(request.Description), "Descriptions cannot exceed 500 characters.");
         var community = await db.Communities.SingleOrDefaultAsync(value => value.Id == communityId);
         if (community is null) return Results.NotFound();
@@ -119,7 +120,8 @@ public static class CommunityManagementEndpoints
 
     private static async Task<IResult> UpdateRoleAsync(
         Guid communityId, Guid roleId, UpdateCommunityRoleRequest request, HttpContext context, IridiumDbContext db,
-        SessionService sessions, CommunityAuthorizationService authorization, CommunityRealtimePublisher realtime)
+        SessionService sessions, CommunityAuthorizationService authorization, CommunityRealtimePublisher realtime,
+        CommunityVoicePermissionEnforcer voicePermissions)
     {
         var actor = await RequirePermissionAsync(communityId, CommunityPermission.ManageRoles, context, db, sessions, authorization);
         if (actor.Error is not null) return actor.Error;
@@ -137,6 +139,7 @@ public static class CommunityManagementEndpoints
         role.IsMentionable = !role.IsDefault && request.IsMentionable;
         try { await db.SaveChangesAsync(); }
         catch (DbUpdateException) { return Results.Conflict(new { message = "A role with that name already exists." }); }
+        await voicePermissions.EnforceAsync(communityId, db);
         await realtime.PublishAsync(communityId, "role-updated", db);
         return Results.Ok(ToDto(role));
     }
@@ -167,7 +170,8 @@ public static class CommunityManagementEndpoints
 
     private static async Task<IResult> DeleteRoleAsync(
         Guid communityId, Guid roleId, HttpContext context, IridiumDbContext db, SessionService sessions,
-        CommunityAuthorizationService authorization, CommunityRealtimePublisher realtime)
+        CommunityAuthorizationService authorization, CommunityRealtimePublisher realtime,
+        CommunityVoicePermissionEnforcer voicePermissions)
     {
         var actor = await RequirePermissionAsync(communityId, CommunityPermission.ManageRoles, context, db, sessions, authorization);
         if (actor.Error is not null) return actor.Error;
@@ -176,16 +180,21 @@ public static class CommunityManagementEndpoints
         if (role is null) return Results.NotFound();
         if (role.IsDefault) return Results.Problem("The @everyone role cannot be deleted.", statusCode: StatusCodes.Status409Conflict);
         if (!actor.Access!.IsOwner && !await authorization.CanManageRoleAsync(communityId, actor.AccountId, roleId, db)) return Results.Forbid();
+        var overwriteRows = await db.CommunityPermissionOverwrites.Where(value => value.CommunityId == communityId &&
+            value.TargetType == PermissionOverwriteTargetType.Role && value.TargetId == roleId).ToListAsync();
+        db.CommunityPermissionOverwrites.RemoveRange(overwriteRows);
         db.CommunityMemberRoles.RemoveRange(role.Members);
         db.CommunityRoles.Remove(role);
         await db.SaveChangesAsync();
+        await voicePermissions.EnforceAsync(communityId, db);
         await realtime.PublishAsync(communityId, "role-deleted", db);
         return Results.NoContent();
     }
 
     private static async Task<IResult> SetMemberRolesAsync(
         Guid communityId, Guid accountId, SetCommunityMemberRolesRequest request, HttpContext context, IridiumDbContext db,
-        SessionService sessions, CommunityAuthorizationService authorization, CommunityRealtimePublisher realtime)
+        SessionService sessions, CommunityAuthorizationService authorization, CommunityRealtimePublisher realtime,
+        CommunityVoicePermissionEnforcer voicePermissions)
     {
         var actor = await RequirePermissionAsync(communityId, CommunityPermission.ManageRoles, context, db, sessions, authorization);
         if (actor.Error is not null) return actor.Error;
@@ -197,7 +206,7 @@ public static class CommunityManagementEndpoints
         if (member is null) return Results.NotFound();
         var roleIds = request.RoleIds.Distinct().ToArray();
         var roles = await db.CommunityRoles.Where(value => value.CommunityId == communityId && roleIds.Contains(value.Id) && !value.IsDefault).ToListAsync();
-        if (roles.Count != roleIds.Length) return Results.BadRequest(new { message = "One or more roles do not belong to this Community." });
+        if (roles.Count != roleIds.Length) return Results.BadRequest(new { message = "One or more roles do not belong to this Server." });
         if (!await authorization.CanSetMemberRolesAsync(communityId, actor.AccountId, accountId, roleIds, db))
             return Results.Forbid();
         db.CommunityMemberRoles.RemoveRange(member.Roles);
@@ -207,6 +216,7 @@ public static class CommunityManagementEndpoints
                 CommunityId = communityId, AccountId = accountId, RoleId = role.Id, Member = member, Role = role
             });
         await db.SaveChangesAsync();
+        await voicePermissions.EnforceAsync(communityId, db);
         await realtime.PublishAsync(communityId, "member-roles", db);
         return Results.NoContent();
     }
@@ -215,6 +225,32 @@ public static class CommunityManagementEndpoints
         Guid communityId, Guid accountId, HttpContext context, IridiumDbContext db, SessionService sessions,
         CommunityAuthorizationService authorization, CommunityRealtimePublisher realtime) =>
         RemoveMemberAsync(communityId, accountId, false, null, context, db, sessions, authorization, realtime);
+
+    private static async Task<IResult> LeaveCommunityAsync(Guid communityId, HttpContext context, IridiumDbContext db,
+        SessionService sessions, CommunityRealtimePublisher realtime)
+    {
+        var session = await sessions.GetAsync(context, db);
+        if (session is null) return Results.Unauthorized();
+        var community = await db.Communities.AsNoTracking().SingleOrDefaultAsync(value => value.Id == communityId);
+        if (community is null) return Results.NotFound();
+        if (community.OwnerAccountId == session.AccountId)
+            return Results.Problem("Transfer ownership or delete the Community before leaving.",
+                statusCode: StatusCodes.Status409Conflict);
+        var member = await db.CommunityMembers.Include(value => value.Roles).SingleOrDefaultAsync(value =>
+            value.CommunityId == communityId && value.AccountId == session.AccountId);
+        if (member is null) return Results.NotFound();
+        var overwrites = await db.CommunityPermissionOverwrites.Where(value => value.CommunityId == communityId &&
+            value.TargetType == PermissionOverwriteTargetType.Member && value.TargetId == session.AccountId).ToListAsync();
+        await using var transaction = await db.Database.BeginTransactionAsync();
+        db.CommunityPermissionOverwrites.RemoveRange(overwrites);
+        db.CommunityMemberRoles.RemoveRange(member.Roles);
+        db.CommunityMembers.Remove(member);
+        await db.SaveChangesAsync();
+        await transaction.CommitAsync();
+        await realtime.PublishAccessRevokedAsync(new CommunityAccessRevokedEvent(communityId, session.AccountId, "left"));
+        await realtime.PublishAsync(communityId, "member-left", db);
+        return Results.NoContent();
+    }
 
     private static Task<IResult> BanMemberAsync(
         Guid communityId, Guid accountId, BanCommunityMemberRequest request, HttpContext context, IridiumDbContext db,
@@ -249,6 +285,9 @@ public static class CommunityManagementEndpoints
         }
         if (member is not null)
         {
+            var overwriteRows = await db.CommunityPermissionOverwrites.Where(value => value.CommunityId == communityId &&
+                value.TargetType == PermissionOverwriteTargetType.Member && value.TargetId == accountId).ToListAsync();
+            db.CommunityPermissionOverwrites.RemoveRange(overwriteRows);
             db.CommunityMemberRoles.RemoveRange(member.Roles);
             db.CommunityMembers.Remove(member);
         }
@@ -334,8 +373,22 @@ public static class CommunityManagementEndpoints
         var alreadyMember = session is not null && await db.CommunityMembers.AnyAsync(value =>
             value.CommunityId == invite.CommunityId && value.AccountId == session.AccountId);
         var count = await db.CommunityMembers.CountAsync(value => value.CommunityId == invite.CommunityId);
-        return Results.Ok(new CommunityInvitePreviewDto(status, invite.Community.Name, null, null, count,
-            NodeAuthority(context, options.Value), alreadyMember, invite.CommunityId));
+        var avatar = invite.Community.ActiveAvatarPresetId is null ? null : AbsoluteCommunityMedia(context,
+            options.Value, invite.CommunityId, "avatar", invite.Community.AvatarRevision);
+        var banner = invite.Community.ActiveBannerPresetId is null ? null : AbsoluteCommunityMedia(context,
+            options.Value, invite.CommunityId, "banner", invite.Community.BannerRevision);
+        var avatarPreset = invite.Community.ActiveAvatarPresetId is null ? null :
+            await db.CommunityMediaPresets.AsNoTracking().SingleOrDefaultAsync(value =>
+                value.CommunityId == invite.CommunityId && value.Id == invite.Community.ActiveAvatarPresetId);
+        var bannerPreset = invite.Community.ActiveBannerPresetId is null ? null :
+            await db.CommunityMediaPresets.AsNoTracking().SingleOrDefaultAsync(value =>
+                value.CommunityId == invite.CommunityId && value.Id == invite.Community.ActiveBannerPresetId);
+        return Results.Ok(new CommunityInvitePreviewDto(status, invite.Community.Name, avatar, banner, count,
+            NodeAuthority(context, options.Value), alreadyMember, invite.CommunityId,
+            avatarPreset?.CropX ?? 0, avatarPreset?.CropY ?? 0, avatarPreset?.Zoom ?? 1,
+            avatarPreset?.Width ?? 0, avatarPreset?.Height ?? 0,
+            bannerPreset?.CropX ?? 0, bannerPreset?.CropY ?? 0, bannerPreset?.Zoom ?? 1,
+            bannerPreset?.Width ?? 0, bannerPreset?.Height ?? 0, bannerPreset?.ProcessedObjectKey is not null));
     }
 
     private static async Task<IResult> JoinInviteAsync(
@@ -415,4 +468,12 @@ public static class CommunityManagementEndpoints
         Results.ValidationProblem(new Dictionary<string, string[]> { [key] = [message] });
     private static string NodeAuthority(HttpContext context, NodeOptions options) =>
         string.IsNullOrWhiteSpace(options.PublicAuthority) ? context.Request.Host.Value ?? "localhost" : options.PublicAuthority!;
+    private static string AbsoluteCommunityMedia(HttpContext context, NodeOptions options, Guid communityId,
+        string kind, long revision)
+    {
+        var authority = NodeAuthority(context, options);
+        var origin = authority.Contains("://", StringComparison.Ordinal) ? authority.TrimEnd('/') :
+            $"{context.Request.Scheme}://{authority}";
+        return $"{origin}/api/communities/{communityId}/{kind}?v={revision}";
+    }
 }
