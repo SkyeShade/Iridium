@@ -14,7 +14,8 @@
             @if (SidebarContent is not null) { @SidebarContent }
         </div>
         @if (VoiceConnection is not null) { @VoiceConnection }
-        <ProfilePanel DisplayName="@DisplayName" PublicIdentity="@PublicIdentity" Presence="Presence" OnProfile="OnProfile" OnSettings="OnSettings" />
+        <ProfilePanel AccountId="AccountId" AvatarRevision="AvatarRevision" DisplayName="@DisplayName"
+                      PublicIdentity="@PublicIdentity" Presence="Presence" OnProfile="OnProfile" OnSettings="OnSettings" />
     </aside>
     <main class="main-content">@ChildContent</main>
     @if (ShowRightSidebar && RightSidebar is not null)
@@ -30,6 +31,8 @@
     [Parameter] public Guid? RingingCallerAccountId { get; set; }
     [Parameter] public string NodeAuthority { get; set; } = string.Empty;
     [Parameter, EditorRequired] public required string DisplayName { get; set; }
+    [Parameter] public Guid? AccountId { get; set; }
+    [Parameter] public long AvatarRevision { get; set; }
     [Parameter, EditorRequired] public required string PublicIdentity { get; set; }
     [Parameter] public PublicPresence Presence { get; set; }
     [Parameter] public EventCallback<CommunityDto?> OnCommunitySelected { get; set; }

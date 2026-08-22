@@ -12,6 +12,7 @@ using Iridium.Server.Storage;
 using Iridium.Server.Calls;
 using Iridium.Server.Voice;
 using Iridium.Server.Communities;
+using Iridium.Server.Profiles;
 
 var builder = WebApplication.CreateBuilder(args);
 var configuredNodeOptions = builder.Configuration.GetSection(NodeOptions.SectionName).Get<NodeOptions>() ?? new NodeOptions();
@@ -26,6 +27,7 @@ builder.Services.AddSingleton<VoiceConnectionRegistry>();
 builder.Services.AddSingleton<VoiceTraceLogger>();
 builder.Services.AddSingleton<CommunityRevisionTracker>();
 builder.Services.AddSingleton<CommunityRealtimePublisher>();
+builder.Services.AddSingleton<ProfileRealtimePublisher>();
 builder.Services.Configure<NodeOptions>(builder.Configuration.GetSection(NodeOptions.SectionName));
 builder.Services.Configure<MediaOptions>(builder.Configuration.GetSection(MediaOptions.SectionName));
 builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(options =>
@@ -39,6 +41,7 @@ builder.Services.AddScoped<CommunityAuthorizationService>();
 builder.Services.AddScoped<CommunityInviteService>();
 builder.Services.AddSingleton<IAttachmentStorage, LocalAttachmentStorage>();
 builder.Services.AddSingleton<IImagePreviewGenerator, ImagePreviewGenerator>();
+builder.Services.AddSingleton<IAvatarImageValidator, AvatarImageValidator>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<ICallService, CallService>();
 builder.Services.AddSingleton<IMediaService, DirectWebRtcMediaService>();
@@ -80,6 +83,7 @@ await using (var scope = app.Services.CreateAsyncScope())
     await DatabaseCompatibility.EnsureMessageHistoryIndexesAsync(db);
     await DatabaseCompatibility.EnsureCommunityManagementSchemaAsync(db);
     await DatabaseCompatibility.EnsureCommunityVoiceSchemaAsync(db);
+    await DatabaseCompatibility.EnsureAvatarPresetSchemaAsync(db);
     await DatabaseCompatibility.EnsureAttachmentsTableAsync(db);
 }
 
@@ -119,5 +123,6 @@ app.MapMessageEndpoints();
 app.MapDirectMessageEndpoints();
 app.MapCommunityManagementEndpoints();
 app.MapAttachmentEndpoints();
+app.MapAvatarPresetEndpoints();
 
 app.Run();

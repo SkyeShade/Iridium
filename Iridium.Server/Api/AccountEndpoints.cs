@@ -7,6 +7,7 @@ using Iridium.Server.Security;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.Options;
+using Iridium.Server.Profiles;
 
 namespace Iridium.Server.Api;
 
@@ -94,7 +95,8 @@ public static partial class AccountEndpoints
         UpdateProfileRequest request,
         HttpContext context,
         IridiumDbContext db,
-        SessionService sessions)
+        SessionService sessions,
+        ProfileRealtimePublisher realtime)
     {
         var session = await sessions.GetAsync(context, db);
         if (session is null) return Results.Unauthorized();
@@ -115,6 +117,7 @@ public static partial class AccountEndpoints
         session.Account.Pronouns = pronouns;
         session.Account.Description = description;
         await db.SaveChangesAsync();
+        await realtime.PublishAsync(session.AccountId, session.Account.AvatarRevision, db);
         return Results.Ok(ToDto(session.Account));
     }
 
@@ -255,7 +258,7 @@ public static partial class AccountEndpoints
 
     private static NodeAccountDto ToDto(NodeAccount account) =>
         new(account.Id, account.Username, account.DisplayName, account.Pronouns, account.Description,
-            account.PreferredPresence, account.CreatedAt);
+            account.PreferredPresence, account.CreatedAt, account.ActiveAvatarPresetId, account.AvatarRevision);
 
     [GeneratedRegex("^[A-Za-z0-9_.-]{3,32}$", RegexOptions.CultureInvariant)]
     private static partial Regex UsernamePattern();

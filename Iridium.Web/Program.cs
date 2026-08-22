@@ -27,6 +27,7 @@ builder.Services.AddScoped<ISavedAccountStore>(sp => sp.GetRequiredService<Brows
 builder.Services.AddScoped<IActiveAccountSelectionStore>(sp => sp.GetRequiredService<BrowserClientStorage>());
 builder.Services.AddScoped<IVoiceParticipantPreferenceStore>(sp => sp.GetRequiredService<BrowserClientStorage>());
 builder.Services.AddScoped<VoiceParticipantPreferencesService>();
+builder.Services.AddScoped<ProfileMediaService>();
 builder.Services.AddScoped<SavedNodeState>();
 builder.Services.AddScoped<NodeSession>();
 builder.Services.AddScoped<RealtimeConnectionService>();

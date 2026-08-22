@@ -60,7 +60,7 @@
                             @onpointerdown:preventDefault="true" @onclick="() => AcceptSuggestionAsync(suggestion)">
                         @if (suggestion.Member is { } member)
                         {
-                            <ProfileAvatar DisplayName="@member.DisplayName" Presence="@member.Presence" Size="small" Surface="panel" />
+                            <ProfileAvatar AccountId="member.AccountId" DisplayName="@member.DisplayName" Presence="@member.Presence" Size="small" Surface="panel" />
                             <span><span class="display-name" style="@(suggestion.Color is { } color ? $"color:{color}" : null)">@member.DisplayName</span><small>@member.Username</small></span>
                         }
                         else

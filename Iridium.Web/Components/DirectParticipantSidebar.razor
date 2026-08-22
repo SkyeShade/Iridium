@@ -27,7 +27,7 @@
                 }
             </div>
         }
-        <div class="profile-avatar"><ProfileAvatar DisplayName="@Participant.DisplayName" Presence="@Participant.Presence" Size="large" Surface="sidebar" /></div>
+        <div class="profile-avatar"><ProfileAvatar AccountId="Participant.AccountId" DisplayName="@Participant.DisplayName" Presence="@Participant.Presence" Size="large" Surface="sidebar" /></div>
         <div class="profile-copy">
             <h2 class="display-name">@Participant.DisplayName</h2>
             <p>@IridiumIdentity.Format(Participant.Username, NodeAuthority)</p>

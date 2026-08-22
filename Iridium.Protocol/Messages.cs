@@ -86,7 +86,9 @@ public sealed record NodeAccountDto(
     string? Pronouns,
     string? Description,
     UserPresence PreferredPresence,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    Guid? ActiveAvatarPresetId = null,
+    long AvatarRevision = 0);
 public sealed record AuthenticationResultDto(string AccessToken, NodeAccountDto Account);
 public sealed record UpdateProfileRequest(string DisplayName, string? Pronouns, string? Description);
 public sealed record CommunityDto(Guid Id, string Name, string? Description, Guid OwnerAccountId, DateTimeOffset CreatedAt, bool HasUnread = false, int MentionCount = 0);

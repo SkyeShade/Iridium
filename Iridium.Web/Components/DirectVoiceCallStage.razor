@@ -6,7 +6,7 @@
 {
     <section class="dm-call-stage incoming" aria-label="Incoming voice call">
         <div class="single-call-participant">
-            <div class="call-avatar"><ProfileAvatar DisplayName="@incoming.CallerDisplayName" Presence="@Participant.Presence" Size="large" Surface="base" /></div>
+            <div class="call-avatar"><ProfileAvatar AccountId="incoming.CallerAccountId" DisplayName="@incoming.CallerDisplayName" Presence="@Participant.Presence" Size="large" Surface="base" /></div>
             <strong>@incoming.CallerDisplayName</strong>
             <span>Incoming voice call</span>
         </div>
@@ -24,7 +24,7 @@ else if (CallForConversation is { } call)
         @if (isRinging)
         {
             <div class="single-call-participant">
-                <div class="call-avatar"><ProfileAvatar DisplayName="@Participant.DisplayName" Presence="@Participant.Presence" Size="large" Surface="base" /></div>
+                <div class="call-avatar"><ProfileAvatar AccountId="Participant.AccountId" DisplayName="@Participant.DisplayName" Presence="@Participant.Presence" Size="large" Surface="base" /></div>
                 <strong>@Participant.DisplayName</strong>
                 <span>Calling…</span>
             </div>
@@ -38,7 +38,7 @@ else if (CallForConversation is { } call)
                     <div class="call-participant" @oncontextmenu="() => OpenParticipantMenu(callParticipant)"
                          @oncontextmenu:preventDefault="true" @oncontextmenu:stopPropagation="true">
                         <div class="call-avatar @(callParticipant.IsSpeaking ? "speaking" : null)">
-                            <ProfileAvatar DisplayName="@callParticipant.DisplayName"
+                            <ProfileAvatar AccountId="callParticipant.AccountId" DisplayName="@callParticipant.DisplayName"
                                            Presence="@(callParticipant.AccountId == CurrentAccountId ? PublicPresence.Online : Participant.Presence)"
                                            Size="large" Surface="base" />
                         </div>
@@ -46,7 +46,8 @@ else if (CallForConversation is { } call)
                         @if (callParticipant.IsMuted) { <span>Muted</span> }
                         @if (_menuRemoteAccountId == callParticipant.AccountId)
                         {
-                            <VoiceParticipantMenu AccountId="callParticipant.AccountId" DisplayName="callParticipant.DisplayName" />
+                            <VoiceParticipantMenu AccountId="callParticipant.AccountId" DisplayName="callParticipant.DisplayName"
+                                                  Username="Participant.Username" />
                         }
                     </div>
                 }

@@ -27,7 +27,7 @@
             {
                 <article class="friend-row">
                     <button class="friend-profile" @onclick="args => OpenProfile(friend, args)">
-                        <ProfileAvatar DisplayName="@friend.DisplayName" Presence="friend.Presence" Surface="base" />
+                        <ProfileAvatar AccountId="friend.AccountId" DisplayName="@friend.DisplayName" Presence="friend.Presence" Surface="base" />
                         <span class="friend-copy"><strong class="display-name">@friend.DisplayName</strong><small>@IridiumIdentity.Format(friend.Username, NodeAuthority) · @StatusText(friend)</small></span>
                     </button>
                     <div class="friend-actions">

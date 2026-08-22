@@ -1,0 +1,50 @@
+@using Iridium.Protocol
+
+<div class="profile-identity-card @Class">
+    <div class="profile-card-banner"></div>
+    <div class="profile-card-avatar-position">
+        @if (Editable)
+        {
+            <EditableAvatar AccountId="AccountId" AvatarRevision="AvatarRevision" DisplayName="@DisplayName"
+                            Presence="Presence" BadgeMode="AvatarBadgeMode.Presence" Size="profile-card"
+                            Surface="sidebar" OnEdit="OnEditAvatar" />
+        }
+        else
+        {
+            <ProfileAvatar AccountId="AccountId" AvatarRevision="AvatarRevision" DisplayName="@DisplayName"
+                           Presence="Presence" BadgeMode="AvatarBadgeMode.Presence" Size="profile-card" Surface="sidebar" />
+        }
+    </div>
+    <div class="profile-card-body">
+        <div class="profile-card-identity">
+            <strong class="display-name">@DisplayName</strong>
+            <span>@Identity</span>
+            @if (!string.IsNullOrWhiteSpace(Pronouns))
+            {
+                <small>@Pronouns</small>
+            }
+            @if (!string.IsNullOrWhiteSpace(Description))
+            {
+                <section class="profile-card-about">
+                    <h3>ABOUT ME</h3>
+                    <p>@Description</p>
+                </section>
+            }
+        </div>
+        @ChildContent
+    </div>
+</div>
+
+@code {
+    [Parameter] public Guid? AccountId { get; set; }
+    [Parameter] public long AvatarRevision { get; set; }
+    [Parameter, EditorRequired] public string DisplayName { get; set; } = string.Empty;
+    [Parameter, EditorRequired] public string Identity { get; set; } = string.Empty;
+    [Parameter] public string? Pronouns { get; set; }
+    [Parameter] public string? Description { get; set; }
+    [Parameter] public PublicPresence Presence { get; set; }
+    [Parameter] public bool Editable { get; set; }
+    [Parameter] public EventCallback OnEditAvatar { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+    [Parameter] public string? Class { get; set; }
+}

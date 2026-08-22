@@ -20,7 +20,7 @@
                             <span class="dm-unread-marker"></span>
                         }
                     </span>
-                    <ProfileAvatar DisplayName="@conversation.OtherParticipant.DisplayName" Presence="conversation.OtherParticipant.Presence" Size="small" Surface="sidebar" />
+                    <ProfileAvatar AccountId="conversation.OtherParticipant.AccountId" DisplayName="@conversation.OtherParticipant.DisplayName" Presence="conversation.OtherParticipant.Presence" Size="small" Surface="sidebar" />
                     <span class="dm-name display-name">@conversation.OtherParticipant.DisplayName</span>
                 </button>
                 <button class="dm-close" title="Close Direct Message" @onclick="() => OnConversationClosed.InvokeAsync(conversation.Id)"><Icon Name="close" Size="13" /></button>

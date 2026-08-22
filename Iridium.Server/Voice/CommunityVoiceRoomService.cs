@@ -14,6 +14,7 @@ public sealed class CommunityVoiceRoomService(TimeProvider timeProvider, ICommun
         public required Guid AccountId { get; init; }
         public required string ParticipantId { get; init; }
         public required string DisplayName { get; init; }
+        public required string Username { get; init; }
         public required PublicPresence Presence { get; init; }
         public required DateTimeOffset JoinedAt { get; init; }
         public bool Muted { get; set; }
@@ -48,7 +49,7 @@ public sealed class CommunityVoiceRoomService(TimeProvider timeProvider, ICommun
     }
 
     public async Task<VoiceJoinResult> JoinAsync(Guid communityId, Guid channelId, Guid accountId,
-        string participantId, string displayName, PublicPresence presence, string communityName, string channelName,
+        string participantId, string displayName, string username, PublicPresence presence, string communityName, string channelName,
         CancellationToken cancellationToken = default)
     {
         VoiceLeaveResult? previous = null;
@@ -74,7 +75,7 @@ public sealed class CommunityVoiceRoomService(TimeProvider timeProvider, ICommun
             }
             participant = new Participant
             {
-                AccountId = accountId, ParticipantId = participantId, DisplayName = displayName,
+                AccountId = accountId, ParticipantId = participantId, DisplayName = displayName, Username = username,
                 Presence = presence, JoinedAt = timeProvider.GetUtcNow()
             };
             duplicate = !room.Participants.TryAdd(participantId, participant);
@@ -88,6 +89,13 @@ public sealed class CommunityVoiceRoomService(TimeProvider timeProvider, ICommun
             await media.ParticipantJoinedAsync(communityId, channelId, participantId, accountId, cancellationToken);
         return new(result, ToDto(participant), previous, duplicate);
     }
+
+    // Compatibility overload for callers that do not yet supply the canonical username.
+    public Task<VoiceJoinResult> JoinAsync(Guid communityId, Guid channelId, Guid accountId,
+        string participantId, string displayName, PublicPresence presence, string communityName, string channelName,
+        CancellationToken cancellationToken = default) =>
+        JoinAsync(communityId, channelId, accountId, participantId, displayName, displayName, presence,
+            communityName, channelName, cancellationToken);
 
     public async Task<VoiceLeaveResult?> LeaveAsync(string participantId, CancellationToken cancellationToken = default)
     {
@@ -149,5 +157,6 @@ public sealed class CommunityVoiceRoomService(TimeProvider timeProvider, ICommun
         room.Participants.Values.Select(ToDto).OrderBy(value => value.JoinedAt).ToArray(),
         room.CommunityName, room.ChannelName);
     private VoiceParticipantDto ToDto(Participant value) => new(value.AccountId, value.ParticipantId,
-        value.DisplayName, value.Presence, value.JoinedAt, value.Muted, value.Deafened, value.Speaking, media.Status);
+        value.DisplayName, value.Presence, value.JoinedAt, value.Muted, value.Deafened, value.Speaking, media.Status,
+        value.Username);
 }

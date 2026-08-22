@@ -16,7 +16,7 @@
                 {
                     <button class="member-entry" @onclick="args => OpenProfile(member, args)"
                             @oncontextmenu="args => OpenMemberContext(member, args)" @oncontextmenu:preventDefault="true">
-                        <ProfileAvatar DisplayName="@member.DisplayName" Presence="@member.Presence" Size="medium" Surface="sidebar" />
+                        <ProfileAvatar AccountId="member.AccountId" DisplayName="@member.DisplayName" Presence="@member.Presence" Size="medium" Surface="sidebar" />
                         <span class="display-name" style="@(HighestColor(member) is { } color ? $"color:{color}" : null)">@member.DisplayName</span>
                     </button>
                 }

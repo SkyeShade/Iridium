@@ -7,6 +7,34 @@ namespace Iridium.Server.Persistence;
 
 public static class DatabaseCompatibility
 {
+    public static async Task EnsureAvatarPresetSchemaAsync(IridiumDbContext db)
+    {
+        await EnsureColumnAsync(db, "Accounts", "ActiveAvatarPresetId", "TEXT NULL");
+        await EnsureColumnAsync(db, "Accounts", "AvatarRevision", "INTEGER NOT NULL DEFAULT 0");
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS AccountAvatarPresets (
+                Id TEXT NOT NULL CONSTRAINT PK_AccountAvatarPresets PRIMARY KEY,
+                AccountId TEXT NOT NULL,
+                SlotIndex INTEGER NOT NULL,
+                OriginalObjectKey TEXT NOT NULL,
+                ProcessedObjectKey TEXT NULL,
+                ContentType TEXT NOT NULL,
+                SizeBytes INTEGER NOT NULL,
+                Width INTEGER NOT NULL,
+                Height INTEGER NOT NULL,
+                CropX REAL NOT NULL DEFAULT 0,
+                CropY REAL NOT NULL DEFAULT 0,
+                Zoom REAL NOT NULL DEFAULT 1,
+                Revision INTEGER NOT NULL,
+                CreatedAt INTEGER NOT NULL,
+                UpdatedAt INTEGER NOT NULL,
+                CONSTRAINT FK_AccountAvatarPresets_Accounts_AccountId FOREIGN KEY (AccountId) REFERENCES Accounts (Id) ON DELETE CASCADE
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS IX_AccountAvatarPresets_AccountId_SlotIndex
+                ON AccountAvatarPresets (AccountId, SlotIndex);
+            """);
+    }
+
     public static async Task EnsureCommunityManagementSchemaAsync(IridiumDbContext db)
     {
         await EnsureColumnAsync(db, "Accounts", "Description", "TEXT NULL");

@@ -3,7 +3,7 @@
   "join": [[523.25, 0.07], [783.99, 0.12]],
   "leave": [[659.25, 0.07], [440.0, 0.12]],
   "masterVolume": 0.85,
-  "incomingCallVolume": 0.529,
-  "voiceJoinVolume": 0.412,
-  "voiceLeaveVolume": 0.412
+  "incomingCallVolume": 0.50,
+  "voiceJoinVolume": 0.35,
+  "voiceLeaveVolume": 0.35
 }

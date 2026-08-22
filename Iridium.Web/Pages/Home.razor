@@ -46,6 +46,8 @@ else
                       RingingCallerAccountId="VoiceSessions.IncomingCall?.CallerAccountId"
                       NodeAuthority="@(Session.SelectedNode!.PublicAuthority)"
                       SelectedCommunity="_selectedCommunity"
+                      AccountId="Session.Account!.Id"
+                      AvatarRevision="Session.Account!.AvatarRevision"
                       DisplayName="@Session.Account!.DisplayName"
                       PublicIdentity="@PublicIdentity"
                       Presence="@CurrentPresence"

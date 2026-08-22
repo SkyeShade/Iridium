@@ -3,15 +3,11 @@
 
 <div class="popup-backdrop" @onclick="OnCancel">
     <section class="profile-popup" @onclick:stopPropagation="true">
-        <div class="profile-banner"></div>
-        <div class="avatar-position"><ProfileAvatar DisplayName="@Account.DisplayName" Presence="Presence" Size="large" Surface="sidebar" /></div>
-        <div class="identity">
-            <strong class="display-name">@Account.DisplayName</strong>
-            <span>@PublicIdentity</span>
-        </div>
-
-        <button class="edit-profile" @onclick="OnEditProfile">Edit Profile</button>
-        <div class="presence-selector">
+        <ProfileIdentityCard AccountId="Account.Id" AvatarRevision="Account.AvatarRevision"
+                             DisplayName="@Account.DisplayName" Identity="@PublicIdentity" Presence="Presence"
+                             Pronouns="@Account.Pronouns" Description="@Account.Description">
+          <button class="edit-profile" @onclick="OnEditProfile">Edit Profile</button>
+          <div class="presence-selector">
             <button class="presence-current" @onclick="() => _presenceOpen = !_presenceOpen">
                 <ProfileAvatar Presence="Presence" BadgeMode="AvatarBadgeMode.PresenceGlyph" Size="tiny" Surface="sidebar" />
                 <span>@PresenceName(Account.PreferredPresence)</span><Icon Name="chevron" Size="12" />
@@ -28,9 +24,9 @@
                     }
                 </div>
             }
-        </div>
+          </div>
 
-        <div class="account-switcher">
+          <div class="account-switcher">
             <p>SWITCH ACCOUNT</p>
             <div class="account-list">
                 @foreach (var account in Accounts)
@@ -39,7 +35,7 @@
                     <div class="saved-account @(active ? "active" : null) @(account.Status == SavedAccountStatus.LoginRequired ? "expired" : null)">
                         <button class="account-select" disabled="@active" @onclick="() => OnSwitchAccount.InvokeAsync(account.Key)">
                             <span class="account-indicator"></span>
-                            <ProfileAvatar DisplayName="@account.DisplayName" Presence="@(active ? Presence : PublicPresence.Offline)" Size="small" Surface="sidebar" />
+                            <ProfileAvatar AccountId="account.AccountId" DisplayName="@account.DisplayName" Presence="@(active ? Presence : PublicPresence.Offline)" Size="small" Surface="sidebar" />
                             <span class="account-copy">
                                 <strong class="display-name">@account.DisplayName</strong>
                                 <small>@account.PublicIdentity</small>
@@ -61,7 +57,8 @@
             }
             <button class="add-account" @onclick="OnAddAccount">＋ Add Account</button>
             <button class="logout-account" disabled="Busy" @onclick="OnLogout">Log Out</button>
-        </div>
+          </div>
+        </ProfileIdentityCard>
     </section>
 </div>
 

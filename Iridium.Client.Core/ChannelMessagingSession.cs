@@ -591,6 +591,8 @@ public sealed class ChannelMessagingSession(
             mention => ReceiveSafely(CommunityMentionHubContract.Received, () => nodeSession.ApplyCommunityMention(mention))));
         _handlerRegistrations.Add(connection.On<CommunityChannelActivityEvent>(CommunityHubContract.ChannelActivity,
             activity => _ = ApplyCommunityActivitySafelyAsync(activity)));
+        _handlerRegistrations.Add(connection.On<ProfileUpdatedEvent>(ProfileHubContract.Updated,
+            change => ReceiveSafely(ProfileHubContract.Updated, () => nodeSession.ApplyProfileUpdated(change))));
         connection.Reconnecting += exception =>
         {
             logger.LogWarning(exception, "Realtime connection to {NodeAddress} is reconnecting.", _connectedNode);

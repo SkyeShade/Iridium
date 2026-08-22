@@ -1,4 +1,7 @@
 @using Iridium.Protocol
+@using Iridium.Client.Core
+@inject ProfileMediaService ProfileMedia
+@implements IDisposable
 
 @if (BadgeMode == AvatarBadgeMode.PresenceGlyph)
 {
@@ -9,7 +12,13 @@
 else
 {
     <span class="profile-avatar avatar-@Size surface-@Surface" title="@Title">
-        <span class="avatar-initial">@Initial</span>
+        @if (_avatar is { HasAvatar: true, AvatarUrl: not null } avatar && !_imageFailed)
+        {
+            <span class="avatar-media">
+                <AvatarCroppedPreview State="AvatarState(avatar)" OnError="ImageFailed" />
+            </span>
+        }
+        else { <span class="avatar-initial">@Initial</span> }
         @if (BadgeMode == AvatarBadgeMode.Presence)
         {
             <span class="presence presence-@Presence.ToString().ToLowerInvariant()" aria-label="@PresenceLabel"></span>
@@ -23,6 +32,8 @@ else
 
 @code {
     [Parameter] public string DisplayName { get; set; } = string.Empty;
+    [Parameter] public Guid? AccountId { get; set; }
+    [Parameter] public long AvatarRevision { get; set; }
     [Parameter] public PublicPresence Presence { get; set; } = PublicPresence.Offline;
     [Parameter] public AvatarBadgeMode BadgeMode { get; set; } = AvatarBadgeMode.Presence;
     [Parameter] public int NotificationCount { get; set; }
@@ -39,4 +50,33 @@ else
         PublicPresence.DoNotDisturb => "Do Not Disturb",
         _ => "Offline"
     };
+    private ProfileAvatarDto? _avatar;
+    private bool _imageFailed;
+    private Guid? _loadedAccountId;
+    private long _loadedRevision = -1;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (AccountId is not { } accountId) return;
+        if (_loadedAccountId == accountId && _loadedRevision == AvatarRevision) return;
+        _loadedAccountId = accountId; _loadedRevision = AvatarRevision; _imageFailed = false;
+        _avatar = await ProfileMedia.GetAvatarAsync(accountId, AvatarRevision);
+    }
+
+    protected override void OnInitialized() => ProfileMedia.Changed += ProfileChanged;
+    private void ProfileChanged(Guid accountId)
+    {
+        if (AccountId != accountId) return;
+        _ = InvokeAsync(async () =>
+        {
+            _avatar = await ProfileMedia.GetAvatarAsync(accountId);
+            _imageFailed = false;
+            StateHasChanged();
+        });
+    }
+    private void ImageFailed() { _imageFailed = true; StateHasChanged(); }
+    private static AvatarEditState AvatarState(ProfileAvatarDto avatar) => new(avatar.AvatarUrl!,
+        Math.Max(1, avatar.Width), Math.Max(1, avatar.Height), 1000, 1000, 1000,
+        avatar.Zoom, avatar.CropX, avatar.CropY);
+    public void Dispose() => ProfileMedia.Changed -= ProfileChanged;
 }

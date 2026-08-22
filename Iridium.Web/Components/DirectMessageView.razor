@@ -9,7 +9,7 @@
 
 <section class="direct-message-view">
     <header class="dm-header">
-        <ProfileAvatar DisplayName="@Conversation.OtherParticipant.DisplayName" Presence="@Conversation.OtherParticipant.Presence" Size="small" Surface="base" />
+        <ProfileAvatar AccountId="Conversation.OtherParticipant.AccountId" DisplayName="@Conversation.OtherParticipant.DisplayName" Presence="@Conversation.OtherParticipant.Presence" Size="small" Surface="base" />
         <div><strong class="display-name">@Conversation.OtherParticipant.DisplayName</strong><span>@IridiumIdentity.Format(Conversation.OtherParticipant.Username, NodeAuthority)</span></div>
         <button type="button" class="voice-call-button" title="Start Voice Call" aria-label="Start Voice Call"
                 disabled="@(Calls.CurrentCall is not null || Calls.IncomingCall is not null)" @onclick="StartVoiceCallAsync"><Icon Name="phone" /></button>

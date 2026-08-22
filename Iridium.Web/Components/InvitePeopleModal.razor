@@ -14,7 +14,7 @@
             @foreach (var friend in People)
             {
                 <div class="person-row">
-                    <ProfileAvatar DisplayName="@friend.DisplayName" Presence="@friend.Presence" Size="medium" Surface="panel" />
+                    <ProfileAvatar AccountId="friend.AccountId" DisplayName="@friend.DisplayName" Presence="@friend.Presence" Size="medium" Surface="panel" />
                     <span class="person-copy"><span class="display-name">@friend.DisplayName</span><small>@IridiumIdentity.Format(friend.Username, NodeAuthority)</small></span>
                     <button title="Send invite to @friend.DisplayName" disabled="@(_sending.Contains(friend.AccountId) || _sent.Contains(friend.AccountId))"
                             @onclick="() => SendAsync(friend)">

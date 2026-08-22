@@ -78,7 +78,8 @@ public sealed record VoiceParticipantDto(
     bool Muted,
     bool Deafened,
     bool Speaking,
-    CommunityVoiceMediaStatus MediaStatus);
+    CommunityVoiceMediaStatus MediaStatus,
+    string? Username = null);
 
 public sealed record ActiveVoiceRoomDto(
     Guid CommunityId,

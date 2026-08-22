@@ -101,7 +101,7 @@
                                     <div class="role-member-list">
                                         @foreach (var member in MembersForSelectedRole)
                                         {
-                                            <div><ProfileAvatar DisplayName="@member.DisplayName" Presence="member.Presence" Size="small" Surface="panel" /><span class="display-name">@member.DisplayName</span><button disabled="@(!CanManageRoleInSettings(_selectedRole!))" @onclick="() => RemoveSelectedRoleFromMemberAsync(member)">Remove</button></div>
+                                            <div><ProfileAvatar AccountId="member.AccountId" DisplayName="@member.DisplayName" Presence="member.Presence" Size="small" Surface="panel" /><span class="display-name">@member.DisplayName</span><button disabled="@(!CanManageRoleInSettings(_selectedRole!))" @onclick="() => RemoveSelectedRoleFromMemberAsync(member)">Remove</button></div>
                                         }
                                         @if (MembersForSelectedRole.Count == 0) { <p class="muted">No members have this role.</p> }
                                         @if (_selectedRole is { IsDefault: false } selectedRole && CanManageRoleInSettings(selectedRole))
@@ -138,7 +138,7 @@
                         @foreach (var member in management.Members)
                         {
                             <button class="member-row @(_selectedMember?.AccountId == member.AccountId ? "active" : null)" @onclick="() => SelectMember(member)">
-                                <ProfileAvatar DisplayName="@member.DisplayName" Presence="member.Presence" Size="small" Surface="panel" />
+                                <ProfileAvatar AccountId="member.AccountId" DisplayName="@member.DisplayName" Presence="member.Presence" Size="small" Surface="panel" />
                                 <span><span class="display-name">@member.DisplayName</span><small>@IridiumIdentity.Format(member.Username, NodeAuthority)</small></span>
                                 @if (member.IsOwner) { <em>OWNER</em> }
                             </button>

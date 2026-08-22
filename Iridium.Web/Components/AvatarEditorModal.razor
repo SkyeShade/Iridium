@@ -1,0 +1,289 @@
+@using Iridium.Client.Core
+@using Iridium.Protocol
+@using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.AspNetCore.Components.Web
+@inject NodeSession Session
+@inject ProfileMediaService ProfileMedia
+@inject IJSRuntime JS
+@inject IWebAssemblyHostEnvironment HostEnvironment
+@inject ILogger<AvatarEditorModal> Logger
+@implements IAsyncDisposable
+
+<ModalShell Title="Edit Avatar" Size="extra-large" OnClose="TryCloseAsync">
+    <div class="avatar-editor">
+        <header class="editor-heading"><div><span>PROFILE AVATAR</span><h1>Edit Avatar</h1></div><small>PNG, animated GIF, JPEG, or WebP · up to ten presets</small></header>
+        @if (_loading)
+        {
+            <div class="editor-loading">Loading avatar presets…</div>
+        }
+        else
+        {
+            <div class="preset-strip" aria-label="Saved avatar presets">
+                @for (var slot = 0; slot < ProfileAvatarLimits.MaximumPresets; slot++)
+                {
+                    var slotIndex = slot;
+                    var preset = PresetAt(slotIndex);
+                    if (preset is not null)
+                    {
+                        <button type="button" class="preset-slot @(preset.Id == _selectedPreset?.Id ? "selected" : null) @(preset.Id == _presets?.ActiveAvatarPresetId ? "active" : null)"
+                                title="Avatar preset @(slotIndex + 1)" @onclick="() => SelectPreset(preset)">
+                            <AvatarCroppedPreview State="PresetState(preset)" />
+                        </button>
+                    }
+                    else
+                    {
+                        <label class="preset-slot empty" title="Add avatar" aria-label="Upload avatar preset @(slotIndex + 1)">
+                            <span aria-hidden="true">+</span>
+                            <InputFile class="file-input-overlay" style="position:absolute;inset:0;width:100%;height:100%;margin:0;padding:0;opacity:0;cursor:pointer;font-size:0" accept="image/png,image/gif,image/jpeg,image/webp"
+                                       OnChange="args => SelectFileAsync(slotIndex, args)" />
+                        </label>
+                    }
+                }
+            </div>
+
+            @if (_editState is not null)
+            {
+                <div class="avatar-workspace">
+                    <section class="crop-column">
+                        <div class="crop-stage @(_dragging ? "dragging" : null)" @ref="_cropStage"
+                             @onpointerdown="StartDraggingAsync" @onpointermove="DragImage"
+                             @onpointerup="StopDraggingAsync" @onpointercancel="StopDraggingAsync">
+                            <img class="crop-image" src="@_editState.SourceUrl" alt="Avatar source" draggable="false"
+                                 style="@_editState.EditorImageStyle" />
+                            <div class="crop-shade"></div>
+                            <div class="crop-outline"></div>
+                        </div>
+                        <label class="zoom-control"><span class="zoom-label">Zoom</span><span aria-hidden="true">−</span><input type="range" min="1" max="3" step="0.01" value="@_editState.Zoom" style="@_editState.ZoomFillStyle" @oninput="ZoomChanged" /><span aria-hidden="true">+</span></label>
+                        <div class="preset-actions">
+                            <label class="replace-button"><Icon Name="upload" /> Replace Image<InputFile class="file-input-overlay" style="position:absolute;inset:0;width:100%;height:100%;margin:0;padding:0;opacity:0;cursor:pointer;font-size:0" aria-label="Replace avatar image" accept="image/png,image/gif,image/jpeg,image/webp" OnChange="args => SelectFileAsync(_selectedSlot, args)" /></label>
+                            @if (_selectedPreset is not null)
+                            {
+                                <button type="button" class="delete-button" @onclick="DeleteSelectedAsync"><Icon Name="trash" /> Delete</button>
+                            }
+                        </div>
+                    </section>
+                    <aside class="chat-preview" aria-label="Avatar chat preview">
+                        <span class="preview-label">CHAT PREVIEW</span>
+                        <div class="preview-message">
+                            <span class="preview-avatar"><AvatarCroppedPreview State="_editState" /></span>
+                            <div><div><strong>@Account.DisplayName</strong><time>Today at 14:32</time></div><p>This is what your avatar will look like in chat.</p><p>Follow-up example message</p></div>
+                        </div>
+                        @if (IsGif)
+                        {
+                            <small class="gif-note">Animated GIF preview remains animated.</small>
+                        }
+                    </aside>
+                </div>
+                <footer><button type="button" class="secondary" @onclick="TryCloseAsync">Cancel</button><button type="button" class="primary" disabled="@_saving" @onclick="SaveAsync">@(_saving ? "Saving…" : "Save")</button></footer>
+            }
+            else
+            {
+                <div class="empty-editor">
+                    <span class="empty-editor-icon" aria-hidden="true"><Icon Name="upload" Size="26" /></span>
+                    <h2>Choose an empty preset slot</h2>
+                    <p>Upload an image to begin cropping your avatar.</p>
+                </div>
+            }
+            @if (!string.IsNullOrWhiteSpace(_error)) { <p class="editor-error" role="alert">@_error</p> }
+        }
+    </div>
+    @if (_confirmClose)
+    {
+        <div class="discard-backdrop" @onclick:stopPropagation="true">
+            <section class="discard-card" role="alertdialog" aria-label="Save avatar changes before closing">
+                <h2>Save changes before closing?</h2><p>Your crop or uploaded image has not been saved.</p>
+                <div><button class="primary" @onclick="SaveAsync">Save</button><button class="danger" @onclick="DiscardAsync">Discard</button><button class="secondary" @onclick="() => _confirmClose = false">Cancel</button></div>
+            </section>
+        </div>
+    }
+</ModalShell>
+
+@code {
+    [Parameter, EditorRequired] public required NodeAccountDto Account { get; set; }
+    [Parameter] public EventCallback OnClosed { get; set; }
+    private AccountAvatarPresetsDto? _presets;
+    private AccountAvatarPresetDto? _selectedPreset;
+    private byte[]? _pendingBytes;
+    private string? _pendingName;
+    private string? _pendingContentType;
+    private string? _pendingPreview;
+    private string? _error;
+    private int _selectedSlot;
+    private AvatarEditState? _editState;
+    private ElementReference _cropStage;
+    private IJSObjectReference? _editorModule;
+    private long? _activePointerId;
+    private double _stagePixels = 1;
+    private bool _loading = true, _saving, _dragging, _dirty, _confirmClose;
+    private bool IsGif => string.Equals(_pendingContentType ?? _selectedPreset?.ContentType, "image/gif", StringComparison.OrdinalIgnoreCase);
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _presets = await Session.GetAvatarPresetsAsync();
+            ProfileMedia.Observe(Account.Id, _presets.AvatarRevision);
+            var initial = _presets.Presets.FirstOrDefault(value => value.Id == _presets.ActiveAvatarPresetId)
+                          ?? _presets.Presets.FirstOrDefault();
+            if (initial is not null) SelectPreset(initial);
+        }
+        catch (Exception exception) { _error = exception.Message; }
+        finally { _loading = false; }
+    }
+
+    private AccountAvatarPresetDto? PresetAt(int slot) => _presets?.Presets.FirstOrDefault(value => value.SlotIndex == slot);
+    private void SelectPreset(AccountAvatarPresetDto preset)
+    {
+        _selectedPreset = preset; _selectedSlot = preset.SlotIndex; _pendingBytes = null; _pendingPreview = null;
+        _pendingName = null; _pendingContentType = null;
+        _editState = PresetState(preset);
+        _dirty = false; _error = null;
+    }
+
+    private async Task SelectFileAsync(int slot, InputFileChangeEventArgs args)
+    {
+        try
+        {
+            var file = args.File;
+            if (file.Size > ProfileAvatarLimits.MaximumUploadBytes)
+            {
+                _error = FileSizeDisplay.AvatarTooLarge(file.Size);
+                return;
+            }
+            if (HostEnvironment.IsDevelopment())
+                Logger.LogInformation("AVATAR UPLOAD Client FileName={FileName} BrowserContentType={ContentType} Size={Size}",
+                    file.Name, file.ContentType, file.Size);
+            await using var input = file.OpenReadStream(ProfileAvatarLimits.MaximumUploadBytes);
+            await using var output = new MemoryStream();
+            await input.CopyToAsync(output);
+            var sourceBytes = output.ToArray();
+            var sourcePreview = $"data:{file.ContentType};base64,{Convert.ToBase64String(sourceBytes)}";
+            ImageDimensions dimensions;
+            if (string.Equals(file.ContentType, "image/gif", StringComparison.OrdinalIgnoreCase))
+            {
+                _pendingBytes = sourceBytes; _pendingName = file.Name; _pendingContentType = "image/gif";
+                _pendingPreview = sourcePreview;
+                dimensions = await (await EditorModuleAsync()).InvokeAsync<ImageDimensions>("imageDimensions", sourcePreview);
+            }
+            else
+            {
+                var processed = await (await EditorModuleAsync()).InvokeAsync<ProcessedAvatar>(
+                    "processStaticAvatar", sourcePreview, file.Name);
+                _pendingBytes = DataUrlBytes(processed.DataUrl); _pendingName = processed.FileName;
+                _pendingContentType = processed.ContentType; _pendingPreview = processed.DataUrl;
+                dimensions = new(processed.Width, processed.Height);
+                if (HostEnvironment.IsDevelopment())
+                    Logger.LogInformation("AVATAR UPLOAD Processed BlobMime={ContentType} GeneratedFileName={FileName} Size={Size}",
+                        processed.ContentType, processed.FileName, processed.Size);
+            }
+            _selectedSlot = slot; _selectedPreset = PresetAt(slot);
+            _editState = NewState(_pendingPreview, dimensions.Width, dimensions.Height);
+            _dirty = true; _error = null;
+        }
+        catch (Exception exception) { _error = exception.Message; }
+    }
+
+    private async Task StartDraggingAsync(PointerEventArgs args)
+    {
+        if (args.Button != 0 || _editState is null) return;
+        _activePointerId = args.PointerId;
+        _stagePixels = await (await EditorModuleAsync()).InvokeAsync<double>("capturePointer", _cropStage, args.PointerId);
+        _dragging = true;
+    }
+    private async Task StopDraggingAsync(PointerEventArgs args)
+    {
+        if (_activePointerId != args.PointerId) return;
+        _dragging = false; _activePointerId = null;
+        if (_editorModule is not null) await _editorModule.InvokeVoidAsync("releasePointer", _cropStage, args.PointerId);
+    }
+    private void DragImage(PointerEventArgs args)
+    {
+        if (!_dragging || _activePointerId != args.PointerId || _editState is null) return;
+        var logicalScale = _editState.ViewportWidth / Math.Max(1, _stagePixels);
+        _editState.Pan(args.MovementX * logicalScale, args.MovementY * logicalScale);
+        _dirty = true;
+    }
+    private void ZoomChanged(ChangeEventArgs args)
+    {
+        if (!double.TryParse(args.Value?.ToString(), System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var value)) return;
+        _editState?.SetZoom(value);
+        _dirty = true;
+    }
+
+    private async Task SaveAsync()
+    {
+        if (_saving || _editState is null) return;
+        _saving = true; _error = null;
+        try
+        {
+            if (_pendingBytes is not null)
+            {
+                await using var stream = new MemoryStream(_pendingBytes, writable: false);
+                _presets = await Session.UploadAvatarPresetAsync(_selectedSlot, stream, _pendingName ?? "avatar",
+                    _pendingContentType ?? "application/octet-stream", _editState.NormalizedOffsetX,
+                    _editState.NormalizedOffsetY, _editState.Zoom, true);
+                var saved = _presets.Presets.Single(value => value.SlotIndex == _selectedSlot);
+                SelectPreset(saved);
+            }
+            else if (_selectedPreset is not null)
+            {
+                var saved = await Session.UpdateAvatarCropAsync(_selectedPreset.Id,
+                    new(_editState.NormalizedOffsetX, _editState.NormalizedOffsetY, _editState.Zoom, true));
+                _selectedPreset = saved; _dirty = false;
+                _presets = await Session.GetAvatarPresetsAsync();
+            }
+            if (_presets is not null) ProfileMedia.Invalidate(Account.Id, _presets.AvatarRevision);
+            _confirmClose = false;
+            await OnClosed.InvokeAsync();
+        }
+        catch (Exception exception) { _error = exception.Message; }
+        finally { _saving = false; }
+    }
+
+    private async Task DeleteSelectedAsync()
+    {
+        if (_selectedPreset is null || _saving) return;
+        _saving = true; _error = null;
+        try
+        {
+            await Session.DeleteAvatarPresetAsync(_selectedPreset.Id);
+            _presets = await Session.GetAvatarPresetsAsync();
+            ProfileMedia.Invalidate(Account.Id, _presets.AvatarRevision);
+            var next = _presets.Presets.FirstOrDefault(value => value.Id == _presets.ActiveAvatarPresetId)
+                       ?? _presets.Presets.FirstOrDefault();
+            _selectedPreset = null; _pendingPreview = null; _pendingBytes = null; _editState = null; _dirty = false;
+            if (next is not null) SelectPreset(next);
+        }
+        catch (Exception exception) { _error = exception.Message; }
+        finally { _saving = false; }
+    }
+
+    private Task TryCloseAsync()
+    {
+        if (_dirty) { _confirmClose = true; return Task.CompletedTask; }
+        return OnClosed.InvokeAsync();
+    }
+    private async Task DiscardAsync() { _dirty = false; _confirmClose = false; await OnClosed.InvokeAsync(); }
+
+    private static AvatarEditState NewState(string sourceUrl, int width, int height, double zoom = 1,
+        double normalizedX = 0, double normalizedY = 0) =>
+        new(sourceUrl, width, height, 760, 1000, 1000, zoom, normalizedX, normalizedY);
+    private static AvatarEditState PresetState(AccountAvatarPresetDto preset) =>
+        NewState(preset.AvatarUrl, preset.Width, preset.Height, preset.Zoom, preset.CropX, preset.CropY);
+    private async Task<IJSObjectReference> EditorModuleAsync() =>
+        _editorModule ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/avatarEditor.js");
+    private sealed record ImageDimensions(int Width, int Height);
+    private sealed record ProcessedAvatar(string DataUrl, string ContentType, string FileName, long Size,
+        int Width, int Height);
+    private static byte[] DataUrlBytes(string dataUrl)
+    {
+        var separator = dataUrl.IndexOf(',');
+        if (separator < 0) throw new InvalidOperationException("The processed avatar data is invalid.");
+        return Convert.FromBase64String(dataUrl[(separator + 1)..]);
+    }
+    public async ValueTask DisposeAsync()
+    {
+        if (_editorModule is not null) await _editorModule.DisposeAsync();
+    }
+}

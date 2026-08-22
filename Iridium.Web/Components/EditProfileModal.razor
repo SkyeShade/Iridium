@@ -10,24 +10,29 @@
         </header>
         <div class="editor-layout">
             <div class="fields">
-                <label>Display Name <input @bind="_displayName" maxlength="64" /></label>
-                <label>Pronouns <input @bind="_pronouns" maxlength="64" placeholder="Optional" /></label>
-                <label>Description <textarea class="iridium-textarea-scrollbar bio-input" @bind="_description" maxlength="400" rows="4" placeholder="Tell people a little about yourself"></textarea></label>
+                <EditableAvatar AccountId="Account.Id" AvatarRevision="Account.AvatarRevision" DisplayName="@_displayName"
+                                Size="large" Surface="panel" OnEdit="OpenAvatarEditor"
+                                Style="margin:0 0 1.25rem;box-shadow:0 0 0 1px var(--border)" />
+                <label>Display Name <input @bind="_displayName" @bind:event="oninput" maxlength="64" /></label>
+                <label>Pronouns <input @bind="_pronouns" @bind:event="oninput" maxlength="64" placeholder="Optional" /></label>
+                <label class="about-field"><span>About Me</span><textarea class="iridium-textarea-scrollbar bio-input" @bind="_description" @bind:event="oninput" maxlength="400" rows="6" placeholder="Tell people a little about yourself"></textarea><small>@_description.Length / 400</small></label>
                 <div class="readonly"><span>Public identity</span><strong>@PublicIdentity</strong></div>
                 @if (!string.IsNullOrWhiteSpace(_error)) { <p class="error" role="alert">@_error</p> }
                 @if (_saving) { <p class="saving">Saving profile…</p> }
             </div>
-            <aside class="preview">
-                <div class="banner"></div>
-                <div class="avatar">@Initial(_displayName)</div>
-                <strong class="display-name">@_displayName</strong>
-                <span>@PublicIdentity</span>
-                @if (!string.IsNullOrWhiteSpace(_pronouns)) { <small>@_pronouns</small> }
-                @if (!string.IsNullOrWhiteSpace(_description)) { <p class="bio-preview">@_description</p> }
+            <aside class="profile-preview">
+                <ProfileIdentityCard AccountId="Account.Id" AvatarRevision="Account.AvatarRevision"
+                                     DisplayName="@_displayName" Identity="@PublicIdentity" Pronouns="@_pronouns"
+                                     Description="@_description" Presence="PresenceVisibility.ToPublic(Account.PreferredPresence)"
+                                     Editable="true" OnEditAvatar="OpenAvatarEditor" />
             </aside>
         </div>
     </div>
 </ModalShell>
+@if (_avatarEditorOpen)
+{
+    <AvatarEditorModal Account="Account" OnClosed="() => _avatarEditorOpen = false" />
+}
 
 @code {
     [Parameter, EditorRequired] public required NodeAccountDto Account { get; set; }
@@ -43,6 +48,8 @@
     private string? _error;
     private Guid? _loadedAccountId;
     private bool _saving;
+    private bool _avatarEditorOpen;
+    private Task OpenAvatarEditor() { _avatarEditorOpen = true; return Task.CompletedTask; }
 
     protected override void OnParametersSet()
     {
@@ -78,5 +85,4 @@
         finally { _saving = false; }
     }
 
-    private static string Initial(string value) => string.IsNullOrWhiteSpace(value) ? "?" : value[..1].ToUpperInvariant();
 }

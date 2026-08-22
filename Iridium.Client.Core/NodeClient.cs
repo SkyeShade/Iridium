@@ -36,6 +36,46 @@ public sealed class NodeClient(Uri nodeAddress)
     public Task<NodeAccountDto> UpdateProfileAsync(UpdateProfileRequest request, CancellationToken cancellationToken = default) =>
         SendAsync<NodeAccountDto>(HttpMethod.Patch, "api/account/current", request, cancellationToken);
 
+    public Task<AccountAvatarPresetsDto> GetAvatarPresetsAsync(CancellationToken cancellationToken = default) =>
+        SendAsync<AccountAvatarPresetsDto>(HttpMethod.Get, "api/account/avatar-presets", null, cancellationToken);
+
+    public Task<ProfileAvatarDto> GetProfileAvatarAsync(Guid accountId, CancellationToken cancellationToken = default) =>
+        SendAsync<ProfileAvatarDto>(HttpMethod.Get, $"api/profiles/{accountId}/avatar-metadata", null, cancellationToken);
+
+    public async Task<AccountAvatarPresetsDto> UploadAvatarPresetAsync(int slotIndex, Stream content,
+        string fileName, string contentType, double cropX, double cropY, double zoom, bool setActive,
+        CancellationToken cancellationToken = default)
+    {
+        using var multipart = new MultipartFormDataContent();
+        using var streamContent = new StreamContent(content);
+        streamContent.Headers.ContentType = new MediaTypeHeaderValue(
+            string.IsNullOrWhiteSpace(contentType) ? "application/octet-stream" : contentType);
+        multipart.Add(streamContent, "file", fileName);
+        multipart.Add(new StringContent(cropX.ToString(System.Globalization.CultureInfo.InvariantCulture)), "cropX");
+        multipart.Add(new StringContent(cropY.ToString(System.Globalization.CultureInfo.InvariantCulture)), "cropY");
+        multipart.Add(new StringContent(zoom.ToString(System.Globalization.CultureInfo.InvariantCulture)), "zoom");
+        multipart.Add(new StringContent(setActive.ToString()), "setActive");
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"api/account/avatar-presets/{slotIndex}")
+            { Content = multipart };
+        if (!string.IsNullOrWhiteSpace(AccessToken))
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", AccessToken);
+        using var response = await _http.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+            throw new NodeApiException(response.StatusCode, await ReadErrorAsync(response, cancellationToken));
+        return await response.Content.ReadFromJsonAsync<AccountAvatarPresetsDto>(cancellationToken: cancellationToken)
+            ?? throw new NodeApiException(response.StatusCode, "The node returned an empty response.");
+    }
+
+    public Task<AccountAvatarPresetDto> UpdateAvatarCropAsync(Guid presetId, UpdateAvatarCropRequest request,
+        CancellationToken cancellationToken = default) => SendAsync<AccountAvatarPresetDto>(HttpMethod.Patch,
+        $"api/account/avatar-presets/{presetId}", request, cancellationToken);
+
+    public Task ActivateAvatarPresetAsync(Guid presetId, CancellationToken cancellationToken = default) =>
+        SendNoContentAsync(HttpMethod.Put, $"api/account/avatar-presets/{presetId}/active", null, cancellationToken);
+
+    public Task DeleteAvatarPresetAsync(Guid presetId, CancellationToken cancellationToken = default) =>
+        SendNoContentAsync(HttpMethod.Delete, $"api/account/avatar-presets/{presetId}", null, cancellationToken);
+
     public Task MarkDirectConversationReadAsync(Guid conversationId, CancellationToken cancellationToken = default) =>
         SendNoContentAsync(HttpMethod.Post, $"api/direct-messages/{conversationId}/read", null, cancellationToken);
 

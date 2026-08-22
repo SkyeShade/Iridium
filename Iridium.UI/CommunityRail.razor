@@ -13,7 +13,7 @@
                         aria-label="@NotificationTitle(conversation, ringing)"
                         @onclick="() => OnDirectConversationSelected.InvokeAsync(conversation)">
                     <span class="notification-avatar-wrapper">
-                        <ProfileAvatar DisplayName="@conversation.OtherParticipant.DisplayName"
+                        <ProfileAvatar AccountId="conversation.OtherParticipant.AccountId" DisplayName="@conversation.OtherParticipant.DisplayName"
                                        BadgeMode="AvatarBadgeMode.Notification"
                                        NotificationCount="@conversation.UnreadCount"
                                        Tooltip="@NotificationTitle(conversation, ringing)"

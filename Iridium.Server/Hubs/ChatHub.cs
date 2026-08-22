@@ -125,7 +125,8 @@ public sealed class ChatHub(
         var names = await db.CommunityChannels.Where(value => value.CommunityId == communityId && value.Id == channelId)
             .Select(value => new { CommunityName = value.Community.Name, ChannelName = value.Name }).SingleAsync();
         var joined = await communityVoice.JoinAsync(communityId, channelId, session.AccountId, Context.ConnectionId,
-            session.Account.DisplayName, presence.GetPublic(session.AccountId), names.CommunityName, names.ChannelName);
+            session.Account.DisplayName, session.Account.Username, presence.GetPublic(session.AccountId),
+            names.CommunityName, names.ChannelName);
         var voiceAccess = await authorization.GetAccessAsync(communityId, session.AccountId, db);
         if (!voiceAccess.Has(CommunityPermission.SpeakVoice) &&
             await communityVoice.SetStateAsync(Context.ConnectionId, true, false) is { } initialState)

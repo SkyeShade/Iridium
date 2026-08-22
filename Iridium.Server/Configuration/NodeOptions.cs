@@ -25,4 +25,10 @@ public sealed class NodeOptions
     public int MaxAttachmentsPerMessage { get; set; } = 10;
 
     public string? AttachmentStoragePath { get; set; } = Path.Combine("data", "attachments");
+
+    public long MaxAvatarBytes { get; set; } = ProfileAvatarLimits.MaximumUploadBytes;
+
+    public int MaxAvatarDimension { get; set; } = ProfileAvatarLimits.MaximumSourceDimension;
+
+    public long MaxAvatarPixels { get; set; } = ProfileAvatarLimits.MaximumDecodedPixels;
 }

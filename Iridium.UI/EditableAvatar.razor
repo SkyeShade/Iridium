@@ -1,0 +1,21 @@
+@using Iridium.Protocol
+
+<button type="button" class="editable-avatar avatar-@Size @Class" style="@Style" aria-label="@AriaLabel" @onclick="OnEdit">
+    <ProfileAvatar AccountId="AccountId" AvatarRevision="AvatarRevision" DisplayName="@DisplayName"
+                   Presence="Presence" BadgeMode="BadgeMode" Size="fill" Surface="@Surface" />
+    <span class="edit-overlay">Edit</span>
+</button>
+
+@code {
+    [Parameter] public Guid? AccountId { get; set; }
+    [Parameter] public long AvatarRevision { get; set; }
+    [Parameter] public string DisplayName { get; set; } = string.Empty;
+    [Parameter] public PublicPresence Presence { get; set; }
+    [Parameter] public AvatarBadgeMode BadgeMode { get; set; } = AvatarBadgeMode.None;
+    [Parameter] public string Size { get; set; } = "large";
+    [Parameter] public string Surface { get; set; } = "panel";
+    [Parameter] public string? Class { get; set; }
+    [Parameter] public string? Style { get; set; }
+    [Parameter] public string AriaLabel { get; set; } = "Edit avatar";
+    [Parameter] public EventCallback OnEdit { get; set; }
+}

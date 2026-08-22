@@ -1,9 +1,11 @@
 @using Iridium.Client.Core
+@using Iridium.Protocol
 @inject VoiceParticipantPreferencesService Preferences
+@inject NodeSession Session
 
 <div class="voice-user-popup" role="dialog" aria-label="Local voice settings for @DisplayName"
      @onclick:stopPropagation="true" @oncontextmenu:preventDefault="true" @oncontextmenu:stopPropagation="true">
-    <header><ProfileAvatar DisplayName="DisplayName" Size="small" Surface="panel" /><div><strong>@DisplayName</strong><small>Local voice settings</small></div></header>
+    <header><ProfileAvatar AccountId="AccountId" DisplayName="DisplayName" Size="small" Surface="panel" /><div><strong>@DisplayName</strong><small>@Identity</small></div></header>
     <div class="voice-popup-divider"></div>
     @if (_preference is not null)
     {
@@ -16,6 +18,9 @@
 @code {
     [Parameter, EditorRequired] public required Guid AccountId { get; set; }
     [Parameter, EditorRequired] public required string DisplayName { get; set; }
+    [Parameter] public string? Username { get; set; }
+    private string Identity => Username is not null && Session.SelectedNode?.PublicAuthority is { } authority
+        ? IridiumIdentity.Format(Username, authority) : "Local voice settings";
     private VoiceParticipantPreference? _preference;
     protected override async Task OnParametersSetAsync() => _preference = await Preferences.GetAsync(AccountId);
     private async Task SetMutedAsync(ChangeEventArgs args)

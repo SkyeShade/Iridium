@@ -41,6 +41,7 @@ public sealed class NodeSession(
     public event Action<PresenceChangedEvent>? PresenceChanged;
     public event Action<CommunityMentionReceivedEvent>? CommunityMentionReceived;
     public event Action<CommunityChannelActivityEvent>? CommunityChannelActivity;
+    public event Action<ProfileUpdatedEvent>? ProfileUpdated;
 
     public Task<ServerInfoDto> GetServerInfoAsync(CancellationToken cancellationToken = default) =>
         AuthorizedClient.GetServerInfoAsync(cancellationToken);
@@ -56,6 +57,24 @@ public sealed class NodeSession(
 
     public Task<byte[]> DownloadAttachmentPreviewAsync(Guid attachmentId, CancellationToken cancellationToken = default) =>
         AuthorizedClient.DownloadAttachmentPreviewAsync(attachmentId, cancellationToken);
+
+    public Task<AccountAvatarPresetsDto> GetAvatarPresetsAsync(CancellationToken cancellationToken = default) =>
+        AuthorizedClient.GetAvatarPresetsAsync(cancellationToken);
+
+    public Task<AccountAvatarPresetsDto> UploadAvatarPresetAsync(int slotIndex, Stream content, string fileName,
+        string contentType, double cropX, double cropY, double zoom, bool setActive,
+        CancellationToken cancellationToken = default) => AuthorizedClient.UploadAvatarPresetAsync(slotIndex,
+        content, fileName, contentType, cropX, cropY, zoom, setActive, cancellationToken);
+
+    public Task<AccountAvatarPresetDto> UpdateAvatarCropAsync(Guid presetId, UpdateAvatarCropRequest request,
+        CancellationToken cancellationToken = default) =>
+        AuthorizedClient.UpdateAvatarCropAsync(presetId, request, cancellationToken);
+
+    public Task ActivateAvatarPresetAsync(Guid presetId, CancellationToken cancellationToken = default) =>
+        AuthorizedClient.ActivateAvatarPresetAsync(presetId, cancellationToken);
+
+    public Task DeleteAvatarPresetAsync(Guid presetId, CancellationToken cancellationToken = default) =>
+        AuthorizedClient.DeleteAvatarPresetAsync(presetId, cancellationToken);
 
     internal NodeClient AuthorizedClient
     {
@@ -292,6 +311,8 @@ public sealed class NodeSession(
     }
 
     internal void ApplyRealtimeReconnected() => RealtimeReconnected?.Invoke();
+
+    internal void ApplyProfileUpdated(ProfileUpdatedEvent change) => ProfileUpdated?.Invoke(change);
 
     internal void ApplyCommunityAccessRevoked(CommunityAccessRevokedEvent change)
     {
