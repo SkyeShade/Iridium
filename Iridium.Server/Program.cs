@@ -84,6 +84,7 @@ await using (var scope = app.Services.CreateAsyncScope())
     await DatabaseCompatibility.EnsureCommunityManagementSchemaAsync(db);
     await DatabaseCompatibility.EnsureCommunityVoiceSchemaAsync(db);
     await DatabaseCompatibility.EnsureAvatarPresetSchemaAsync(db);
+    await DatabaseCompatibility.EnsureBannerPresetSchemaAsync(db);
     await DatabaseCompatibility.EnsureAttachmentsTableAsync(db);
 }
 
@@ -124,5 +125,6 @@ app.MapDirectMessageEndpoints();
 app.MapCommunityManagementEndpoints();
 app.MapAttachmentEndpoints();
 app.MapAvatarPresetEndpoints();
+app.MapBannerPresetEndpoints();
 
 app.Run();

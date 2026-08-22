@@ -36,7 +36,8 @@ public sealed class AvatarPresetFlowTests
             var owner = new NodeClient(address);
             var authentication = await owner.RegisterAsync(new("avatar-owner", "Avatar Owner", "test-password"));
             var other = new NodeClient(address);
-            await other.RegisterAsync(new("avatar-other", "Avatar Other", "test-password"));
+            var otherAuthentication = await other.RegisterAsync(new("avatar-other", "Avatar Other", "test-password"));
+            await owner.OpenDirectConversationAsync(otherAuthentication.Account.Id);
             Assert.Empty((await owner.GetAvatarPresetsAsync()).Presets);
 
             var jpeg = Encode(SKEncodedImageFormat.Jpeg);
@@ -78,6 +79,20 @@ public sealed class AvatarPresetFlowTests
             state = await owner.GetAvatarPresetsAsync();
             Assert.Equal(selected.Id, state.ActiveAvatarPresetId);
 
+            await using var otherHub = new HubConnectionBuilder().WithUrl(new Uri(address, "hubs/chat"), options =>
+                options.AccessTokenProvider = () => Task.FromResult<string?>(otherAuthentication.AccessToken)).Build();
+            var profileChanged = new TaskCompletionSource<ProfileUpdatedEvent>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            otherHub.On<ProfileUpdatedEvent>(ProfileHubContract.Updated,
+                value => profileChanged.TrySetResult(value));
+            await otherHub.StartAsync();
+            await owner.UpdateProfileAsync(new("Avatar Owner Updated", "they/them", "Realtime profile details"));
+            var profileEvent = await profileChanged.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(authentication.Account.Id, profileEvent.AccountId);
+            Assert.Equal("Avatar Owner Updated", profileEvent.DisplayName);
+            Assert.Equal("they/them", profileEvent.Pronouns);
+            Assert.Equal("Realtime profile details", profileEvent.Description);
+
             var ownerPreset = state.Presets[0];
             var ownershipFailure = await Assert.ThrowsAsync<NodeApiException>(() => other.UpdateAvatarCropAsync(
                 ownerPreset.Id, new(0, 0, 1.5, false)));
@@ -96,6 +111,89 @@ public sealed class AvatarPresetFlowTests
             Assert.Equal(9, state.Presets.Count);
             Assert.Equal(state.Presets.OrderBy(value => value.SlotIndex).First().Id, state.ActiveAvatarPresetId);
             Assert.True((await owner.GetProfileAvatarAsync(authentication.Account.Id)).HasAvatar);
+        }
+        finally
+        {
+            if (!server.HasExited) server.Kill(entireProcessTree: true);
+            await server.WaitForExitAsync();
+            for (var attempt = 0; attempt < 20; attempt++)
+            {
+                try { Directory.Delete(temp, true); break; }
+                catch (IOException) when (attempt < 19) { await Task.Delay(100); }
+            }
+        }
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task FourBannerSlotsFormatsActivationRealtimeDerivativeAndDeleteFallbackWork()
+    {
+        var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
+        var project = Path.Combine(root, "Iridium.Server", "Iridium.Server.csproj");
+        var temp = Path.Combine(Path.GetTempPath(), $"iridium-banners-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(temp);
+        var address = new Uri($"http://127.0.0.1:{FreePort()}/");
+        var configuration = new DirectoryInfo(AppContext.BaseDirectory).Parent?.Name ?? "Debug";
+        using var server = StartServer(project, address, Path.Combine(temp, "banners.db"),
+            Path.Combine(temp, "objects"), configuration);
+        var output = server.StandardOutput.ReadToEndAsync();
+        var error = server.StandardError.ReadToEndAsync();
+        try
+        {
+            await WaitForServerAsync(address, server, output, error);
+            var client = new NodeClient(address);
+            var authentication = await client.RegisterAsync(new("banner-owner", "Banner Owner", "test-password"));
+            var jpeg = Encode(SKEncodedImageFormat.Jpeg);
+            var webp = Encode(SKEncodedImageFormat.Webp);
+            var uploads = new[]
+            {
+                (Bytes: Png, Name: "banner.png", Type: "image/png"),
+                (Bytes: jpeg, Name: "banner.jpg", Type: "image/jpeg"),
+                (Bytes: webp, Name: "banner.webp", Type: "image/webp"),
+                (Bytes: Png, Name: "banner-4.png", Type: "image/png")
+            };
+            AccountBannerPresetsDto state = null!;
+            for (var slot = 0; slot < uploads.Length; slot++)
+                state = await client.UploadBannerPresetAsync(slot, new MemoryStream(uploads[slot].Bytes),
+                    uploads[slot].Name, uploads[slot].Type, 0, 0, 1);
+            Assert.Equal(ProfileBannerLimits.MaximumPresets, state.Presets.Count);
+            Assert.Equal(state.Presets.Single(value => value.SlotIndex == 3).Id, state.ActiveBannerPresetId);
+            await Assert.ThrowsAsync<NodeApiException>(() => client.UploadBannerPresetAsync(4,
+                new MemoryStream(Png), "fifth.png", "image/png", 0, 0, 1));
+
+            var activeMetadata = await client.GetProfileBannerAsync(authentication.Account.Id);
+            Assert.True(activeMetadata.HasBanner);
+            Assert.True(activeMetadata.IsProcessed);
+            using (var http = new HttpClient())
+            {
+                var derivative = await http.GetByteArrayAsync(activeMetadata.BannerUrl);
+                using var data = SKData.CreateCopy(derivative);
+                using var codec = SKCodec.Create(data);
+                Assert.Equal(SKEncodedImageFormat.Webp, codec.EncodedFormat);
+                Assert.Equal(ProfileBannerLimits.ProcessedWidth, codec.Info.Width);
+                Assert.Equal(ProfileBannerLimits.ProcessedHeight, codec.Info.Height);
+            }
+
+            await using var hub = new HubConnectionBuilder().WithUrl(new Uri(address, "hubs/chat"), options =>
+                options.AccessTokenProvider = () => Task.FromResult<string?>(authentication.AccessToken)).Build();
+            var changed = new TaskCompletionSource<ProfileUpdatedEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
+            hub.On<ProfileUpdatedEvent>(ProfileHubContract.Updated, value => changed.TrySetResult(value));
+            await hub.StartAsync();
+            var selected = state.Presets.Single(value => value.SlotIndex == 2);
+            await client.UpdateBannerCropAsync(selected.Id, new(.45, -.25, 1.7, true));
+            var update = await changed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.True(update.BannerRevision > 0);
+            state = await client.GetBannerPresetsAsync();
+            Assert.Equal(selected.Id, state.ActiveBannerPresetId);
+
+            state = await client.UploadBannerPresetAsync(3, new MemoryStream(AnimatedGif), "animated.gif",
+                "image/gif", 0, 0, 1);
+            var gif = state.Presets.Single(value => value.SlotIndex == 3);
+            Assert.False(gif.IsProcessed);
+            using (var http = new HttpClient()) Assert.Equal(AnimatedGif, await http.GetByteArrayAsync(gif.BannerUrl));
+            await client.DeleteBannerPresetAsync(gif.Id);
+            state = await client.GetBannerPresetsAsync();
+            Assert.Equal(3, state.Presets.Count);
+            Assert.Equal(state.Presets.OrderBy(value => value.SlotIndex).First().Id, state.ActiveBannerPresetId);
         }
         finally
         {

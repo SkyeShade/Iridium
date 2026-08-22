@@ -16,6 +16,14 @@ public sealed class ProfileRealtimePublisher(
     {
         try
         {
+            var profile = await db.Accounts.AsNoTracking()
+                .Where(value => value.Id == accountId)
+                .Select(value => new
+                {
+                    value.DisplayName, value.Pronouns, value.Description, value.BannerRevision
+                })
+                .SingleOrDefaultAsync(cancellationToken);
+            if (profile is null) return;
             var recipients = new HashSet<Guid> { accountId };
             var communityIds = await db.CommunityMembers.AsNoTracking()
                 .Where(value => value.AccountId == accountId).Select(value => value.CommunityId)
@@ -36,7 +44,9 @@ public sealed class ProfileRealtimePublisher(
                     ? value.ParticipantBAccountId : value.ParticipantAAccountId)
                 .ToArrayAsync(cancellationToken));
             await hub.Clients.Groups(recipients.Select(ChatHub.AccountGroup).ToArray()).SendAsync(
-                ProfileHubContract.Updated, new ProfileUpdatedEvent(accountId, avatarRevision), cancellationToken);
+                ProfileHubContract.Updated,
+                new ProfileUpdatedEvent(accountId, avatarRevision, profile.BannerRevision, profile.DisplayName, profile.Pronouns,
+                    profile.Description), cancellationToken);
         }
         catch (Exception exception)
         {

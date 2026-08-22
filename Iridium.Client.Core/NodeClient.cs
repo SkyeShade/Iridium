@@ -76,6 +76,44 @@ public sealed class NodeClient(Uri nodeAddress)
     public Task DeleteAvatarPresetAsync(Guid presetId, CancellationToken cancellationToken = default) =>
         SendNoContentAsync(HttpMethod.Delete, $"api/account/avatar-presets/{presetId}", null, cancellationToken);
 
+    public Task<AccountBannerPresetsDto> GetBannerPresetsAsync(CancellationToken cancellationToken = default) =>
+        SendAsync<AccountBannerPresetsDto>(HttpMethod.Get, "api/account/banner-presets", null, cancellationToken);
+
+    public Task<ProfileBannerDto> GetProfileBannerAsync(Guid accountId,
+        CancellationToken cancellationToken = default) =>
+        SendAsync<ProfileBannerDto>(HttpMethod.Get, $"api/profiles/{accountId}/banner-metadata", null,
+            cancellationToken);
+
+    public async Task<AccountBannerPresetsDto> UploadBannerPresetAsync(int slotIndex, Stream content,
+        string fileName, string contentType, double cropX, double cropY, double zoom,
+        CancellationToken cancellationToken = default)
+    {
+        using var multipart = new MultipartFormDataContent();
+        using var streamContent = new StreamContent(content);
+        streamContent.Headers.ContentType = new MediaTypeHeaderValue(
+            string.IsNullOrWhiteSpace(contentType) ? "application/octet-stream" : contentType);
+        multipart.Add(streamContent, "file", fileName);
+        multipart.Add(new StringContent(cropX.ToString(System.Globalization.CultureInfo.InvariantCulture)), "cropX");
+        multipart.Add(new StringContent(cropY.ToString(System.Globalization.CultureInfo.InvariantCulture)), "cropY");
+        multipart.Add(new StringContent(zoom.ToString(System.Globalization.CultureInfo.InvariantCulture)), "zoom");
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"api/account/banner-presets/{slotIndex}")
+            { Content = multipart };
+        if (!string.IsNullOrWhiteSpace(AccessToken))
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", AccessToken);
+        using var response = await _http.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+            throw new NodeApiException(response.StatusCode, await ReadErrorAsync(response, cancellationToken));
+        return await response.Content.ReadFromJsonAsync<AccountBannerPresetsDto>(cancellationToken: cancellationToken)
+            ?? throw new NodeApiException(response.StatusCode, "The node returned an empty response.");
+    }
+
+    public Task<AccountBannerPresetDto> UpdateBannerCropAsync(Guid presetId, UpdateBannerCropRequest request,
+        CancellationToken cancellationToken = default) => SendAsync<AccountBannerPresetDto>(HttpMethod.Patch,
+        $"api/account/banner-presets/{presetId}", request, cancellationToken);
+
+    public Task DeleteBannerPresetAsync(Guid presetId, CancellationToken cancellationToken = default) =>
+        SendNoContentAsync(HttpMethod.Delete, $"api/account/banner-presets/{presetId}", null, cancellationToken);
+
     public Task MarkDirectConversationReadAsync(Guid conversationId, CancellationToken cancellationToken = default) =>
         SendNoContentAsync(HttpMethod.Post, $"api/direct-messages/{conversationId}/read", null, cancellationToken);
 

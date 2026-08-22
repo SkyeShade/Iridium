@@ -7,7 +7,6 @@
                        NodeAuthority="@NodeAuthority" OnResultSelected="OnSearchResultSelected" />
     </header>
     <div class="participant-profile">
-        <div class="profile-banner"></div>
         <button type="button" class="participant-more" title="Participant actions" aria-label="Participant actions"
                 aria-expanded="@_menuOpen" @onclick="ToggleMenu"><Icon Name="more" /></button>
         @if (_menuOpen)
@@ -27,15 +26,13 @@
                 }
             </div>
         }
-        <div class="profile-avatar"><ProfileAvatar AccountId="Participant.AccountId" DisplayName="@Participant.DisplayName" Presence="@Participant.Presence" Size="large" Surface="sidebar" /></div>
-        <div class="profile-copy">
-            <h2 class="display-name">@Participant.DisplayName</h2>
-            <p>@IridiumIdentity.Format(Participant.Username, NodeAuthority)</p>
-            @if (!string.IsNullOrWhiteSpace(Participant.Pronouns)) { <span>@Participant.Pronouns</span> }
-            @if (!string.IsNullOrWhiteSpace(Participant.Description)) { <p class="profile-bio">@Participant.Description</p> }
-        </div>
-        <div class="profile-section"><h3>Friendship</h3><p>@RelationshipText</p></div>
-        @if (!string.IsNullOrWhiteSpace(_actionError)) { <p class="participant-action-error">@_actionError</p> }
+        <ProfileIdentityCard AccountId="Participant.AccountId" DisplayName="@Participant.DisplayName"
+                             Identity="@IridiumIdentity.Format(Participant.Username, NodeAuthority)"
+                             Pronouns="@Participant.Pronouns" Description="@Participant.Description"
+                             Presence="@Participant.Presence" Class="dm-participant-card">
+            <div class="profile-section"><h3>Friendship</h3><p>@RelationshipText</p></div>
+            @if (!string.IsNullOrWhiteSpace(_actionError)) { <p class="participant-action-error">@_actionError</p> }
+        </ProfileIdentityCard>
     </div>
 </section>
 @if (_showProfileCard)

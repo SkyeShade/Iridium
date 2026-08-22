@@ -1,0 +1,7 @@
+.profile-banner-media{position:absolute;inset:0;overflow:hidden;border-radius:inherit;background:linear-gradient(120deg,var(--accent),var(--accent-deep) 55%,var(--surface-active))}
+.profile-banner-media>img{width:100%;height:100%;display:block;object-fit:cover}
+.profile-banner-media.editable{cursor:pointer}
+.banner-edit-overlay{position:absolute;inset:0;display:grid;place-items:center;color:white;background:#05060b99;opacity:0;transition:opacity 130ms ease}
+.banner-edit-overlay span{padding:.32rem .58rem;border:1px solid #fff5;border-radius:var(--radius-sm);background:#080a10a8;font-size:.7rem;font-weight:800}
+.profile-banner-media.editable:hover .banner-edit-overlay,.profile-banner-media.editable:focus-visible .banner-edit-overlay{opacity:1}
+.profile-banner-media.editable:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}

@@ -7,6 +7,8 @@ public sealed class ProfileMediaService : IDisposable
     private readonly NodeSession _session;
     private readonly Dictionary<Guid, long> _avatarRevisions = [];
     private readonly Dictionary<Guid, ProfileAvatarDto> _presentations = [];
+    private readonly Dictionary<Guid, long> _bannerRevisions = [];
+    private readonly Dictionary<Guid, ProfileBannerDto> _banners = [];
     public event Action<Guid>? Changed;
 
     public ProfileMediaService(NodeSession session)
@@ -54,10 +56,51 @@ public sealed class ProfileMediaService : IDisposable
         catch { return null; }
     }
 
+    public void ObserveBanner(Guid accountId, long revision)
+    {
+        if (revision > _bannerRevisions.GetValueOrDefault(accountId)) _bannerRevisions[accountId] = revision;
+    }
+
+    public async Task<ProfileBannerDto?> GetBannerAsync(Guid accountId, long observedRevision = 0,
+        CancellationToken cancellationToken = default)
+    {
+        ObserveBanner(accountId, observedRevision);
+        if (_banners.TryGetValue(accountId, out var cached) &&
+            cached.Revision >= _bannerRevisions.GetValueOrDefault(accountId)) return cached;
+        if (!_session.IsAuthenticated) return null;
+        try
+        {
+            var value = await _session.AuthorizedClient.GetProfileBannerAsync(accountId, cancellationToken);
+            _banners[accountId] = value;
+            ObserveBanner(accountId, value.Revision);
+            return value;
+        }
+        catch { return null; }
+    }
+
+    public void InvalidateBanner(Guid accountId, long revision)
+    {
+        ObserveBanner(accountId, revision);
+        _banners.Remove(accountId);
+        Changed?.Invoke(accountId);
+    }
+
     private void OnProfileUpdated(ProfileUpdatedEvent change)
     {
-        if (_avatarRevisions.GetValueOrDefault(change.AccountId) >= change.AvatarRevision) return;
-        Invalidate(change.AccountId, change.AvatarRevision);
+        var changed = false;
+        if (_avatarRevisions.GetValueOrDefault(change.AccountId) < change.AvatarRevision)
+        {
+            _avatarRevisions[change.AccountId] = change.AvatarRevision;
+            _presentations.Remove(change.AccountId);
+            changed = true;
+        }
+        if (_bannerRevisions.GetValueOrDefault(change.AccountId) < change.BannerRevision)
+        {
+            _bannerRevisions[change.AccountId] = change.BannerRevision;
+            _banners.Remove(change.AccountId);
+            changed = true;
+        }
+        if (changed) Changed?.Invoke(change.AccountId);
     }
 
     public void Dispose() => _session.ProfileUpdated -= OnProfileUpdated;

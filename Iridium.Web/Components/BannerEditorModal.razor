@@ -1,0 +1,283 @@
+@using Iridium.Client.Core
+@using Iridium.Protocol
+@using Microsoft.AspNetCore.Components.Forms
+@inject NodeSession Session
+@inject ProfileMediaService ProfileMedia
+@inject IJSRuntime JS
+@implements IAsyncDisposable
+
+<ModalShell Title="Edit Banner" Size="extra-large" OnClose="TryCloseAsync">
+    <div class="banner-editor">
+        <header class="editor-heading">
+            <div><span>PROFILE BANNER</span><h1>Edit Banner</h1></div>
+            <small>PNG, animated GIF, JPEG, or WebP · up to four presets · 25.00 MB maximum</small>
+        </header>
+        @if (_loading)
+        {
+            <div class="editor-loading">Loading banner presets…</div>
+        }
+        else
+        {
+            <div class="preset-strip" aria-label="Saved banner presets">
+                @for (var slot = 0; slot < ProfileBannerLimits.MaximumPresets; slot++)
+                {
+                    var slotIndex = slot;
+                    var preset = PresetAt(slot);
+                    if (preset is not null)
+                    {
+                        <button type="button" class="preset-slot @(preset.Id == _selectedPreset?.Id ? "selected" : null) @(preset.Id == _presets?.ActiveBannerPresetId ? "active" : null)"
+                                title="Banner preset @(slot + 1)" @onclick="() => SelectPreset(preset)">
+                            <AvatarCroppedPreview State="PresetState(preset)" Shape="banner" />
+                        </button>
+                    }
+                    else
+                    {
+                        <label class="preset-slot empty" title="Add banner" aria-label="Upload banner preset @(slot + 1)">
+                            <span aria-hidden="true">+</span>
+                            <InputFile class="file-input-overlay"
+                                       style="position:absolute;inset:0;width:100%;height:100%;margin:0;padding:0;opacity:0;cursor:pointer;font-size:0"
+                                       accept="image/png,image/gif,image/jpeg,image/webp"
+                                       OnChange="args => SelectFileAsync(slotIndex, args)" />
+                        </label>
+                    }
+                }
+            </div>
+            @if (_editState is not null)
+            {
+                <div class="banner-workspace">
+                    <section class="crop-column">
+                        <div class="crop-stage @(_dragging ? "dragging" : null)" @ref="_cropStage"
+                             @onpointerdown="StartDraggingAsync" @onpointermove="DragImage"
+                             @onpointerup="StopDraggingAsync" @onpointercancel="StopDraggingAsync">
+                            <img class="crop-image" src="@_editState.SourceUrl" alt="Banner source" draggable="false"
+                                 style="@_editState.EditorImageStyle" />
+                            <div class="crop-shade"></div>
+                            <div class="crop-outline"></div>
+                        </div>
+                        <label class="zoom-control">
+                            <span class="zoom-label">Zoom</span><span aria-hidden="true">−</span>
+                            <input type="range" min="1" max="3" step="0.01" value="@_editState.Zoom"
+                                   style="@_editState.ZoomFillStyle" @oninput="ZoomChanged" />
+                            <span aria-hidden="true">+</span>
+                        </label>
+                        <div class="preset-actions">
+                            <label class="replace-button"><Icon Name="upload" /> Replace Image
+                                <InputFile class="file-input-overlay"
+                                           style="position:absolute;inset:0;width:100%;height:100%;margin:0;padding:0;opacity:0;cursor:pointer;font-size:0"
+                                           aria-label="Replace banner image"
+                                           accept="image/png,image/gif,image/jpeg,image/webp"
+                                           OnChange="args => SelectFileAsync(_selectedSlot, args)" />
+                            </label>
+                            @if (_selectedPreset is not null)
+                            {
+                                <button type="button" class="delete-button" @onclick="DeleteSelectedAsync"><Icon Name="trash" /> Delete</button>
+                            }
+                        </div>
+                    </section>
+                    <aside class="card-preview">
+                        <span class="preview-label">PROFILE CARD PREVIEW</span>
+                        <ProfileIdentityCard AccountId="Account.Id" AvatarRevision="Account.AvatarRevision"
+                                             BannerRevision="Account.BannerRevision" BannerEditState="_editState"
+                                             DisplayName="@DisplayName" Identity="@PublicIdentity" Pronouns="@Pronouns"
+                                             Description="@Description" Presence="PresenceVisibility.ToPublic(Account.PreferredPresence)" />
+                        @if (IsGif) { <small>Animated GIF banners remain animated.</small> }
+                    </aside>
+                </div>
+                <footer>
+                    <button type="button" class="secondary" @onclick="TryCloseAsync">Cancel</button>
+                    <button type="button" class="primary" disabled="@_saving" @onclick="SaveAsync">@(_saving ? "Saving…" : "Save")</button>
+                </footer>
+            }
+            else
+            {
+                <div class="empty-editor">
+                    <span class="empty-editor-icon"><Icon Name="upload" Size="26" /></span>
+                    <h2>Choose an empty banner preset</h2>
+                    <p>Upload an image to begin positioning your profile banner.</p>
+                </div>
+            }
+            @if (!string.IsNullOrWhiteSpace(_error)) { <p class="editor-error" role="alert">@_error</p> }
+        }
+    </div>
+    @if (_confirmClose)
+    {
+        <div class="discard-backdrop" @onclick:stopPropagation="true">
+            <section class="discard-card" role="alertdialog" aria-label="Save banner changes before closing">
+                <h2>Save changes before closing?</h2><p>Your banner positioning or uploaded image has not been saved.</p>
+                <div><button class="primary" @onclick="SaveAsync">Save</button><button class="danger" @onclick="DiscardAsync">Discard</button><button class="secondary" @onclick="() => _confirmClose = false">Cancel</button></div>
+            </section>
+        </div>
+    }
+</ModalShell>
+
+@code {
+    [Parameter, EditorRequired] public required NodeAccountDto Account { get; set; }
+    [Parameter, EditorRequired] public required string DisplayName { get; set; }
+    [Parameter, EditorRequired] public required string PublicIdentity { get; set; }
+    [Parameter] public string? Pronouns { get; set; }
+    [Parameter] public string? Description { get; set; }
+    [Parameter] public EventCallback OnClosed { get; set; }
+    private AccountBannerPresetsDto? _presets;
+    private AccountBannerPresetDto? _selectedPreset;
+    private byte[]? _pendingBytes;
+    private string? _pendingName, _pendingContentType, _error;
+    private int _selectedSlot;
+    private ProfileMediaEditState? _editState;
+    private ElementReference _cropStage;
+    private IJSObjectReference? _module;
+    private long? _activePointerId;
+    private double _stagePixels = 1;
+    private bool _loading = true, _saving, _dragging, _dirty, _confirmClose;
+    private bool IsGif => string.Equals(_pendingContentType ?? _selectedPreset?.ContentType, "image/gif",
+        StringComparison.OrdinalIgnoreCase);
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _presets = await Session.GetBannerPresetsAsync();
+            ProfileMedia.ObserveBanner(Account.Id, _presets.BannerRevision);
+            var initial = _presets.Presets.FirstOrDefault(value => value.Id == _presets.ActiveBannerPresetId)
+                          ?? _presets.Presets.FirstOrDefault();
+            if (initial is not null) SelectPreset(initial);
+        }
+        catch (Exception exception) { _error = exception.Message; }
+        finally { _loading = false; }
+    }
+
+    private AccountBannerPresetDto? PresetAt(int slot) =>
+        _presets?.Presets.FirstOrDefault(value => value.SlotIndex == slot);
+
+    private void SelectPreset(AccountBannerPresetDto preset)
+    {
+        _selectedPreset = preset; _selectedSlot = preset.SlotIndex; _pendingBytes = null;
+        _pendingName = null; _pendingContentType = null; _editState = PresetState(preset);
+        _dirty = false; _error = null;
+    }
+
+    private async Task SelectFileAsync(int slot, InputFileChangeEventArgs args)
+    {
+        try
+        {
+            var file = args.File;
+            if (file.Size > ProfileBannerLimits.MaximumUploadBytes)
+            {
+                _error = FileSizeDisplay.BannerTooLarge(file.Size);
+                return;
+            }
+            await using var input = file.OpenReadStream(ProfileBannerLimits.MaximumUploadBytes);
+            await using var output = new MemoryStream();
+            await input.CopyToAsync(output);
+            var bytes = output.ToArray();
+            var preview = $"data:{file.ContentType};base64,{Convert.ToBase64String(bytes)}";
+            ImageDimensions dimensions;
+            if (string.Equals(file.ContentType, "image/gif", StringComparison.OrdinalIgnoreCase))
+            {
+                _pendingBytes = bytes; _pendingName = file.Name; _pendingContentType = "image/gif";
+                dimensions = await (await ModuleAsync()).InvokeAsync<ImageDimensions>("imageDimensions", preview);
+            }
+            else
+            {
+                var processed = await (await ModuleAsync()).InvokeAsync<ProcessedImage>(
+                    "processStaticProfileMedia", preview, file.Name, "banner");
+                _pendingBytes = DataUrlBytes(processed.DataUrl); _pendingName = processed.FileName;
+                _pendingContentType = processed.ContentType; preview = processed.DataUrl;
+                dimensions = new(processed.Width, processed.Height);
+            }
+            _selectedSlot = slot; _selectedPreset = PresetAt(slot);
+            _editState = NewState(preview, dimensions.Width, dimensions.Height);
+            _dirty = true; _error = null;
+        }
+        catch (Exception exception) { _error = exception.Message; }
+    }
+
+    private async Task StartDraggingAsync(PointerEventArgs args)
+    {
+        if (args.Button != 0 || _editState is null) return;
+        _activePointerId = args.PointerId;
+        _stagePixels = await (await ModuleAsync()).InvokeAsync<double>("capturePointer", _cropStage, args.PointerId);
+        _dragging = true;
+    }
+    private async Task StopDraggingAsync(PointerEventArgs args)
+    {
+        if (_activePointerId != args.PointerId) return;
+        _dragging = false; _activePointerId = null;
+        if (_module is not null) await _module.InvokeVoidAsync("releasePointer", _cropStage, args.PointerId);
+    }
+    private void DragImage(PointerEventArgs args)
+    {
+        if (!_dragging || _activePointerId != args.PointerId || _editState is null) return;
+        var scale = _editState.ViewportWidth / Math.Max(1, _stagePixels);
+        _editState.Pan(args.MovementX * scale, args.MovementY * scale); _dirty = true;
+    }
+    private void ZoomChanged(ChangeEventArgs args)
+    {
+        if (double.TryParse(args.Value?.ToString(), System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var value))
+        { _editState?.SetZoom(value); _dirty = true; }
+    }
+
+    private async Task SaveAsync()
+    {
+        if (_saving || _editState is null) return;
+        _saving = true; _error = null;
+        try
+        {
+            if (_pendingBytes is not null)
+            {
+                await using var stream = new MemoryStream(_pendingBytes, false);
+                _presets = await Session.UploadBannerPresetAsync(_selectedSlot, stream, _pendingName ?? "banner",
+                    _pendingContentType ?? "application/octet-stream", _editState.NormalizedOffsetX,
+                    _editState.NormalizedOffsetY, _editState.Zoom);
+            }
+            else if (_selectedPreset is not null)
+            {
+                await Session.UpdateBannerCropAsync(_selectedPreset.Id,
+                    new(_editState.NormalizedOffsetX, _editState.NormalizedOffsetY, _editState.Zoom, true));
+                _presets = await Session.GetBannerPresetsAsync();
+            }
+            if (_presets is not null) ProfileMedia.InvalidateBanner(Account.Id, _presets.BannerRevision);
+            _dirty = false; _confirmClose = false;
+            await OnClosed.InvokeAsync();
+        }
+        catch (Exception exception) { _error = exception.Message; }
+        finally { _saving = false; }
+    }
+
+    private async Task DeleteSelectedAsync()
+    {
+        if (_selectedPreset is null || _saving) return;
+        _saving = true; _error = null;
+        try
+        {
+            await Session.DeleteBannerPresetAsync(_selectedPreset.Id);
+            _presets = await Session.GetBannerPresetsAsync();
+            ProfileMedia.InvalidateBanner(Account.Id, _presets.BannerRevision);
+            var next = _presets.Presets.FirstOrDefault(value => value.Id == _presets.ActiveBannerPresetId)
+                       ?? _presets.Presets.FirstOrDefault();
+            _selectedPreset = null; _pendingBytes = null; _editState = null; _dirty = false;
+            if (next is not null) SelectPreset(next);
+        }
+        catch (Exception exception) { _error = exception.Message; }
+        finally { _saving = false; }
+    }
+
+    private Task TryCloseAsync()
+    {
+        if (_dirty) { _confirmClose = true; return Task.CompletedTask; }
+        return OnClosed.InvokeAsync();
+    }
+    private async Task DiscardAsync() { _dirty = false; _confirmClose = false; await OnClosed.InvokeAsync(); }
+    private static ProfileMediaEditState NewState(string source, int width, int height, double zoom = 1,
+        double x = 0, double y = 0) => new(source, width, height, ProfileBannerLimits.CropWidth,
+        ProfileBannerLimits.CropHeight, 1200, 600, zoom, x, y);
+    private static ProfileMediaEditState PresetState(AccountBannerPresetDto preset) =>
+        NewState(preset.SourceUrl, preset.Width, preset.Height, preset.Zoom, preset.CropX, preset.CropY);
+    private async Task<IJSObjectReference> ModuleAsync() =>
+        _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/avatarEditor.js");
+    private sealed record ImageDimensions(int Width, int Height);
+    private sealed record ProcessedImage(string DataUrl, string ContentType, string FileName, long Size,
+        int Width, int Height);
+    private static byte[] DataUrlBytes(string value) => Convert.FromBase64String(value[(value.IndexOf(',') + 1)..]);
+    public async ValueTask DisposeAsync() { if (_module is not null) await _module.DisposeAsync(); }
+}

@@ -22,9 +22,11 @@
             </div>
             <aside class="profile-preview">
                 <ProfileIdentityCard AccountId="Account.Id" AvatarRevision="Account.AvatarRevision"
+                                     BannerRevision="Account.BannerRevision"
                                      DisplayName="@_displayName" Identity="@PublicIdentity" Pronouns="@_pronouns"
                                      Description="@_description" Presence="PresenceVisibility.ToPublic(Account.PreferredPresence)"
-                                     Editable="true" OnEditAvatar="OpenAvatarEditor" />
+                                     Editable="true" EditableBanner="true" OnEditAvatar="OpenAvatarEditor"
+                                     OnEditBanner="OpenBannerEditor" />
             </aside>
         </div>
     </div>
@@ -32,6 +34,12 @@
 @if (_avatarEditorOpen)
 {
     <AvatarEditorModal Account="Account" OnClosed="() => _avatarEditorOpen = false" />
+}
+@if (_bannerEditorOpen)
+{
+    <BannerEditorModal Account="Account" DisplayName="@_displayName" PublicIdentity="@PublicIdentity"
+                       Pronouns="@_pronouns" Description="@_description"
+                       OnClosed="() => _bannerEditorOpen = false" />
 }
 
 @code {
@@ -49,7 +57,9 @@
     private Guid? _loadedAccountId;
     private bool _saving;
     private bool _avatarEditorOpen;
+    private bool _bannerEditorOpen;
     private Task OpenAvatarEditor() { _avatarEditorOpen = true; return Task.CompletedTask; }
+    private Task OpenBannerEditor() { _bannerEditorOpen = true; return Task.CompletedTask; }
 
     protected override void OnParametersSet()
     {

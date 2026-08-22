@@ -1,6 +1,6 @@
 @using Iridium.Client.Core
 
-<span class="avatar-cropped-preview @Class" style="@Style" aria-hidden="true">
+<span class="avatar-cropped-preview shape-@Shape @Class" style="@Style" aria-hidden="true">
     @if (State is not null)
     {
         <img src="@State.SourceUrl" alt="" draggable="false" style="@State.CroppedImageStyle" @onerror="OnError" />
@@ -8,8 +8,9 @@
 </span>
 
 @code {
-    [Parameter, EditorRequired] public AvatarEditState? State { get; set; }
+    [Parameter, EditorRequired] public ProfileMediaEditState? State { get; set; }
     [Parameter] public string? Class { get; set; }
+    [Parameter] public string Shape { get; set; } = "avatar";
     [Parameter] public string? Style { get; set; }
     [Parameter] public EventCallback OnError { get; set; }
 }

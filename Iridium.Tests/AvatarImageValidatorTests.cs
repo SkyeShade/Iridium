@@ -62,7 +62,16 @@ public sealed class AvatarImageValidatorTests
         var validator = Create(maximumBytes: ProfileAvatarLimits.MaximumUploadBytes);
         var exception = await Assert.ThrowsAsync<AvatarImageValidationException>(() =>
             validator.ValidateAsync(new LengthOnlyStream(247_380_000), "image/png"));
-        Assert.Equal("This image is 247.38 MB. The maximum avatar size is 200.00 MB.", exception.Message);
+        Assert.Equal(FileSizeDisplay.AvatarTooLarge(247_380_000), exception.Message);
+    }
+
+    [Fact]
+    public async Task BannerUploadHasIndependentTwentyFiveMegabyteFriendlyLimit()
+    {
+        var validator = Create();
+        var exception = await Assert.ThrowsAsync<AvatarImageValidationException>(() =>
+            validator.ValidateBannerAsync(new LengthOnlyStream(31_420_000), "image/png"));
+        Assert.Equal("This image is 31.42 MB. The maximum banner size is 25.00 MB.", exception.Message);
     }
 
     private static AvatarImageValidator Create(long maximumBytes = 1024 * 1024) =>

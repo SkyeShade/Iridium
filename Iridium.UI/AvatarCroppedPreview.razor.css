@@ -1,2 +1,3 @@
 .avatar-cropped-preview{position:relative;display:block;overflow:hidden;width:100%;height:100%;border-radius:50%;background:var(--surface-raised)}
+.avatar-cropped-preview.shape-banner{border-radius:inherit}
 .avatar-cropped-preview img{position:absolute;max-width:none;object-fit:fill;transform:translate(-50%,-50%);pointer-events:none;user-select:none}

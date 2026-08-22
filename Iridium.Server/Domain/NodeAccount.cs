@@ -11,6 +11,8 @@ public sealed class NodeAccount
     public string? Description { get; set; }
     public Guid? ActiveAvatarPresetId { get; set; }
     public long AvatarRevision { get; set; }
+    public Guid? ActiveBannerPresetId { get; set; }
+    public long BannerRevision { get; set; }
     public UserPresence PreferredPresence { get; set; } = UserPresence.Online;
     public required string PasswordHash { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
@@ -18,4 +20,5 @@ public sealed class NodeAccount
     public ICollection<Community> OwnedCommunities { get; set; } = [];
     public ICollection<ChannelMessage> Messages { get; set; } = [];
     public ICollection<AccountAvatarPreset> AvatarPresets { get; set; } = [];
+    public ICollection<AccountBannerPreset> BannerPresets { get; set; } = [];
 }

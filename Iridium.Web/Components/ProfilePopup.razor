@@ -4,6 +4,7 @@
 <div class="popup-backdrop" @onclick="OnCancel">
     <section class="profile-popup" @onclick:stopPropagation="true">
         <ProfileIdentityCard AccountId="Account.Id" AvatarRevision="Account.AvatarRevision"
+                             BannerRevision="Account.BannerRevision"
                              DisplayName="@Account.DisplayName" Identity="@PublicIdentity" Presence="Presence"
                              Pronouns="@Account.Pronouns" Description="@Account.Description">
           <button class="edit-profile" @onclick="OnEditProfile">Edit Profile</button>

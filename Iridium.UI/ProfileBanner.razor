@@ -1,0 +1,72 @@
+@using Iridium.Client.Core
+@using Iridium.Protocol
+@inject ProfileMediaService ProfileMedia
+@implements IDisposable
+
+<div class="profile-banner-media @(Editable ? "editable" : null)" @onclick="EditAsync" role="@(Editable ? "button" : null)"
+     tabindex="@(Editable ? "0" : null)" @onkeydown="HandleKeyAsync">
+    @if (EditState is not null)
+    {
+        <AvatarCroppedPreview State="EditState" Shape="banner" />
+    }
+    else if (_banner is { HasBanner: true, BannerUrl: not null } banner && !_failed)
+    {
+        @if (banner.IsProcessed)
+        {
+            <img src="@banner.BannerUrl" alt="" draggable="false" @onerror="Failed" />
+        }
+        else
+        {
+            <AvatarCroppedPreview State="BannerState(banner)" Shape="banner" OnError="Failed" />
+        }
+    }
+    @if (Editable)
+    {
+        <span class="banner-edit-overlay"><span>Edit</span></span>
+    }
+</div>
+
+@code {
+    [Parameter] public Guid? AccountId { get; set; }
+    [Parameter] public long BannerRevision { get; set; }
+    [Parameter] public ProfileMediaEditState? EditState { get; set; }
+    [Parameter] public bool Editable { get; set; }
+    [Parameter] public EventCallback OnEdit { get; set; }
+    private ProfileBannerDto? _banner;
+    private Guid? _loadedAccountId;
+    private long _loadedRevision = -1;
+    private bool _failed;
+
+    protected override void OnInitialized() => ProfileMedia.Changed += MediaChanged;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (EditState is not null || AccountId is not { } accountId) return;
+        if (_loadedAccountId == accountId && _loadedRevision == BannerRevision) return;
+        _loadedAccountId = accountId;
+        _loadedRevision = BannerRevision;
+        _failed = false;
+        _banner = await ProfileMedia.GetBannerAsync(accountId, BannerRevision);
+    }
+
+    private void MediaChanged(Guid accountId)
+    {
+        if (AccountId != accountId || EditState is not null) return;
+        _ = InvokeAsync(async () =>
+        {
+            _banner = await ProfileMedia.GetBannerAsync(accountId);
+            _failed = false;
+            StateHasChanged();
+        });
+    }
+
+    private Task EditAsync() => Editable ? OnEdit.InvokeAsync() : Task.CompletedTask;
+    private Task HandleKeyAsync(KeyboardEventArgs args) => Editable && args.Key is "Enter" or " "
+        ? OnEdit.InvokeAsync() : Task.CompletedTask;
+    private void Failed() { _failed = true; StateHasChanged(); }
+    private static ProfileMediaEditState BannerState(ProfileBannerDto banner) => new(banner.BannerUrl!,
+        Math.Max(1, banner.Width), Math.Max(1, banner.Height), ProfileBannerLimits.CropWidth,
+        ProfileBannerLimits.CropHeight, ProfileBannerLimits.CropWidth, ProfileBannerLimits.CropHeight,
+        banner.Zoom, banner.CropX, banner.CropY);
+    public void Dispose() => ProfileMedia.Changed -= MediaChanged;
+}

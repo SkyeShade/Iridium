@@ -35,6 +35,34 @@ public static class DatabaseCompatibility
             """);
     }
 
+    public static async Task EnsureBannerPresetSchemaAsync(IridiumDbContext db)
+    {
+        await EnsureColumnAsync(db, "Accounts", "ActiveBannerPresetId", "TEXT NULL");
+        await EnsureColumnAsync(db, "Accounts", "BannerRevision", "INTEGER NOT NULL DEFAULT 0");
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS AccountBannerPresets (
+                Id TEXT NOT NULL CONSTRAINT PK_AccountBannerPresets PRIMARY KEY,
+                AccountId TEXT NOT NULL,
+                SlotIndex INTEGER NOT NULL,
+                OriginalObjectKey TEXT NOT NULL,
+                ProcessedObjectKey TEXT NULL,
+                ContentType TEXT NOT NULL,
+                SizeBytes INTEGER NOT NULL,
+                Width INTEGER NOT NULL,
+                Height INTEGER NOT NULL,
+                CropX REAL NOT NULL DEFAULT 0,
+                CropY REAL NOT NULL DEFAULT 0,
+                Zoom REAL NOT NULL DEFAULT 1,
+                Revision INTEGER NOT NULL,
+                CreatedAt INTEGER NOT NULL,
+                UpdatedAt INTEGER NOT NULL,
+                CONSTRAINT FK_AccountBannerPresets_Accounts_AccountId FOREIGN KEY (AccountId) REFERENCES Accounts (Id) ON DELETE CASCADE
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS IX_AccountBannerPresets_AccountId_SlotIndex
+                ON AccountBannerPresets (AccountId, SlotIndex);
+            """);
+    }
+
     public static async Task EnsureCommunityManagementSchemaAsync(IridiumDbContext db)
     {
         await EnsureColumnAsync(db, "Accounts", "Description", "TEXT NULL");

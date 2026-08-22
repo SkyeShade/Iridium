@@ -258,7 +258,8 @@ public static partial class AccountEndpoints
 
     private static NodeAccountDto ToDto(NodeAccount account) =>
         new(account.Id, account.Username, account.DisplayName, account.Pronouns, account.Description,
-            account.PreferredPresence, account.CreatedAt, account.ActiveAvatarPresetId, account.AvatarRevision);
+            account.PreferredPresence, account.CreatedAt, account.ActiveAvatarPresetId, account.AvatarRevision,
+            account.ActiveBannerPresetId, account.BannerRevision);
 
     [GeneratedRegex("^[A-Za-z0-9_.-]{3,32}$", RegexOptions.CultureInvariant)]
     private static partial Regex UsernamePattern();

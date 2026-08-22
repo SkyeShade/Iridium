@@ -31,4 +31,10 @@ public sealed class NodeOptions
     public int MaxAvatarDimension { get; set; } = ProfileAvatarLimits.MaximumSourceDimension;
 
     public long MaxAvatarPixels { get; set; } = ProfileAvatarLimits.MaximumDecodedPixels;
+
+    public long MaxBannerBytes { get; set; } = ProfileBannerLimits.MaximumUploadBytes;
+
+    public int MaxBannerDimension { get; set; } = ProfileBannerLimits.MaximumSourceDimension;
+
+    public long MaxBannerPixels { get; set; } = ProfileBannerLimits.MaximumDecodedPixels;
 }

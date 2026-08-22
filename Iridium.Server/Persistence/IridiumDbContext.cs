@@ -25,6 +25,7 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
     public DbSet<DirectMessage> DirectMessages => Set<DirectMessage>();
     public DbSet<Attachment> Attachments => Set<Attachment>();
     public DbSet<AccountAvatarPreset> AccountAvatarPresets => Set<AccountAvatarPreset>();
+    public DbSet<AccountBannerPreset> AccountBannerPresets => Set<AccountBannerPreset>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -48,6 +49,19 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
             .HasConversion(value => value.UtcTicks, value => new DateTimeOffset(value, TimeSpan.Zero));
         avatarPreset.HasIndex(value => new { value.AccountId, value.SlotIndex }).IsUnique();
         avatarPreset.HasOne(value => value.Account).WithMany(value => value.AvatarPresets)
+            .HasForeignKey(value => value.AccountId).OnDelete(DeleteBehavior.Cascade);
+
+        var bannerPreset = modelBuilder.Entity<AccountBannerPreset>();
+        bannerPreset.HasKey(value => value.Id);
+        bannerPreset.Property(value => value.OriginalObjectKey).HasMaxLength(64);
+        bannerPreset.Property(value => value.ProcessedObjectKey).HasMaxLength(64);
+        bannerPreset.Property(value => value.ContentType).HasMaxLength(64);
+        bannerPreset.Property(value => value.CreatedAt)
+            .HasConversion(value => value.UtcTicks, value => new DateTimeOffset(value, TimeSpan.Zero));
+        bannerPreset.Property(value => value.UpdatedAt)
+            .HasConversion(value => value.UtcTicks, value => new DateTimeOffset(value, TimeSpan.Zero));
+        bannerPreset.HasIndex(value => new { value.AccountId, value.SlotIndex }).IsUnique();
+        bannerPreset.HasOne(value => value.Account).WithMany(value => value.BannerPresets)
             .HasForeignKey(value => value.AccountId).OnDelete(DeleteBehavior.Cascade);
 
         var community = modelBuilder.Entity<Community>();

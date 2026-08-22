@@ -76,6 +76,21 @@ public sealed class NodeSession(
     public Task DeleteAvatarPresetAsync(Guid presetId, CancellationToken cancellationToken = default) =>
         AuthorizedClient.DeleteAvatarPresetAsync(presetId, cancellationToken);
 
+    public Task<AccountBannerPresetsDto> GetBannerPresetsAsync(CancellationToken cancellationToken = default) =>
+        AuthorizedClient.GetBannerPresetsAsync(cancellationToken);
+
+    public Task<AccountBannerPresetsDto> UploadBannerPresetAsync(int slotIndex, Stream content, string fileName,
+        string contentType, double cropX, double cropY, double zoom,
+        CancellationToken cancellationToken = default) => AuthorizedClient.UploadBannerPresetAsync(slotIndex,
+        content, fileName, contentType, cropX, cropY, zoom, cancellationToken);
+
+    public Task<AccountBannerPresetDto> UpdateBannerCropAsync(Guid presetId, UpdateBannerCropRequest request,
+        CancellationToken cancellationToken = default) =>
+        AuthorizedClient.UpdateBannerCropAsync(presetId, request, cancellationToken);
+
+    public Task DeleteBannerPresetAsync(Guid presetId, CancellationToken cancellationToken = default) =>
+        AuthorizedClient.DeleteBannerPresetAsync(presetId, cancellationToken);
+
     internal NodeClient AuthorizedClient
     {
         get { EnsureAuthenticated(); return _client!; }
@@ -312,7 +327,39 @@ public sealed class NodeSession(
 
     internal void ApplyRealtimeReconnected() => RealtimeReconnected?.Invoke();
 
-    internal void ApplyProfileUpdated(ProfileUpdatedEvent change) => ProfileUpdated?.Invoke(change);
+    internal void ApplyProfileUpdated(ProfileUpdatedEvent change)
+    {
+        if (Account?.Id == change.AccountId)
+            Account = Account with
+            {
+                DisplayName = change.DisplayName,
+                Pronouns = change.Pronouns,
+                Description = change.Description,
+                AvatarRevision = change.AvatarRevision,
+                BannerRevision = change.BannerRevision
+            };
+        for (var index = 0; index < _friends.Count; index++)
+            if (_friends[index].AccountId == change.AccountId)
+                _friends[index] = _friends[index] with
+                {
+                    DisplayName = change.DisplayName,
+                    Pronouns = change.Pronouns,
+                    Description = change.Description
+                };
+        for (var index = 0; index < _directConversations.Count; index++)
+            if (_directConversations[index].OtherParticipant.AccountId == change.AccountId)
+                _directConversations[index] = _directConversations[index] with
+                {
+                    OtherParticipant = _directConversations[index].OtherParticipant with
+                    {
+                        DisplayName = change.DisplayName,
+                        Pronouns = change.Pronouns,
+                        Description = change.Description
+                    }
+                };
+        ProfileUpdated?.Invoke(change);
+        NotifyChanged();
+    }
 
     internal void ApplyCommunityAccessRevoked(CommunityAccessRevokedEvent change)
     {

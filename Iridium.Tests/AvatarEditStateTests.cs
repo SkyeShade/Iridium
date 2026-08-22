@@ -1,4 +1,7 @@
 using Iridium.Client.Core;
+using Iridium.Protocol;
+using Iridium.Server.Storage;
+using SkiaSharp;
 
 namespace Iridium.Tests;
 
@@ -60,6 +63,37 @@ public sealed class AvatarEditStateTests
             editor.Zoom, editor.NormalizedOffsetX, editor.NormalizedOffsetY);
         Assert.Equal(editor.CroppedImageStyle, persisted.CroppedImageStyle);
         Assert.Equal(editor.SourceCrop, persisted.SourceCrop);
+    }
+
+    [Fact]
+    public void BannerTransformUsesFiveToOneCropAndPansAtMinimumZoom()
+    {
+        var wide = new ProfileMediaEditState("banner", 3600, 600, ProfileBannerLimits.CropWidth,
+            ProfileBannerLimits.CropHeight, 1200, 600);
+        Assert.True(wide.MaximumOffsetX > 0);
+        Assert.Equal(0, wide.MaximumOffsetY);
+        var tall = new ProfileMediaEditState("banner", 800, 1600, ProfileBannerLimits.CropWidth,
+            ProfileBannerLimits.CropHeight, 1200, 600);
+        Assert.Equal(0, tall.MaximumOffsetX);
+        Assert.True(tall.MaximumOffsetY > 0);
+    }
+
+    [Fact]
+    public void StaticBannerProcessorProducesExactTwelveHundredByTwoFortyWebpDerivative()
+    {
+        using var bitmap = new SKBitmap(1600, 800);
+        bitmap.Erase(SKColors.CornflowerBlue);
+        using var sourceImage = SKImage.FromBitmap(bitmap);
+        using var encoded = sourceImage.Encode(SKEncodedImageFormat.Png, 100);
+        var source = encoded.ToArray();
+        var processed = BannerImageProcessor.Process(
+            new(source, "image/png", 1600, 800, false), .4, -.3, 1.6)!;
+        using var data = SKData.CreateCopy(processed.Content);
+        using var codec = SKCodec.Create(data);
+        Assert.Equal("image/webp", processed.ContentType);
+        Assert.Equal(SKEncodedImageFormat.Webp, codec.EncodedFormat);
+        Assert.Equal(ProfileBannerLimits.ProcessedWidth, codec.Info.Width);
+        Assert.Equal(ProfileBannerLimits.ProcessedHeight, codec.Info.Height);
     }
 
     private static AvatarEditState State(int width, int height) =>
