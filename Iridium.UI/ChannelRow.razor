@@ -1,6 +1,6 @@
 @using Iridium.Protocol
 
-<div class="channel-row @(CanManage ? "draggable" : null) @(Selected ? "selected" : null) @(Channel.UnreadCount > 0 ? "unread" : null)" style="--channel-depth:@Depth"
+<div class="channel-row @(CanManage ? "draggable" : null) @(Selected ? "selected" : null) @(Connected ? "voice-connected" : null) @(Channel.UnreadCount > 0 ? "unread" : null)" style="--channel-depth:@Depth"
      data-sidebar-item data-sidebar-kind="channel" data-sidebar-id="@Channel.Id" data-sidebar-parent="@Channel.CategoryId" data-sidebar-depth="@Depth"
      data-iridium-channel-drag="@(CanManage ? Channel.Id : null)"
      data-channel-category="@Channel.CategoryId"
@@ -9,8 +9,9 @@
      @oncontextmenu:preventDefault="true"
      @oncontextmenu:stopPropagation="true"
      >
-    <span class="channel-symbol"><Icon Name="channel" /></span>
+    <span class="channel-symbol"><Icon Name="@(Channel.Kind == CommunityChannelKind.Voice ? "speaker" : "channel")" /></span>
     <span class="channel-name">@Channel.Name</span>
+    @if (Room is not null) { <VoiceElapsedTimer StartedAt="Room.StartedAt" /> }
     @if (Channel.MentionCount > 0)
     {
         <span class="channel-mention-badge" aria-label="@($"{Channel.MentionCount} unread mentions")">
@@ -31,19 +32,44 @@
         </div>
     }
 </div>
+@if (Channel.Kind == CommunityChannelKind.Voice && Room is not null)
+{
+    <div class="voice-participants" style="--channel-depth:@Depth">
+        @foreach (var participant in Room.Participants)
+        {
+            <div class="voice-participant @(participant.Speaking ? "speaking" : null)" title="@(participant.MediaStatus == CommunityVoiceMediaStatus.MediaUnavailable ? "Voice control connected; media backend unavailable" : participant.MediaStatus.ToString())"
+                 @oncontextmenu="() => OpenParticipantMenu(participant)" @oncontextmenu:preventDefault="true" @oncontextmenu:stopPropagation="true">
+                <span class="participant-avatar"><ProfileAvatar DisplayName="participant.DisplayName" Presence="participant.Presence" Size="tiny" Surface="sidebar" /></span>
+                <span class="display-name">@participant.DisplayName</span>
+                @if (participant.Muted) { <Icon Name="microphone" Size="12" /> }
+                @if (participant.Deafened) { <Icon Name="headphones" Size="12" /> }
+                @if (_menuParticipant?.ParticipantId == participant.ParticipantId)
+                {
+                    <VoiceParticipantMenu AccountId="participant.AccountId" DisplayName="participant.DisplayName" />
+                }
+            </div>
+        }
+    </div>
+}
 
 @code {
     [Parameter, EditorRequired] public required CommunityChannelDto Channel { get; set; }
     [Parameter] public bool Selected { get; set; }
     [Parameter] public bool CanManage { get; set; }
+    [Parameter] public bool Connected { get; set; }
+    [Parameter] public ActiveVoiceRoomDto? Room { get; set; }
+    [Parameter] public Guid CurrentAccountId { get; set; }
     [Parameter] public int Depth { get; set; } = 1;
     [Parameter] public EventCallback<CommunityChannelDto> OnSelect { get; set; }
     [Parameter] public EventCallback<CommunityChannelDto> OnEdit { get; set; }
     [Parameter] public EventCallback<CommunityChannelDto> OnDelete { get; set; }
     private bool _menuOpen;
+    private VoiceParticipantDto? _menuParticipant;
 
     private Task SelectAsync() { _menuOpen = false; return OnSelect.InvokeAsync(Channel); }
     private void OpenMenu() { if (CanManage) _menuOpen = true; }
+    private void OpenParticipantMenu(VoiceParticipantDto participant) =>
+        _menuParticipant = participant.AccountId == CurrentAccountId ? null : participant;
     private Task EditAsync() { _menuOpen = false; return OnEdit.InvokeAsync(Channel); }
     private Task EditFromMenuAsync() => EditAsync();
     private Task DeleteAsync() { _menuOpen = false; return OnDelete.InvokeAsync(Channel); }

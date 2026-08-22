@@ -139,7 +139,15 @@ public sealed record SendFriendRequest(string Username);
 public sealed record ProfileBlockChange(Guid AccountId, bool IsBlocked);
 
 public sealed record CommunityCategoryDto(Guid Id, Guid CommunityId, string Name, int Position, Guid? ParentCategoryId);
-public sealed record CommunityChannelDto(Guid Id, Guid CommunityId, Guid? CategoryId, string Name, int Position, DateTimeOffset CreatedAt, int UnreadCount = 0, int MentionCount = 0);
+public enum CommunityChannelKind
+{
+    Text = 0,
+    Voice = 1
+}
+
+public sealed record CommunityChannelDto(Guid Id, Guid CommunityId, Guid? CategoryId, string Name, int Position,
+    DateTimeOffset CreatedAt, int UnreadCount = 0, int MentionCount = 0,
+    CommunityChannelKind Kind = CommunityChannelKind.Text);
 public sealed record CommunityStructureDto(
     Guid CommunityId,
     bool CanManage,
@@ -156,5 +164,7 @@ public sealed record CommunitySidebarMoveRequest(
     Guid? TargetItemId,
     CommunitySidebarItemType? TargetItemType,
     CommunitySidebarDropIntent Intent);
-public sealed record CreateChannelRequest(string Name, Guid? CategoryId);
-public sealed record UpdateChannelRequest(string Name, Guid? CategoryId);
+public sealed record CreateChannelRequest(string Name, Guid? CategoryId,
+    CommunityChannelKind Kind = CommunityChannelKind.Text);
+public sealed record UpdateChannelRequest(string Name, Guid? CategoryId,
+    CommunityChannelKind Kind = CommunityChannelKind.Text);

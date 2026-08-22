@@ -12,6 +12,12 @@ public static class DirectMessageHubContract
     public const string MessageDeleted = "DirectMessageDeleted";
 }
 
+public enum MessageKind
+{
+    User = 0,
+    CallStarted = 1
+}
+
 public sealed record DirectParticipantDto(
     Guid AccountId,
     string Username,
@@ -43,7 +49,9 @@ public sealed record DirectMessageDto(
     MessageDeliveryState DeliveryState = MessageDeliveryState.Confirmed,
     string? DeliveryError = null,
     bool CanRetry = false,
-    IReadOnlyList<AttachmentDto>? Attachments = null);
+    IReadOnlyList<AttachmentDto>? Attachments = null,
+    MessageKind Kind = MessageKind.User,
+    Guid? RelatedCallId = null);
 
 public sealed record SendDirectMessageRequest(string Content, Guid? ReplyToMessageId, Guid? ClientMessageId = null,
     IReadOnlyList<Guid>? AttachmentIds = null);

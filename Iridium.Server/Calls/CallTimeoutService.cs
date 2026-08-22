@@ -4,7 +4,8 @@ using Microsoft.AspNetCore.SignalR;
 
 namespace Iridium.Server.Calls;
 
-public sealed class CallTimeoutService(ICallService calls, IHubContext<ChatHub> hub, ILogger<CallTimeoutService> logger)
+public sealed class CallTimeoutService(ICallService calls, IHubContext<ChatHub> hub,
+    VoiceTraceLogger voiceTrace, ILogger<CallTimeoutService> logger)
     : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -15,6 +16,9 @@ public sealed class CallTimeoutService(ICallService calls, IHubContext<ChatHub> 
             foreach (var call in calls.ExpireRingingCalls())
             {
                 logger.LogInformation("Voice call {CallId} timed out while ringing.", call.Id);
+                foreach (var participant in call.Participants)
+                    voiceTrace.Log(call, participant.AccountId, "server-timeout",
+                        new VoiceDiagnosticReport(call.Id, "CallCancelled", Reason: "RingTimeout"));
                 var groups = call.Participants.Select(value => ChatHub.AccountGroup(value.AccountId)).ToArray();
                 await hub.Clients.Groups(groups).SendAsync(VoiceCallHubContract.Cancelled,
                     new CallStateEvent(call.Id, CallState.Cancelled, "No answer"), stoppingToken);
@@ -22,6 +26,9 @@ public sealed class CallTimeoutService(ICallService calls, IHubContext<ChatHub> 
             foreach (var call in calls.ExpireAbandonedActiveCalls())
             {
                 logger.LogInformation("Voice call {CallId} ended after significant signaling loss.", call.Id);
+                foreach (var participant in call.Participants)
+                    voiceTrace.Log(call, participant.AccountId, "server-timeout",
+                        new VoiceDiagnosticReport(call.Id, "CallEnded", Reason: "SignalingTimeout"));
                 var groups = call.Participants.Select(value => ChatHub.AccountGroup(value.AccountId)).ToArray();
                 await hub.Clients.Groups(groups).SendAsync(VoiceCallHubContract.Ended,
                     new CallStateEvent(call.Id, CallState.Ended, "Signaling connection lost"), stoppingToken);

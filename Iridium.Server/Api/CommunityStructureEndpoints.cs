@@ -4,6 +4,7 @@ using Iridium.Protocol;
 using Iridium.Server.Domain;
 using Iridium.Server.Persistence;
 using Iridium.Server.Security;
+using Iridium.Server.Communities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Data.Sqlite;
 
@@ -60,7 +61,8 @@ public static partial class CommunityStructureEndpoints
     }
 
     private static async Task<IResult> CreateCategoryAsync(Guid communityId, CreateCategoryRequest request,
-        HttpContext context, IridiumDbContext db, SessionService sessions, CommunityAuthorizationService authorization)
+        HttpContext context, IridiumDbContext db, SessionService sessions, CommunityAuthorizationService authorization,
+        CommunityRealtimePublisher realtime)
     {
         var denied = await RequireManagerAsync(communityId, context, db, sessions, authorization);
         if (denied is not null) return denied;
@@ -84,12 +86,13 @@ public static partial class CommunityStructureEndpoints
         };
         db.CommunityCategories.Add(category);
         await db.SaveChangesAsync();
+        await realtime.PublishAsync(communityId, "category-created", db);
         return Results.Created($"/api/communities/{communityId}/categories/{category.Id}", ToDto(category));
     }
 
     private static async Task<IResult> UpdateCategoryAsync(Guid communityId, Guid categoryId,
         UpdateCategoryRequest request, HttpContext context, IridiumDbContext db, SessionService sessions,
-        CommunityAuthorizationService authorization)
+        CommunityAuthorizationService authorization, CommunityRealtimePublisher realtime)
     {
         var denied = await RequireManagerAsync(communityId, context, db, sessions, authorization);
         if (denied is not null) return denied;
@@ -99,12 +102,13 @@ public static partial class CommunityStructureEndpoints
         if (category is null) return Results.NotFound();
         category.Name = request.Name.Trim();
         await db.SaveChangesAsync();
+        await realtime.PublishAsync(communityId, "category-updated", db);
         return Results.Ok(ToDto(category));
     }
 
     private static async Task<IResult> MoveCategoryAsync(Guid communityId, Guid categoryId,
         CommunitySidebarMoveRequest request, HttpContext context, IridiumDbContext db, SessionService sessions,
-        CommunityAuthorizationService authorization)
+        CommunityAuthorizationService authorization, CommunityRealtimePublisher realtime)
     {
         var denied = await RequireManagerAsync(communityId, context, db, sessions, authorization);
         if (denied is not null) return denied;
@@ -133,6 +137,7 @@ public static partial class CommunityStructureEndpoints
             ApplySidebarMove(items, new SidebarItem(category), destination);
             await db.SaveChangesAsync();
             await transaction.CommitAsync();
+            await realtime.PublishAsync(communityId, "category-moved", db);
             return Results.NoContent();
         }
         catch (DbUpdateConcurrencyException)
@@ -150,10 +155,12 @@ public static partial class CommunityStructureEndpoints
     }
 
     private static async Task<IResult> DeleteCategoryAsync(Guid communityId, Guid categoryId, HttpContext context,
-        IridiumDbContext db, SessionService sessions, CommunityAuthorizationService authorization)
+        IridiumDbContext db, SessionService sessions, CommunityAuthorizationService authorization,
+        CommunityRealtimePublisher realtime)
     {
         var denied = await RequireManagerAsync(communityId, context, db, sessions, authorization);
         if (denied is not null) return denied;
+        await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
         var category = await db.CommunityCategories.SingleOrDefaultAsync(value =>
             value.CommunityId == communityId && value.Id == categoryId);
         if (category is null) return Results.NotFound();
@@ -165,14 +172,18 @@ public static partial class CommunityStructureEndpoints
         await db.SaveChangesAsync();
         await NormalizeSidebarPositionsAsync(communityId, parent, db);
         await db.SaveChangesAsync();
+        await transaction.CommitAsync();
+        await realtime.PublishAsync(communityId, "category-deleted", db);
         return Results.NoContent();
     }
 
     private static async Task<IResult> CreateChannelAsync(Guid communityId, CreateChannelRequest request,
-        HttpContext context, IridiumDbContext db, SessionService sessions, CommunityAuthorizationService authorization)
+        HttpContext context, IridiumDbContext db, SessionService sessions, CommunityAuthorizationService authorization,
+        CommunityRealtimePublisher realtime)
     {
         var denied = await RequireManagerAsync(communityId, context, db, sessions, authorization);
         if (denied is not null) return denied;
+        if (!Enum.IsDefined(request.Kind)) return Invalid("That Channel type is not supported.");
         var name = NormalizeChannelName(request.Name);
         if (name is null) return Invalid("Channel names must be 1-100 characters using letters, numbers, underscores, or hyphens.");
         CommunityCategory? category = null;
@@ -184,22 +195,25 @@ public static partial class CommunityStructureEndpoints
         }
         var channel = new CommunityChannel
         {
-            Id = Guid.NewGuid(), CommunityId = communityId, CategoryId = request.CategoryId, Category = category, Name = name,
+            Id = Guid.NewGuid(), CommunityId = communityId, CategoryId = request.CategoryId, Category = category,
+            Name = name, Kind = request.Kind,
             Position = await db.CommunityChannels.CountAsync(value => value.CommunityId == communityId && value.CategoryId == request.CategoryId) +
                        await db.CommunityCategories.CountAsync(value => value.CommunityId == communityId && value.ParentCategoryId == request.CategoryId),
             CreatedAt = DateTimeOffset.UtcNow, Community = null!
         };
         db.CommunityChannels.Add(channel);
         await db.SaveChangesAsync();
+        await realtime.PublishAsync(communityId, "channel-created", db);
         return Results.Created($"/api/communities/{communityId}/channels/{channel.Id}", ToDto(channel));
     }
 
     private static async Task<IResult> UpdateChannelAsync(Guid communityId, Guid channelId,
         UpdateChannelRequest request, HttpContext context, IridiumDbContext db, SessionService sessions,
-        CommunityAuthorizationService authorization)
+        CommunityAuthorizationService authorization, CommunityRealtimePublisher realtime)
     {
         var denied = await RequireManagerAsync(communityId, context, db, sessions, authorization);
         if (denied is not null) return denied;
+        if (!Enum.IsDefined(request.Kind)) return Invalid("That Channel type is not supported.");
         var name = NormalizeChannelName(request.Name);
         if (name is null) return Invalid("Enter a valid Channel name.");
         if (request.CategoryId is { } categoryId && !await CategoryExistsAsync(communityId, categoryId, db))
@@ -208,6 +222,7 @@ public static partial class CommunityStructureEndpoints
             value.CommunityId == communityId && value.Id == channelId);
         if (channel is null) return Results.NotFound();
         channel.Name = name;
+        channel.Kind = request.Kind;
         if (channel.CategoryId != request.CategoryId)
         {
             var categories = await LoadCategoriesAsync(communityId, db);
@@ -216,11 +231,13 @@ public static partial class CommunityStructureEndpoints
                 new SidebarDestination(request.CategoryId, int.MaxValue));
         }
         await db.SaveChangesAsync();
+        await realtime.PublishAsync(communityId, "channel-updated", db);
         return Results.Ok(ToDto(channel));
     }
 
     private static async Task<IResult> MoveChannelAsync(Guid communityId, Guid channelId, CommunitySidebarMoveRequest request,
-        HttpContext context, IridiumDbContext db, SessionService sessions, CommunityAuthorizationService authorization)
+        HttpContext context, IridiumDbContext db, SessionService sessions, CommunityAuthorizationService authorization,
+        CommunityRealtimePublisher realtime)
     {
         var denied = await RequireManagerAsync(communityId, context, db, sessions, authorization);
         if (denied is not null) return denied;
@@ -237,6 +254,7 @@ public static partial class CommunityStructureEndpoints
             ApplySidebarMove(items, new SidebarItem(channel), destination);
             await db.SaveChangesAsync();
             await transaction.CommitAsync();
+            await realtime.PublishAsync(communityId, "channel-moved", db);
             return Results.NoContent();
         }
         catch (DbUpdateConcurrencyException) { return CategoryMoveConflict(); }
@@ -245,10 +263,12 @@ public static partial class CommunityStructureEndpoints
     }
 
     private static async Task<IResult> DeleteChannelAsync(Guid communityId, Guid channelId, HttpContext context,
-        IridiumDbContext db, SessionService sessions, CommunityAuthorizationService authorization)
+        IridiumDbContext db, SessionService sessions, CommunityAuthorizationService authorization,
+        CommunityRealtimePublisher realtime)
     {
         var denied = await RequireManagerAsync(communityId, context, db, sessions, authorization);
         if (denied is not null) return denied;
+        await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
         var channel = await db.CommunityChannels.SingleOrDefaultAsync(value =>
             value.CommunityId == communityId && value.Id == channelId);
         if (channel is null) return Results.NotFound();
@@ -257,6 +277,8 @@ public static partial class CommunityStructureEndpoints
         await db.SaveChangesAsync();
         await NormalizeSidebarPositionsAsync(communityId, categoryId, db);
         await db.SaveChangesAsync();
+        await transaction.CommitAsync();
+        await realtime.PublishAsync(communityId, "channel-deleted", db);
         return Results.NoContent();
     }
 
@@ -414,7 +436,8 @@ public static partial class CommunityStructureEndpoints
     private static CommunityCategoryDto ToDto(CommunityCategory value) =>
         new(value.Id, value.CommunityId, value.Name, value.Position, value.ParentCategoryId);
     private static CommunityChannelDto ToDto(CommunityChannel value) =>
-        new(value.Id, value.CommunityId, value.CategoryId, value.Name, value.Position, value.CreatedAt);
+        new(value.Id, value.CommunityId, value.CategoryId, value.Name, value.Position, value.CreatedAt,
+            Kind: value.Kind);
 
     [GeneratedRegex("^[a-z0-9_-]+$", RegexOptions.CultureInvariant)]
     private static partial Regex ChannelNamePattern();

@@ -14,9 +14,11 @@ public enum CommunityPermission : long
     KickMembers = 1L << 7,
     BanMembers = 1L << 8,
     MentionEveryone = 1L << 9,
+    ConnectVoice = 1L << 10,
+    SpeakVoice = 1L << 11,
     Administrator = 1L << 62,
     All = ViewChannels | SendMessages | ManageMessages | ManageChannels | ManageCommunity |
-          ManageRoles | CreateInvites | KickMembers | BanMembers | MentionEveryone
+          ManageRoles | CreateInvites | KickMembers | BanMembers | MentionEveryone | ConnectVoice | SpeakVoice
 }
 
 public sealed record CommunityAccessDto(bool IsOwner, CommunityPermission Permissions)
@@ -122,7 +124,7 @@ public static class CommunityHubContract
     public const string ChannelActivity = "CommunityChannelActivity";
 }
 
-public sealed record CommunityStateChangedEvent(Guid CommunityId, string Change);
+public sealed record CommunityStateChangedEvent(Guid CommunityId, string Change, long Revision = 0);
 public sealed record CommunityAccessRevokedEvent(Guid CommunityId, Guid AccountId, string Reason);
 public sealed record CommunityChannelActivityEvent(Guid CommunityId, Guid ChannelId, Guid AuthorAccountId);
 

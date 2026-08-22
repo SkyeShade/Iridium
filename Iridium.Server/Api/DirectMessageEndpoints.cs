@@ -174,7 +174,8 @@ public static class DirectMessageEndpoints
         if (!await IsParticipantAsync(conversationId, session.AccountId, db))
             return Results.StatusCode(StatusCodes.Status403Forbidden);
         var take = Math.Clamp(limit ?? MessageHistoryDefaults.SearchPageSize, 1, MessageHistoryDefaults.MaximumPageSize);
-        var query = db.DirectMessages.AsNoTracking().Where(value => value.ConversationId == conversationId && !value.IsDeleted)
+        var query = db.DirectMessages.AsNoTracking().Where(value => value.ConversationId == conversationId &&
+                !value.IsDeleted && value.Kind == MessageKind.User)
             .Include(value => value.AuthorAccount).AsQueryable();
         if (!string.IsNullOrWhiteSpace(q))
         {
@@ -214,7 +215,8 @@ public static class DirectMessageEndpoints
         var criteria = request.Query;
         var take = Math.Clamp(request.Limit, 1, MessageHistoryDefaults.MaximumPageSize);
         var query = db.DirectMessages.AsNoTracking()
-            .Where(value => value.ConversationId == conversationId && !value.IsDeleted)
+            .Where(value => value.ConversationId == conversationId && !value.IsDeleted &&
+                            value.Kind == MessageKind.User)
             .Include(value => value.AuthorAccount).AsQueryable();
         if (!string.IsNullOrWhiteSpace(criteria.Text))
         {

@@ -72,6 +72,7 @@ public sealed class RealtimeFlowTests
             Assert.Equal("TEXT CHANNELS", defaultCategory.Name);
             var defaultChannel = Assert.Single(defaults.Channels);
             Assert.Equal("general", defaultChannel.Name);
+            Assert.Equal(CommunityChannelKind.Text, defaultChannel.Kind);
             Assert.Equal(defaultCategory.Id, defaultChannel.CategoryId);
             var loadedAgain = await owner.GetCommunityStructureAsync(communityA.Id);
             Assert.Equal(defaultCategory.Id, Assert.Single(loadedAgain.Categories).Id);
@@ -143,6 +144,19 @@ public sealed class RealtimeFlowTests
             Assert.Equal([welcome.Id, defaultChannel.Id, tail.Id], unified.Channels
                 .Where(value => value.CategoryId == defaultCategory.Id).OrderBy(value => value.Position).Select(value => value.Id));
             var chatChannel = await owner.CreateChannelAsync(communityA.Id, "General Chat", firstCategory.Id);
+            var rootVoice = await owner.CreateChannelAsync(communityA.Id, "Root Voice", null,
+                CommunityChannelKind.Voice);
+            var categoryVoice = await owner.CreateChannelAsync(communityA.Id, "Lounge", firstCategory.Id,
+                CommunityChannelKind.Voice);
+            var nestedVoice = await owner.CreateChannelAsync(communityA.Id, "Studio", nestedA.Id,
+                CommunityChannelKind.Voice);
+            Assert.All([rootVoice, categoryVoice, nestedVoice], value =>
+                Assert.Equal(CommunityChannelKind.Voice, value.Kind));
+            Assert.Null(rootVoice.CategoryId);
+            Assert.Equal(firstCategory.Id, categoryVoice.CategoryId);
+            Assert.Equal(nestedA.Id, nestedVoice.CategoryId);
+            Assert.Equal(HttpStatusCode.Forbidden, (await Assert.ThrowsAsync<NodeApiException>(() =>
+                outsider.CreateChannelAsync(communityA.Id, "not-allowed", null, CommunityChannelKind.Voice))).StatusCode);
             var disposable = await owner.CreateChannelAsync(communityA.Id, "Archive", firstCategory.Id);
             Assert.Equal(HttpStatusCode.Conflict, (await Assert.ThrowsAsync<NodeApiException>(() =>
                 owner.DeleteCategoryAsync(communityA.Id, firstCategory.Id))).StatusCode);
@@ -219,6 +233,7 @@ public sealed class RealtimeFlowTests
             await using var firstConnection = Connection(nodeAddress, ownerAuth.AccessToken);
             await using var secondConnection = Connection(nodeAddress, secondOwnerAuth.AccessToken);
             await using var outsiderConnection = Connection(nodeAddress, outsiderAuth.AccessToken);
+            await using var secondOutsiderConnection = Connection(nodeAddress, outsiderAuth.AccessToken);
             await using var intruderConnection = Connection(nodeAddress, intruderAuth.AccessToken);
             var createdOnSecond = Completion<ChannelMessageDto>();
             var secondCreatedOnSecond = Completion<ChannelMessageDto>();
@@ -230,21 +245,42 @@ public sealed class RealtimeFlowTests
             var deletedOnSecond = Completion<ChannelMessageDeletedEvent>();
             var directOnOutsider = Completion<DirectMessageDto>();
             var secondDirectOnOutsider = Completion<DirectMessageDto>();
+            var callStartedOnCaller = Completion<DirectMessageDto>();
+            var callStartedOnCallee = Completion<DirectMessageDto>();
             var friendRequestOnOwner = Completion<FriendshipChangedEvent>();
             var friendAcceptedOnIntruder = Completion<FriendshipChangedEvent>();
             TaskCompletionSource<PresenceChangedEvent>? outsiderPresenceOnOwner = null;
             var mentionReceived = Completion<CommunityMentionReceivedEvent>();
             var incomingCall = Completion<IncomingCallEvent>();
+            var incomingCallOnSecondCallee = Completion<IncomingCallEvent>();
+            var answeredElsewhere = Completion<CallStateEvent>();
             var callAccepted = Completion<CallStateEvent>();
             var receivedOffer = Completion<WebRtcDescriptionEvent>();
             var receivedAnswer = Completion<WebRtcDescriptionEvent>();
             var receivedIce = Completion<WebRtcIceCandidateEvent>();
+            var receivedCommunityOffer = Completion<CommunityVoiceMediaDescriptionEvent>();
+            var receivedCommunityAnswer = Completion<CommunityVoiceMediaDescriptionEvent>();
+            var receivedCommunityIce = Completion<CommunityVoiceMediaIceCandidateEvent>();
+            var structureOnFirstOwnerTab = Completion<CommunityStateChangedEvent>();
+            var structureOnSecondOwnerTab = Completion<CommunityStateChangedEvent>();
+            var structureOnMember = Completion<CommunityStateChangedEvent>();
+            var activeVoiceMovedOnMember = Completion<CommunityStateChangedEvent>();
+            var permissionsChangedOnMember = Completion<CommunityStateChangedEvent>();
+            var categoryCreatedOnMember = Completion<CommunityStateChangedEvent>();
+            var categoryDeletedOnMember = Completion<CommunityStateChangedEvent>();
+            var channelDeletedOnMember = Completion<CommunityStateChangedEvent>();
+            var intruderCommunityChangeCount = 0;
             var participantChanged = Completion<CallParticipantStateEvent>();
+            var participantStateChangeCount = 0;
             var speakingChanged = Completion<CallParticipantSpeakingEvent>();
             var mediaRetryRequested = Completion<CallStateEvent>();
             var callEnded = Completion<CallStateEvent>();
             var mentionNotificationCount = 0;
             var answerDeliveryCount = 0;
+            var answerDeliveryOnSecondCallerCount = 0;
+            var acceptedOnSecondCallerCount = 0;
+            var offerDeliveryOnSecondCalleeCount = 0;
+            var iceDeliveryOnSecondCalleeCount = 0;
             secondConnection.On<ChannelMessageDto>(ChatHubContract.MessageCreated, message =>
             {
                 if (message.Content == "hello from tab one") createdOnSecond.TrySetResult(message);
@@ -266,6 +302,11 @@ public sealed class RealtimeFlowTests
             {
                 if (message.Content == "private hello") directOnOutsider.TrySetResult(message);
                 if (message.Content == "private again") secondDirectOnOutsider.TrySetResult(message);
+                if (message.Kind == MessageKind.CallStarted) callStartedOnCallee.TrySetResult(message);
+            });
+            firstConnection.On<DirectMessageDto>(DirectMessageHubContract.MessageCreated, message =>
+            {
+                if (message.Kind == MessageKind.CallStarted) callStartedOnCaller.TrySetResult(message);
             });
             firstConnection.On<FriendshipChangedEvent>(FriendshipHubContract.RequestReceived,
                 change => friendRequestOnOwner.TrySetResult(change));
@@ -281,23 +322,202 @@ public sealed class RealtimeFlowTests
                 mentionReceived.TrySetResult(mention);
             });
             outsiderConnection.On<IncomingCallEvent>(VoiceCallHubContract.Incoming, value => incomingCall.TrySetResult(value));
+            secondOutsiderConnection.On<IncomingCallEvent>(VoiceCallHubContract.Incoming,
+                value => incomingCallOnSecondCallee.TrySetResult(value));
+            secondOutsiderConnection.On<CallStateEvent>(VoiceCallHubContract.Cancelled,
+                value => answeredElsewhere.TrySetResult(value));
             firstConnection.On<CallStateEvent>(VoiceCallHubContract.Accepted, value => callAccepted.TrySetResult(value));
+            secondConnection.On<CallStateEvent>(VoiceCallHubContract.Accepted,
+                _ => Interlocked.Increment(ref acceptedOnSecondCallerCount));
             outsiderConnection.On<WebRtcDescriptionEvent>(VoiceCallHubContract.Offer, value => receivedOffer.TrySetResult(value));
+            secondOutsiderConnection.On<WebRtcDescriptionEvent>(VoiceCallHubContract.Offer,
+                _ => Interlocked.Increment(ref offerDeliveryOnSecondCalleeCount));
             firstConnection.On<WebRtcDescriptionEvent>(VoiceCallHubContract.Answer, value =>
             {
                 Interlocked.Increment(ref answerDeliveryCount);
                 receivedAnswer.TrySetResult(value);
             });
+            secondConnection.On<WebRtcDescriptionEvent>(VoiceCallHubContract.Answer,
+                _ => Interlocked.Increment(ref answerDeliveryOnSecondCallerCount));
             outsiderConnection.On<WebRtcIceCandidateEvent>(VoiceCallHubContract.IceCandidate, value => receivedIce.TrySetResult(value));
+            secondOutsiderConnection.On<WebRtcIceCandidateEvent>(VoiceCallHubContract.IceCandidate,
+                _ => Interlocked.Increment(ref iceDeliveryOnSecondCalleeCount));
             outsiderConnection.On<CallParticipantStateEvent>(VoiceCallHubContract.ParticipantStateChanged,
-                value => participantChanged.TrySetResult(value));
+                value => { Interlocked.Increment(ref participantStateChangeCount); participantChanged.TrySetResult(value); });
             outsiderConnection.On<CallParticipantSpeakingEvent>(VoiceCallHubContract.ParticipantSpeakingChanged,
                 value => speakingChanged.TrySetResult(value));
             firstConnection.On<CallStateEvent>(VoiceCallHubContract.MediaRetryRequested,
                 value => mediaRetryRequested.TrySetResult(value));
             outsiderConnection.On<CallStateEvent>(VoiceCallHubContract.Ended, value => callEnded.TrySetResult(value));
+            secondConnection.On<CommunityVoiceMediaDescriptionEvent>(CommunityVoiceHubContract.MediaOffer,
+                value => receivedCommunityOffer.TrySetResult(value));
+            firstConnection.On<CommunityVoiceMediaDescriptionEvent>(CommunityVoiceHubContract.MediaAnswer,
+                value => receivedCommunityAnswer.TrySetResult(value));
+            secondConnection.On<CommunityVoiceMediaIceCandidateEvent>(CommunityVoiceHubContract.MediaIceCandidate,
+                value => receivedCommunityIce.TrySetResult(value));
+            firstConnection.On<CommunityStateChangedEvent>(CommunityHubContract.StateChanged, value =>
+            {
+                if (value.CommunityId == communityA.Id && value.Change == "channel-created")
+                    structureOnFirstOwnerTab.TrySetResult(value);
+            });
+            secondConnection.On<CommunityStateChangedEvent>(CommunityHubContract.StateChanged, value =>
+            {
+                if (value.CommunityId == communityA.Id && value.Change == "channel-created")
+                    structureOnSecondOwnerTab.TrySetResult(value);
+            });
+            outsiderConnection.On<CommunityStateChangedEvent>(CommunityHubContract.StateChanged, value =>
+            {
+                if (value.CommunityId != communityA.Id) return;
+                if (value.Change == "channel-created") structureOnMember.TrySetResult(value);
+                if (value.Change == "channel-moved") activeVoiceMovedOnMember.TrySetResult(value);
+                if (value.Change == "role-updated") permissionsChangedOnMember.TrySetResult(value);
+                if (value.Change == "category-created") categoryCreatedOnMember.TrySetResult(value);
+                if (value.Change == "category-deleted") categoryDeletedOnMember.TrySetResult(value);
+                if (value.Change == "channel-deleted") channelDeletedOnMember.TrySetResult(value);
+            });
+            intruderConnection.On<CommunityStateChangedEvent>(CommunityHubContract.StateChanged, _ =>
+                Interlocked.Increment(ref intruderCommunityChangeCount));
 
-            await Task.WhenAll(firstConnection.StartAsync(), secondConnection.StartAsync(), outsiderConnection.StartAsync(), intruderConnection.StartAsync());
+            await Task.WhenAll(firstConnection.StartAsync(), secondConnection.StartAsync(), outsiderConnection.StartAsync(),
+                secondOutsiderConnection.StartAsync(), intruderConnection.StartAsync());
+
+            var syncedSession = new NodeSession(new MemoryAccountStore(), new MemorySelectionStore(),
+                new EmptyLegacyTokenStore());
+            syncedSession.BeginAuthentication(new SavedNode(nodeAddress.ToString(), "Realtime client", true));
+            var syncedActivation = await syncedSession.PrepareAuthenticationAsync(outsiderAuth);
+            await syncedSession.AcceptAuthenticationAsync(syncedActivation);
+            using var syncedCommunity = new CommunitySession(syncedSession);
+            await using var syncedRealtime = new RealtimeConnectionService(syncedSession,
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<RealtimeConnectionService>.Instance);
+            await using var syncedMessaging = new ChannelMessagingSession(syncedSession, syncedRealtime,
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<ChannelMessagingSession>.Instance);
+            await syncedMessaging.ConnectAsync();
+            await syncedCommunity.LoadAsync(communityA.Id);
+            var sharedStateRefreshed = Completion<bool>();
+            syncedCommunity.Changed += () => sharedStateRefreshed.TrySetResult(true);
+
+            var realtimeChannel = await owner.CreateChannelAsync(communityA.Id, "realtime-sync", null,
+                CommunityChannelKind.Text);
+            var structureEvents = new[]
+            {
+                await structureOnFirstOwnerTab.Task.WaitAsync(TimeSpan.FromSeconds(5)),
+                await structureOnSecondOwnerTab.Task.WaitAsync(TimeSpan.FromSeconds(5)),
+                await structureOnMember.Task.WaitAsync(TimeSpan.FromSeconds(5))
+            };
+            Assert.All(structureEvents, value => Assert.True(value.Revision > 0));
+            Assert.Single(structureEvents.Select(value => value.Revision).Distinct());
+            Assert.Contains((await outsider.GetCommunityStructureAsync(communityA.Id)).Channels,
+                value => value.Id == realtimeChannel.Id);
+            await sharedStateRefreshed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Contains(syncedCommunity.Channels, value => value.Id == realtimeChannel.Id);
+            await Task.Delay(100);
+            Assert.Equal(0, Volatile.Read(ref intruderCommunityChangeCount));
+            var realtimeCategory = await owner.CreateCategoryAsync(communityA.Id, "Realtime Category");
+            Assert.True((await categoryCreatedOnMember.Task.WaitAsync(TimeSpan.FromSeconds(5))).Revision >
+                        structureEvents[0].Revision);
+            await owner.DeleteCategoryAsync(communityA.Id, realtimeCategory.Id);
+            await categoryDeletedOnMember.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await owner.DeleteChannelAsync(communityA.Id, realtimeChannel.Id);
+            await channelDeletedOnMember.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.DoesNotContain((await outsider.GetCommunityStructureAsync(communityA.Id)).Channels,
+                value => value.Id == realtimeChannel.Id);
+            await syncedMessaging.DisconnectAsync();
+
+            var firstVoiceJoin = await firstConnection.InvokeAsync<ActiveVoiceRoomDto>(
+                CommunityVoiceHubContract.Join, communityA.Id, categoryVoice.Id);
+            Assert.Single(firstVoiceJoin.Participants);
+            var duplicateVoiceJoin = await firstConnection.InvokeAsync<ActiveVoiceRoomDto>(
+                CommunityVoiceHubContract.Join, communityA.Id, categoryVoice.Id);
+            Assert.Single(duplicateVoiceJoin.Participants);
+            Assert.Equal(firstVoiceJoin.StartedAt, duplicateVoiceJoin.StartedAt);
+            var sameAccountSecondConnection = await secondConnection.InvokeAsync<ActiveVoiceRoomDto>(
+                CommunityVoiceHubContract.Join, communityA.Id, categoryVoice.Id);
+            await owner.MoveChannelAsync(communityA.Id, categoryVoice.Id, secondCategory.Id, 0);
+            var activeVoiceMove = await activeVoiceMovedOnMember.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.True(activeVoiceMove.Revision > structureEvents[0].Revision);
+            Assert.Equal(secondCategory.Id, (await outsider.GetCommunityStructureAsync(communityA.Id)).Channels
+                .Single(value => value.Id == categoryVoice.Id).CategoryId);
+            var roomAfterStructureRefresh = (await firstConnection.InvokeAsync<IReadOnlyList<ActiveVoiceRoomDto>>(
+                CommunityVoiceHubContract.GetRooms, communityA.Id)).Single(value => value.ChannelId == categoryVoice.Id);
+            Assert.Equal(2, roomAfterStructureRefresh.Participants.Count);
+            Assert.Equal(firstVoiceJoin.StartedAt, roomAfterStructureRefresh.StartedAt);
+            Assert.Equal(2, sameAccountSecondConnection.Participants.Count);
+            Assert.Equal(2, sameAccountSecondConnection.Participants.Select(value => value.ParticipantId).Distinct().Count());
+            var firstCommunityMedia = await firstConnection.InvokeAsync<CommunityVoiceMediaSessionDto>(
+                CommunityVoiceHubContract.GetMediaSession);
+            var secondCommunityMedia = await secondConnection.InvokeAsync<CommunityVoiceMediaSessionDto>(
+                CommunityVoiceHubContract.GetMediaSession);
+            Assert.Equal("development-peer-mesh", firstCommunityMedia.Provider);
+            Assert.Equal(firstConnection.ConnectionId, firstCommunityMedia.ParticipantId);
+            Assert.Equal(secondConnection.ConnectionId, secondCommunityMedia.ParticipantId);
+            var communityNegotiation = Guid.NewGuid();
+            var communityOffer = new WebRtcSessionDescription("offer", "safe-community-offer-sdp");
+            await firstConnection.InvokeAsync(CommunityVoiceHubContract.SendMediaOffer,
+                secondConnection.ConnectionId!, communityNegotiation, communityOffer);
+            var routedCommunityOffer = await receivedCommunityOffer.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(firstConnection.ConnectionId, routedCommunityOffer.SourceParticipantId);
+            Assert.Equal(communityOffer, routedCommunityOffer.Description);
+            var communityAnswer = new WebRtcSessionDescription("answer", "safe-community-answer-sdp");
+            await secondConnection.InvokeAsync(CommunityVoiceHubContract.SendMediaAnswer,
+                firstConnection.ConnectionId!, communityNegotiation, communityAnswer);
+            Assert.Equal(communityAnswer,
+                (await receivedCommunityAnswer.Task.WaitAsync(TimeSpan.FromSeconds(5))).Description);
+            var communityIce = new WebRtcIceCandidate("candidate:test", "audio", 0, null);
+            await firstConnection.InvokeAsync(CommunityVoiceHubContract.SendMediaIceCandidate,
+                secondConnection.ConnectionId!, communityNegotiation, communityIce);
+            Assert.Equal(communityIce,
+                (await receivedCommunityIce.Task.WaitAsync(TimeSpan.FromSeconds(5))).Candidate);
+            await Assert.ThrowsAsync<HubException>(() => intruderConnection.InvokeAsync(
+                CommunityVoiceHubContract.SendMediaOffer, firstConnection.ConnectionId!, communityNegotiation,
+                communityOffer));
+            await owner.UpdateCommunityRoleAsync(communityA.Id, initialRole.Id, new UpdateCommunityRoleRequest(
+                "@everyone", initialRole.Permissions & ~CommunityPermission.SpeakVoice, initialRole.Color));
+            var permissionChange = await permissionsChangedOnMember.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.True(permissionChange.Revision > activeVoiceMove.Revision);
+            Assert.False(((await outsider.GetCommunityStructureAsync(communityA.Id)).EffectivePermissions &
+                          CommunityPermission.SpeakVoice) != 0);
+            var thirdVoiceJoin = await outsiderConnection.InvokeAsync<ActiveVoiceRoomDto>(
+                CommunityVoiceHubContract.Join, communityA.Id, categoryVoice.Id);
+            Assert.Equal(3, thirdVoiceJoin.Participants.Count);
+            Assert.Equal(firstVoiceJoin.StartedAt, thirdVoiceJoin.StartedAt);
+            await outsiderConnection.InvokeAsync(CommunityVoiceHubContract.SetState, true, false);
+            await Assert.ThrowsAsync<HubException>(() => outsiderConnection.InvokeAsync(
+                CommunityVoiceHubContract.SetState, false, false));
+            await owner.UpdateCommunityRoleAsync(communityA.Id, initialRole.Id, new UpdateCommunityRoleRequest(
+                "@everyone", initialRole.Permissions | CommunityPermission.ConnectVoice |
+                CommunityPermission.SpeakVoice, initialRole.Color));
+            await outsiderConnection.InvokeAsync(CommunityVoiceHubContract.SetSpeaking, true);
+            var activeRooms = await firstConnection.InvokeAsync<IReadOnlyList<ActiveVoiceRoomDto>>(
+                CommunityVoiceHubContract.GetRooms, communityA.Id);
+            var outsiderVoice = activeRooms.Single(value => value.ChannelId == categoryVoice.Id).Participants
+                .Single(value => value.ParticipantId == outsiderConnection.ConnectionId);
+            Assert.True(outsiderVoice.Muted);
+            Assert.False(outsiderVoice.Speaking);
+            var switchedVoice = await firstConnection.InvokeAsync<ActiveVoiceRoomDto>(
+                CommunityVoiceHubContract.Join, communityA.Id, nestedVoice.Id);
+            Assert.Equal(nestedVoice.Id, switchedVoice.ChannelId);
+            Assert.Single(switchedVoice.Participants);
+            await Assert.ThrowsAsync<HubException>(() => intruderConnection.InvokeAsync<ActiveVoiceRoomDto>(
+                CommunityVoiceHubContract.Join, communityA.Id, rootVoice.Id));
+            await firstConnection.InvokeAsync(CommunityVoiceHubContract.Leave);
+            await secondConnection.InvokeAsync(CommunityVoiceHubContract.Leave);
+            await outsiderConnection.InvokeAsync(CommunityVoiceHubContract.Leave);
+            Assert.Empty(await firstConnection.InvokeAsync<IReadOnlyList<ActiveVoiceRoomDto>>(
+                CommunityVoiceHubContract.GetRooms, communityA.Id));
+            await using (var disconnectProbe = Connection(nodeAddress, ownerAuth.AccessToken))
+            {
+                await disconnectProbe.StartAsync();
+                await disconnectProbe.InvokeAsync<ActiveVoiceRoomDto>(CommunityVoiceHubContract.Join,
+                    communityA.Id, rootVoice.Id);
+            }
+            for (var attempt = 0; attempt < 20; attempt++)
+            {
+                if ((await firstConnection.InvokeAsync<IReadOnlyList<ActiveVoiceRoomDto>>(
+                        CommunityVoiceHubContract.GetRooms, communityA.Id)).Count == 0) break;
+                await Task.Delay(50);
+            }
+            Assert.Empty(await firstConnection.InvokeAsync<IReadOnlyList<ActiveVoiceRoomDto>>(
+                CommunityVoiceHubContract.GetRooms, communityA.Id));
             await firstConnection.InvokeAsync(ChatHubContract.JoinChannel, communityA.Id, chatChannel.Id);
             await secondConnection.InvokeAsync(ChatHubContract.JoinChannel, communityA.Id, chatChannel.Id);
             await outsiderConnection.InvokeAsync(ChatHubContract.JoinChannel, communityB.Id, outsiderChannel.Id);
@@ -369,48 +589,109 @@ public sealed class RealtimeFlowTests
             Assert.Equal(1, Assert.Single(await owner.GetDirectConversationsAsync()).UnreadCount);
             Assert.Equal(4, (await outsider.GetDirectMessagesAsync(directConversation.Id)).Count);
 
+            await owner.MarkDirectConversationReadAsync(directConversation.Id);
+            await outsider.MarkDirectConversationReadAsync(directConversation.Id);
+            Assert.Equal(0, Assert.Single(await owner.GetDirectConversationsAsync()).UnreadCount);
+            Assert.Equal(0, Assert.Single(await outsider.GetDirectConversationsAsync()).UnreadCount);
+
             var call = await firstConnection.InvokeAsync<CallSessionDto>(VoiceCallHubContract.Start, directConversation.Id);
+            var callerCallEvent = await callStartedOnCaller.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var calleeCallEvent = await callStartedOnCallee.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(callerCallEvent.Id, calleeCallEvent.Id);
+            Assert.Equal(MessageKind.CallStarted, callerCallEvent.Kind);
+            Assert.Equal(call.Id, callerCallEvent.RelatedCallId);
+            Assert.Equal(directConversation.Id, callerCallEvent.ConversationId);
+            Assert.Equal(ownerAuth.Account.Id, callerCallEvent.Author.AccountId);
+            Assert.Empty(callerCallEvent.Content);
+            Assert.Equal(0, Assert.Single(await owner.GetDirectConversationsAsync()).UnreadCount);
+            Assert.Equal(1, Assert.Single(await outsider.GetDirectConversationsAsync()).UnreadCount);
+            Assert.Single(await owner.GetDirectMessagesAsync(directConversation.Id),
+                value => value.Kind == MessageKind.CallStarted && value.RelatedCallId == call.Id);
+            await Assert.ThrowsAsync<HubException>(() => firstConnection.InvokeAsync<DirectMessageDto>(
+                DirectMessageHubContract.EditMessage, directConversation.Id, callerCallEvent.Id,
+                new EditDirectMessageRequest("spoofed system text")));
+            await Assert.ThrowsAsync<HubException>(() => firstConnection.InvokeAsync(
+                DirectMessageHubContract.DeleteMessage, directConversation.Id, callerCallEvent.Id));
+            await Assert.ThrowsAsync<HubException>(() => outsiderConnection.InvokeAsync<DirectMessageDto>(
+                DirectMessageHubContract.SendMessage, directConversation.Id,
+                new SendDirectMessageRequest("reply to system", callerCallEvent.Id)));
+            Assert.DoesNotContain(typeof(SendDirectMessageRequest).GetProperties(),
+                property => property.Name.Contains("Kind", StringComparison.OrdinalIgnoreCase));
             var incoming = await incomingCall.Task.WaitAsync(TimeSpan.FromSeconds(5));
             Assert.Equal(call.Id, incoming.CallId);
             Assert.Equal(ownerAuth.Account.Id, incoming.CallerAccountId);
             Assert.Equal("Owner", incoming.CallerDisplayName);
+            Assert.Equal(call.Id, (await incomingCallOnSecondCallee.Task.WaitAsync(TimeSpan.FromSeconds(5))).CallId);
             await Assert.ThrowsAsync<HubException>(() => secondConnection.InvokeAsync<CallSessionDto>(
                 VoiceCallHubContract.Start, directConversation.Id));
             await Assert.ThrowsAsync<HubException>(() => intruderConnection.InvokeAsync(
-                VoiceCallHubContract.SendAnswer, call.Id, Guid.NewGuid(), new WebRtcSessionDescription("answer", "intrusion")));
+                VoiceCallHubContract.SendAnswer, call.Id, Guid.NewGuid(), 1, 1, Guid.NewGuid(),
+                new WebRtcSessionDescription("answer", "intrusion")));
             var mediaConfiguration = await firstConnection.InvokeAsync<CallMediaConfigurationDto>(
                 VoiceCallHubContract.GetMediaConfiguration, call.Id);
             Assert.Equal(MediaMode.DirectWebRtc, mediaConfiguration.Mode);
+            await firstConnection.InvokeAsync(VoiceCallHubContract.ReportDiagnostic,
+                new VoiceDiagnosticReport(call.Id, "PeerCreated", PeerGeneration: 1,
+                    NegotiationGeneration: 1, IceServerCount: 1, IceTransportPolicy: "all"));
             await Assert.ThrowsAsync<HubException>(() => intruderConnection.InvokeAsync<CallMediaConfigurationDto>(
                 VoiceCallHubContract.GetMediaConfiguration, call.Id));
+            await Assert.ThrowsAsync<HubException>(() => intruderConnection.InvokeAsync(
+                VoiceCallHubContract.ReportDiagnostic,
+                new VoiceDiagnosticReport(call.Id, "PeerCreated", PeerGeneration: 1)));
+
+            await outsiderConnection.InvokeAsync(VoiceCallHubContract.Accept, call.Id);
+            Assert.Equal(CallState.Active, (await callAccepted.Task.WaitAsync(TimeSpan.FromSeconds(5))).State);
+            var elsewhere = await answeredElsewhere.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(call.Id, elsewhere.CallId);
+            Assert.Equal("Answered in another tab", elsewhere.Reason);
+            await Assert.ThrowsAsync<HubException>(() => secondOutsiderConnection.InvokeAsync(
+                VoiceCallHubContract.Accept, call.Id));
 
             var offer = new WebRtcSessionDescription("offer", "test-offer-sdp");
             var negotiationId = Guid.NewGuid();
-            await firstConnection.InvokeAsync(VoiceCallHubContract.SendOffer, call.Id, negotiationId, offer);
+            var offerSignalId = Guid.NewGuid();
+            await firstConnection.InvokeAsync(VoiceCallHubContract.SendOffer, call.Id, negotiationId,
+                1, 1, offerSignalId, offer);
             var forwardedOffer = await receivedOffer.Task.WaitAsync(TimeSpan.FromSeconds(5));
             Assert.Equal(negotiationId, forwardedOffer.NegotiationId);
+            Assert.Equal(offerSignalId, forwardedOffer.SignalId);
             Assert.Equal(offer, forwardedOffer.Description);
-            await outsiderConnection.InvokeAsync(VoiceCallHubContract.Accept, call.Id);
-            Assert.Equal(CallState.Active, (await callAccepted.Task.WaitAsync(TimeSpan.FromSeconds(5))).State);
             var answer = new WebRtcSessionDescription("answer", "test-answer-sdp");
-            await outsiderConnection.InvokeAsync(VoiceCallHubContract.SendAnswer, call.Id, negotiationId, answer);
+            var answerSignalId = Guid.NewGuid();
+            await outsiderConnection.InvokeAsync(VoiceCallHubContract.SendAnswer, call.Id, negotiationId,
+                1, 1, answerSignalId, answer);
             var forwardedAnswer = await receivedAnswer.Task.WaitAsync(TimeSpan.FromSeconds(5));
             Assert.Equal(negotiationId, forwardedAnswer.NegotiationId);
+            Assert.Equal(answerSignalId, forwardedAnswer.SignalId);
             Assert.Equal(answer, forwardedAnswer.Description);
-            await outsiderConnection.InvokeAsync(VoiceCallHubContract.SendAnswer, call.Id, negotiationId, answer);
-            await outsiderConnection.InvokeAsync(VoiceCallHubContract.SendAnswer, call.Id, Guid.NewGuid(), answer);
+            await outsiderConnection.InvokeAsync(VoiceCallHubContract.SendAnswer, call.Id, negotiationId,
+                1, 1, answerSignalId, answer);
+            await outsiderConnection.InvokeAsync(VoiceCallHubContract.SendAnswer, call.Id, Guid.NewGuid(),
+                2, 1, Guid.NewGuid(), answer);
             await Task.Delay(250);
             Assert.Equal(1, Volatile.Read(ref answerDeliveryCount));
+            Assert.Equal(0, Volatile.Read(ref answerDeliveryOnSecondCallerCount));
+            Assert.Equal(0, Volatile.Read(ref acceptedOnSecondCallerCount));
+            Assert.Equal(0, Volatile.Read(ref offerDeliveryOnSecondCalleeCount));
             var candidate = new WebRtcIceCandidate("candidate:test", "audio", 0, "test-fragment");
-            await firstConnection.InvokeAsync(VoiceCallHubContract.SendIceCandidate, call.Id, negotiationId, candidate);
+            var candidateSignalId = Guid.NewGuid();
+            await firstConnection.InvokeAsync(VoiceCallHubContract.SendIceCandidate, call.Id, negotiationId,
+                1, 1, candidateSignalId, candidate);
             var forwardedCandidate = await receivedIce.Task.WaitAsync(TimeSpan.FromSeconds(5));
             Assert.Equal(negotiationId, forwardedCandidate.NegotiationId);
+            Assert.Equal(candidateSignalId, forwardedCandidate.SignalId);
             Assert.Equal(candidate, forwardedCandidate.Candidate);
+            await Task.Delay(100);
+            Assert.Equal(0, Volatile.Read(ref iceDeliveryOnSecondCalleeCount));
             await firstConnection.InvokeAsync(VoiceCallHubContract.SetParticipantState, call.Id,
                 true, false, CallConnectionState.Connected);
             var participantState = await participantChanged.Task.WaitAsync(TimeSpan.FromSeconds(5));
             Assert.True(participantState.IsMuted);
             Assert.Equal(ownerAuth.Account.Id, participantState.AccountId);
+            await firstConnection.InvokeAsync(VoiceCallHubContract.SetParticipantState, call.Id,
+                true, false, CallConnectionState.Connected);
+            await Task.Delay(100);
+            Assert.Equal(1, Volatile.Read(ref participantStateChangeCount));
             await firstConnection.InvokeAsync(VoiceCallHubContract.SetSpeaking, call.Id, true);
             var speakingState = await speakingChanged.Task.WaitAsync(TimeSpan.FromSeconds(5));
             Assert.True(speakingState.IsSpeaking);
@@ -419,8 +700,19 @@ public sealed class RealtimeFlowTests
                 VoiceCallHubContract.SetSpeaking, call.Id, true));
             await outsiderConnection.InvokeAsync(VoiceCallHubContract.RequestMediaRetry, call.Id);
             Assert.Equal(call.Id, (await mediaRetryRequested.Task.WaitAsync(TimeSpan.FromSeconds(5))).CallId);
+            Assert.Single(await owner.GetDirectMessagesAsync(directConversation.Id),
+                value => value.Kind == MessageKind.CallStarted && value.RelatedCallId == call.Id);
             await firstConnection.InvokeAsync(VoiceCallHubContract.HangUp, call.Id);
             Assert.Equal(CallState.Ended, (await callEnded.Task.WaitAsync(TimeSpan.FromSeconds(5))).State);
+            await firstConnection.InvokeAsync(DirectMessageHubContract.DeleteMessage,
+                directConversation.Id, directMessage.Id);
+            Assert.True((await owner.GetDirectMessagesAsync(directConversation.Id))
+                .Single(value => value.Id == directMessage.Id).IsDeleted);
+            // Wait until the server has processed the first disconnect before stopping the
+            // final connection; otherwise either disconnect notification can win the TCS race.
+            outsiderPresenceOnOwner = Completion<PresenceChangedEvent>();
+            await secondOutsiderConnection.StopAsync();
+            await outsiderPresenceOnOwner.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
             outsiderPresenceOnOwner = Completion<PresenceChangedEvent>();
             await outsiderConnection.InvokeAsync(PresenceHubContract.SetPresence, UserPresence.DoNotDisturb);
@@ -602,6 +894,40 @@ public sealed class RealtimeFlowTests
         .Build();
 
     private static TaskCompletionSource<T> Completion<T>() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private sealed class MemoryAccountStore : ISavedAccountStore
+    {
+        private SavedAccountStoreData _data = SavedAccountStoreData.Empty;
+        public Task<SavedAccountStoreData> LoadAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(_data);
+        public Task SaveAsync(SavedAccountStoreData data, CancellationToken cancellationToken = default)
+        {
+            _data = data;
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class MemorySelectionStore : IActiveAccountSelectionStore
+    {
+        private SavedAccountKey? _key;
+        public Task<SavedAccountKey?> LoadAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(_key);
+        public Task SaveAsync(SavedAccountKey? key, CancellationToken cancellationToken = default)
+        {
+            _key = key;
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class EmptyLegacyTokenStore : INodeTokenStore
+    {
+        public Task<string?> LoadAsync(string nodeAddress, CancellationToken cancellationToken = default) =>
+            Task.FromResult<string?>(null);
+        public Task SaveAsync(string nodeAddress, string token, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+        public Task RemoveAsync(string nodeAddress, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+    }
 
     private static async Task<Exception?> CaptureAsync(Func<Task> action)
     {

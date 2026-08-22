@@ -5,46 +5,66 @@ using Microsoft.AspNetCore.Components.WebAssembly.Hosting;
 
 namespace Iridium.Web.Services;
 
-public sealed class WebRtcCallMediaService(IJSRuntime js, IWebAssemblyHostEnvironment environment) : ICallMediaService
+public sealed class WebRtcCallMediaService(
+    IJSRuntime js,
+    IWebAssemblyHostEnvironment environment,
+    ILogger<WebRtcCallMediaService> logger,
+    VoiceParticipantPreferencesService preferences) : ICallMediaService
 {
     private const string ModuleDirectoryAndName = "./js/voiceCall";
+    private const int IceInteropProtocolVersion = 2;
     private IJSObjectReference? _module;
     private DotNetObjectReference<WebRtcCallMediaService>? _callback;
     private string? _sessionId;
+    private CallMediaSessionContext? _context;
+    private bool _preferenceSubscribed;
 
-    public event Func<WebRtcIceCandidate, Task>? IceCandidateGenerated;
+    public bool DiagnosticsEnabled => environment.IsDevelopment();
+
+    public event Func<LocalIceCandidateSignal, Task>? IceCandidateGenerated;
     public event Func<CallConnectionState, Task>? ConnectionStateChanged;
+    public event Func<string, Task>? IceConnectionStateChanged;
     public event Func<bool, Task>? SpeakingChanged;
     public event Func<string, Task>? Error;
+    public event Func<VoiceDiagnosticReport, Task>? DiagnosticGenerated;
 
     public async Task InitializeAsync(CallMediaConfigurationDto configuration, CallMediaSessionContext context,
         CancellationToken cancellationToken = default)
     {
-        await CleanupAsync(cancellationToken);
+        await CleanupAsync("peer replacement during initialization", cancellationToken);
         // Compose at runtime so the WebAssembly static-asset fingerprint rewriter does not
         // turn this dynamic import into a precompressed development asset URL. Chromium can
         // fetch that URL but rejects it as an ES module in the dev server.
-        var modulePath = string.Concat(ModuleDirectoryAndName, ".js?module=1");
+        var modulePath = string.Concat(ModuleDirectoryAndName, ".js?module=ice-v2");
         _module ??= await js.InvokeAsync<IJSObjectReference>("import", cancellationToken, modulePath);
         _callback = DotNetObjectReference.Create(this);
+        _context = context;
+        var preference = context.RemoteAccountId is { } remote
+            ? await preferences.GetAsync(remote, cancellationToken) : null;
         _sessionId = await _module.InvokeAsync<string>("initialize", cancellationToken,
             _callback, configuration.IceServers, environment.IsDevelopment(), context.CallId, context.LocalAccountId,
-            context.Role, context.PeerGeneration, context.NegotiationId);
+            context.Role, context.PeerGeneration, context.NegotiationId, context.NegotiationGeneration,
+            IceInteropProtocolVersion, context.RemoteAccountId, preference);
+        if (!_preferenceSubscribed) { preferences.Changed += PreferenceChanged; _preferenceSubscribed = true; }
     }
 
-    public Task<WebRtcSessionDescription> CreateOfferAsync(Guid negotiationId, CancellationToken cancellationToken = default) =>
-        InvokeAsync<WebRtcSessionDescription>("createOffer", cancellationToken, negotiationId);
-
-    public Task<WebRtcSessionDescription> AcceptOfferAsync(Guid negotiationId, WebRtcSessionDescription offer,
+    public Task<WebRtcSessionDescription> CreateOfferAsync(Guid negotiationId, Guid signalId,
         CancellationToken cancellationToken = default) =>
-        InvokeAsync<WebRtcSessionDescription>("acceptOffer", cancellationToken, negotiationId, offer);
+        InvokeAsync<WebRtcSessionDescription>("createOffer", cancellationToken, negotiationId, signalId);
 
-    public Task<RemoteAnswerApplyResult> ApplyAnswerAsync(Guid negotiationId, WebRtcSessionDescription answer,
+    public Task<WebRtcSessionDescription> AcceptOfferAsync(Guid negotiationId, Guid offerSignalId, Guid answerSignalId,
+        WebRtcSessionDescription offer,
         CancellationToken cancellationToken = default) =>
-        InvokeAsync<RemoteAnswerApplyResult>("applyAnswer", cancellationToken, negotiationId, answer);
+        InvokeAsync<WebRtcSessionDescription>("acceptOffer", cancellationToken, negotiationId,
+            offerSignalId, answerSignalId, offer);
 
-    public Task AddIceCandidateAsync(WebRtcIceCandidate candidate, CancellationToken cancellationToken = default) =>
-        InvokeVoidAsync("addIceCandidate", cancellationToken, candidate);
+    public Task<RemoteAnswerApplyResult> ApplyAnswerAsync(Guid negotiationId, Guid signalId, WebRtcSessionDescription answer,
+        CancellationToken cancellationToken = default) =>
+        InvokeAsync<RemoteAnswerApplyResult>("applyAnswer", cancellationToken, negotiationId, signalId, answer);
+
+    public Task AddIceCandidateAsync(Guid signalId, WebRtcIceCandidate candidate,
+        CancellationToken cancellationToken = default) =>
+        InvokeVoidAsync("addIceCandidate", cancellationToken, signalId, candidate);
 
     public Task SetMutedAsync(bool muted, CancellationToken cancellationToken = default) =>
         InvokeVoidAsync("setMuted", cancellationToken, muted);
@@ -56,25 +76,54 @@ public sealed class WebRtcCallMediaService(IJSRuntime js, IWebAssemblyHostEnviro
         _sessionId is null ? Task.FromResult<WebRtcDiagnosticSnapshot?>(null) :
             InvokeAsync<WebRtcDiagnosticSnapshot?>("getDiagnosticSnapshot", cancellationToken);
 
-    public async Task CleanupAsync(CancellationToken cancellationToken = default)
+    public async Task CleanupAsync(string reason, CancellationToken cancellationToken = default)
     {
         var id = _sessionId;
         _sessionId = null;
         if (id is not null && _module is not null)
         {
-            try { await _module.InvokeVoidAsync("cleanup", cancellationToken, id); }
+            try { await _module.InvokeVoidAsync("cleanup", cancellationToken, id, reason); }
             catch (JSDisconnectedException) { }
         }
         _callback?.Dispose();
         _callback = null;
+        _context = null;
     }
 
     [JSInvokable]
-    public Task OnIceCandidate(WebRtcIceCandidate candidate) => InvokeHandlersAsync(IceCandidateGenerated, candidate);
+    public async Task OnIceCandidate(int peerGeneration, int negotiationGeneration, int sequence, Guid signalId,
+        WebRtcIceCandidate candidate)
+    {
+        if (!IsCurrent(peerGeneration, "ICE candidate"))
+        {
+            if (DiagnosticsEnabled && _context is { } staleContext)
+                await InvokeHandlersAsync(DiagnosticGenerated, new VoiceDiagnosticReport(staleContext.CallId,
+                    "StaleSignalIgnored", peerGeneration, negotiationGeneration, signalId, sequence,
+                    Reason: "PeerGenerationMismatch"));
+            return;
+        }
+        // TODO: Remove temporary voice-call diagnostics once WebRTC calls are stable.
+        if (environment.IsDevelopment())
+            logger.LogDebug(
+                "VOICE DIAGNOSTIC DOTNET RECEIVED LOCAL ICE #{Sequence}: CallId={CallId} AccountId={AccountId} " +
+                "Role={Role} PeerGeneration={PeerGeneration} NegotiationGeneration={NegotiationGeneration} " +
+                "SignalId={SignalId} HasCandidate={HasCandidate} HasSdpMid={HasSdpMid} " +
+                "HasSdpMLineIndex={HasSdpMLineIndex} HasUsernameFragment={HasUsernameFragment}",
+                sequence, _context?.CallId, _context?.LocalAccountId, _context?.Role, peerGeneration,
+                negotiationGeneration, signalId, !string.IsNullOrWhiteSpace(candidate.Candidate),
+                candidate.SdpMid is not null, candidate.SdpMLineIndex is not null,
+                candidate.UsernameFragment is not null);
+        if (DiagnosticsEnabled && _context is { } context)
+            await InvokeHandlersAsync(DiagnosticGenerated, new VoiceDiagnosticReport(context.CallId,
+                "LocalIceReceivedFromJs", peerGeneration, negotiationGeneration, signalId, sequence));
+        await InvokeHandlersAsync(IceCandidateGenerated,
+            new LocalIceCandidateSignal(sequence, signalId, peerGeneration, negotiationGeneration, candidate));
+    }
 
     [JSInvokable]
-    public Task OnConnectionStateChanged(string state)
+    public Task OnConnectionStateChanged(int peerGeneration, string state)
     {
+        if (!IsCurrent(peerGeneration, $"connectionState={state}")) return Task.CompletedTask;
         var parsed = state switch
         {
             "new" => CallConnectionState.New,
@@ -89,10 +138,39 @@ public sealed class WebRtcCallMediaService(IJSRuntime js, IWebAssemblyHostEnviro
     }
 
     [JSInvokable]
-    public Task OnSpeakingChanged(bool isSpeaking) => InvokeHandlersAsync(SpeakingChanged, isSpeaking);
+    public Task OnIceConnectionStateChanged(int peerGeneration, string state) =>
+        IsCurrent(peerGeneration, $"iceConnectionState={state}")
+            ? InvokeHandlersAsync(IceConnectionStateChanged, state)
+            : Task.CompletedTask;
 
     [JSInvokable]
-    public Task OnMediaError(string message) => InvokeHandlersAsync(Error, message);
+    public Task OnSpeakingChanged(int peerGeneration, bool isSpeaking) =>
+        IsCurrent(peerGeneration, "speaking state") ? InvokeHandlersAsync(SpeakingChanged, isSpeaking) : Task.CompletedTask;
+
+    [JSInvokable]
+    public Task OnMediaError(int peerGeneration, string message) =>
+        IsCurrent(peerGeneration, "media error") ? InvokeHandlersAsync(Error, message) : Task.CompletedTask;
+
+    [JSInvokable]
+    public Task OnVoiceDiagnostic(int peerGeneration, VoiceDiagnosticReport report)
+    {
+        if (!DiagnosticsEnabled || !IsCurrent(peerGeneration, $"voice diagnostic {report.Event}"))
+            return Task.CompletedTask;
+        return InvokeHandlersAsync(DiagnosticGenerated, report);
+    }
+
+    // TODO: Remove temporary voice-call diagnostics once WebRTC calls are stable.
+    private bool IsCurrent(int peerGeneration, string eventName)
+    {
+        var current = _context?.PeerGeneration == peerGeneration;
+        if (!current && environment.IsDevelopment())
+            logger.LogDebug(
+                "VOICE DIAGNOSTIC stale JS callback ignored: Event={Event} CallId={CallId} AccountId={AccountId} " +
+                "Role={Role} CallbackPeerGeneration={CallbackPeerGeneration} CurrentPeerGeneration={CurrentPeerGeneration}",
+                eventName, _context?.CallId, _context?.LocalAccountId, _context?.Role,
+                peerGeneration, _context?.PeerGeneration);
+        return current;
+    }
 
     private async Task<T> InvokeAsync<T>(string method, CancellationToken cancellationToken, params object?[] arguments)
     {
@@ -114,9 +192,16 @@ public sealed class WebRtcCallMediaService(IJSRuntime js, IWebAssemblyHostEnviro
         foreach (Func<T, Task> handler in handlers.GetInvocationList()) await handler(value);
     }
 
+    private void PreferenceChanged(VoiceParticipantPreference preference)
+    {
+        if (_context?.RemoteAccountId != preference.RemoteAccountId || _sessionId is null) return;
+        _ = InvokeVoidAsync("setParticipantPreference", CancellationToken.None, preference);
+    }
+
     public async ValueTask DisposeAsync()
     {
-        await CleanupAsync();
+        if (_preferenceSubscribed) preferences.Changed -= PreferenceChanged;
+        await CleanupAsync("media service disposed");
         if (_module is not null) await _module.DisposeAsync();
         _module = null;
     }

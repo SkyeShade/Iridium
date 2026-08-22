@@ -16,10 +16,20 @@
         {
             var message = Messages[index];
             var previous = index == 0 ? null : Messages[index - 1];
-            <MessageRow @key="(message.ClientMessageId ?? message.Id)" Message="message"
+            @if (message.Kind == MessageKind.CallStarted)
+            {
+                <div @key="message.Id" class="message-system-event" data-message-id="@message.Id">
+                    <span class="call-event-icon"><Icon Name="phone" /></span>
+                    <span class="call-event-copy"><span><strong class="initiator">@message.Author.DisplayName</strong> started a call</span>
+                    <time title="@message.CreatedAt.ToLocalTime().ToString("F")">@message.CreatedAt.ToLocalTime().ToString("g")</time></span>
+                </div>
+            }
+            else
+            {
+                <MessageRow @key="(message.ClientMessageId ?? message.Id)" Message="message"
                         StartsGroup="MessageGrouping.StartsNewGroup(previous, message)"
-                        CanEdit="@(message.DeliveryState == MessageDeliveryState.Confirmed && !message.IsDeleted && message.Author.AccountId == CurrentAccountId)"
-                        CanDelete="@(message.DeliveryState == MessageDeliveryState.Confirmed && !message.IsDeleted && (message.Author.AccountId == CurrentAccountId || CanManage))"
+                        CanEdit="@(message.Kind == MessageKind.User && message.DeliveryState == MessageDeliveryState.Confirmed && !message.IsDeleted && message.Author.AccountId == CurrentAccountId)"
+                        CanDelete="@(message.Kind == MessageKind.User && message.DeliveryState == MessageDeliveryState.Confirmed && !message.IsDeleted && (message.Author.AccountId == CurrentAccountId || CanManage))"
                         CurrentAccountId="CurrentAccountId" NodeAuthority="@NodeAuthority" CommunityManagement="CommunityManagement"
                         AuthorPresence="@PresenceFor(message.Author.AccountId)"
                         OnEditProfile="OnEditProfile" OnMessage="OnMessage"
@@ -27,6 +37,7 @@
                         OnMention="OnMention"
                         OnReply="OnReply" Edit="Edit" OnDelete="OnDelete" OnFocusReply="FocusMessageAsync"
                         OnRetryLocal="OnRetryLocal" OnRemoveLocal="OnRemoveLocal" />
+            }
         }
     }
 </div>

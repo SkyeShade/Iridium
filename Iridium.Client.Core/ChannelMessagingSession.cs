@@ -6,6 +6,7 @@ namespace Iridium.Client.Core;
 
 public sealed class ChannelMessagingSession(
     NodeSession nodeSession,
+    RealtimeConnectionService realtime,
     ILogger<ChannelMessagingSession> logger) : IAsyncDisposable
 {
     private readonly List<ChannelMessageDto> _messages = [];
@@ -15,6 +16,7 @@ public sealed class ChannelMessagingSession(
     private readonly Dictionary<Guid, Func<CancellationToken, Task<IReadOnlyList<AttachmentDto>>>> _channelAttachmentUploads = [];
     private readonly Dictionary<Guid, Func<CancellationToken, Task<IReadOnlyList<AttachmentDto>>>> _directAttachmentUploads = [];
     private HubConnection? _connection;
+    private readonly List<IDisposable> _handlerRegistrations = [];
     private Uri? _connectedNode;
     private Guid? _connectedAccountId;
     private bool _channelReady;
@@ -299,6 +301,8 @@ public sealed class ChannelMessagingSession(
     public async Task EditDirectAsync(Guid messageId, string content, CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
+        if (_directMessages.FirstOrDefault(value => value.Id == messageId) is { Kind: not MessageKind.User })
+            throw new InvalidOperationException("System messages cannot be edited.");
         await _lifecycleGate.WaitAsync(cancellationToken);
         try
         {
@@ -314,6 +318,8 @@ public sealed class ChannelMessagingSession(
     public async Task DeleteDirectAsync(Guid messageId, CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
+        if (_directMessages.FirstOrDefault(value => value.Id == messageId) is { Kind: not MessageKind.User })
+            throw new InvalidOperationException("System messages cannot be deleted.");
         await _lifecycleGate.WaitAsync(cancellationToken);
         try
         {
@@ -522,9 +528,10 @@ public sealed class ChannelMessagingSession(
             if (_connection is not null)
             {
                 logger.LogDebug("Disconnecting realtime client from {NodeAddress}.", _connectedNode);
-                await _connection.DisposeAsync();
+                DisposeHandlerRegistrations();
             }
             _connection = null;
+            await realtime.DisconnectAsync("account context reset", cancellationToken);
             _connectedNode = null;
             _connectedAccountId = null;
             NotifyChanged();
@@ -540,68 +547,50 @@ public sealed class ChannelMessagingSession(
         var client = nodeSession.AuthorizedClient;
         var accountId = nodeSession.Account?.Id
             ?? throw new InvalidOperationException("Log in before connecting realtime services.");
-        if (_connection is not null && _connectedNode == client.NodeAddress && _connectedAccountId == accountId)
-        {
-            if (_connection.State == HubConnectionState.Connected) return;
-            if (_connection.State == HubConnectionState.Disconnected)
-            {
-                logger.LogDebug("Starting realtime connection to {NodeAddress}.", client.NodeAddress);
-                await _connection.StartAsync(cancellationToken);
-                return;
-            }
-
-            throw new InvalidOperationException($"The realtime connection is currently {_connection.State.ToString().ToLowerInvariant()}.");
-        }
-
-        if (_connection is not null) await _connection.DisposeAsync();
+        var connection = await realtime.EnsureConnectedAsync("ChannelMessagingSession requested realtime", cancellationToken);
+        if (ReferenceEquals(_connection, connection)) return;
+        DisposeHandlerRegistrations();
         ClearChannelState();
         ClearDirectState();
         _connectedNode = client.NodeAddress;
         _connectedAccountId = accountId;
-        var connection = new HubConnectionBuilder()
-            .WithUrl(new Uri(client.NodeAddress, "hubs/chat"), options =>
-            {
-                options.AccessTokenProvider = () => Task.FromResult(client.AccessToken);
-            })
-            .WithAutomaticReconnect()
-            .Build();
         _connection = connection;
 
-        connection.On<ChannelMessageDto>(ChatHubContract.MessageCreated,
-            message => ReceiveSafely(ChatHubContract.MessageCreated, () => ReceiveCreated(message)));
-        connection.On<ChannelMessageDto>(ChatHubContract.MessageUpdated,
-            message => ReceiveSafely(ChatHubContract.MessageUpdated, () => ReceiveUpdated(message)));
-        connection.On<ChannelMessageDeletedEvent>(ChatHubContract.MessageDeleted,
-            deleted => ReceiveSafely(ChatHubContract.MessageDeleted, () => ReceiveDeleted(deleted)));
-        connection.On<DirectMessageDto>(DirectMessageHubContract.MessageCreated,
-            message => ReceiveSafely(DirectMessageHubContract.MessageCreated, () => ReceiveDirectCreated(message)));
-        connection.On<DirectMessageDto>(DirectMessageHubContract.MessageUpdated,
-            message => ReceiveSafely(DirectMessageHubContract.MessageUpdated, () => ReceiveDirectUpdated(message)));
-        connection.On<DirectMessageDeletedEvent>(DirectMessageHubContract.MessageDeleted,
-            deleted => ReceiveSafely(DirectMessageHubContract.MessageDeleted, () => ReceiveDirectDeleted(deleted)));
-        connection.On<FriendshipChangedEvent>(FriendshipHubContract.RequestReceived,
-            _event => _ = RefreshFriendsSafelyAsync(FriendshipHubContract.RequestReceived));
-        connection.On<FriendshipChangedEvent>(FriendshipHubContract.RequestAccepted,
-            _event => _ = RefreshFriendsSafelyAsync(FriendshipHubContract.RequestAccepted));
-        connection.On<FriendshipChangedEvent>(FriendshipHubContract.RequestDeclined,
-            _event => _ = RefreshFriendsSafelyAsync(FriendshipHubContract.RequestDeclined));
-        connection.On<FriendshipChangedEvent>(FriendshipHubContract.FriendshipRemoved,
-            _event => _ = RefreshFriendsSafelyAsync(FriendshipHubContract.FriendshipRemoved));
-        connection.On<PresenceChangedEvent>(PresenceHubContract.PresenceChanged,
-            change => ReceiveSafely(PresenceHubContract.PresenceChanged, () => nodeSession.ApplyPresence(change)));
-        connection.On<CommunityStateChangedEvent>(CommunityHubContract.StateChanged,
-            change => _ = ApplyCommunityChangeSafelyAsync(change));
-        connection.On<CommunityAccessRevokedEvent>(CommunityHubContract.AccessRevoked,
+        _handlerRegistrations.Add(connection.On<ChannelMessageDto>(ChatHubContract.MessageCreated,
+            message => ReceiveSafely(ChatHubContract.MessageCreated, () => ReceiveCreated(message))));
+        _handlerRegistrations.Add(connection.On<ChannelMessageDto>(ChatHubContract.MessageUpdated,
+            message => ReceiveSafely(ChatHubContract.MessageUpdated, () => ReceiveUpdated(message))));
+        _handlerRegistrations.Add(connection.On<ChannelMessageDeletedEvent>(ChatHubContract.MessageDeleted,
+            deleted => ReceiveSafely(ChatHubContract.MessageDeleted, () => ReceiveDeleted(deleted))));
+        _handlerRegistrations.Add(connection.On<DirectMessageDto>(DirectMessageHubContract.MessageCreated,
+            message => ReceiveSafely(DirectMessageHubContract.MessageCreated, () => ReceiveDirectCreated(message))));
+        _handlerRegistrations.Add(connection.On<DirectMessageDto>(DirectMessageHubContract.MessageUpdated,
+            message => ReceiveSafely(DirectMessageHubContract.MessageUpdated, () => ReceiveDirectUpdated(message))));
+        _handlerRegistrations.Add(connection.On<DirectMessageDeletedEvent>(DirectMessageHubContract.MessageDeleted,
+            deleted => ReceiveSafely(DirectMessageHubContract.MessageDeleted, () => ReceiveDirectDeleted(deleted))));
+        _handlerRegistrations.Add(connection.On<FriendshipChangedEvent>(FriendshipHubContract.RequestReceived,
+            _event => _ = RefreshFriendsSafelyAsync(FriendshipHubContract.RequestReceived)));
+        _handlerRegistrations.Add(connection.On<FriendshipChangedEvent>(FriendshipHubContract.RequestAccepted,
+            _event => _ = RefreshFriendsSafelyAsync(FriendshipHubContract.RequestAccepted)));
+        _handlerRegistrations.Add(connection.On<FriendshipChangedEvent>(FriendshipHubContract.RequestDeclined,
+            _event => _ = RefreshFriendsSafelyAsync(FriendshipHubContract.RequestDeclined)));
+        _handlerRegistrations.Add(connection.On<FriendshipChangedEvent>(FriendshipHubContract.FriendshipRemoved,
+            _event => _ = RefreshFriendsSafelyAsync(FriendshipHubContract.FriendshipRemoved)));
+        _handlerRegistrations.Add(connection.On<PresenceChangedEvent>(PresenceHubContract.PresenceChanged,
+            change => ReceiveSafely(PresenceHubContract.PresenceChanged, () => nodeSession.ApplyPresence(change))));
+        _handlerRegistrations.Add(connection.On<CommunityStateChangedEvent>(CommunityHubContract.StateChanged,
+            change => _ = ApplyCommunityChangeSafelyAsync(change)));
+        _handlerRegistrations.Add(connection.On<CommunityAccessRevokedEvent>(CommunityHubContract.AccessRevoked,
             change => ReceiveSafely(CommunityHubContract.AccessRevoked, () =>
             {
                 if (CommunityId == change.CommunityId) ClearChannelState();
                 nodeSession.ApplyCommunityAccessRevoked(change);
                 NotifyChanged();
-            }));
-        connection.On<CommunityMentionReceivedEvent>(CommunityMentionHubContract.Received,
-            mention => ReceiveSafely(CommunityMentionHubContract.Received, () => nodeSession.ApplyCommunityMention(mention)));
-        connection.On<CommunityChannelActivityEvent>(CommunityHubContract.ChannelActivity,
-            activity => _ = ApplyCommunityActivitySafelyAsync(activity));
+            })));
+        _handlerRegistrations.Add(connection.On<CommunityMentionReceivedEvent>(CommunityMentionHubContract.Received,
+            mention => ReceiveSafely(CommunityMentionHubContract.Received, () => nodeSession.ApplyCommunityMention(mention))));
+        _handlerRegistrations.Add(connection.On<CommunityChannelActivityEvent>(CommunityHubContract.ChannelActivity,
+            activity => _ = ApplyCommunityActivitySafelyAsync(activity)));
         connection.Reconnecting += exception =>
         {
             logger.LogWarning(exception, "Realtime connection to {NodeAddress} is reconnecting.", _connectedNode);
@@ -616,6 +605,7 @@ public sealed class ChannelMessagingSession(
                     await connection.InvokeAsync(ChatHubContract.JoinChannel, communityId, channelId);
                 if (DirectConversationId is { } conversationId)
                     await connection.InvokeAsync(DirectMessageHubContract.JoinConversation, conversationId);
+                nodeSession.ApplyRealtimeReconnected();
                 logger.LogInformation("Realtime connection to {NodeAddress} reconnected.", _connectedNode);
             }
             catch (Exception exception)
@@ -635,17 +625,13 @@ public sealed class ChannelMessagingSession(
             return Task.CompletedTask;
         };
 
-        try
-        {
-            logger.LogDebug("Starting realtime connection to {NodeAddress}.", client.NodeAddress);
-            await connection.StartAsync(cancellationToken);
-            logger.LogInformation("Realtime connection to {NodeAddress} established.", client.NodeAddress);
-        }
-        catch (Exception exception)
-        {
-            logger.LogError(exception, "Could not connect the realtime client to {NodeAddress}.", client.NodeAddress);
-            throw;
-        }
+        logger.LogInformation("Shared realtime connection to {NodeAddress} is active for messaging.", client.NodeAddress);
+    }
+
+    private void DisposeHandlerRegistrations()
+    {
+        foreach (var registration in _handlerRegistrations) registration.Dispose();
+        _handlerRegistrations.Clear();
     }
 
     private async Task LeaveActiveChannelAsync(CancellationToken cancellationToken)
@@ -1154,7 +1140,7 @@ public sealed class ChannelMessagingSession(
         await _lifecycleGate.WaitAsync();
         try
         {
-            if (_connection is not null) await _connection.DisposeAsync();
+            DisposeHandlerRegistrations();
             _connection = null;
             _connectedNode = null;
             _connectedAccountId = null;

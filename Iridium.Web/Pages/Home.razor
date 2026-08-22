@@ -14,6 +14,8 @@
 @inject IIdentityProfileResolver ProfileResolver
 @inject ILastCommunityChannelStore LastChannelStore
 @inject Iridium.Web.Services.MessageMenuCoordinator MessageMenus
+@inject ActiveVoiceSessionCoordinator VoiceSessions
+@inject UiSoundService UiSounds
 
 <PageTitle>Iridium</PageTitle>
 
@@ -41,6 +43,7 @@ else
 {
     <ApplicationShell Communities="Session.Communities"
                       DirectConversations="Session.DirectConversations"
+                      RingingCallerAccountId="VoiceSessions.IncomingCall?.CallerAccountId"
                       NodeAuthority="@(Session.SelectedNode!.PublicAuthority)"
                       SelectedCommunity="_selectedCommunity"
                       DisplayName="@Session.Account!.DisplayName"
@@ -85,6 +88,7 @@ else
                                   OnChannelSelected="SelectChannelAsync" />
             }
         </SidebarContent>
+        <VoiceConnection><VoiceConnectionPanel /></VoiceConnection>
         <ChildContent>
             @if (_selectedCommunity is null)
             {
@@ -229,6 +233,7 @@ else
     protected override async Task OnInitializedAsync()
     {
         await Appearance.InitializeAsync();
+        await UiSounds.InitializeAsync();
         var localAddress = new Uri(HostEnvironment.BaseAddress).Scheme == Uri.UriSchemeHttps
             ? "https://localhost:7008"
             : "http://localhost:5159";
@@ -237,10 +242,12 @@ else
         Session.Changed += OnSessionChanged;
         Session.CommunityAccessRevoked += OnCommunityAccessRevoked;
         Session.CommunityJoined += OnCommunityJoined;
-        Session.CommunityChanged += OnCommunityChanged;
+        CommunityState.Changed += OnCommunityStateChanged;
+        CommunityState.RealtimeRefreshFailed += OnCommunityRefreshFailed;
         Session.PresenceChanged += OnPresenceChanged;
         Session.CommunityChannelActivity += OnCommunityChannelActivity;
         Messaging.Changed += OnSessionChanged;
+        VoiceSessions.Changed += OnSessionChanged;
         await AccountSwitching.InitializeAsync(SavedNodes.Nodes);
         if (!Session.IsAuthenticated)
         {
@@ -586,15 +593,20 @@ else
         StateHasChanged();
     });
     private void OnCommunityJoined(CommunityDto community) => _ = InvokeAsync(() => SelectCommunity(community));
-    private void OnCommunityChanged(CommunityStateChangedEvent change) => _ = InvokeAsync(async () =>
+    private void OnCommunityStateChanged() => _ = InvokeAsync(async () =>
     {
-        if (_selectedCommunity?.Id != change.CommunityId) return;
-        try
+        if (_selectedCommunity?.Id != CommunityState.CommunityId) return;
+        if (_selectedChannel is { } selected)
         {
-            await CommunityState.LoadAsync(change.CommunityId);
-            await CommunityState.LoadManagementAsync();
+            var refreshed = CommunityState.Channels.FirstOrDefault(value => value.Id == selected.Id);
+            if (refreshed is not null) _selectedChannel = refreshed;
+            else await SelectChannelAsync(CommunityState.FirstOrderedChannel());
         }
-        catch (NodeApiException exception) when (exception.StatusCode == System.Net.HttpStatusCode.Forbidden)
+        StateHasChanged();
+    });
+    private void OnCommunityRefreshFailed(Exception exception) => _ = InvokeAsync(async () =>
+    {
+        if (exception is NodeApiException { StatusCode: System.Net.HttpStatusCode.Forbidden })
         {
             await Messaging.ClearAsync();
             _selectedCommunity = null;
@@ -603,6 +615,7 @@ else
             CommunityState.Clear();
             _error = "You no longer have access to that Community.";
         }
+        else _error = UserMessage(exception);
         StateHasChanged();
     });
     private void OnPresenceChanged(PresenceChangedEvent change) => _ = InvokeAsync(() =>
@@ -639,10 +652,12 @@ else
         Session.Changed -= OnSessionChanged;
         Session.CommunityAccessRevoked -= OnCommunityAccessRevoked;
         Session.CommunityJoined -= OnCommunityJoined;
-        Session.CommunityChanged -= OnCommunityChanged;
+        CommunityState.Changed -= OnCommunityStateChanged;
+        CommunityState.RealtimeRefreshFailed -= OnCommunityRefreshFailed;
         Session.PresenceChanged -= OnPresenceChanged;
         Session.CommunityChannelActivity -= OnCommunityChannelActivity;
         Messaging.Changed -= OnSessionChanged;
+        VoiceSessions.Changed -= OnSessionChanged;
     }
     private static string UserMessage(Exception exception) => exception is NodeApiException ? exception.Message : exception.Message;
     private static string CommunityInitials(string name) => string.Concat(name.Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(2).Select(word => char.ToUpperInvariant(word[0])));

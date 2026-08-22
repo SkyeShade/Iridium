@@ -2,10 +2,27 @@ using Iridium.Protocol;
 
 namespace Iridium.Client.Core;
 
-public sealed class CommunitySession(NodeSession nodeSession)
+public sealed class CommunitySession : IDisposable
 {
+    private readonly NodeSession _nodeSession;
     private readonly List<CommunityCategoryDto> _categories = [];
     private readonly List<CommunityChannelDto> _channels = [];
+    private readonly object _realtimeGate = new();
+    private long _requestedRevision;
+    private long _appliedRevision;
+    private long _generation;
+    private bool _realtimeRefreshRunning;
+    private bool _managementRefreshRequested;
+
+    public CommunitySession(NodeSession nodeSession)
+    {
+        _nodeSession = nodeSession;
+        nodeSession.CommunityChanged += OnCommunityChanged;
+        nodeSession.RealtimeReconnected += OnRealtimeReconnected;
+    }
+
+    public event Action? Changed;
+    public event Action<Exception>? RealtimeRefreshFailed;
 
     public Guid? CommunityId { get; private set; }
     public bool CanManage { get; private set; }
@@ -17,7 +34,15 @@ public sealed class CommunitySession(NodeSession nodeSession)
 
     public async Task LoadAsync(Guid communityId, CancellationToken cancellationToken = default)
     {
-        var structure = await nodeSession.AuthorizedClient.GetCommunityStructureAsync(communityId, cancellationToken);
+        long generation;
+        lock (_realtimeGate)
+        {
+            if (CommunityId != communityId) _generation++;
+            generation = _generation;
+        }
+        var structure = await _nodeSession.AuthorizedClient.GetCommunityStructureAsync(communityId, cancellationToken);
+        lock (_realtimeGate)
+            if (generation != _generation) return;
         CommunityId = communityId;
         CanManage = structure.CanManage;
         EffectivePermissions = structure.EffectivePermissions;
@@ -31,7 +56,7 @@ public sealed class CommunitySession(NodeSession nodeSession)
 
     public async Task<CommunityManagementDto> LoadManagementAsync(CancellationToken cancellationToken = default)
     {
-        Management = await nodeSession.AuthorizedClient.GetCommunityManagementAsync(RequireCommunity(), cancellationToken);
+        Management = await _nodeSession.AuthorizedClient.GetCommunityManagementAsync(RequireCommunity(), cancellationToken);
         EffectivePermissions = Management.Access.Permissions;
         IsOwner = Management.Access.IsOwner;
         CanManage = HasPermission(CommunityPermission.ManageChannels);
@@ -40,7 +65,7 @@ public sealed class CommunitySession(NodeSession nodeSession)
 
     public async Task<CommunityDto> UpdateCommunityAsync(string name, string? description, CancellationToken cancellationToken = default)
     {
-        var updated = await nodeSession.AuthorizedClient.UpdateCommunityAsync(
+        var updated = await _nodeSession.AuthorizedClient.UpdateCommunityAsync(
             RequireCommunity(), new UpdateCommunityRequest(name, description), cancellationToken);
         await LoadManagementAsync(cancellationToken);
         return updated;
@@ -48,55 +73,55 @@ public sealed class CommunitySession(NodeSession nodeSession)
 
     public async Task CreateRoleAsync(string name, CommunityPermission permissions, string? color, bool displaySeparately = false, bool isMentionable = false, CancellationToken cancellationToken = default)
     {
-        await nodeSession.AuthorizedClient.CreateCommunityRoleAsync(RequireCommunity(), new(name, permissions, color, displaySeparately, isMentionable), cancellationToken);
+        await _nodeSession.AuthorizedClient.CreateCommunityRoleAsync(RequireCommunity(), new(name, permissions, color, displaySeparately, isMentionable), cancellationToken);
         await LoadManagementAsync(cancellationToken);
     }
 
     public async Task UpdateRoleAsync(Guid roleId, string name, CommunityPermission permissions, string? color, bool displaySeparately = false, bool isMentionable = false, CancellationToken cancellationToken = default)
     {
-        await nodeSession.AuthorizedClient.UpdateCommunityRoleAsync(RequireCommunity(), roleId, new(name, permissions, color, displaySeparately, isMentionable), cancellationToken);
+        await _nodeSession.AuthorizedClient.UpdateCommunityRoleAsync(RequireCommunity(), roleId, new(name, permissions, color, displaySeparately, isMentionable), cancellationToken);
         await LoadManagementAsync(cancellationToken);
     }
 
     public async Task DeleteRoleAsync(Guid roleId, CancellationToken cancellationToken = default)
     {
-        await nodeSession.AuthorizedClient.DeleteCommunityRoleAsync(RequireCommunity(), roleId, cancellationToken);
+        await _nodeSession.AuthorizedClient.DeleteCommunityRoleAsync(RequireCommunity(), roleId, cancellationToken);
         await LoadManagementAsync(cancellationToken);
     }
 
     public async Task MoveRoleAsync(Guid roleId, int position, CancellationToken cancellationToken = default)
     {
-        await nodeSession.AuthorizedClient.MoveCommunityRoleAsync(RequireCommunity(), roleId, position, cancellationToken);
+        await _nodeSession.AuthorizedClient.MoveCommunityRoleAsync(RequireCommunity(), roleId, position, cancellationToken);
         await LoadManagementAsync(cancellationToken);
     }
 
     public async Task SetMemberRolesAsync(Guid accountId, IReadOnlyList<Guid> roleIds, CancellationToken cancellationToken = default)
     {
-        await nodeSession.AuthorizedClient.SetCommunityMemberRolesAsync(RequireCommunity(), accountId, roleIds, cancellationToken);
+        await _nodeSession.AuthorizedClient.SetCommunityMemberRolesAsync(RequireCommunity(), accountId, roleIds, cancellationToken);
         await LoadManagementAsync(cancellationToken);
     }
 
     public async Task KickMemberAsync(Guid accountId, CancellationToken cancellationToken = default)
     {
-        await nodeSession.AuthorizedClient.KickCommunityMemberAsync(RequireCommunity(), accountId, cancellationToken);
+        await _nodeSession.AuthorizedClient.KickCommunityMemberAsync(RequireCommunity(), accountId, cancellationToken);
         await LoadManagementAsync(cancellationToken);
     }
 
     public async Task BanMemberAsync(Guid accountId, string? reason, CancellationToken cancellationToken = default)
     {
-        await nodeSession.AuthorizedClient.BanCommunityMemberAsync(RequireCommunity(), accountId, reason, cancellationToken);
+        await _nodeSession.AuthorizedClient.BanCommunityMemberAsync(RequireCommunity(), accountId, reason, cancellationToken);
         await LoadManagementAsync(cancellationToken);
     }
 
     public async Task UnbanMemberAsync(Guid accountId, CancellationToken cancellationToken = default)
     {
-        await nodeSession.AuthorizedClient.UnbanCommunityMemberAsync(RequireCommunity(), accountId, cancellationToken);
+        await _nodeSession.AuthorizedClient.UnbanCommunityMemberAsync(RequireCommunity(), accountId, cancellationToken);
         await LoadManagementAsync(cancellationToken);
     }
 
     public async Task<CommunityInviteDto> CreateInviteAsync(DateTimeOffset? expiresAt, int? maxUses, CancellationToken cancellationToken = default)
     {
-        var invite = await nodeSession.AuthorizedClient.CreateCommunityInviteAsync(
+        var invite = await _nodeSession.AuthorizedClient.CreateCommunityInviteAsync(
             RequireCommunity(), new(expiresAt, maxUses), cancellationToken);
         await LoadManagementAsync(cancellationToken);
         return invite;
@@ -104,55 +129,57 @@ public sealed class CommunitySession(NodeSession nodeSession)
 
     public async Task RevokeInviteAsync(Guid inviteId, CancellationToken cancellationToken = default)
     {
-        await nodeSession.AuthorizedClient.RevokeCommunityInviteAsync(RequireCommunity(), inviteId, cancellationToken);
+        await _nodeSession.AuthorizedClient.RevokeCommunityInviteAsync(RequireCommunity(), inviteId, cancellationToken);
         await LoadManagementAsync(cancellationToken);
     }
 
     public async Task<CommunityCategoryDto> CreateCategoryAsync(string name, Guid? parentCategoryId = null, CancellationToken cancellationToken = default)
     {
-        var created = await nodeSession.AuthorizedClient.CreateCategoryAsync(RequireCommunity(), name, parentCategoryId, cancellationToken);
+        var created = await _nodeSession.AuthorizedClient.CreateCategoryAsync(RequireCommunity(), name, parentCategoryId, cancellationToken);
         _categories.Add(created); Sort(); return created;
     }
 
     public async Task UpdateCategoryAsync(Guid categoryId, string name, CancellationToken cancellationToken = default)
     {
-        var updated = await nodeSession.AuthorizedClient.UpdateCategoryAsync(RequireCommunity(), categoryId, name, cancellationToken);
+        var updated = await _nodeSession.AuthorizedClient.UpdateCategoryAsync(RequireCommunity(), categoryId, name, cancellationToken);
         ReplaceCategory(updated);
     }
 
     public async Task MoveCategoryAsync(Guid categoryId, CommunitySidebarMoveRequest request, CancellationToken cancellationToken = default)
     {
-        await nodeSession.AuthorizedClient.MoveCategoryAsync(RequireCommunity(), categoryId, request, cancellationToken);
+        await _nodeSession.AuthorizedClient.MoveCategoryAsync(RequireCommunity(), categoryId, request, cancellationToken);
         await ReloadAsync(cancellationToken);
     }
 
     public async Task DeleteCategoryAsync(Guid categoryId, CancellationToken cancellationToken = default)
     {
-        await nodeSession.AuthorizedClient.DeleteCategoryAsync(RequireCommunity(), categoryId, cancellationToken);
+        await _nodeSession.AuthorizedClient.DeleteCategoryAsync(RequireCommunity(), categoryId, cancellationToken);
         await ReloadAsync(cancellationToken);
     }
 
-    public async Task<CommunityChannelDto> CreateChannelAsync(string name, Guid? categoryId, CancellationToken cancellationToken = default)
+    public async Task<CommunityChannelDto> CreateChannelAsync(string name, Guid? categoryId,
+        CommunityChannelKind kind = CommunityChannelKind.Text, CancellationToken cancellationToken = default)
     {
-        var created = await nodeSession.AuthorizedClient.CreateChannelAsync(RequireCommunity(), name, categoryId, cancellationToken);
+        var created = await _nodeSession.AuthorizedClient.CreateChannelAsync(RequireCommunity(), name, categoryId, kind, cancellationToken);
         _channels.Add(created); Sort(); return created;
     }
 
-    public async Task UpdateChannelAsync(Guid channelId, string name, Guid? categoryId, CancellationToken cancellationToken = default)
+    public async Task UpdateChannelAsync(Guid channelId, string name, Guid? categoryId,
+        CommunityChannelKind kind = CommunityChannelKind.Text, CancellationToken cancellationToken = default)
     {
-        var updated = await nodeSession.AuthorizedClient.UpdateChannelAsync(RequireCommunity(), channelId, name, categoryId, cancellationToken);
+        var updated = await _nodeSession.AuthorizedClient.UpdateChannelAsync(RequireCommunity(), channelId, name, categoryId, kind, cancellationToken);
         ReplaceChannel(updated);
     }
 
     public async Task MoveChannelAsync(Guid channelId, CommunitySidebarMoveRequest request, CancellationToken cancellationToken = default)
     {
-        await nodeSession.AuthorizedClient.MoveChannelAsync(RequireCommunity(), channelId, request, cancellationToken);
+        await _nodeSession.AuthorizedClient.MoveChannelAsync(RequireCommunity(), channelId, request, cancellationToken);
         await ReloadAsync(cancellationToken);
     }
 
     public async Task DeleteChannelAsync(Guid channelId, CancellationToken cancellationToken = default)
     {
-        await nodeSession.AuthorizedClient.DeleteChannelAsync(RequireCommunity(), channelId, cancellationToken);
+        await _nodeSession.AuthorizedClient.DeleteChannelAsync(RequireCommunity(), channelId, cancellationToken);
         _channels.RemoveAll(value => value.Id == channelId);
     }
 
@@ -183,7 +210,7 @@ public sealed class CommunitySession(NodeSession nodeSession)
                 .OrderBy(value => value.Position).ThenBy(value => value.Kind).ThenBy(value => value.Id);
             foreach (var item in items)
             {
-                if (item.Channel is { } direct) return direct;
+                if (item.Channel is { Kind: CommunityChannelKind.Text } direct) return direct;
                 if (item.Category is { } child && FirstIn(child.Id) is { } nested) return nested;
             }
             return null;
@@ -199,7 +226,132 @@ public sealed class CommunitySession(NodeSession nodeSession)
         Management = Management with { Members = members };
     }
 
-    public void Clear() { CommunityId = null; CanManage = false; EffectivePermissions = CommunityPermission.None; IsOwner = false; Management = null; _categories.Clear(); _channels.Clear(); }
+    public void Clear()
+    {
+        CommunityId = null;
+        CanManage = false;
+        EffectivePermissions = CommunityPermission.None;
+        IsOwner = false;
+        Management = null;
+        _categories.Clear();
+        _channels.Clear();
+        lock (_realtimeGate)
+        {
+            _requestedRevision = 0;
+            _appliedRevision = 0;
+            _managementRefreshRequested = false;
+            _generation++;
+        }
+    }
+
+    private void OnCommunityChanged(CommunityStateChangedEvent change)
+    {
+        if (CommunityId != change.CommunityId) return;
+        QueueRealtimeRefresh(change.Revision, RequiresManagementRefresh(change.Change));
+    }
+
+    private void OnRealtimeReconnected()
+    {
+        if (CommunityId is not null) QueueRealtimeRefresh(0, refreshManagement: true);
+    }
+
+    private void QueueRealtimeRefresh(long revision, bool refreshManagement)
+    {
+        lock (_realtimeGate)
+        {
+            if (revision > 0 && revision <= _appliedRevision) return;
+            var requested = revision > 0 ? revision : Math.Max(_requestedRevision, _appliedRevision) + 1;
+            _requestedRevision = Math.Max(_requestedRevision, requested);
+            _managementRefreshRequested |= refreshManagement;
+            if (_realtimeRefreshRunning) return;
+            _realtimeRefreshRunning = true;
+        }
+        _ = RefreshRealtimeLoopAsync();
+    }
+
+    private async Task RefreshRealtimeLoopAsync()
+    {
+        while (true)
+        {
+            long targetRevision;
+            long generation;
+            Guid communityId;
+            bool reloadManagement;
+            lock (_realtimeGate)
+            {
+                if (CommunityId is not { } activeCommunityId)
+                {
+                    _realtimeRefreshRunning = false;
+                    return;
+                }
+                communityId = activeCommunityId;
+                generation = _generation;
+                targetRevision = _requestedRevision;
+                reloadManagement = Management is not null && _managementRefreshRequested;
+                _managementRefreshRequested = false;
+            }
+
+            var refreshed = false;
+            try
+            {
+                var structure = await _nodeSession.AuthorizedClient.GetCommunityStructureAsync(communityId);
+                var management = reloadManagement
+                    ? await _nodeSession.AuthorizedClient.GetCommunityManagementAsync(communityId)
+                    : null;
+                lock (_realtimeGate)
+                {
+                    if (generation != _generation || CommunityId != communityId)
+                    {
+                        _realtimeRefreshRunning = false;
+                        return;
+                    }
+                    CanManage = structure.CanManage;
+                    EffectivePermissions = structure.EffectivePermissions;
+                    IsOwner = structure.IsOwner;
+                    Replace(structure);
+                    if (management is not null)
+                    {
+                        Management = management;
+                        EffectivePermissions = management.Access.Permissions;
+                        IsOwner = management.Access.IsOwner;
+                        CanManage = HasPermission(CommunityPermission.ManageChannels);
+                    }
+                }
+                refreshed = true;
+                Changed?.Invoke();
+            }
+            catch (Exception exception)
+            {
+                RealtimeRefreshFailed?.Invoke(exception);
+            }
+
+            lock (_realtimeGate)
+            {
+                if (!refreshed)
+                {
+                    _managementRefreshRequested |= reloadManagement;
+                    _realtimeRefreshRunning = false;
+                    return;
+                }
+                _appliedRevision = Math.Max(_appliedRevision, targetRevision);
+                if (CommunityId == communityId && _requestedRevision > _appliedRevision) continue;
+                _realtimeRefreshRunning = false;
+                return;
+            }
+        }
+    }
+
+    public void Dispose()
+    {
+        _nodeSession.CommunityChanged -= OnCommunityChanged;
+        _nodeSession.RealtimeReconnected -= OnRealtimeReconnected;
+    }
+
+    private static bool RequiresManagementRefresh(string change) =>
+        change.StartsWith("role", StringComparison.Ordinal) ||
+        change.StartsWith("member", StringComparison.Ordinal) ||
+        change.StartsWith("invite", StringComparison.Ordinal) ||
+        change is "overview";
 
     private async Task ReloadAsync(CancellationToken cancellationToken) => await LoadAsync(RequireCommunity(), cancellationToken);
     private Guid RequireCommunity() => CommunityId ?? throw new InvalidOperationException("Select a Community first.");

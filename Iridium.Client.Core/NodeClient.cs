@@ -129,11 +129,13 @@ public sealed class NodeClient(Uri nodeAddress)
     public Task DeleteCategoryAsync(Guid communityId, Guid categoryId, CancellationToken cancellationToken = default) =>
         SendNoContentAsync(HttpMethod.Delete, $"api/communities/{communityId}/categories/{categoryId}", null, cancellationToken);
 
-    public Task<CommunityChannelDto> CreateChannelAsync(Guid communityId, string name, Guid? categoryId, CancellationToken cancellationToken = default) =>
-        SendAsync<CommunityChannelDto>(HttpMethod.Post, $"api/communities/{communityId}/channels", new CreateChannelRequest(name, categoryId), cancellationToken);
+    public Task<CommunityChannelDto> CreateChannelAsync(Guid communityId, string name, Guid? categoryId,
+        CommunityChannelKind kind = CommunityChannelKind.Text, CancellationToken cancellationToken = default) =>
+        SendAsync<CommunityChannelDto>(HttpMethod.Post, $"api/communities/{communityId}/channels", new CreateChannelRequest(name, categoryId, kind), cancellationToken);
 
-    public Task<CommunityChannelDto> UpdateChannelAsync(Guid communityId, Guid channelId, string name, Guid? categoryId, CancellationToken cancellationToken = default) =>
-        SendAsync<CommunityChannelDto>(HttpMethod.Patch, $"api/communities/{communityId}/channels/{channelId}", new UpdateChannelRequest(name, categoryId), cancellationToken);
+    public Task<CommunityChannelDto> UpdateChannelAsync(Guid communityId, Guid channelId, string name, Guid? categoryId,
+        CommunityChannelKind kind = CommunityChannelKind.Text, CancellationToken cancellationToken = default) =>
+        SendAsync<CommunityChannelDto>(HttpMethod.Patch, $"api/communities/{communityId}/channels/{channelId}", new UpdateChannelRequest(name, categoryId, kind), cancellationToken);
 
     public Task MoveChannelAsync(Guid communityId, Guid channelId, CommunitySidebarMoveRequest request, CancellationToken cancellationToken = default) =>
         SendNoContentAsync(HttpMethod.Post, $"api/communities/{communityId}/channels/{channelId}/move", request, cancellationToken);

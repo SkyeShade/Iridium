@@ -1,20 +1,24 @@
 @using Iridium.Protocol
+@using Iridium.Client.Core
 
 <nav class="community-rail" aria-label="Communities">
     <button class="rail-item home active" title="Home" @onclick="() => OnSelected.InvokeAsync(null)">I</button>
-    @if (UnreadConversations.Count > 0)
+    @if (NotificationConversations.Count > 0)
     {
         <div class="notification-stack" aria-label="Unread Direct Messages">
-            @foreach (var conversation in UnreadConversations)
+            @foreach (var conversation in NotificationConversations)
             {
-                <button class="notification-item" title="@NotificationTitle(conversation)"
-                        aria-label="@NotificationTitle(conversation)"
+                var ringing = conversation.OtherParticipant.AccountId == RingingCallerAccountId;
+                <button class="notification-item @(ringing ? "ringing" : null)" title="@NotificationTitle(conversation, ringing)"
+                        aria-label="@NotificationTitle(conversation, ringing)"
                         @onclick="() => OnDirectConversationSelected.InvokeAsync(conversation)">
-                    <ProfileAvatar DisplayName="@conversation.OtherParticipant.DisplayName"
-                                   BadgeMode="AvatarBadgeMode.Notification"
-                                   NotificationCount="@conversation.UnreadCount"
-                                   Tooltip="@NotificationTitle(conversation)"
-                                   Surface="deep" />
+                    <span class="notification-avatar-wrapper">
+                        <ProfileAvatar DisplayName="@conversation.OtherParticipant.DisplayName"
+                                       BadgeMode="AvatarBadgeMode.Notification"
+                                       NotificationCount="@conversation.UnreadCount"
+                                       Tooltip="@NotificationTitle(conversation, ringing)"
+                                       Surface="deep" />
+                    </span>
                 </button>
             }
         </div>
@@ -46,18 +50,16 @@
     [Parameter] public Guid? SelectedCommunityId { get; set; }
     [Parameter] public IReadOnlyList<DirectConversationDto> DirectConversations { get; set; } = [];
     [Parameter] public string NodeAuthority { get; set; } = string.Empty;
+    [Parameter] public Guid? RingingCallerAccountId { get; set; }
     [Parameter] public EventCallback<CommunityDto?> OnSelected { get; set; }
     [Parameter] public EventCallback<DirectConversationDto> OnDirectConversationSelected { get; set; }
     [Parameter] public EventCallback OnAdd { get; set; }
-    private IReadOnlyList<DirectConversationDto> UnreadConversations => DirectConversations
-        .Where(value => value.UnreadCount > 0)
-        .GroupBy(value => value.Id)
-        .Select(group => group.OrderByDescending(value => value.LastMessageAt).First())
-        .OrderByDescending(value => value.LastMessageAt)
-        .ToArray();
+    private IReadOnlyList<DirectConversationDto> NotificationConversations =>
+        DirectNotificationProjection.Build(DirectConversations, RingingCallerAccountId);
 
-    private string NotificationTitle(DirectConversationDto conversation) =>
-        $"{conversation.OtherParticipant.DisplayName} | {IridiumIdentity.Format(conversation.OtherParticipant.Username, NodeAuthority)} | {conversation.UnreadCount} unread";
+    private string NotificationTitle(DirectConversationDto conversation, bool ringing) =>
+        $"{conversation.OtherParticipant.DisplayName} | {IridiumIdentity.Format(conversation.OtherParticipant.Username, NodeAuthority)} | " +
+        (ringing ? "Incoming voice call" : $"{conversation.UnreadCount} unread");
 
     private static string Initials(string name)
     {

@@ -9,12 +9,14 @@ public static class VoiceCallHubContract
     public const string HangUp = "HangUpVoiceCall";
     public const string SetParticipantState = "SetCallParticipantState";
     public const string SetSpeaking = "SetCallParticipantSpeaking";
+    public const string Heartbeat = "HeartbeatVoiceCall";
     public const string RequestMediaRetry = "RequestCallMediaRetry";
     public const string GetMediaConfiguration = "GetCallMediaConfiguration";
     public const string GetCurrent = "GetCurrentCall";
     public const string SendOffer = "SendWebRtcOffer";
     public const string SendAnswer = "SendWebRtcAnswer";
     public const string SendIceCandidate = "SendWebRtcIceCandidate";
+    public const string ReportDiagnostic = "ReportVoiceDiagnostic";
 
     public const string Incoming = "IncomingCall";
     public const string Accepted = "CallAccepted";
@@ -51,7 +53,8 @@ public sealed record CallSessionDto(
     CallState State,
     DateTimeOffset CreatedAt,
     DateTimeOffset ExpiresAt,
-    IReadOnlyList<CallParticipantDto> Participants);
+    IReadOnlyList<CallParticipantDto> Participants,
+    DateTimeOffset? AcceptedAt = null);
 
 public sealed record IncomingCallEvent(
     Guid CallId,
@@ -61,7 +64,7 @@ public sealed record IncomingCallEvent(
     DateTimeOffset CreatedAt,
     DateTimeOffset ExpiresAt);
 
-public sealed record CallStateEvent(Guid CallId, CallState State, string? Reason = null);
+public sealed record CallStateEvent(Guid CallId, CallState State, string? Reason = null, Guid? SignalId = null);
 public sealed record CallParticipantStateEvent(
     Guid CallId,
     Guid AccountId,
@@ -72,16 +75,89 @@ public sealed record CallParticipantSpeakingEvent(Guid CallId, Guid AccountId, b
 
 public sealed record WebRtcSessionDescription(string Type, string Sdp);
 public sealed record WebRtcIceCandidate(string Candidate, string? SdpMid, int? SdpMLineIndex, string? UsernameFragment);
+// TODO: Remove temporary voice-call diagnostics once WebRTC calls are stable.
 public sealed record WebRtcDescriptionEvent(
     Guid CallId,
     Guid SenderAccountId,
     Guid NegotiationId,
+    int NegotiationGeneration,
+    int SenderPeerGeneration,
+    Guid SignalId,
     WebRtcSessionDescription Description);
 public sealed record WebRtcIceCandidateEvent(
     Guid CallId,
     Guid SenderAccountId,
     Guid NegotiationId,
+    int NegotiationGeneration,
+    int SenderPeerGeneration,
+    Guid SignalId,
     WebRtcIceCandidate Candidate);
+
+// TODO: Remove temporary voice-call diagnostics once WebRTC calls are stable.
+// Deliberately whitelist safe metadata. SDP and ICE candidate payloads have no place in this DTO.
+public sealed record VoiceDiagnosticReport(
+    Guid CallId,
+    string Event,
+    int? PeerGeneration = null,
+    int? NegotiationGeneration = null,
+    Guid? SignalId = null,
+    int? Sequence = null,
+    string? OldState = null,
+    string? NewState = null,
+    string? SignalingState = null,
+    string? IceGatheringState = null,
+    string? IceConnectionState = null,
+    string? ConnectionState = null,
+    string? LocalDescriptionType = null,
+    string? RemoteDescriptionType = null,
+    string? CandidateType = null,
+    string? Protocol = null,
+    string? SdpMid = null,
+    int? SdpMLineIndex = null,
+    string? TrackKind = null,
+    bool? TrackEnabled = null,
+    string? TrackReadyState = null,
+    bool? TrackMuted = null,
+    string? IceTransportPolicy = null,
+    string? ErrorName = null,
+    string? SafeMessage = null,
+    string? Reason = null,
+    int? Count = null,
+    int? QueueLength = null,
+    int? AudioTrackCount = null,
+    int? SenderCount = null,
+    int? IceServerCount = null,
+    int? SdpLength = null,
+    int? CandidateLineCount = null,
+    bool? CandidatePresent = null,
+    bool? HasAudioMediaSection = null,
+    int? OffersCreated = null,
+    int? OffersReceived = null,
+    int? AnswersCreated = null,
+    int? AnswersReceived = null,
+    int? LocalIceGenerated = null,
+    int? LocalIceSent = null,
+    int? RemoteIceReceived = null,
+    int? RemoteIceQueued = null,
+    int? RemoteIceAdded = null,
+    int? RemoteIceAddFailures = null,
+    bool? RemoteTrackReceived = null,
+    bool? RemoteAudioPlaySucceeded = null,
+    bool? MediaTrafficDetected = null,
+    int? LocalCandidateStats = null,
+    int? RemoteCandidateStats = null,
+    int? CandidatePairStats = null,
+    int? SucceededCandidatePairs = null,
+    bool? NominatedPairExists = null,
+    bool? SelectedPairExists = null,
+    string? PairState = null,
+    string? LocalCandidateType = null,
+    string? RemoteCandidateType = null,
+    long? PacketsSent = null,
+    long? PacketsReceived = null,
+    long? PacketsLost = null,
+    long? BytesSent = null,
+    long? BytesReceived = null);
 
 public sealed record IceServerDto(IReadOnlyList<string> Urls, string? Username = null, string? Credential = null);
 public sealed record CallMediaConfigurationDto(MediaMode Mode, IReadOnlyList<IceServerDto> IceServers);

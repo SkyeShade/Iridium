@@ -3,6 +3,8 @@
 @using Iridium.Web.Models
 @inject ICategoryCollapseStore CollapseStore
 @inject IJSRuntime JS
+@inject CommunityVoiceSession Voice
+@inject ActiveVoiceSessionCoordinator VoiceSessions
 @implements IAsyncDisposable
 
 <div class="community-sidebar" @ref="_sidebar" @onclick="CloseSidebarContextMenu">
@@ -22,12 +24,16 @@
                 {
                     <ChannelRow @key="item.Id" Channel="rootChannel" CanManage="State.CanManage" Depth="1"
                                 Selected="@(SelectedChannel?.Id == rootChannel.Id)" OnSelect="SelectChannelAsync"
+                                Room="@Voice.Room(rootChannel.Id)" Connected="@(Voice.CurrentRoom?.ChannelId == rootChannel.Id)"
+                                CurrentAccountId="AccountId"
                                 OnEdit="EditChannel" OnDelete="RequestDeleteChannel" />
                 }
                 else if (item.Category is { } category)
                 {
                     <CommunityCategoryTreeNode @key="item.Id" Category="category" Categories="State.Categories"
                                                Channels="State.Channels" Collapsed="_collapsed" CanManage="State.CanManage"
+                                               VoiceRooms="Voice.Rooms" ConnectedVoiceChannelId="Voice.CurrentRoom?.ChannelId"
+                                               CurrentAccountId="AccountId"
                                                SelectedChannelId="SelectedChannel?.Id" OnToggle="ToggleCategoryAsync"
                                                OnEdit="EditCategory" OnCreateChannel="OpenChannelDialog"
                                                OnCreateSubcategory="OpenSubcategoryDialog" OnDelete="RequestDeleteCategory"
@@ -82,6 +88,7 @@
     private string? _error; private string? _dialogError;
     private ElementReference _sidebar; private IJSObjectReference? _dragModule;
     private DotNetObjectReference<CommunitySidebar>? _selfReference;
+    private bool _voiceSubscribed;
     private IEnumerable<CommunitySidebarVisualItem> RootItems => State.Categories.Where(value => value.ParentCategoryId is null)
         .Select(CommunitySidebarVisualItem.From)
         .Concat(State.Channels.Where(value => value.CategoryId is null).Select(CommunitySidebarVisualItem.From))
@@ -90,11 +97,14 @@
 
     protected override async Task OnParametersSetAsync()
     {
+        if (!_voiceSubscribed) { Voice.Changed += OnVoiceChanged; _voiceSubscribed = true; }
         if (_loadedCommunityId != CommunityId)
         {
             _loadedCommunityId = CommunityId; _collapsed.Clear();
             _collapsed.UnionWith(await CollapseStore.LoadAsync(AccountId, CommunityId));
             _revealedChannelId = null;
+            try { await Voice.ObserveCommunityAsync(CommunityId); }
+            catch (Exception exception) { _error = exception.Message; }
         }
         if (SelectedChannel is { } selected && _revealedChannelId != selected.Id)
         {
@@ -125,7 +135,17 @@
             await _dragModule.InvokeVoidAsync("updateChannelSorterProjection", _sidebar, projection);
     }
 
-    private Task SelectChannelAsync(CommunityChannelDto channel) => OnChannelSelected.InvokeAsync(channel);
+    private async Task SelectChannelAsync(CommunityChannelDto channel)
+    {
+        if (channel.Kind == CommunityChannelKind.Voice)
+        {
+            try { await VoiceSessions.JoinCommunityAsync(channel.CommunityId, channel.Id); _error = null; }
+            catch (Exception exception) { _error = exception.Message; }
+            return;
+        }
+        await OnChannelSelected.InvokeAsync(channel);
+    }
+    private void OnVoiceChanged() => _ = InvokeAsync(StateHasChanged);
     private void EditChannel(CommunityChannelDto channel) { _editingChannel = channel; _newChannelCategoryId = channel.CategoryId; _confirmChannelDelete = false; _dialogError = null; _showChannelDialog = true; }
     private void RequestDeleteChannel(CommunityChannelDto channel) { EditChannel(channel); _confirmChannelDelete = true; }
     private void OpenChannelDialog(CommunityCategoryDto category) { _editingChannel = null; _newChannelCategoryId = category.Id; _confirmChannelDelete = false; _dialogError = null; _showChannelDialog = true; }
@@ -144,9 +164,9 @@
     private async Task SaveChannelAsync(ChannelSettingsSubmission submission) => await RunDialogAsync(async () =>
     {
         CommunityChannelDto? created = null;
-        if (submission.ChannelId is { } id) await State.UpdateChannelAsync(id, submission.Name, submission.CategoryId);
-        else created = await State.CreateChannelAsync(submission.Name, submission.CategoryId);
-        CloseChannelDialog(); if (created is not null) await OnChannelSelected.InvokeAsync(created);
+        if (submission.ChannelId is { } id) await State.UpdateChannelAsync(id, submission.Name, submission.CategoryId, submission.Kind);
+        else created = await State.CreateChannelAsync(submission.Name, submission.CategoryId, submission.Kind);
+        CloseChannelDialog(); if (created is { Kind: CommunityChannelKind.Text }) await OnChannelSelected.InvokeAsync(created);
     });
     private async Task DeleteChannelAsync(Guid channelId) => await RunDialogAsync(async () =>
     {
@@ -215,6 +235,7 @@
         => CommunityVisibleTreeProjection.Build(State.Categories, State.Channels, _collapsed);
     public async ValueTask DisposeAsync()
     {
+        if (_voiceSubscribed) Voice.Changed -= OnVoiceChanged;
         if (_dragModule is not null)
         {
             try { await _dragModule.InvokeVoidAsync("unwireChannelSorter", _sidebar); await _dragModule.DisposeAsync(); }

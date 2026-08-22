@@ -1,10 +1,10 @@
 using Iridium.Protocol;
 using Iridium.Server.Configuration;
+using Iridium.Server.Communities;
 using Iridium.Server.Domain;
 using Iridium.Server.Hubs;
 using Iridium.Server.Persistence;
 using Iridium.Server.Security;
-using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
@@ -71,7 +71,7 @@ public static class CommunityManagementEndpoints
 
     private static async Task<IResult> UpdateCommunityAsync(
         Guid communityId, UpdateCommunityRequest request, HttpContext context, IridiumDbContext db,
-        SessionService sessions, CommunityAuthorizationService authorization, IHubContext<ChatHub> hub)
+        SessionService sessions, CommunityAuthorizationService authorization, CommunityRealtimePublisher realtime)
     {
         var actor = await RequirePermissionAsync(communityId, CommunityPermission.ManageCommunity, context, db, sessions, authorization);
         if (actor.Error is not null) return actor.Error;
@@ -84,13 +84,13 @@ public static class CommunityManagementEndpoints
         community.Name = name;
         community.Description = description;
         await db.SaveChangesAsync();
-        await NotifyCommunityAsync(communityId, "overview", db, hub);
+        await realtime.PublishAsync(communityId, "overview", db);
         return Results.Ok(ToDto(community));
     }
 
     private static async Task<IResult> CreateRoleAsync(
         Guid communityId, CreateCommunityRoleRequest request, HttpContext context, IridiumDbContext db,
-        SessionService sessions, CommunityAuthorizationService authorization, IHubContext<ChatHub> hub)
+        SessionService sessions, CommunityAuthorizationService authorization, CommunityRealtimePublisher realtime)
     {
         var actor = await RequirePermissionAsync(communityId, CommunityPermission.ManageRoles, context, db, sessions, authorization);
         if (actor.Error is not null) return actor.Error;
@@ -113,13 +113,13 @@ public static class CommunityManagementEndpoints
         db.CommunityRoles.Add(role);
         try { await db.SaveChangesAsync(); }
         catch (DbUpdateException) { return Results.Conflict(new { message = "A role with that name already exists." }); }
-        await NotifyCommunityAsync(communityId, "role-created", db, hub);
+        await realtime.PublishAsync(communityId, "role-created", db);
         return Results.Created($"/api/communities/{communityId}/roles/{role.Id}", ToDto(role));
     }
 
     private static async Task<IResult> UpdateRoleAsync(
         Guid communityId, Guid roleId, UpdateCommunityRoleRequest request, HttpContext context, IridiumDbContext db,
-        SessionService sessions, CommunityAuthorizationService authorization, IHubContext<ChatHub> hub)
+        SessionService sessions, CommunityAuthorizationService authorization, CommunityRealtimePublisher realtime)
     {
         var actor = await RequirePermissionAsync(communityId, CommunityPermission.ManageRoles, context, db, sessions, authorization);
         if (actor.Error is not null) return actor.Error;
@@ -137,13 +137,13 @@ public static class CommunityManagementEndpoints
         role.IsMentionable = !role.IsDefault && request.IsMentionable;
         try { await db.SaveChangesAsync(); }
         catch (DbUpdateException) { return Results.Conflict(new { message = "A role with that name already exists." }); }
-        await NotifyCommunityAsync(communityId, "role-updated", db, hub);
+        await realtime.PublishAsync(communityId, "role-updated", db);
         return Results.Ok(ToDto(role));
     }
 
     private static async Task<IResult> MoveRoleAsync(
         Guid communityId, Guid roleId, MoveCommunityRoleRequest request, HttpContext context, IridiumDbContext db,
-        SessionService sessions, CommunityAuthorizationService authorization, IHubContext<ChatHub> hub)
+        SessionService sessions, CommunityAuthorizationService authorization, CommunityRealtimePublisher realtime)
     {
         var actor = await RequirePermissionAsync(communityId, CommunityPermission.ManageRoles, context, db, sessions, authorization);
         if (actor.Error is not null) return actor.Error;
@@ -161,13 +161,13 @@ public static class CommunityManagementEndpoints
         defaultRole.Position = 0;
         for (var index = 0; index < custom.Count; index++) custom[index].Position = index + 1;
         await db.SaveChangesAsync();
-        await NotifyCommunityAsync(communityId, "roles-reordered", db, hub);
+        await realtime.PublishAsync(communityId, "roles-reordered", db);
         return Results.NoContent();
     }
 
     private static async Task<IResult> DeleteRoleAsync(
         Guid communityId, Guid roleId, HttpContext context, IridiumDbContext db, SessionService sessions,
-        CommunityAuthorizationService authorization, IHubContext<ChatHub> hub)
+        CommunityAuthorizationService authorization, CommunityRealtimePublisher realtime)
     {
         var actor = await RequirePermissionAsync(communityId, CommunityPermission.ManageRoles, context, db, sessions, authorization);
         if (actor.Error is not null) return actor.Error;
@@ -179,13 +179,13 @@ public static class CommunityManagementEndpoints
         db.CommunityMemberRoles.RemoveRange(role.Members);
         db.CommunityRoles.Remove(role);
         await db.SaveChangesAsync();
-        await NotifyCommunityAsync(communityId, "role-deleted", db, hub);
+        await realtime.PublishAsync(communityId, "role-deleted", db);
         return Results.NoContent();
     }
 
     private static async Task<IResult> SetMemberRolesAsync(
         Guid communityId, Guid accountId, SetCommunityMemberRolesRequest request, HttpContext context, IridiumDbContext db,
-        SessionService sessions, CommunityAuthorizationService authorization, IHubContext<ChatHub> hub)
+        SessionService sessions, CommunityAuthorizationService authorization, CommunityRealtimePublisher realtime)
     {
         var actor = await RequirePermissionAsync(communityId, CommunityPermission.ManageRoles, context, db, sessions, authorization);
         if (actor.Error is not null) return actor.Error;
@@ -207,23 +207,23 @@ public static class CommunityManagementEndpoints
                 CommunityId = communityId, AccountId = accountId, RoleId = role.Id, Member = member, Role = role
             });
         await db.SaveChangesAsync();
-        await NotifyCommunityAsync(communityId, "member-roles", db, hub);
+        await realtime.PublishAsync(communityId, "member-roles", db);
         return Results.NoContent();
     }
 
     private static Task<IResult> KickMemberAsync(
         Guid communityId, Guid accountId, HttpContext context, IridiumDbContext db, SessionService sessions,
-        CommunityAuthorizationService authorization, IHubContext<ChatHub> hub) =>
-        RemoveMemberAsync(communityId, accountId, false, null, context, db, sessions, authorization, hub);
+        CommunityAuthorizationService authorization, CommunityRealtimePublisher realtime) =>
+        RemoveMemberAsync(communityId, accountId, false, null, context, db, sessions, authorization, realtime);
 
     private static Task<IResult> BanMemberAsync(
         Guid communityId, Guid accountId, BanCommunityMemberRequest request, HttpContext context, IridiumDbContext db,
-        SessionService sessions, CommunityAuthorizationService authorization, IHubContext<ChatHub> hub) =>
-        RemoveMemberAsync(communityId, accountId, true, request.Reason, context, db, sessions, authorization, hub);
+        SessionService sessions, CommunityAuthorizationService authorization, CommunityRealtimePublisher realtime) =>
+        RemoveMemberAsync(communityId, accountId, true, request.Reason, context, db, sessions, authorization, realtime);
 
     private static async Task<IResult> RemoveMemberAsync(
         Guid communityId, Guid accountId, bool ban, string? reason, HttpContext context, IridiumDbContext db,
-        SessionService sessions, CommunityAuthorizationService authorization, IHubContext<ChatHub> hub)
+        SessionService sessions, CommunityAuthorizationService authorization, CommunityRealtimePublisher realtime)
     {
         var permission = ban ? CommunityPermission.BanMembers : CommunityPermission.KickMembers;
         var actor = await RequirePermissionAsync(communityId, permission, context, db, sessions, authorization);
@@ -253,15 +253,15 @@ public static class CommunityManagementEndpoints
             db.CommunityMembers.Remove(member);
         }
         await db.SaveChangesAsync();
-        await hub.Clients.Group(ChatHub.AccountGroup(accountId)).SendAsync(CommunityHubContract.AccessRevoked,
+        await realtime.PublishAccessRevokedAsync(
             new CommunityAccessRevokedEvent(communityId, accountId, ban ? "banned" : "kicked"));
-        await NotifyCommunityAsync(communityId, ban ? "member-banned" : "member-kicked", db, hub);
+        await realtime.PublishAsync(communityId, ban ? "member-banned" : "member-kicked", db);
         return Results.NoContent();
     }
 
     private static async Task<IResult> UnbanMemberAsync(
         Guid communityId, Guid accountId, HttpContext context, IridiumDbContext db, SessionService sessions,
-        CommunityAuthorizationService authorization, IHubContext<ChatHub> hub)
+        CommunityAuthorizationService authorization, CommunityRealtimePublisher realtime)
     {
         var actor = await RequirePermissionAsync(communityId, CommunityPermission.BanMembers, context, db, sessions, authorization);
         if (actor.Error is not null) return actor.Error;
@@ -269,7 +269,7 @@ public static class CommunityManagementEndpoints
         if (ban is null) return Results.NotFound();
         db.CommunityBans.Remove(ban);
         await db.SaveChangesAsync();
-        await NotifyCommunityAsync(communityId, "member-unbanned", db, hub);
+        await realtime.PublishAsync(communityId, "member-unbanned", db);
         return Results.NoContent();
     }
 
@@ -283,7 +283,7 @@ public static class CommunityManagementEndpoints
 
     private static async Task<IResult> CreateInviteAsync(
         Guid communityId, CreateCommunityInviteRequest request, HttpContext context, IridiumDbContext db,
-        SessionService sessions, CommunityAuthorizationService authorization, IHubContext<ChatHub> hub)
+        SessionService sessions, CommunityAuthorizationService authorization, CommunityRealtimePublisher realtime)
     {
         var actor = await RequirePermissionAsync(communityId, CommunityPermission.CreateInvites, context, db, sessions, authorization);
         if (actor.Error is not null) return actor.Error;
@@ -300,7 +300,7 @@ public static class CommunityManagementEndpoints
         };
         db.CommunityInvites.Add(invite);
         await db.SaveChangesAsync();
-        await NotifyCommunityAsync(communityId, "invite-created", db, hub);
+        await realtime.PublishAsync(communityId, "invite-created", db);
         var url = $"{context.Request.Scheme}://{context.Request.Host}/invite/{token}";
         return Results.Created($"/api/communities/{communityId}/invites/{invite.Id}",
             new CommunityInviteDto(invite.Id, communityId, invite.CodePrefix, actor.DisplayName!, invite.CreatedAt,
@@ -309,7 +309,7 @@ public static class CommunityManagementEndpoints
 
     private static async Task<IResult> RevokeInviteAsync(
         Guid communityId, Guid inviteId, HttpContext context, IridiumDbContext db, SessionService sessions,
-        CommunityAuthorizationService authorization, IHubContext<ChatHub> hub)
+        CommunityAuthorizationService authorization, CommunityRealtimePublisher realtime)
     {
         var actor = await RequirePermissionAsync(communityId, CommunityPermission.CreateInvites, context, db, sessions, authorization);
         if (actor.Error is not null) return actor.Error;
@@ -317,7 +317,7 @@ public static class CommunityManagementEndpoints
         if (invite is null) return Results.NotFound();
         invite.Revoked = true;
         await db.SaveChangesAsync();
-        await NotifyCommunityAsync(communityId, "invite-revoked", db, hub);
+        await realtime.PublishAsync(communityId, "invite-revoked", db);
         return Results.NoContent();
     }
 
@@ -340,7 +340,7 @@ public static class CommunityManagementEndpoints
 
     private static async Task<IResult> JoinInviteAsync(
         string token, HttpContext context, IridiumDbContext db, SessionService sessions,
-        IHubContext<ChatHub> hub, CommunityInviteService inviteService)
+        CommunityInviteService inviteService, CommunityRealtimePublisher realtime)
     {
         var session = await sessions.GetAsync(context, db);
         if (session is null) return Results.Unauthorized();
@@ -352,7 +352,7 @@ public static class CommunityManagementEndpoints
             return Results.Problem(exception.Message, statusCode: exception.Status is null
                 ? StatusCodes.Status403Forbidden : StatusCodes.Status410Gone);
         }
-        if (!outcome.AlreadyMember) await NotifyCommunityAsync(outcome.Community.Id, "member-joined", db, hub);
+        if (!outcome.AlreadyMember) await realtime.PublishAsync(outcome.Community.Id, "member-joined", db);
         return Results.Ok(new JoinCommunityInviteResultDto(ToDto(outcome.Community), outcome.AlreadyMember));
     }
 
@@ -403,15 +403,6 @@ public static class CommunityManagementEndpoints
         if (string.IsNullOrWhiteSpace(color)) return null;
         var normalized = color.Trim().ToUpperInvariant();
         return normalized.Length == 7 && normalized[0] == '#' && normalized[1..].All(Uri.IsHexDigit) ? normalized : null;
-    }
-
-    private static async Task NotifyCommunityAsync(Guid communityId, string change, IridiumDbContext db, IHubContext<ChatHub> hub)
-    {
-        var accounts = await db.CommunityMembers.Where(value => value.CommunityId == communityId)
-            .Select(value => value.AccountId).ToListAsync();
-        if (accounts.Count == 0) return;
-        await hub.Clients.Groups(accounts.Select(ChatHub.AccountGroup).ToArray()).SendAsync(
-            CommunityHubContract.StateChanged, new CommunityStateChangedEvent(communityId, change));
     }
 
     private static CommunityRoleDto ToDto(CommunityRole role) =>

@@ -27,7 +27,9 @@ public sealed class AccountSwitchingTests
             var tabASelection = new MemorySelectionStore();
             var session = new NodeSession(store, tabASelection, new EmptyLegacyTokenStore());
             var communities = new CommunitySession(session);
-            await using var messaging = new ChannelMessagingSession(session, NullLogger<ChannelMessagingSession>.Instance);
+            await using var realtime = new RealtimeConnectionService(session, NullLogger<RealtimeConnectionService>.Instance);
+            await using var messaging = new ChannelMessagingSession(session, realtime,
+                NullLogger<ChannelMessagingSession>.Instance);
             var switching = new AccountSwitchService(session, communities, messaging);
 
             await switching.InitializeAsync([node]);
@@ -47,7 +49,10 @@ public sealed class AccountSwitchingTests
             var tabBSelection = new MemorySelectionStore(beta.Key);
             var tabBSession = new NodeSession(store, tabBSelection, new EmptyLegacyTokenStore());
             var tabBCommunities = new CommunitySession(tabBSession);
-            await using var tabBMessaging = new ChannelMessagingSession(tabBSession, NullLogger<ChannelMessagingSession>.Instance);
+            await using var tabBRealtime = new RealtimeConnectionService(tabBSession,
+                NullLogger<RealtimeConnectionService>.Instance);
+            await using var tabBMessaging = new ChannelMessagingSession(tabBSession, tabBRealtime,
+                NullLogger<ChannelMessagingSession>.Instance);
             var tabBSwitching = new AccountSwitchService(tabBSession, tabBCommunities, tabBMessaging);
             await tabBSwitching.InitializeAsync([node]);
             Assert.Equal(beta.AccountId, tabBSession.Account!.Id);

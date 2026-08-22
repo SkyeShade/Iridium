@@ -1,0 +1,43 @@
+@implements IAsyncDisposable
+
+<time class="voice-elapsed" datetime="@StartedAt.ToString("O")">@Format(DateTimeOffset.UtcNow - StartedAt)</time>
+
+@code {
+    [Parameter] public DateTimeOffset StartedAt { get; set; }
+    private PeriodicTimer? _timer;
+    private CancellationTokenSource? _cancellation;
+
+    protected override void OnParametersSet()
+    {
+        if (_timer is not null) return;
+        _timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+        _cancellation = new CancellationTokenSource();
+        _ = TickAsync(_cancellation.Token);
+    }
+
+    private async Task TickAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            while (await _timer!.WaitForNextTickAsync(cancellationToken))
+                await InvokeAsync(StateHasChanged);
+        }
+        catch (OperationCanceledException) { }
+    }
+
+    private static string Format(TimeSpan elapsed)
+    {
+        if (elapsed < TimeSpan.Zero) elapsed = TimeSpan.Zero;
+        var hours = (long)elapsed.TotalHours;
+        return hours > 0 ? $"{hours:00}:{elapsed.Minutes:00}:{elapsed.Seconds:00}" :
+            $"{elapsed.Minutes:00}:{elapsed.Seconds:00}";
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        _cancellation?.Cancel();
+        _cancellation?.Dispose();
+        _timer?.Dispose();
+        return ValueTask.CompletedTask;
+    }
+}

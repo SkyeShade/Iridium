@@ -53,7 +53,8 @@ public sealed record ChannelMessageDto(
     MessageDeliveryState DeliveryState = MessageDeliveryState.Confirmed,
     string? DeliveryError = null,
     bool CanRetry = false,
-    IReadOnlyList<AttachmentDto>? Attachments = null);
+    IReadOnlyList<AttachmentDto>? Attachments = null,
+    MessageKind Kind = MessageKind.User);
 
 public sealed record SendChannelMessageRequest(
     string Content,

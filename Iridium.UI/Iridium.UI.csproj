@@ -11,6 +11,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Iridium.Protocol\Iridium.Protocol.csproj" />
+    <ProjectReference Include="..\Iridium.Client.Core\Iridium.Client.Core.csproj" />
   </ItemGroup>
 
   <ItemGroup>

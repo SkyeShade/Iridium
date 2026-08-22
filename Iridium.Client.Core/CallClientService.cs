@@ -4,9 +4,16 @@ using Microsoft.Extensions.Logging;
 
 namespace Iridium.Client.Core;
 
-public sealed class CallClientService(NodeSession session, ICallMediaService media, ILogger<CallClientService> logger)
-    : IAsyncDisposable
+public sealed class CallClientService(
+    NodeSession session,
+    RealtimeConnectionService realtime,
+    ICallMediaService media,
+    ILogger<CallClientService> logger)
+    : IDirectVoiceSession, IAsyncDisposable
 {
+    // TODO: Remove temporary voice-call diagnostics once WebRTC calls are stable.
+    private static int _nextInstanceId;
+    private readonly int _instanceId = CreateDiagnosticInstance(logger, media.DiagnosticsEnabled);
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly SemaphoreSlim _signalingGate = new(1, 1);
     private readonly List<IDisposable> _handlerRegistrations = [];
@@ -23,11 +30,13 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
     private readonly Dictionary<string, int> _localCandidateTypes = new(StringComparer.OrdinalIgnoreCase);
     private int _peerGeneration;
     private Guid? _negotiationId;
+    private int _negotiationGeneration;
     private bool _negotiationStarted;
     private readonly HashSet<Guid> _processedAnswerNegotiations = [];
     private int _localCandidatesGenerated;
     private int _localCandidatesSent;
     private int _remoteCandidatesReceived;
+    private int _remoteCandidatesQueued;
     private int _remoteCandidatesAdded;
     private int _remoteCandidateAddFailures;
     private string _mediaRole = "unknown";
@@ -35,6 +44,17 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
     private bool _mediaFailureInProgress;
     private int _negotiationTimeoutPeerGeneration;
     private Guid? _negotiationTimeoutId;
+    private int _handlerRegistrationCount;
+    private int _offerReceivedCount;
+    private int _answerReceivedCount;
+    private int _iceReceivedCount;
+    private int _createOfferCount;
+    private int _createAnswerCount;
+    private int _acceptInvokedCount;
+    private int _callAcceptedReceivedCount;
+    private readonly HashSet<Guid> _receivedSignalIds = [];
+    private bool _accepting;
+    private (bool Muted, bool Deafened, CallConnectionState State)? _lastPublishedParticipantState;
     private bool _disposed;
 
     public CallSessionDto? CurrentCall { get; private set; }
@@ -45,6 +65,7 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
     public bool IsDeafened { get; private set; }
     public CallConnectionState MediaConnectionState { get; private set; } = CallConnectionState.New;
     public bool CanRetry => CurrentCall?.State == CallState.Active && MediaConnectionState == CallConnectionState.Failed;
+    public bool IsAccepting => _accepting;
     public bool IsSignalingConnected => _connection?.State == HubConnectionState.Connected;
     public Guid? AccountId => _accountId;
     public event Action? Changed;
@@ -63,6 +84,7 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
         {
             await EnsureConnectionAsync(cancellationToken);
             if (CurrentCall is not null || IncomingCall is not null) throw new InvalidOperationException("A call is already in progress.");
+            ResetCallDiagnostics();
             if (conversation.OtherParticipant.AccountId == _accountId) throw new InvalidOperationException("You cannot call yourself.");
             ErrorMessage = null;
             StatusMessage = $"Calling {conversation.OtherParticipant.DisplayName}…";
@@ -90,6 +112,11 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
 
     public async Task AcceptAsync(CancellationToken cancellationToken = default)
     {
+        if (_accepting) return;
+        _accepting = true;
+        _acceptInvokedCount++;
+        VoiceDiagnostic("AcceptCall invoked", IncomingCall?.CallId);
+        NotifyChanged();
         await _gate.WaitAsync(cancellationToken);
         try
         {
@@ -106,6 +133,7 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
                 await StartMediaAsync(cancellationToken);
                 await _connection!.InvokeAsync(VoiceCallHubContract.Accept, incoming.CallId, cancellationToken);
                 accepted = true;
+                VoiceDiagnostic("server accepted", incoming.CallId);
                 CurrentCall = await _connection!.InvokeAsync<CallSessionDto?>(VoiceCallHubContract.GetCurrent, cancellationToken)
                     ?? throw new InvalidOperationException("The call ended before it could be accepted.");
                 IncomingCall = null;
@@ -126,7 +154,12 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
                 else await FailMediaAsync(message);
             }
         }
-        finally { _gate.Release(); }
+        finally
+        {
+            _accepting = false;
+            _gate.Release();
+            NotifyChanged();
+        }
     }
 
     public async Task DeclineAsync(CancellationToken cancellationToken = default)
@@ -155,6 +188,9 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
             }
             var method = call.State == CallState.Ringing && call.CallerAccountId == _accountId
                 ? VoiceCallHubContract.Cancel : VoiceCallHubContract.HangUp;
+            // Stop microphone transmission before ending server membership so a subsequent
+            // voice session can never overlap this PeerConnection's local track.
+            await ResetMediaAsync("voice session ended by local user", cancellationToken);
             await TryInvokeAsync(method, call.Id, cancellationToken);
             await FinishAsync();
         }
@@ -191,7 +227,7 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
             if (call.CallerAccountId == _accountId) await RestartOffererAsync(cancellationToken);
             else
             {
-                await ResetMediaAsync(cancellationToken);
+                await ResetMediaAsync("callee retry replacement", cancellationToken);
                 _negotiationId = null;
                 _negotiationStarted = false;
                 MediaConnectionState = CallConnectionState.Connecting;
@@ -222,7 +258,6 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
             if (_connection is not null)
             {
                 DisposeHandlerRegistrations();
-                await _connection.DisposeAsync();
             }
             _connection = null; _node = null; _accountId = null;
         }
@@ -234,30 +269,20 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
         ObjectDisposedException.ThrowIf(_disposed, this);
         var client = session.AuthorizedClient;
         var accountId = session.Account?.Id ?? throw new InvalidOperationException("Log in before using voice calls.");
-        if (_connection is not null && _node == client.NodeAddress && _accountId == accountId)
-        {
-            if (_connection.State == HubConnectionState.Connected) return;
-            if (_connection.State == HubConnectionState.Disconnected) { await _connection.StartAsync(cancellationToken); return; }
-            throw new InvalidOperationException("Voice-call signaling is reconnecting. Please wait a moment.");
-        }
-
-        if (_connection is not null)
-        {
-            DisposeHandlerRegistrations();
-            await _connection.DisposeAsync();
-        }
+        var connection = await realtime.EnsureConnectedAsync("CallClientService requested realtime", cancellationToken);
+        if (ReferenceEquals(_connection, connection)) return;
+        DisposeHandlerRegistrations();
         _node = client.NodeAddress; _accountId = accountId;
-        var connection = new HubConnectionBuilder().WithUrl(new Uri(client.NodeAddress, "hubs/chat"), options =>
-            options.AccessTokenProvider = () => Task.FromResult(client.AccessToken)).WithAutomaticReconnect().Build();
         _connection = connection;
         RegisterHandlers(connection);
-        await connection.StartAsync(cancellationToken);
         await RestoreCurrentCallAsync();
     }
 
     private void RegisterHandlers(HubConnection connection)
     {
         DisposeHandlerRegistrations();
+        _handlerRegistrationCount++;
+        VoiceDiagnostic("Registering Offer/Answer/IceCandidate handlers", registrationCount: _handlerRegistrationCount);
         _handlerRegistrations.Add(connection.On<IncomingCallEvent>(VoiceCallHubContract.Incoming, value => RunHandlerAsync(() => ReceiveIncoming(value))));
         _handlerRegistrations.Add(connection.On<CallStateEvent>(VoiceCallHubContract.Accepted, value => RunHandlerAsync(() => ReceiveAcceptedAsync(value))));
         _handlerRegistrations.Add(connection.On<CallStateEvent>(VoiceCallHubContract.Rejected, value => RunHandlerAsync(() => ReceiveTerminalAsync(value, "Call declined"))));
@@ -272,8 +297,8 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
         _handlerRegistrations.Add(connection.On<WebRtcDescriptionEvent>(VoiceCallHubContract.Offer, value => RunHandlerAsync(() => ReceiveOfferAsync(value))));
         _handlerRegistrations.Add(connection.On<WebRtcDescriptionEvent>(VoiceCallHubContract.Answer, value => RunHandlerAsync(() => ReceiveAnswerAsync(value))));
         _handlerRegistrations.Add(connection.On<WebRtcIceCandidateEvent>(VoiceCallHubContract.IceCandidate, value => RunHandlerAsync(() => ReceiveIceAsync(value))));
-        logger.LogDebug("Registered one WebRtcAnswer handler on the active call signaling connection; {HandlerCount} total call handlers are active.",
-            _handlerRegistrations.Count);
+        VoiceDiagnostic("subscribed to signaling", registrationCount: _handlerRegistrationCount,
+            details: $"activeHandlers={_handlerRegistrations.Count}");
         connection.Reconnecting += exception => { StatusMessage = "Signaling reconnecting; audio may continue…"; NotifyChanged(); return Task.CompletedTask; };
         connection.Reconnected += _ => RunHandlerAsync(RestoreCurrentCallAsync);
         connection.Closed += exception => RunHandlerAsync(async () =>
@@ -288,6 +313,8 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
 
     private void DisposeHandlerRegistrations()
     {
+        if (_handlerRegistrations.Count > 0)
+            VoiceDiagnostic("disposing signaling subscriptions", details: $"activeHandlers={_handlerRegistrations.Count}");
         foreach (var registration in _handlerRegistrations) registration.Dispose();
         _handlerRegistrations.Clear();
     }
@@ -295,6 +322,7 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
     private Task ReceiveIncoming(IncomingCallEvent incoming)
     {
         if (CurrentCall is not null || IncomingCall is not null) return Task.CompletedTask;
+        ResetCallDiagnostics();
         if (_pendingSignalingCallId is not null && _pendingSignalingCallId != incoming.CallId)
         {
             _pendingOffer = null;
@@ -308,7 +336,14 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
     private async Task ReceiveAcceptedAsync(CallStateEvent value)
     {
         if (CurrentCall?.Id != value.CallId) return;
+        _callAcceptedReceivedCount++;
+        var duplicateSignal = value.SignalId is { } acceptedSignalId && !_receivedSignalIds.Add(acceptedSignalId);
+        VoiceDiagnostic("caller received CallAccepted", value.CallId, value.SignalId,
+            details: $"acceptedReceivedCount={_callAcceptedReceivedCount} duplicateSignalId={duplicateSignal}");
         CurrentCall = CurrentCall with { State = CallState.Active };
+        var authoritativeCall = await _connection!.InvokeAsync<CallSessionDto?>(VoiceCallHubContract.GetCurrent);
+        if (authoritativeCall?.Id == value.CallId)
+            CurrentCall = authoritativeCall;
         if (MediaConnectionState != CallConnectionState.Connected)
         {
             MediaConnectionState = CallConnectionState.Connecting;
@@ -362,6 +397,16 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
 
     private async Task ReceiveOfferAsync(WebRtcDescriptionEvent value)
     {
+        _offerReceivedCount++;
+        var duplicateSignal = !_receivedSignalIds.Add(value.SignalId);
+        VoiceDiagnostic("RECEIVED Offer", value.CallId, value.SignalId, value.NegotiationGeneration,
+            details: $"offerReceivedCount={_offerReceivedCount} senderPeerGeneration={value.SenderPeerGeneration} duplicateSignalId={duplicateSignal}");
+        if (duplicateSignal)
+        {
+            VoiceDiagnostic("SignalId already processed -> ignoring Offer", value.CallId, value.SignalId,
+                value.NegotiationGeneration);
+            return;
+        }
         if (IncomingCall?.CallId != value.CallId && CurrentCall?.Id != value.CallId)
         {
             // The server has already authorized and targeted this signal. Keep it if SignalR
@@ -388,12 +433,13 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
             return;
         }
         _negotiationId = value.NegotiationId;
+        _negotiationGeneration = value.NegotiationGeneration;
         _pendingOffer = value;
         if (CurrentCall?.State == CallState.Active)
         {
             if (!_mediaReady || _remoteDescriptionReady)
             {
-                await ResetMediaAsync();
+                await ResetMediaAsync("new remote offer replacement");
                 await StartMediaAsync(CancellationToken.None);
                 _negotiationId = value.NegotiationId;
                 _pendingOffer = value;
@@ -408,6 +454,16 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
     private async Task ReceiveAnswerAsync(WebRtcDescriptionEvent value)
     {
         if (CurrentCall?.Id != value.CallId) return;
+        _answerReceivedCount++;
+        var duplicateSignal = !_receivedSignalIds.Add(value.SignalId);
+        VoiceDiagnostic("RECEIVED Answer", value.CallId, value.SignalId, value.NegotiationGeneration,
+            details: $"answerReceivedCount={_answerReceivedCount} senderPeerGeneration={value.SenderPeerGeneration} duplicateSignalId={duplicateSignal}");
+        if (duplicateSignal)
+        {
+            VoiceDiagnostic("SignalId already processed -> ignoring Answer", value.CallId, value.SignalId,
+                value.NegotiationGeneration);
+            return;
+        }
         var alreadyProcessed = _processedAnswerNegotiations.Contains(value.NegotiationId);
         WebRtcDiagnosticSnapshot? before = null;
         if (_mediaReady)
@@ -430,6 +486,8 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
         }
         if (disposition == RemoteAnswerDisposition.Duplicate)
         {
+            VoiceDiagnostic("duplicate answer ignored: negotiation already processed", value.CallId, value.SignalId,
+                value.NegotiationGeneration, details: $"duplicateSignalId={duplicateSignal}");
             logger.LogDebug("Call {CallId} negotiation {NegotiationId}: duplicate answer ignored; the current peer remains untouched.",
                 value.CallId, value.NegotiationId);
             return;
@@ -437,6 +495,9 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
         if (disposition == RemoteAnswerDisposition.AlreadyApplied)
         {
             _processedAnswerNegotiations.Add(value.NegotiationId);
+            VoiceDiagnostic("stale/duplicate answer ignored before setRemoteDescription because signalingState is stable",
+                value.CallId, value.SignalId, value.NegotiationGeneration,
+                details: $"duplicateSignalId={duplicateSignal} localPeerGeneration={_peerGeneration}");
             logger.LogDebug("Call {CallId} negotiation {NegotiationId}: answer arrived in stable state and was treated as already applied; the peer remains connected.",
                 value.CallId, value.NegotiationId);
             return;
@@ -452,7 +513,7 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
         }
         logger.LogDebug("Call {CallId} account {AccountId}: answer metadata Type={DescriptionType}, SdpLength={SdpLength}.",
             value.CallId, _accountId, value.Description.Type, value.Description.Sdp?.Length ?? 0);
-        var result = await media.ApplyAnswerAsync(value.NegotiationId, value.Description);
+        var result = await media.ApplyAnswerAsync(value.NegotiationId, value.SignalId, value.Description);
         if (!result.Applied)
         {
             logger.LogDebug("Call {CallId} negotiation {NegotiationId}: answer ignored by peer state guard. SignalingState={SignalingState}, Reason={IgnoreReason}.",
@@ -470,6 +531,16 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
 
     private async Task ReceiveIceAsync(WebRtcIceCandidateEvent value)
     {
+        _iceReceivedCount++;
+        var duplicateSignal = !_receivedSignalIds.Add(value.SignalId);
+        VoiceDiagnostic($"SIGNALR RECEIVED REMOTE ICE #{_iceReceivedCount}", value.CallId, value.SignalId, value.NegotiationGeneration,
+            details: $"iceReceivedCount={_iceReceivedCount} senderPeerGeneration={value.SenderPeerGeneration} duplicateSignalId={duplicateSignal}");
+        if (duplicateSignal)
+        {
+            VoiceDiagnostic("SignalId already processed -> ignoring IceCandidate", value.CallId, value.SignalId,
+                value.NegotiationGeneration);
+            return;
+        }
         if (CurrentCall?.Id != value.CallId && IncomingCall?.CallId != value.CallId)
         {
             if (_pendingSignalingCallId is not null && _pendingSignalingCallId != value.CallId) return;
@@ -478,29 +549,38 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
         logger.LogDebug("Call {CallId} negotiation {NegotiationId} account {AccountId}: remote ICE candidate received from account {SenderAccountId}.",
             value.CallId, value.NegotiationId, _accountId, value.SenderAccountId);
         _remoteCandidatesReceived++;
-        if (_negotiationId is { } currentNegotiationId && currentNegotiationId != value.NegotiationId)
+        if (_negotiationId is { } currentNegotiationId &&
+            (currentNegotiationId != value.NegotiationId || value.NegotiationGeneration != _negotiationGeneration))
         {
-            logger.LogDebug("Call {CallId}: stale ICE candidate for negotiation {NegotiationId} ignored; active negotiation is {ActiveNegotiationId}.",
-                value.CallId, value.NegotiationId, currentNegotiationId);
+            VoiceDiagnostic("stale remote ICE ignored", value.CallId, value.SignalId, value.NegotiationGeneration,
+                details: $"activeNegotiationId={currentNegotiationId} activeNegotiationGeneration={_negotiationGeneration} " +
+                         $"senderPeerGeneration={value.SenderPeerGeneration}");
             return;
         }
         if (!_mediaReady || CurrentCall is null || !_remoteDescriptionReady || _negotiationId is null)
         {
             _pendingIce.Add(value);
-            logger.LogDebug("Call {CallId}: ICE candidate queued until remote description exists ({QueuedCount} queued).",
-                value.CallId, _pendingIce.Count);
+            _remoteCandidatesQueued++;
+            VoiceDiagnostic($"REMOTE ICE QUEUED #{_iceReceivedCount}", value.CallId, value.SignalId,
+                value.NegotiationGeneration, details: $"queuedCount={_pendingIce.Count}");
         }
         else
         {
             try
             {
-                await media.AddIceCandidateAsync(value.Candidate);
+                VoiceDiagnostic($"ADDING REMOTE ICE #{_iceReceivedCount}", value.CallId, value.SignalId,
+                    value.NegotiationGeneration);
+                await media.AddIceCandidateAsync(value.SignalId, value.Candidate);
                 _remoteCandidatesAdded++;
-                logger.LogDebug("Call {CallId}: ICE candidate successfully added.", value.CallId);
+                VoiceDiagnostic($"addIceCandidate SUCCESS #{_iceReceivedCount}", value.CallId, value.SignalId,
+                    value.NegotiationGeneration, details: $"remoteCandidatesAdded={_remoteCandidatesAdded}");
             }
-            catch
+            catch (Exception exception)
             {
                 _remoteCandidateAddFailures++;
+                VoiceDiagnostic($"addIceCandidate FAILED #{_iceReceivedCount}", value.CallId, value.SignalId,
+                    value.NegotiationGeneration,
+                    details: $"failureCount={_remoteCandidateAddFailures} name={exception.GetType().Name} message={exception.Message}");
                 throw;
             }
         }
@@ -516,20 +596,26 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
             throw new InvalidOperationException("This client does not yet support the Node's configured media mode.");
         media.IceCandidateGenerated -= SendIceAsync;
         media.ConnectionStateChanged -= MediaConnectionChangedAsync;
+        media.IceConnectionStateChanged -= MediaIceConnectionChangedAsync;
         media.SpeakingChanged -= LocalSpeakingChangedAsync;
         media.Error -= MediaErrorAsync;
+        media.DiagnosticGenerated -= ForwardVoiceDiagnosticAsync;
         media.IceCandidateGenerated += SendIceAsync;
         media.ConnectionStateChanged += MediaConnectionChangedAsync;
+        media.IceConnectionStateChanged += MediaIceConnectionChangedAsync;
         media.SpeakingChanged += LocalSpeakingChangedAsync;
         media.Error += MediaErrorAsync;
+        media.DiagnosticGenerated += ForwardVoiceDiagnosticAsync;
         var accountId = _accountId ?? throw new InvalidOperationException("The active call account is unavailable.");
         var callerAccountId = CurrentCall?.CallerAccountId ?? IncomingCall?.CallerAccountId;
         _mediaRole = callerAccountId == accountId ? "caller" : "callee";
         _peerGeneration++;
         ResetAttemptDiagnostics(preserveRemoteCandidates: true);
         _mediaFailureInProgress = false;
+        var remoteAccountId = CurrentCall?.Participants.FirstOrDefault(value => value.AccountId != accountId)?.AccountId;
         await media.InitializeAsync(configuration,
-            new CallMediaSessionContext(callId, accountId, _mediaRole, _peerGeneration, _negotiationId), cancellationToken);
+            new CallMediaSessionContext(callId, accountId, _mediaRole, _peerGeneration, _negotiationId,
+                _negotiationGeneration, remoteAccountId), cancellationToken);
         logger.LogDebug("Call {CallId} account {AccountId} role {Role}: PeerGeneration {PeerGeneration} created; getUserMedia succeeded; local audio track attached.",
             callId, accountId, _mediaRole, _peerGeneration);
         _mediaReady = true;
@@ -541,20 +627,36 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
         _ = HeartbeatAsync(_heartbeatCancellation.Token);
     }
 
-    private async Task SendIceAsync(WebRtcIceCandidate candidate)
+    private async Task SendIceAsync(LocalIceCandidateSignal signal)
     {
         var callId = CurrentCall?.Id ?? IncomingCall?.CallId;
         var negotiationId = _negotiationId;
         _localCandidatesGenerated++;
-        IncrementCandidateType(_localCandidateTypes, candidate.Candidate);
+        IncrementCandidateType(_localCandidateTypes, signal.Candidate.Candidate);
+        VoiceDiagnostic($"DOTNET RECEIVED LOCAL ICE #{signal.Sequence}", callId, signal.SignalId,
+            signal.NegotiationGeneration,
+            details: $"callbackPeerGeneration={signal.PeerGeneration} localCandidateCount={_localCandidatesGenerated}");
+        if (signal.PeerGeneration != _peerGeneration || signal.NegotiationGeneration != _negotiationGeneration)
+        {
+            VoiceDiagnostic($"stale local ICE #{signal.Sequence} ignored", callId, signal.SignalId,
+                signal.NegotiationGeneration,
+                details: $"callbackPeerGeneration={signal.PeerGeneration} currentPeerGeneration={_peerGeneration} " +
+                         $"callbackNegotiationGeneration={signal.NegotiationGeneration} currentNegotiationGeneration={_negotiationGeneration}");
+            return;
+        }
         if (callId is not null && negotiationId is not null && IsSignalingConnected)
         {
-            logger.LogDebug("Call {CallId} account {AccountId}: ICE candidate generated; forwarding without candidate contents.",
-                callId, _accountId);
-            await _connection!.InvokeAsync(VoiceCallHubContract.SendIceCandidate, callId.Value, negotiationId.Value, candidate);
+            VoiceDiagnostic($"CLIENT SENDING ICE #{signal.Sequence} TO SERVER", callId, signal.SignalId,
+                signal.NegotiationGeneration);
+            await _connection!.InvokeAsync(VoiceCallHubContract.SendIceCandidate, callId.Value, negotiationId.Value,
+                signal.NegotiationGeneration, signal.PeerGeneration, signal.SignalId, signal.Candidate);
             _localCandidatesSent++;
-            logger.LogDebug("Call {CallId}: ICE candidate sent.", callId);
+            VoiceDiagnostic($"CLIENT SENT ICE #{signal.Sequence} TO SERVER", callId, signal.SignalId,
+                signal.NegotiationGeneration, details: $"localCandidatesSent={_localCandidatesSent}");
         }
+        else VoiceDiagnostic($"LOCAL ICE #{signal.Sequence} NOT SENT", callId, signal.SignalId,
+            signal.NegotiationGeneration,
+            details: $"hasCallId={callId is not null} hasNegotiationId={negotiationId is not null} signalingConnected={IsSignalingConnected}");
     }
 
     private async Task MediaConnectionChangedAsync(CallConnectionState state)
@@ -574,11 +676,31 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
         {
             logger.LogDebug("Call {CallId} account {AccountId} role {Role} PeerGeneration {PeerGeneration}: negotiation timeout cancelled because peer connected.",
                 CurrentCall?.Id, _accountId, _mediaRole, _peerGeneration);
-            CancelNegotiationTimeout();
+            CancelNegotiationTimeout("current peer connected");
         }
         if (CurrentCall is not null && IsSignalingConnected) await PublishParticipantStateAsync();
         NotifyChanged();
         if (state == CallConnectionState.Failed) await FailMediaAsync("The WebRTC connection failed.", "WEBRTC FAILED");
+    }
+
+    private Task MediaIceConnectionChangedAsync(string state)
+    {
+        if (state is "connected" or "completed") CancelNegotiationTimeout("IceConnected");
+        return Task.CompletedTask;
+    }
+
+    // TODO: Remove temporary voice-call diagnostics once WebRTC calls are stable.
+    private async Task ForwardVoiceDiagnosticAsync(VoiceDiagnosticReport report)
+    {
+        if (!media.DiagnosticsEnabled || !IsSignalingConnected) return;
+        var activeCallId = CurrentCall?.Id ?? IncomingCall?.CallId;
+        if (activeCallId != report.CallId) return;
+        try { await _connection!.InvokeAsync(VoiceCallHubContract.ReportDiagnostic, report); }
+        catch (Exception exception)
+        {
+            logger.LogDebug(exception, "Call {CallId}: could not forward temporary voice diagnostic {Event}.",
+                report.CallId, report.Event);
+        }
     }
 
     private async Task MediaErrorAsync(string message)
@@ -602,24 +724,37 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
     private async Task PublishParticipantStateAsync(CancellationToken cancellationToken = default)
     {
         if (CurrentCall is null || !IsSignalingConnected) return;
+        var state = (IsMuted, IsDeafened, MediaConnectionState);
+        if (_lastPublishedParticipantState == state) return;
         await _connection!.InvokeAsync(VoiceCallHubContract.SetParticipantState, CurrentCall.Id,
             IsMuted, IsDeafened, MediaConnectionState, cancellationToken);
+        _lastPublishedParticipantState = state;
     }
 
     private async Task FlushIceAsync(CancellationToken cancellationToken = default)
     {
         if (!_mediaReady || !_remoteDescriptionReady || CurrentCall is null) return;
-        foreach (var signal in _pendingIce.Where(value => value.NegotiationId == _negotiationId).ToList())
+        var current = _pendingIce.Where(value => value.NegotiationId == _negotiationId &&
+            value.NegotiationGeneration == _negotiationGeneration).ToList();
+        VoiceDiagnostic($"flushing {current.Count} queued ICE candidates", CurrentCall.Id,
+            negotiationGeneration: _negotiationGeneration);
+        foreach (var signal in current)
         {
             try
             {
-                await media.AddIceCandidateAsync(signal.Candidate, cancellationToken);
+                VoiceDiagnostic("ADDING QUEUED REMOTE ICE", signal.CallId, signal.SignalId,
+                    signal.NegotiationGeneration);
+                await media.AddIceCandidateAsync(signal.SignalId, signal.Candidate, cancellationToken);
                 _remoteCandidatesAdded++;
-                logger.LogDebug("Call {CallId}: queued ICE candidate successfully flushed and added.", CurrentCall.Id);
+                VoiceDiagnostic("addIceCandidate SUCCESS (queued)", signal.CallId, signal.SignalId,
+                    signal.NegotiationGeneration, details: $"remoteCandidatesAdded={_remoteCandidatesAdded}");
             }
-            catch
+            catch (Exception exception)
             {
                 _remoteCandidateAddFailures++;
+                VoiceDiagnostic("addIceCandidate FAILED (queued)", signal.CallId, signal.SignalId,
+                    signal.NegotiationGeneration,
+                    details: $"failureCount={_remoteCandidateAddFailures} name={exception.GetType().Name} message={exception.Message}");
                 throw;
             }
         }
@@ -632,13 +767,21 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
         var callId = CurrentCall.Id;
         var offer = _pendingOffer;
         if (_negotiationId != offer.NegotiationId) return;
-        var answer = await media.AcceptOfferAsync(offer.NegotiationId, offer.Description, cancellationToken);
+        _createAnswerCount++;
+        var signalId = Guid.NewGuid();
+        VoiceDiagnostic("createAnswer invocation", callId, negotiationGeneration: _negotiationGeneration,
+            details: $"createAnswerCount={_createAnswerCount}");
+        var answer = await media.AcceptOfferAsync(offer.NegotiationId, offer.SignalId, signalId,
+            offer.Description, cancellationToken);
         _remoteDescriptionReady = true;
         _appliedOfferSdp = offer.Description.Sdp;
         _pendingOffer = null;
         logger.LogDebug("Call {CallId} negotiation {NegotiationId}: setRemoteDescription(offer), createAnswer, and setLocalDescription(answer) completed.",
             callId, offer.NegotiationId);
-        await _connection!.InvokeAsync(VoiceCallHubContract.SendAnswer, callId, offer.NegotiationId, answer, cancellationToken);
+        VoiceDiagnostic("SEND Answer", callId, signalId, _negotiationGeneration,
+            details: $"createAnswerCount={_createAnswerCount}");
+        await _connection!.InvokeAsync(VoiceCallHubContract.SendAnswer, callId, offer.NegotiationId,
+            _negotiationGeneration, _peerGeneration, signalId, answer, cancellationToken);
         logger.LogDebug("Call {CallId} negotiation {NegotiationId}: answer sent exactly once.", callId, offer.NegotiationId);
         await FlushIceAsync(cancellationToken);
     }
@@ -648,22 +791,31 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
         if (CurrentCall is not { } call || call.CallerAccountId != _accountId || _negotiationStarted) return;
         if (!_mediaReady) await StartMediaAsync(cancellationToken);
         _negotiationId = Guid.NewGuid();
+        _negotiationGeneration++;
         _negotiationStarted = true;
         _remoteDescriptionReady = false;
         MediaConnectionState = CallConnectionState.Connecting;
         StatusMessage = "Connecting media…";
         StartNegotiationTimeout(_negotiationId.Value);
-        var offer = await media.CreateOfferAsync(_negotiationId.Value, cancellationToken);
+        _createOfferCount++;
+        var signalId = Guid.NewGuid();
+        VoiceDiagnostic("createOffer invocation", call.Id, negotiationGeneration: _negotiationGeneration,
+            details: $"createOfferCount={_createOfferCount}");
+        var offer = await media.CreateOfferAsync(_negotiationId.Value, signalId, cancellationToken);
         logger.LogDebug("Call {CallId} negotiation {NegotiationId}: offer created and local description set exactly once.",
             call.Id, _negotiationId);
-        await _connection!.InvokeAsync(VoiceCallHubContract.SendOffer, call.Id, _negotiationId.Value, offer, cancellationToken);
+        VoiceDiagnostic("SEND Offer", call.Id, signalId, _negotiationGeneration);
+        await _connection!.InvokeAsync(VoiceCallHubContract.SendOffer, call.Id, _negotiationId.Value,
+            _negotiationGeneration, _peerGeneration, signalId, offer, cancellationToken);
         logger.LogDebug("Call {CallId} negotiation {NegotiationId}: offer sent exactly once.", call.Id, _negotiationId);
     }
 
     private async Task RestartOffererAsync(CancellationToken cancellationToken = default)
     {
         if (CurrentCall is not { } call || call.CallerAccountId != _accountId) return;
-        await ResetMediaAsync(cancellationToken);
+        VoiceDiagnostic("RetryStarted", call.Id, negotiationGeneration: _negotiationGeneration + 1,
+            details: $"oldPeerGeneration={_peerGeneration} newPeerGeneration={_peerGeneration + 1}");
+        await ResetMediaAsync("retry replacement", cancellationToken);
         _negotiationId = null;
         _negotiationStarted = false;
         await StartMediaAsync(cancellationToken);
@@ -671,10 +823,10 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
         NotifyChanged();
     }
 
-    private async Task ResetMediaAsync(CancellationToken cancellationToken = default)
+    private async Task ResetMediaAsync(string reason, CancellationToken cancellationToken = default)
     {
-        CancelNegotiationTimeout();
-        await media.CleanupAsync(cancellationToken);
+        CancelNegotiationTimeout(reason);
+        await media.CleanupAsync(reason, cancellationToken);
         _mediaReady = false;
         _remoteDescriptionReady = false;
         _appliedOfferSdp = null;
@@ -689,7 +841,13 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
         if (_mediaFailureInProgress) return;
         _mediaFailureInProgress = true;
         await LogWebRtcSummaryAsync(summaryEvent);
-        await ResetMediaAsync();
+        var cleanupReason = summaryEvent switch
+        {
+            "WEBRTC NEGOTIATION TIMED OUT" => "negotiation timeout",
+            "WEBRTC FAILED" => "terminal peer failure",
+            _ => "signaling failure"
+        };
+        await ResetMediaAsync(cleanupReason);
         MediaConnectionState = CallConnectionState.Failed;
         StatusMessage = "Connection failed";
         ErrorMessage = message;
@@ -709,10 +867,16 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
     private void StartNegotiationTimeout(Guid negotiationId)
     {
         if (MediaConnectionState == CallConnectionState.Connected) return;
-        CancelNegotiationTimeout();
+        CancelNegotiationTimeout("new timeout replacing previous timeout");
         _negotiationTimeoutPeerGeneration = _peerGeneration;
         _negotiationTimeoutId = negotiationId;
         var cancellation = _negotiationCancellation = new CancellationTokenSource();
+        VoiceDiagnostic("NegotiationTimeoutStarted", negotiationGeneration: _negotiationGeneration,
+            details: $"timeoutGeneration={_peerGeneration} timeoutToken={negotiationId}");
+        var callId = CurrentCall?.Id ?? IncomingCall?.CallId;
+        if (callId is { } id)
+            _ = ForwardVoiceDiagnosticAsync(new VoiceDiagnosticReport(id, "NegotiationTimeoutStarted",
+                _peerGeneration, _negotiationGeneration, Count: 18, Reason: "InitialNegotiation"));
         _ = WaitForNegotiationAsync(cancellation, negotiationId, _peerGeneration);
     }
 
@@ -721,19 +885,64 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
         try
         {
             await Task.Delay(TimeSpan.FromSeconds(18), cancellation.Token);
-            if (ReferenceEquals(_negotiationCancellation, cancellation) &&
-                _negotiationTimeoutId == negotiationId && _negotiationId == negotiationId &&
-                _negotiationTimeoutPeerGeneration == peerGeneration && _peerGeneration == peerGeneration &&
-                CurrentCall?.State == CallState.Active && MediaConnectionState == CallConnectionState.Connecting)
-            {
-                await FailMediaAsync("WebRTC negotiation timed out after 18 seconds.", "WEBRTC NEGOTIATION TIMED OUT");
-            }
+            await HandleNegotiationTimeoutAsync(cancellation, negotiationId, peerGeneration);
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
     }
 
-    private void CancelNegotiationTimeout()
+    private async Task HandleNegotiationTimeoutAsync(CancellationTokenSource cancellation, Guid negotiationId,
+        int peerGeneration)
     {
+        await _gate.WaitAsync();
+        try
+        {
+            var current = ReferenceEquals(_negotiationCancellation, cancellation) &&
+                          _negotiationTimeoutId == negotiationId && _negotiationId == negotiationId &&
+                          _negotiationTimeoutPeerGeneration == peerGeneration && _peerGeneration == peerGeneration &&
+                          CurrentCall?.State == CallState.Active && MediaConnectionState == CallConnectionState.Connecting;
+            VoiceDiagnostic(current ? "NegotiationTimeoutFired" : "StaleNegotiationTimeoutIgnored",
+                negotiationGeneration: _negotiationGeneration,
+                details: $"timeoutGeneration={peerGeneration} currentGeneration={_peerGeneration} timeoutToken={negotiationId}");
+            if (current)
+            {
+                WebRtcDiagnosticSnapshot? snapshot = null;
+                try { snapshot = await media.GetDiagnosticSnapshotAsync(); }
+                catch (Exception exception)
+                {
+                    logger.LogDebug(exception, "Call {CallId}: timeout could not collect the current WebRTC snapshot.",
+                        CurrentCall?.Id);
+                }
+                var connected = snapshot is not null && (snapshot.ConnectionState == "connected" ||
+                    snapshot.IceConnectionState is "connected" or "completed" || snapshot.MediaTrafficDetected);
+                if (connected)
+                {
+                    VoiceDiagnostic("TimeoutSuppressedMediaIsConnected", negotiationGeneration: _negotiationGeneration,
+                        details: $"connectionState={snapshot!.ConnectionState} iceConnectionState={snapshot.IceConnectionState} " +
+                                 $"mediaTraffic={snapshot.MediaTrafficDetected}");
+                    MediaConnectionState = CallConnectionState.Connected;
+                    StatusMessage = "Connected";
+                    CancelNegotiationTimeout("PeerConnected");
+                    if (CurrentCall is not null && IsSignalingConnected) await PublishParticipantStateAsync();
+                    NotifyChanged();
+                    return;
+                }
+                await FailMediaAsync("WebRTC negotiation timed out after 18 seconds.", "WEBRTC NEGOTIATION TIMED OUT");
+            }
+        }
+        finally { _gate.Release(); }
+    }
+
+    private void CancelNegotiationTimeout(string reason)
+    {
+        if (_negotiationCancellation is not null)
+        {
+            VoiceDiagnostic("NegotiationTimeoutCancelled", negotiationGeneration: _negotiationGeneration,
+                details: $"reason={reason} timeoutGeneration={_negotiationTimeoutPeerGeneration} timeoutToken={_negotiationTimeoutId}");
+            var callId = CurrentCall?.Id ?? IncomingCall?.CallId;
+            if (callId is { } id)
+                _ = ForwardVoiceDiagnosticAsync(new VoiceDiagnosticReport(id, "NegotiationTimeoutCancelled",
+                    _peerGeneration, _negotiationGeneration, Reason: CanonicalCleanupReason(reason)));
+        }
         _negotiationCancellation?.Cancel();
         _negotiationCancellation?.Dispose();
         _negotiationCancellation = null;
@@ -750,17 +959,46 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
         logger.LogError(
             "Call {CallId} account {AccountId} role {Role} PeerGeneration {PeerGeneration}: {Event}. " +
             "SignalingState={SignalingState}, IceGatheringState={IceGatheringState}, IceConnectionState={IceConnectionState}, ConnectionState={ConnectionState}, " +
+            "NegotiationGeneration={NegotiationGeneration}, LocalDescription={LocalDescription}, RemoteDescription={RemoteDescription}, " +
+            "CreateOfferCount={CreateOfferCount}, CreateAnswerCount={CreateAnswerCount}, OfferReceivedCount={OfferReceivedCount}, " +
+            "AnswerReceivedCount={AnswerReceivedCount}, IceReceivedCount={IceReceivedCount}, NegotiationNeededCount={NegotiationNeededCount}, " +
             "LocalGenerated={LocalGenerated}, LocalSent={LocalSent}, LocalTypes={LocalTypes}, RemoteReceived={RemoteReceived}, " +
             "RemoteAdded={RemoteAdded}, RemoteAddFailures={RemoteAddFailures}, QueuedRemote={QueuedRemote}, " +
-            "SelectedPair={SelectedLocalType}/{SelectedRemoteType}/{SelectedProtocol}.",
+            "TimeoutGeneration={TimeoutGeneration}, CurrentGeneration={CurrentGeneration}, SelectedPair={SelectedLocalType}/{SelectedRemoteType}/{SelectedProtocol}, " +
+            "StatsLocalCandidates={StatsLocalCandidates}, StatsRemoteCandidates={StatsRemoteCandidates}, CandidatePairs={CandidatePairs}, PairSummary={PairSummary}.",
             call.Id, _accountId, _mediaRole, _peerGeneration, eventName,
             snapshot?.SignalingState ?? "unavailable", snapshot?.IceGatheringState ?? "unavailable",
             snapshot?.IceConnectionState ?? "unavailable", snapshot?.ConnectionState ?? "unavailable",
+            _negotiationGeneration, snapshot?.LocalDescriptionType ?? "none", snapshot?.RemoteDescriptionType ?? "none",
+            _createOfferCount, _createAnswerCount, _offerReceivedCount, _answerReceivedCount, _iceReceivedCount,
+            snapshot?.NegotiationNeededCount ?? 0,
             _localCandidatesGenerated, _localCandidatesSent, CandidateTypeSummary(_localCandidateTypes),
             _remoteCandidatesReceived, _remoteCandidatesAdded, _remoteCandidateAddFailures,
             snapshot?.QueuedRemoteCandidateCount ?? _pendingIce.Count,
+            _negotiationTimeoutPeerGeneration, _peerGeneration,
             snapshot?.SelectedLocalCandidateType ?? "none", snapshot?.SelectedRemoteCandidateType ?? "none",
-            snapshot?.SelectedCandidateProtocol ?? "none");
+            snapshot?.SelectedCandidateProtocol ?? "none", snapshot?.StatsLocalCandidateCount ?? 0,
+            snapshot?.StatsRemoteCandidateCount ?? 0, snapshot?.StatsCandidatePairCount ?? 0,
+            snapshot?.CandidatePairSummary ?? "none");
+        await ForwardVoiceDiagnosticAsync(new VoiceDiagnosticReport(call.Id, "VoiceFailureSnapshot",
+            _peerGeneration, _negotiationGeneration,
+            SignalingState: snapshot?.SignalingState, IceGatheringState: snapshot?.IceGatheringState,
+            IceConnectionState: snapshot?.IceConnectionState, ConnectionState: snapshot?.ConnectionState,
+            LocalDescriptionType: snapshot?.LocalDescriptionType, RemoteDescriptionType: snapshot?.RemoteDescriptionType,
+            Reason: CanonicalVoiceReason(eventName), OffersCreated: _createOfferCount, OffersReceived: _offerReceivedCount,
+            AnswersCreated: _createAnswerCount, AnswersReceived: _answerReceivedCount,
+            LocalIceGenerated: _localCandidatesGenerated, LocalIceSent: _localCandidatesSent,
+            RemoteIceReceived: _remoteCandidatesReceived, RemoteIceQueued: _remoteCandidatesQueued,
+            RemoteIceAdded: _remoteCandidatesAdded, RemoteIceAddFailures: _remoteCandidateAddFailures,
+            RemoteTrackReceived: snapshot?.RemoteTrackReceived, RemoteAudioPlaySucceeded: snapshot?.RemoteAudioPlaySucceeded,
+            MediaTrafficDetected: snapshot?.MediaTrafficDetected, LocalCandidateStats: snapshot?.StatsLocalCandidateCount,
+            RemoteCandidateStats: snapshot?.StatsRemoteCandidateCount, CandidatePairStats: snapshot?.StatsCandidatePairCount,
+            SucceededCandidatePairs: snapshot?.StatsSucceededCandidatePairCount,
+            NominatedPairExists: snapshot?.StatsNominatedPairExists, SelectedPairExists: snapshot?.StatsSelectedPairExists,
+            LocalCandidateType: snapshot?.SelectedLocalCandidateType, RemoteCandidateType: snapshot?.SelectedRemoteCandidateType,
+            Protocol: snapshot?.SelectedCandidateProtocol, PacketsSent: snapshot?.PacketsSent,
+            PacketsReceived: snapshot?.PacketsReceived, PacketsLost: snapshot?.PacketsLost,
+            BytesSent: snapshot?.BytesSent, BytesReceived: snapshot?.BytesReceived));
     }
 
     private void ResetAttemptDiagnostics(bool preserveRemoteCandidates)
@@ -768,9 +1006,88 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
         _localCandidatesGenerated = 0;
         _localCandidatesSent = 0;
         _remoteCandidatesReceived = preserveRemoteCandidates ? _pendingIce.Count : 0;
+        _remoteCandidatesQueued = preserveRemoteCandidates ? _pendingIce.Count : 0;
         _remoteCandidatesAdded = 0;
         _remoteCandidateAddFailures = 0;
         _localCandidateTypes.Clear();
+    }
+
+    private void ResetCallDiagnostics()
+    {
+        _offerReceivedCount = 0;
+        _answerReceivedCount = 0;
+        _iceReceivedCount = 0;
+        _createOfferCount = 0;
+        _createAnswerCount = 0;
+        _acceptInvokedCount = 0;
+        _callAcceptedReceivedCount = 0;
+        _negotiationGeneration = 0;
+        _lastPublishedParticipantState = null;
+        _receivedSignalIds.Clear();
+    }
+
+    // TODO: Remove temporary voice-call diagnostics once WebRTC calls are stable.
+    private void VoiceDiagnostic(string eventName, Guid? callId = null, Guid? signalId = null,
+        int? negotiationGeneration = null, int? registrationCount = null, string? details = null)
+    {
+        if (!media.DiagnosticsEnabled) return;
+        logger.LogDebug(
+            "VOICE DIAGNOSTIC {Event}: CallClientServiceInstance={ServiceInstanceId} CallId={CallId} AccountId={AccountId} " +
+            "Role={Role} PeerGeneration={PeerGeneration} NegotiationGeneration={NegotiationGeneration} " +
+            "SignalId={SignalId} RegistrationCount={RegistrationCount} Details={Details}",
+            eventName, _instanceId, callId ?? CurrentCall?.Id ?? IncomingCall?.CallId, _accountId, _mediaRole,
+            _peerGeneration, negotiationGeneration ?? _negotiationGeneration, signalId, registrationCount, details);
+        var diagnosticCallId = callId ?? CurrentCall?.Id ?? IncomingCall?.CallId;
+        if (diagnosticCallId is { } id)
+            _ = ForwardVoiceDiagnosticAsync(new VoiceDiagnosticReport(id, CanonicalVoiceEvent(eventName),
+                _peerGeneration, negotiationGeneration ?? _negotiationGeneration, signalId));
+    }
+
+    private static string CanonicalVoiceEvent(string value)
+    {
+        if (value.StartsWith("RECEIVED Offer", StringComparison.Ordinal)) return "OfferReceivedByClient";
+        if (value.StartsWith("RECEIVED Answer", StringComparison.Ordinal)) return "AnswerReceivedByClient";
+        if (value.StartsWith("SIGNALR RECEIVED REMOTE ICE", StringComparison.Ordinal)) return "IceReceivedByClient";
+        if (value.StartsWith("REMOTE ICE QUEUED", StringComparison.Ordinal)) return "IceQueued";
+        if (value.StartsWith("ADDING", StringComparison.Ordinal)) return "IceAddStarted";
+        if (value.StartsWith("addIceCandidate SUCCESS", StringComparison.Ordinal)) return "IceAddSucceeded";
+        if (value.StartsWith("addIceCandidate FAILED", StringComparison.Ordinal)) return "IceAddFailed";
+        if (value.StartsWith("CLIENT SENDING ICE", StringComparison.Ordinal)) return "IceSending";
+        if (value.StartsWith("SEND Offer", StringComparison.Ordinal)) return "OfferSending";
+        if (value.StartsWith("SEND Answer", StringComparison.Ordinal)) return "AnswerSending";
+        if (value.Contains("stale", StringComparison.OrdinalIgnoreCase)) return "StaleSignalIgnored";
+        if (value.Contains("duplicate", StringComparison.OrdinalIgnoreCase)) return "DuplicateOrStaleAnswerIgnored";
+        var characters = value.Where(char.IsLetterOrDigit).ToArray();
+        return characters.Length == 0 ? "ClientDiagnostic" : new string(characters)[..Math.Min(64, characters.Length)];
+    }
+
+    private static string CanonicalVoiceReason(string value) => value switch
+    {
+        "WEBRTC NEGOTIATION TIMED OUT" => "NegotiationTimeout",
+        "WEBRTC FAILED" => "TerminalPeerFailure",
+        _ => "SignalError"
+    };
+
+    private static string CanonicalCleanupReason(string value) => value switch
+    {
+        "current peer connected" or "PeerConnected" => "PeerConnected",
+        "IceConnected" => "IceConnected",
+        "call finished" => "CallEnded",
+        "retry replacement" or "callee retry replacement" => "Retry",
+        "peer replacement during initialization" => "PeerReplaced",
+        _ => "PeerReplaced"
+    };
+
+    private static int CreateDiagnosticInstance(ILogger logger, bool diagnosticsEnabled)
+    {
+        var instanceId = Interlocked.Increment(ref _nextInstanceId);
+        // TODO: Remove temporary voice-call diagnostics once WebRTC calls are stable.
+        if (diagnosticsEnabled)
+            logger.LogDebug(
+                "VOICE DIAGNOSTIC CallClientService instance {ServiceInstanceId} created: CallId={CallId} AccountId={AccountId} " +
+                "Role={Role} PeerGeneration={PeerGeneration} NegotiationGeneration={NegotiationGeneration}",
+                instanceId, null, null, "unknown", 0, 0);
+        return instanceId;
     }
 
     private static void IncrementCandidateType(Dictionary<string, int> counts, string candidate)
@@ -820,13 +1137,14 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
 
     private async Task FinishAsync(bool clearMessage = true)
     {
-        CancelNegotiationTimeout();
+        CancelNegotiationTimeout("call finished");
         _heartbeatCancellation?.Cancel();
         _heartbeatCancellation?.Dispose();
         _heartbeatCancellation = null;
-        await media.CleanupAsync();
+        await media.CleanupAsync("call finished");
         _mediaReady = false; _remoteDescriptionReady = false; _pendingOffer = null; _pendingSignalingCallId = null; _pendingIce.Clear();
         _negotiationId = null; _negotiationStarted = false; _processedAnswerNegotiations.Clear();
+        _lastPublishedParticipantState = null;
         MediaConnectionState = CallConnectionState.Closed;
         CurrentCall = null; IncomingCall = null; IsMuted = false; IsDeafened = false;
         if (clearMessage) { StatusMessage = null; ErrorMessage = null; }
@@ -846,7 +1164,8 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
         try
         {
             while (await timer.WaitForNextTickAsync(cancellationToken))
-                if (CurrentCall is not null && IsSignalingConnected) await PublishParticipantStateAsync(cancellationToken);
+                if (CurrentCall is not null && IsSignalingConnected)
+                    await _connection!.InvokeAsync(VoiceCallHubContract.Heartbeat, CurrentCall.Id, cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
         catch (Exception exception) { logger.LogWarning(exception, "Voice call signaling heartbeat failed."); }
@@ -885,11 +1204,11 @@ public sealed class CallClientService(NodeSession session, ICallMediaService med
     {
         if (_disposed) return;
         _disposed = true;
+        VoiceDiagnostic("CallClientService disposed");
         await FinishAsync();
         if (_connection is not null)
         {
             DisposeHandlerRegistrations();
-            await _connection.DisposeAsync();
         }
         await media.DisposeAsync();
         _signalingGate.Dispose();

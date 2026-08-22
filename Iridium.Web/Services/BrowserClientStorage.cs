@@ -4,7 +4,8 @@ using Microsoft.JSInterop;
 namespace Iridium.Web.Services;
 
 public sealed class BrowserClientStorage(IJSRuntime js) : ISavedNodeStore, INodeTokenStore, ISavedAccountStore,
-    IActiveAccountSelectionStore, ICategoryCollapseStore, ILastCommunityChannelStore, IAsyncDisposable
+    IActiveAccountSelectionStore, ICategoryCollapseStore, ILastCommunityChannelStore,
+    IVoiceParticipantPreferenceStore, IAsyncDisposable
 {
     private IJSObjectReference? _module;
 
@@ -97,6 +98,21 @@ public sealed class BrowserClientStorage(IJSRuntime js) : ISavedNodeStore, INode
         var module = await ModuleAsync(cancellationToken);
         await module.InvokeVoidAsync(
             "saveGuidValue", cancellationToken, $"iridium.last-channel:{accountId}:{communityId}", channelId.ToString("D"));
+    }
+
+    async Task<IReadOnlyList<VoiceParticipantPreference>> IVoiceParticipantPreferenceStore.LoadAsync(
+        CancellationToken cancellationToken)
+    {
+        var module = await ModuleAsync(cancellationToken);
+        return await module.InvokeAsync<VoiceParticipantPreference[]>("load", cancellationToken,
+            "iridium.voiceParticipantPreferences") ?? [];
+    }
+
+    async Task IVoiceParticipantPreferenceStore.SaveAsync(IReadOnlyList<VoiceParticipantPreference> preferences,
+        CancellationToken cancellationToken)
+    {
+        var module = await ModuleAsync(cancellationToken);
+        await module.InvokeVoidAsync("save", cancellationToken, "iridium.voiceParticipantPreferences", preferences);
     }
 
     private async Task<IJSObjectReference> ModuleAsync(CancellationToken cancellationToken)

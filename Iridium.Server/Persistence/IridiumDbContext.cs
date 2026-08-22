@@ -127,6 +127,7 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
         var channel = modelBuilder.Entity<CommunityChannel>();
         channel.HasKey(value => new { value.CommunityId, value.Id });
         channel.Property(value => value.Name).HasMaxLength(100);
+        channel.Property(value => value.Kind).HasDefaultValue(Iridium.Protocol.CommunityChannelKind.Text);
         channel.HasIndex(value => new { value.CommunityId, value.CategoryId, value.Position });
         channel.HasOne(value => value.Community).WithMany(value => value.Channels).HasForeignKey(value => value.CommunityId);
         channel.HasOne(value => value.Category).WithMany(value => value.Channels)
@@ -212,6 +213,7 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
         var directMessage = modelBuilder.Entity<DirectMessage>();
         directMessage.HasKey(value => value.Id);
         directMessage.Property(value => value.Content);
+        directMessage.Property(value => value.Kind).HasDefaultValue(Iridium.Protocol.MessageKind.User);
         directMessage.Property(value => value.CreatedAt)
             .HasConversion(value => value.UtcTicks, value => new DateTimeOffset(value, TimeSpan.Zero));
         directMessage.Property(value => value.EditedAt)
@@ -223,6 +225,8 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
         directMessage.HasIndex(value => new { value.ConversationId, value.CreatedAt, value.Id });
         directMessage.HasIndex(value => new { value.AuthorAccountId, value.ConversationId, value.ClientMessageId })
             .IsUnique().HasFilter("ClientMessageId IS NOT NULL");
+        directMessage.HasIndex(value => new { value.RelatedCallId, value.Kind }).IsUnique()
+            .HasFilter("RelatedCallId IS NOT NULL");
         directMessage.HasOne(value => value.Conversation).WithMany(value => value.Messages)
             .HasForeignKey(value => value.ConversationId).OnDelete(DeleteBehavior.Cascade);
         directMessage.HasOne(value => value.AuthorAccount).WithMany()

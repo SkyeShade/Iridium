@@ -13,12 +13,17 @@
             {
                 <ChannelRow @key="item.Id" Channel="channel" CanManage="CanManage" Depth="@(Depth + 1)"
                             Selected="@(SelectedChannelId == channel.Id)" OnSelect="OnSelectChannel"
+                            Room="@VoiceRooms.FirstOrDefault(value => value.ChannelId == channel.Id)"
+                            Connected="@(ConnectedVoiceChannelId == channel.Id)"
+                            CurrentAccountId="CurrentAccountId"
                             OnEdit="OnEditChannel" OnDelete="OnDeleteChannel" />
             }
             else if (item.Category is { } child)
             {
                 <CommunityCategoryTreeNode @key="item.Id" Category="child" Categories="Categories" Channels="Channels"
                                            Depth="@(Depth + 1)" CanManage="CanManage" Collapsed="Collapsed"
+                                           VoiceRooms="VoiceRooms" ConnectedVoiceChannelId="ConnectedVoiceChannelId"
+                                           CurrentAccountId="CurrentAccountId"
                                            SelectedChannelId="SelectedChannelId" OnToggle="OnToggle" OnEdit="OnEdit"
                                            OnCreateChannel="OnCreateChannel" OnCreateSubcategory="OnCreateSubcategory"
                                            OnDelete="OnDelete" OnSelectChannel="OnSelectChannel"
@@ -36,6 +41,9 @@
     [Parameter] public Guid? SelectedChannelId { get; set; }
     [Parameter] public int Depth { get; set; } = 1;
     [Parameter] public bool CanManage { get; set; }
+    [Parameter] public IReadOnlyCollection<ActiveVoiceRoomDto> VoiceRooms { get; set; } = [];
+    [Parameter] public Guid? ConnectedVoiceChannelId { get; set; }
+    [Parameter] public Guid CurrentAccountId { get; set; }
     [Parameter] public EventCallback<CommunityCategoryDto> OnToggle { get; set; }
     [Parameter] public EventCallback<CommunityCategoryDto> OnEdit { get; set; }
     [Parameter] public EventCallback<CommunityCategoryDto> OnCreateChannel { get; set; }

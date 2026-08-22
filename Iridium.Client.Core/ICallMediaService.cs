@@ -7,15 +7,25 @@ public sealed record CallMediaSessionContext(
     Guid LocalAccountId,
     string Role,
     int PeerGeneration,
-    Guid? NegotiationId);
+    Guid? NegotiationId,
+    int NegotiationGeneration,
+    Guid? RemoteAccountId = null);
 
 public sealed record RemoteAnswerApplyResult(bool Applied, string SignalingState, string? IgnoreReason);
+public sealed record LocalIceCandidateSignal(
+    int Sequence,
+    Guid SignalId,
+    int PeerGeneration,
+    int NegotiationGeneration,
+    WebRtcIceCandidate Candidate);
 
 public sealed record WebRtcDiagnosticSnapshot(
     string SignalingState,
     string IceGatheringState,
     string IceConnectionState,
     string ConnectionState,
+    string? LocalDescriptionType,
+    string? RemoteDescriptionType,
     int LocalCandidateCount,
     int RemoteCandidateCount,
     int RemoteCandidateAddedCount,
@@ -31,26 +41,51 @@ public sealed record WebRtcDiagnosticSnapshot(
     int AnswersIgnored,
     string? LastAnswerSignalingStateBefore,
     string? LastAnswerSignalingStateAfter,
+    int CreateOfferCount,
+    int CreateAnswerCount,
+    int NegotiationNeededCount,
+    int NegotiationGeneration,
     int PeerGeneration,
-    string Role);
+    string Role,
+    int StatsLocalCandidateCount,
+    int StatsRemoteCandidateCount,
+    int StatsCandidatePairCount,
+    string CandidatePairSummary,
+    int StatsSucceededCandidatePairCount,
+    bool StatsNominatedPairExists,
+    bool StatsSelectedPairExists,
+    long PacketsSent,
+    long PacketsReceived,
+    long PacketsLost,
+    long BytesSent,
+    long BytesReceived,
+    bool RemoteTrackReceived,
+    bool RemoteAudioPlaySucceeded,
+    bool MediaTrafficDetected);
 
 public interface ICallMediaService : IAsyncDisposable
 {
-    event Func<WebRtcIceCandidate, Task>? IceCandidateGenerated;
+    bool DiagnosticsEnabled { get; }
+    event Func<LocalIceCandidateSignal, Task>? IceCandidateGenerated;
     event Func<CallConnectionState, Task>? ConnectionStateChanged;
+    event Func<string, Task>? IceConnectionStateChanged;
     event Func<bool, Task>? SpeakingChanged;
     event Func<string, Task>? Error;
+    event Func<VoiceDiagnosticReport, Task>? DiagnosticGenerated;
 
     Task InitializeAsync(CallMediaConfigurationDto configuration, CallMediaSessionContext context,
         CancellationToken cancellationToken = default);
-    Task<WebRtcSessionDescription> CreateOfferAsync(Guid negotiationId, CancellationToken cancellationToken = default);
-    Task<WebRtcSessionDescription> AcceptOfferAsync(Guid negotiationId, WebRtcSessionDescription offer,
+    Task<WebRtcSessionDescription> CreateOfferAsync(Guid negotiationId, Guid signalId,
         CancellationToken cancellationToken = default);
-    Task<RemoteAnswerApplyResult> ApplyAnswerAsync(Guid negotiationId, WebRtcSessionDescription answer,
+    Task<WebRtcSessionDescription> AcceptOfferAsync(Guid negotiationId, Guid offerSignalId, Guid answerSignalId,
+        WebRtcSessionDescription offer,
         CancellationToken cancellationToken = default);
-    Task AddIceCandidateAsync(WebRtcIceCandidate candidate, CancellationToken cancellationToken = default);
+    Task<RemoteAnswerApplyResult> ApplyAnswerAsync(Guid negotiationId, Guid signalId, WebRtcSessionDescription answer,
+        CancellationToken cancellationToken = default);
+    Task AddIceCandidateAsync(Guid signalId, WebRtcIceCandidate candidate,
+        CancellationToken cancellationToken = default);
     Task SetMutedAsync(bool muted, CancellationToken cancellationToken = default);
     Task SetDeafenedAsync(bool deafened, CancellationToken cancellationToken = default);
     Task<WebRtcDiagnosticSnapshot?> GetDiagnosticSnapshotAsync(CancellationToken cancellationToken = default);
-    Task CleanupAsync(CancellationToken cancellationToken = default);
+    Task CleanupAsync(string reason, CancellationToken cancellationToken = default);
 }

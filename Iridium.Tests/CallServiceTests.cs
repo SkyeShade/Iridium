@@ -13,6 +13,9 @@ namespace Iridium.Tests;
 
 public sealed class CallServiceTests
 {
+    private const string CallerConnection = "caller-connection";
+    private const string CalleeConnection = "callee-connection";
+
     [Fact]
     public void DirectConversationAllowsOnlyOneLiveCallAndAuthorizedParticipants()
     {
@@ -22,19 +25,20 @@ public sealed class CallServiceTests
         var callee = Guid.NewGuid();
         var outsider = Guid.NewGuid();
 
-        var call = service.CreateDirect(conversationId, caller, "Caller", callee, "Callee");
+        var call = service.CreateDirect(conversationId, caller, "Caller", callee, "Callee", CallerConnection);
         Assert.Equal(CallState.Ringing, call.State);
-        Assert.Throws<HubException>(() => service.CreateDirect(conversationId, caller, "Caller", callee, "Callee"));
-        Assert.Throws<HubException>(() => service.CreateDirect(Guid.NewGuid(), caller, "Caller", Guid.NewGuid(), "Third"));
+        Assert.Throws<HubException>(() => service.CreateDirect(conversationId, caller, "Caller", callee, "Callee", CallerConnection));
+        Assert.Throws<HubException>(() => service.CreateDirect(Guid.NewGuid(), caller, "Caller", Guid.NewGuid(), "Third", CallerConnection));
         Assert.Throws<HubException>(() => service.RequireParticipant(call.Id, outsider, CallState.Ringing));
 
-        var accepted = service.Accept(call.Id, callee);
+        var accepted = service.Accept(call.Id, callee, CalleeConnection);
         Assert.Equal(CallState.Active, accepted.State);
-        Assert.NotNull(accepted.Participants.Single(value => value.AccountId == callee).JoinedAt);
+        Assert.NotNull(accepted.AcceptedAt);
+        Assert.Equal(accepted.AcceptedAt, accepted.Participants.Single(value => value.AccountId == callee).JoinedAt);
         Assert.Throws<HubException>(() => service.Reject(call.Id, callee));
         Assert.Equal(CallState.Ended, service.HangUp(call.Id, caller).State);
 
-        var next = service.CreateDirect(conversationId, callee, "Callee", caller, "Caller");
+        var next = service.CreateDirect(conversationId, callee, "Callee", caller, "Caller", CalleeConnection);
         Assert.Equal(CallState.Ringing, next.State);
     }
 
@@ -44,40 +48,82 @@ public sealed class CallServiceTests
         var service = CreateService();
         var caller = Guid.NewGuid();
         var callee = Guid.NewGuid();
-        var call = service.CreateDirect(Guid.NewGuid(), caller, "Caller", callee, "Callee");
+        var call = service.CreateDirect(Guid.NewGuid(), caller, "Caller", callee, "Callee", CallerConnection);
         var media = new DirectWebRtcMediaService(service, Options.Create(new MediaOptions()));
         var offer = new WebRtcSessionDescription("offer", "safe-test-sdp");
         var answer = new WebRtcSessionDescription("answer", "safe-test-sdp");
         var negotiationId = Guid.NewGuid();
-        var earlyIce = media.AuthorizeIceCandidate(call.Id, caller, negotiationId,
+        Assert.Throws<HubException>(() => media.AuthorizeOffer(call.Id, caller, CallerConnection, negotiationId, offer));
+        Assert.Throws<HubException>(() => service.Accept(call.Id, caller, CallerConnection));
+
+        service.Accept(call.Id, callee, CalleeConnection);
+        var earlyIce = media.AuthorizeIceCandidate(call.Id, caller, CallerConnection, negotiationId,
             new WebRtcIceCandidate("candidate:early", "audio", 0, "fragment"));
         Assert.True(earlyIce.ShouldForward);
 
-        var offerRoute = media.AuthorizeOffer(call.Id, caller, negotiationId, offer);
+        var offerRoute = media.AuthorizeOffer(call.Id, caller, CallerConnection, negotiationId, offer);
         Assert.Equal(callee, offerRoute.TargetAccountId);
+        Assert.Equal(CalleeConnection, offerRoute.TargetConnectionId);
         Assert.True(offerRoute.ShouldForward);
-        Assert.Equal("duplicate-offer", media.AuthorizeOffer(call.Id, caller, negotiationId, offer).IgnoreReason);
-        Assert.Throws<HubException>(() => media.AuthorizeOffer(call.Id, callee, negotiationId, offer));
-        Assert.Throws<HubException>(() => media.AuthorizeAnswer(call.Id, callee, negotiationId, answer));
-        Assert.Throws<HubException>(() => service.Accept(call.Id, caller));
+        Assert.Equal("duplicate-offer", media.AuthorizeOffer(call.Id, caller, CallerConnection, negotiationId, offer).IgnoreReason);
+        Assert.Throws<HubException>(() => media.AuthorizeOffer(call.Id, callee, CalleeConnection, negotiationId, offer));
+        Assert.Throws<HubException>(() => media.AuthorizeAnswer(call.Id, callee, "other-callee-connection", negotiationId, answer));
 
-        service.Accept(call.Id, callee);
-        var answerRoute = media.AuthorizeAnswer(call.Id, callee, negotiationId, answer);
+        var answerRoute = media.AuthorizeAnswer(call.Id, callee, CalleeConnection, negotiationId, answer);
         Assert.Equal(caller, answerRoute.TargetAccountId);
+        Assert.Equal(CallerConnection, answerRoute.TargetConnectionId);
         Assert.True(answerRoute.ShouldForward);
-        var duplicateAnswer = media.AuthorizeAnswer(call.Id, callee, negotiationId, answer);
+        var duplicateAnswer = media.AuthorizeAnswer(call.Id, callee, CalleeConnection, negotiationId, answer);
         Assert.False(duplicateAnswer.ShouldForward);
         Assert.Equal("duplicate-answer", duplicateAnswer.IgnoreReason);
-        var staleAnswer = media.AuthorizeAnswer(call.Id, callee, Guid.NewGuid(), answer);
+        var staleAnswer = media.AuthorizeAnswer(call.Id, callee, CalleeConnection, Guid.NewGuid(), answer);
         Assert.False(staleAnswer.ShouldForward);
         Assert.Equal("stale-negotiation", staleAnswer.IgnoreReason);
-        Assert.Throws<HubException>(() => media.AuthorizeAnswer(call.Id, caller, negotiationId, answer));
-        Assert.Throws<HubException>(() => media.AuthorizeIceCandidate(call.Id, Guid.NewGuid(), negotiationId,
+        Assert.Throws<HubException>(() => media.AuthorizeAnswer(call.Id, caller, CallerConnection, negotiationId, answer));
+        Assert.Throws<HubException>(() => media.AuthorizeIceCandidate(call.Id, Guid.NewGuid(), "outsider-connection", negotiationId,
             new WebRtcIceCandidate("candidate", null, null, null)));
         var speaking = service.SetParticipantSpeaking(call.Id, caller, true);
         Assert.True(speaking.IsSpeaking);
-        Assert.True(service.CurrentFor(caller)!.Participants.Single(value => value.AccountId == caller).IsSpeaking);
+        Assert.True(service.CurrentFor(caller, CallerConnection)!.Participants.Single(value => value.AccountId == caller).IsSpeaking);
+        Assert.Null(service.CurrentFor(caller, "other-caller-connection"));
         Assert.Throws<HubException>(() => service.SetParticipantSpeaking(call.Id, Guid.NewGuid(), true));
+    }
+
+    [Fact]
+    public void AcceptAtomicallyClaimsOneCalleeConnectionAndRoutesOnlyBetweenSelectedEndpoints()
+    {
+        var service = CreateService();
+        var caller = Guid.NewGuid();
+        var callee = Guid.NewGuid();
+        var call = service.CreateDirect(Guid.NewGuid(), caller, "Caller", callee, "Callee", "A1");
+
+        service.Accept(call.Id, callee, "B1");
+
+        Assert.Equal("B1", service.RequireSignalingRoute(call.Id, caller, "A1", CallState.Active).TargetConnectionId);
+        Assert.Equal("A1", service.RequireSignalingRoute(call.Id, callee, "B1", CallState.Active).TargetConnectionId);
+        Assert.Throws<HubException>(() => service.Accept(call.Id, callee, "B2"));
+        Assert.Throws<HubException>(() => service.RequireSignalingRoute(call.Id, caller, "A2", CallState.Active));
+        Assert.Throws<HubException>(() => service.RequireSignalingRoute(call.Id, callee, "B2", CallState.Active));
+        Assert.Null(service.CurrentFor(caller, "A2"));
+        Assert.Null(service.CurrentFor(callee, "B2"));
+    }
+
+    [Fact]
+    public void SelectedConnectionDisconnectEndsCallWithoutSubstitutingAnotherAccountConnection()
+    {
+        var service = CreateService();
+        var caller = Guid.NewGuid();
+        var callee = Guid.NewGuid();
+        var call = service.CreateDirect(Guid.NewGuid(), caller, "Caller", callee, "Callee", "A1");
+        service.Accept(call.Id, callee, "B1");
+
+        Assert.Null(service.DisconnectSignaling("A2"));
+        var loss = Assert.IsType<CallConnectionLoss>(service.DisconnectSignaling("B1"));
+
+        Assert.Equal(CallState.Ended, loss.Call.State);
+        Assert.Equal(caller, loss.RemainingAccountId);
+        Assert.Equal("A1", loss.RemainingConnectionId);
+        Assert.Null(service.CurrentFor(caller, "A1"));
     }
 
     [Fact]
@@ -85,14 +131,14 @@ public sealed class CallServiceTests
     {
         var clock = new TestTimeProvider(DateTimeOffset.Parse("2026-08-21T00:00:00Z"));
         var service = CreateService(clock, 30);
-        var call = service.CreateDirect(Guid.NewGuid(), Guid.NewGuid(), "Caller", Guid.NewGuid(), "Callee");
+        var call = service.CreateDirect(Guid.NewGuid(), Guid.NewGuid(), "Caller", Guid.NewGuid(), "Callee", CallerConnection);
         clock.Advance(TimeSpan.FromSeconds(31));
 
         var expired = Assert.Single(service.ExpireRingingCalls());
         Assert.Equal(call.Id, expired.Id);
         Assert.Equal(CallState.Cancelled, expired.State);
         Assert.All(expired.Participants, value => Assert.Equal(CallConnectionState.Closed, value.ConnectionState));
-        Assert.Null(service.CurrentFor(call.CallerAccountId));
+        Assert.Null(service.CurrentFor(call.CallerAccountId, CallerConnection));
     }
 
     [Fact]
@@ -132,8 +178,8 @@ public sealed class CallServiceTests
             clock, NullLogger<CallService>.Instance);
         var caller = Guid.NewGuid();
         var callee = Guid.NewGuid();
-        var call = service.CreateDirect(Guid.NewGuid(), caller, "Caller", callee, "Callee");
-        service.Accept(call.Id, callee);
+        var call = service.CreateDirect(Guid.NewGuid(), caller, "Caller", callee, "Callee", CallerConnection);
+        service.Accept(call.Id, callee, CalleeConnection);
         clock.Advance(TimeSpan.FromSeconds(30));
         Assert.Empty(service.ExpireAbandonedActiveCalls());
         service.SetParticipantState(call.Id, caller, false, false, CallConnectionState.Connected);
@@ -142,7 +188,7 @@ public sealed class CallServiceTests
         Assert.Empty(service.ExpireAbandonedActiveCalls());
         clock.Advance(TimeSpan.FromSeconds(26));
         Assert.Single(service.ExpireAbandonedActiveCalls());
-        Assert.Null(service.CurrentFor(caller));
+        Assert.Null(service.CurrentFor(caller, CallerConnection));
     }
 
     private static CallService CreateService(TimeProvider? clock = null, int timeoutSeconds = 30) => new(

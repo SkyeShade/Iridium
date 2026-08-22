@@ -60,9 +60,18 @@ public static class DatabaseCompatibility
             {
                 Id = Guid.NewGuid(), CommunityId = communityId, Community = null!, Name = "@everyone",
                 Position = 0, IsDefault = true,
-                Permissions = CommunityPermission.ViewChannels | CommunityPermission.SendMessages
+                Permissions = CommunityPermission.ViewChannels | CommunityPermission.SendMessages |
+                              CommunityPermission.ConnectVoice | CommunityPermission.SpeakVoice
             });
         if (missing.Count > 0) await db.SaveChangesAsync();
+    }
+
+    public static async Task EnsureCommunityVoiceSchemaAsync(IridiumDbContext db)
+    {
+        await EnsureColumnAsync(db, "CommunityChannels", "Kind", "INTEGER NOT NULL DEFAULT 0");
+        await db.Database.ExecuteSqlRawAsync(
+            "UPDATE CommunityRoles SET Permissions = Permissions | {0} WHERE IsDefault = 1",
+            (long)(CommunityPermission.ConnectVoice | CommunityPermission.SpeakVoice));
     }
 
     public static async Task EnsureDirectMessageTablesAsync(IridiumDbContext db)
@@ -91,6 +100,8 @@ public static class DatabaseCompatibility
                 Id TEXT NOT NULL CONSTRAINT PK_DirectMessages PRIMARY KEY,
                 ConversationId TEXT NOT NULL,
                 AuthorAccountId TEXT NOT NULL,
+                Kind INTEGER NOT NULL DEFAULT 0,
+                RelatedCallId TEXT NULL,
                 Content TEXT NOT NULL,
                 CreatedAt INTEGER NOT NULL,
                 EditedAt INTEGER NULL,
@@ -106,6 +117,12 @@ public static class DatabaseCompatibility
             CREATE INDEX IF NOT EXISTS IX_DirectMessages_ReplyToMessageId ON DirectMessages (ReplyToMessageId);
             """);
         await EnsureColumnAsync(db, "DirectConversationStates", "LastReadAt", "INTEGER NULL");
+        await EnsureColumnAsync(db, "DirectMessages", "Kind", "INTEGER NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(db, "DirectMessages", "RelatedCallId", "TEXT NULL");
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE UNIQUE INDEX IF NOT EXISTS IX_DirectMessages_RelatedCallId_Kind
+                ON DirectMessages (RelatedCallId, Kind) WHERE RelatedCallId IS NOT NULL;
+            """);
     }
 
     public static Task EnsurePresenceColumnAsync(IridiumDbContext db) =>
@@ -288,6 +305,7 @@ public static class DatabaseCompatibility
                 Id TEXT NOT NULL,
                 CategoryId TEXT NULL,
                 Name TEXT NOT NULL,
+                Kind INTEGER NOT NULL DEFAULT 0,
                 Position INTEGER NOT NULL,
                 CreatedAt TEXT NOT NULL,
                 CONSTRAINT PK_CommunityChannels PRIMARY KEY (CommunityId, Id),
@@ -297,6 +315,7 @@ public static class DatabaseCompatibility
             CREATE INDEX IF NOT EXISTS IX_CommunityChannels_CommunityId_CategoryId_Position ON CommunityChannels (CommunityId, CategoryId, Position);
             """);
         await EnsureColumnAsync(db, "CommunityCategories", "ParentCategoryId", "TEXT NULL");
+        await EnsureColumnAsync(db, "CommunityChannels", "Kind", "INTEGER NOT NULL DEFAULT 0");
         await EnsureCommunityChannelCategoryNullableAsync(db);
         await db.Database.ExecuteSqlRawAsync("""
             CREATE INDEX IF NOT EXISTS IX_CommunityCategories_CommunityId_ParentCategoryId_Position
@@ -306,6 +325,7 @@ public static class DatabaseCompatibility
 
     public static async Task EnsureUnifiedCommunitySidebarOrderingAsync(IridiumDbContext db)
     {
+        await EnsureColumnAsync(db, "CommunityChannels", "Kind", "INTEGER NOT NULL DEFAULT 0");
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
         // SQLite compares TEXT primary keys case-sensitively. Microsoft.Data.Sqlite writes
         // Guid values in upper-case, so normalize IDs created by the original raw-SQL
@@ -379,14 +399,15 @@ public static class DatabaseCompatibility
                     Id TEXT NOT NULL,
                     CategoryId TEXT NULL,
                     Name TEXT NOT NULL,
+                    Kind INTEGER NOT NULL DEFAULT 0,
                     Position INTEGER NOT NULL,
                     CreatedAt TEXT NOT NULL,
                     CONSTRAINT PK_CommunityChannels PRIMARY KEY (CommunityId, Id),
                     CONSTRAINT FK_CommunityChannels_Communities_CommunityId FOREIGN KEY (CommunityId) REFERENCES Communities (Id) ON DELETE CASCADE,
                     CONSTRAINT FK_CommunityChannels_CommunityCategories_CommunityId_CategoryId FOREIGN KEY (CommunityId, CategoryId) REFERENCES CommunityCategories (CommunityId, Id) ON DELETE RESTRICT
                 );
-                INSERT INTO CommunityChannels_NullableUpgrade (CommunityId, Id, CategoryId, Name, Position, CreatedAt)
-                    SELECT CommunityId, Id, CategoryId, Name, Position, CreatedAt FROM CommunityChannels;
+                INSERT INTO CommunityChannels_NullableUpgrade (CommunityId, Id, CategoryId, Name, Kind, Position, CreatedAt)
+                    SELECT CommunityId, Id, CategoryId, Name, Kind, Position, CreatedAt FROM CommunityChannels;
                 DROP TABLE CommunityChannels;
                 ALTER TABLE CommunityChannels_NullableUpgrade RENAME TO CommunityChannels;
                 CREATE INDEX IX_CommunityChannels_CommunityId_CategoryId_Position

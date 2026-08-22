@@ -22,7 +22,9 @@ public static class DirectMessageMapper
                 message.ReplyToMessage.IsDeleted ? null : Excerpt(message.ReplyToMessage.Content),
                 message.ReplyToMessage.IsDeleted),
         message.ClientMessageId,
-        Attachments: message.IsDeleted ? [] : message.Attachments.Select(ChannelMessageMapper.ToAttachment).ToArray());
+        Attachments: message.IsDeleted ? [] : message.Attachments.Select(ChannelMessageMapper.ToAttachment).ToArray(),
+        Kind: message.Kind,
+        RelatedCallId: message.RelatedCallId);
 
     public static DirectConversationDto ConversationToDto(
         DirectConversation conversation,

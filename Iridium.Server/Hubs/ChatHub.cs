@@ -9,6 +9,7 @@ using System.Text.Json;
 using Iridium.Server.Configuration;
 using Microsoft.Extensions.Options;
 using Iridium.Server.Calls;
+using Iridium.Server.Voice;
 
 namespace Iridium.Server.Hubs;
 
@@ -23,6 +24,11 @@ public sealed class ChatHub(
     ICallService calls,
     IMediaService media,
     DirectCallAuthorizationService callAuthorization,
+    VoiceConnectionRegistry voiceConnections,
+    VoiceTraceLogger voiceTrace,
+    CommunityVoiceRoomService communityVoice,
+    ICommunityVoiceMediaGateway communityVoiceMedia,
+    IHostEnvironment environment,
     ILogger<ChatHub> logger) : Hub
 {
     private const string CountedKey = "iridium.connection-counted";
@@ -40,6 +46,7 @@ public sealed class ChatHub(
         Context.Items[CountedKey] = true;
         Context.Items[AccountKey] = session.AccountId;
         connections.Connected();
+        voiceConnections.Connected(session.AccountId, Context.ConnectionId);
         await Groups.AddToGroupAsync(Context.ConnectionId, AccountGroup(session.AccountId));
         logger.LogDebug("SignalR connection {ConnectionId} registered for authenticated account {AccountId}.",
             Context.ConnectionId, session.AccountId);
@@ -53,6 +60,24 @@ public sealed class ChatHub(
         if (Context.Items.ContainsKey(CountedKey)) connections.Disconnected();
         if (Context.Items.TryGetValue(AccountKey, out var value) && value is Guid accountId)
         {
+            if (await communityVoice.LeaveAsync(Context.ConnectionId) is { } voiceLeave)
+                await BroadcastVoiceAsync(voiceLeave.CommunityId, CommunityVoiceHubContract.ParticipantLeft,
+                    new VoiceParticipantLeftEvent(voiceLeave.CommunityId, voiceLeave.ChannelId,
+                        voiceLeave.Participant.AccountId, voiceLeave.Participant.ParticipantId, voiceLeave.Room));
+            var connectionLoss = calls.DisconnectSignaling(Context.ConnectionId);
+            if (connectionLoss is not null)
+            {
+                var ended = new CallStateEvent(connectionLoss.Call.Id, connectionLoss.Call.State,
+                    "The selected signaling connection disconnected");
+                voiceTrace.Log(connectionLoss.Call, accountId, Context.ConnectionId,
+                    new VoiceDiagnosticReport(connectionLoss.Call.Id, "CallEnded", Reason: "SignalingConnectionDisconnected"));
+                if (connectionLoss.RemainingConnectionId is { } remainingConnectionId)
+                    await Clients.Client(remainingConnectionId).SendAsync(VoiceCallHubContract.Ended, ended);
+                else
+                    await Clients.Group(AccountGroup(connectionLoss.RemainingAccountId))
+                        .SendAsync(VoiceCallHubContract.Cancelled, ended);
+            }
+            voiceConnections.Disconnected(accountId, Context.ConnectionId);
             logger.LogDebug("SignalR connection {ConnectionId} disconnected from authenticated account {AccountId}.",
                 Context.ConnectionId, accountId);
             await BroadcastPresenceAsync(accountId, presence.Disconnected(accountId));
@@ -78,6 +103,120 @@ public sealed class ChatHub(
 
     public Task LeaveChannel(Guid communityId, Guid channelId) =>
         Groups.RemoveFromGroupAsync(Context.ConnectionId, GroupName(communityId, channelId));
+
+    public async Task<IReadOnlyList<ActiveVoiceRoomDto>> GetCommunityVoiceRooms(Guid communityId)
+    {
+        var accountId = await RequireAccountAsync();
+        var access = await authorization.GetAccessAsync(communityId, accountId, db);
+        if (!access.Has(CommunityPermission.ViewChannels))
+            throw new HubException("You do not have permission to view this Community's voice rooms.");
+        return communityVoice.GetRooms(communityId);
+    }
+
+    public async Task<ActiveVoiceRoomDto> JoinVoiceChannel(Guid communityId, Guid channelId)
+    {
+        var session = await RequireSessionAsync();
+        await RequireVoiceChannelAsync(communityId, channelId, session.AccountId, CommunityPermission.ConnectVoice);
+        var existingRoom = communityVoice.GetRooms(communityId).FirstOrDefault(value => value.ChannelId == channelId);
+        if (communityVoiceMedia.MaximumParticipants is { } maximum &&
+            existingRoom is not null && existingRoom.Participants.All(value => value.ParticipantId != Context.ConnectionId) &&
+            existingRoom.Participants.Count >= maximum)
+            throw new HubException($"Development Community voice rooms support at most {maximum} connected clients.");
+        var names = await db.CommunityChannels.Where(value => value.CommunityId == communityId && value.Id == channelId)
+            .Select(value => new { CommunityName = value.Community.Name, ChannelName = value.Name }).SingleAsync();
+        var joined = await communityVoice.JoinAsync(communityId, channelId, session.AccountId, Context.ConnectionId,
+            session.Account.DisplayName, presence.GetPublic(session.AccountId), names.CommunityName, names.ChannelName);
+        var voiceAccess = await authorization.GetAccessAsync(communityId, session.AccountId, db);
+        if (!voiceAccess.Has(CommunityPermission.SpeakVoice) &&
+            await communityVoice.SetStateAsync(Context.ConnectionId, true, false) is { } initialState)
+        {
+            var updatedRoom = communityVoice.GetRooms(communityId).Single(value => value.ChannelId == channelId);
+            joined = joined with { Room = updatedRoom, Participant = initialState.Participant };
+        }
+        if (joined.PreviousRoom is { } previous)
+            await BroadcastVoiceAsync(previous.CommunityId, CommunityVoiceHubContract.ParticipantLeft,
+                new VoiceParticipantLeftEvent(previous.CommunityId, previous.ChannelId, previous.Participant.AccountId,
+                    previous.Participant.ParticipantId, previous.Room));
+        if (!joined.AlreadyJoined)
+            await BroadcastVoiceAsync(communityId, CommunityVoiceHubContract.ParticipantJoined,
+                new VoiceParticipantJoinedEvent(joined.Room, joined.Participant));
+        return joined.Room;
+    }
+
+    public async Task LeaveVoiceChannel()
+    {
+        await RequireAccountAsync();
+        if (await communityVoice.LeaveAsync(Context.ConnectionId) is not { } left) return;
+        await BroadcastVoiceAsync(left.CommunityId, CommunityVoiceHubContract.ParticipantLeft,
+            new VoiceParticipantLeftEvent(left.CommunityId, left.ChannelId, left.Participant.AccountId,
+                left.Participant.ParticipantId, left.Room));
+    }
+
+    public async Task<CommunityVoiceMediaSessionDto> GetCommunityVoiceMediaSession()
+    {
+        var accountId = await RequireAccountAsync();
+        var room = communityVoice.RoomFor(Context.ConnectionId)
+            ?? throw new HubException("Join a Community voice channel first.");
+        return await communityVoiceMedia.PrepareSessionAsync(room.CommunityId, room.ChannelId,
+            Context.ConnectionId, accountId, Context.ConnectionAborted);
+    }
+
+    public async Task SendCommunityVoiceMediaOffer(string targetParticipantId, Guid negotiationId,
+        WebRtcSessionDescription description)
+    {
+        RequireCommunityMediaRoute(targetParticipantId);
+        if (!string.Equals(description.Type, "offer", StringComparison.OrdinalIgnoreCase))
+            throw new HubException("A Community media offer must have type offer.");
+        CommunityVoiceDiagnostic("OfferCreated", targetParticipantId, negotiationId);
+        await Clients.Client(targetParticipantId).SendAsync(CommunityVoiceHubContract.MediaOffer,
+            new CommunityVoiceMediaDescriptionEvent(Context.ConnectionId, negotiationId, description));
+    }
+
+    public async Task SendCommunityVoiceMediaAnswer(string targetParticipantId, Guid negotiationId,
+        WebRtcSessionDescription description)
+    {
+        RequireCommunityMediaRoute(targetParticipantId);
+        if (!string.Equals(description.Type, "answer", StringComparison.OrdinalIgnoreCase))
+            throw new HubException("A Community media answer must have type answer.");
+        CommunityVoiceDiagnostic("AnswerCreated", targetParticipantId, negotiationId);
+        await Clients.Client(targetParticipantId).SendAsync(CommunityVoiceHubContract.MediaAnswer,
+            new CommunityVoiceMediaDescriptionEvent(Context.ConnectionId, negotiationId, description));
+    }
+
+    public async Task SendCommunityVoiceMediaIceCandidate(string targetParticipantId, Guid negotiationId,
+        WebRtcIceCandidate candidate)
+    {
+        RequireCommunityMediaRoute(targetParticipantId);
+        CommunityVoiceDiagnostic("IceGenerated", targetParticipantId, negotiationId);
+        await Clients.Client(targetParticipantId).SendAsync(CommunityVoiceHubContract.MediaIceCandidate,
+            new CommunityVoiceMediaIceCandidateEvent(Context.ConnectionId, negotiationId, candidate));
+    }
+
+    public async Task SetVoiceParticipantState(bool muted, bool deafened)
+    {
+        var accountId = await RequireAccountAsync();
+        var room = communityVoice.RoomFor(Context.ConnectionId)
+            ?? throw new HubException("Join a Community voice channel first.");
+        if (!muted && !deafened)
+            await RequireVoiceChannelAsync(room.CommunityId, room.ChannelId, accountId,
+                CommunityPermission.SpeakVoice);
+        var changed = await communityVoice.SetStateAsync(Context.ConnectionId, muted, deafened)
+            ?? throw new HubException("Your voice membership is no longer active.");
+        await BroadcastVoiceAsync(changed.CommunityId, CommunityVoiceHubContract.ParticipantStateChanged, changed);
+    }
+
+    public async Task SetVoiceParticipantSpeaking(bool speaking)
+    {
+        var accountId = await RequireAccountAsync();
+        var room = communityVoice.RoomFor(Context.ConnectionId)
+            ?? throw new HubException("Join a Community voice channel first.");
+        if (speaking)
+            await RequireVoiceChannelAsync(room.CommunityId, room.ChannelId, accountId,
+                CommunityPermission.SpeakVoice);
+        var changed = communityVoice.SetSpeaking(Context.ConnectionId, speaking);
+        if (changed is null) return;
+        await BroadcastVoiceAsync(changed.CommunityId, CommunityVoiceHubContract.ParticipantStateChanged, changed);
+    }
 
     public async Task<ChannelMessageDto> SendMessage(
         Guid communityId,
@@ -220,19 +359,49 @@ public sealed class ChatHub(
         var session = await RequireSessionAsync();
         var parties = await callAuthorization.AuthorizeStartAsync(conversationId, session.AccountId);
         var call = calls.CreateDirect(parties.ConversationId, parties.CallerId, parties.CallerDisplayName,
-            parties.CalleeId, parties.CalleeDisplayName);
+            parties.CalleeId, parties.CalleeDisplayName, Context.ConnectionId);
+        var conversation = await RequireDirectConversationAsync(parties.ConversationId, session.AccountId);
+        var callStartedMessage = new DirectMessage
+        {
+            Id = Guid.NewGuid(),
+            ConversationId = conversation.Id,
+            Conversation = conversation,
+            AuthorAccountId = session.AccountId,
+            AuthorAccount = session.Account,
+            Kind = MessageKind.CallStarted,
+            RelatedCallId = call.Id,
+            Content = string.Empty,
+            CreatedAt = call.CreatedAt
+        };
+        db.DirectMessages.Add(callStartedMessage);
+        try { await db.SaveChangesAsync(); }
+        catch
+        {
+            calls.Cancel(call.Id, session.AccountId);
+            throw;
+        }
+        var callStartedEvent = DirectMessageMapper.ToDto(callStartedMessage);
+        await DirectParticipants(conversation).SendAsync(DirectMessageHubContract.MessageCreated, callStartedEvent);
+        VoiceDiagnostic("CallCreated", call.Id, session.AccountId, parties.CalleeId, null, null, null);
         await Clients.Group(AccountGroup(parties.CalleeId)).SendAsync(VoiceCallHubContract.Incoming,
             new IncomingCallEvent(call.Id, parties.ConversationId, parties.CallerId, parties.CallerDisplayName,
                 call.CreatedAt, call.ExpiresAt));
+        VoiceDiagnostic("IncomingCallSent", call.Id, session.AccountId, parties.CalleeId, null, null, null);
         return call;
     }
 
     public async Task AcceptVoiceCall(Guid callId)
     {
         var accountId = await RequireAccountAsync();
-        var call = calls.Accept(callId, accountId);
-        await OtherCallParticipant(call, accountId).SendAsync(VoiceCallHubContract.Accepted,
-            new CallStateEvent(callId, CallState.Active));
+        // TODO: Remove temporary voice-call diagnostics once WebRTC calls are stable.
+        VoiceDiagnostic("AcceptRequested", callId, accountId, null, null, null, null);
+        var call = calls.Accept(callId, accountId, Context.ConnectionId);
+        var callerRoute = calls.RequireSignalingRoute(callId, accountId, Context.ConnectionId, CallState.Active);
+        var signalId = Guid.NewGuid();
+        VoiceDiagnostic("CallAccepted", callId, accountId, call.CallerAccountId, null, null,
+            signalId, callerRoute.TargetConnectionId);
+        await Clients.Client(callerRoute.TargetConnectionId).SendAsync(VoiceCallHubContract.Accepted,
+            new CallStateEvent(callId, CallState.Active, SignalId: signalId));
         await Clients.OthersInGroup(AccountGroup(accountId)).SendAsync(VoiceCallHubContract.Cancelled,
             new CallStateEvent(callId, CallState.Cancelled, "Answered in another tab"));
     }
@@ -240,7 +409,9 @@ public sealed class ChatHub(
     public async Task RejectVoiceCall(Guid callId)
     {
         var accountId = await RequireAccountAsync();
+        VoiceDiagnostic("DeclineRequested", callId, accountId, null, null, null, null);
         var call = calls.Reject(callId, accountId);
+        VoiceDiagnostic("CallRejected", callId, accountId, call.CallerAccountId, null, null, null);
         await OtherCallParticipant(call, accountId).SendAsync(VoiceCallHubContract.Rejected,
             new CallStateEvent(callId, CallState.Rejected));
         await Clients.OthersInGroup(AccountGroup(accountId)).SendAsync(VoiceCallHubContract.Cancelled,
@@ -250,7 +421,11 @@ public sealed class ChatHub(
     public async Task CancelVoiceCall(Guid callId)
     {
         var accountId = await RequireAccountAsync();
+        VoiceDiagnostic("CancelRequested", callId, accountId, null, null, null, null);
+        calls.RequireSelectedConnection(callId, accountId, Context.ConnectionId, CallState.Ringing);
         var call = calls.Cancel(callId, accountId);
+        VoiceDiagnostic("CallCancelled", callId, accountId,
+            call.Participants.Single(value => value.AccountId != accountId).AccountId, null, null, null);
         await OtherCallParticipant(call, accountId).SendAsync(VoiceCallHubContract.Cancelled,
             new CallStateEvent(callId, CallState.Cancelled));
         await Clients.OthersInGroup(AccountGroup(accountId)).SendAsync(VoiceCallHubContract.Cancelled,
@@ -260,8 +435,12 @@ public sealed class ChatHub(
     public async Task HangUpVoiceCall(Guid callId)
     {
         var accountId = await RequireAccountAsync();
+        VoiceDiagnostic("HangupRequested", callId, accountId, null, null, null, null);
+        var route = calls.RequireSignalingRoute(callId, accountId, Context.ConnectionId, CallState.Active);
         var call = calls.HangUp(callId, accountId);
-        await OtherCallParticipant(call, accountId).SendAsync(VoiceCallHubContract.Ended,
+        VoiceDiagnostic("CallEnded", callId, accountId, route.TargetAccountId, null, null, null,
+            route.TargetConnectionId);
+        await Clients.Client(route.TargetConnectionId).SendAsync(VoiceCallHubContract.Ended,
             new CallStateEvent(callId, call.State));
         await Clients.OthersInGroup(AccountGroup(accountId)).SendAsync(VoiceCallHubContract.Ended,
             new CallStateEvent(callId, call.State));
@@ -270,29 +449,49 @@ public sealed class ChatHub(
     public async Task SetCallParticipantState(Guid callId, bool muted, bool deafened, CallConnectionState connectionState)
     {
         var accountId = await RequireAccountAsync();
+        calls.RequireSignalingRoute(callId, accountId, Context.ConnectionId, CallState.Active);
+        var previousParticipant = calls.RequireParticipant(callId, accountId, CallState.Active).Participants
+            .Single(value => value.AccountId == accountId);
+        if (previousParticipant.IsMuted == muted && previousParticipant.IsDeafened == deafened &&
+            previousParticipant.ConnectionState == connectionState)
+        {
+            calls.TouchSignaling(callId, accountId, Context.ConnectionId);
+            return;
+        }
         var update = calls.SetParticipantState(callId, accountId, muted, deafened, connectionState);
-        var target = calls.OtherParticipants(callId, accountId, CallState.Ringing, CallState.Active).Single();
-        logger.LogDebug("Call {CallId} participant {AccountId} connection state changed to {ConnectionState}.",
-            callId, accountId, connectionState);
-        await Clients.Group(AccountGroup(target)).SendAsync(VoiceCallHubContract.ParticipantStateChanged, update);
+        var route = calls.RequireSignalingRoute(callId, accountId, Context.ConnectionId, CallState.Active);
+        // TODO: Remove temporary voice-call diagnostics once WebRTC calls are stable.
+        var stateCall = calls.RequireParticipant(callId, accountId, CallState.Active);
+        voiceTrace.Log(stateCall, accountId, Context.ConnectionId, new VoiceDiagnosticReport(callId,
+            "PeerStateChanged", OldState: previousParticipant.ConnectionState.ToString(),
+            NewState: connectionState.ToString(), ConnectionState: connectionState.ToString()));
+        await Clients.Client(route.TargetConnectionId).SendAsync(VoiceCallHubContract.ParticipantStateChanged, update);
     }
 
     public async Task SetCallParticipantSpeaking(Guid callId, bool isSpeaking)
     {
         var accountId = await RequireAccountAsync();
+        var route = calls.RequireSignalingRoute(callId, accountId, Context.ConnectionId, CallState.Active);
         var update = calls.SetParticipantSpeaking(callId, accountId, isSpeaking);
-        var targets = calls.OtherParticipants(callId, accountId, CallState.Ringing, CallState.Active);
-        await Clients.Groups(targets.Select(AccountGroup).ToArray())
+        await Clients.Client(route.TargetConnectionId)
             .SendAsync(VoiceCallHubContract.ParticipantSpeakingChanged, update);
+    }
+
+    public async Task HeartbeatVoiceCall(Guid callId)
+    {
+        var accountId = await RequireAccountAsync();
+        calls.TouchSignaling(callId, accountId, Context.ConnectionId);
     }
 
     public async Task RequestCallMediaRetry(Guid callId)
     {
         var accountId = await RequireAccountAsync();
         var call = calls.RequireParticipant(callId, accountId, CallState.Active);
-        var targets = calls.OtherParticipants(callId, accountId, CallState.Active);
+        var route = calls.RequireSignalingRoute(callId, accountId, Context.ConnectionId, CallState.Active);
+        VoiceDiagnostic("RetryRequested", callId, accountId, route.TargetAccountId, null, null, null,
+            route.TargetConnectionId);
         logger.LogDebug("Media retry requested for call {CallId} by participant {AccountId}.", callId, accountId);
-        await Clients.Groups(targets.Select(AccountGroup).ToArray()).SendAsync(
+        await Clients.Client(route.TargetConnectionId).SendAsync(
             VoiceCallHubContract.MediaRetryRequested, new CallStateEvent(call.Id, call.State));
     }
 
@@ -303,58 +502,89 @@ public sealed class ChatHub(
         return media.GetConfiguration();
     }
 
+    // TODO: Remove temporary voice-call diagnostics once WebRTC calls are stable.
+    public async Task ReportVoiceDiagnostic(VoiceDiagnosticReport report)
+    {
+        var accountId = await RequireAccountAsync();
+        if (!voiceTrace.Enabled) return;
+        if (report.CallId == Guid.Empty || string.IsNullOrWhiteSpace(report.Event) || report.Event.Length > 64 ||
+            report.PeerGeneration is < 0 or > 1000 || report.NegotiationGeneration is < 0 or > 1000)
+            throw new HubException("The voice diagnostic report is invalid.");
+        var call = calls.RequireParticipant(report.CallId, accountId,
+            CallState.Ringing, CallState.Active, CallState.Ended, CallState.Rejected, CallState.Cancelled);
+        voiceTrace.Log(call, accountId, Context.ConnectionId, report);
+    }
+
     public async Task<CallSessionDto?> GetCurrentCall()
     {
         var accountId = await RequireAccountAsync();
-        return calls.CurrentFor(accountId);
+        return calls.CurrentFor(accountId, Context.ConnectionId);
     }
 
-    public async Task SendWebRtcOffer(Guid callId, Guid negotiationId, WebRtcSessionDescription description)
+    public async Task SendWebRtcOffer(Guid callId, Guid negotiationId, int negotiationGeneration,
+        int peerGeneration, Guid signalId, WebRtcSessionDescription description)
     {
         var sender = await RequireAccountAsync();
-        var route = media.AuthorizeOffer(callId, sender, negotiationId, description);
+        ValidateDiagnosticSignal(signalId, negotiationGeneration, peerGeneration);
+        // TODO: Remove temporary voice-call diagnostics once WebRTC calls are stable.
+        VoiceDiagnostic("OfferReceivedByServer", callId, sender, null, negotiationGeneration, peerGeneration, signalId);
+        var route = media.AuthorizeOffer(callId, sender, Context.ConnectionId, negotiationId, description);
         if (!route.ShouldForward)
         {
+            VoiceDiagnostic("OfferIgnoredByServer", callId, sender, route.TargetAccountId,
+                negotiationGeneration, peerGeneration, signalId, route.TargetConnectionId);
             logger.LogDebug("Call {CallId} negotiation {NegotiationId}: WebRTC offer ignored by server ({IgnoreReason}).",
                 callId, negotiationId, route.IgnoreReason);
             return;
         }
-        logger.LogDebug("Call {CallId} negotiation {NegotiationId}: WebRTC offer forwarded once from account {SenderAccountId} on connection {ConnectionId} to account {TargetAccountId}.",
-            callId, negotiationId, sender, Context.ConnectionId, route.TargetAccountId);
-        await Clients.Group(AccountGroup(route.TargetAccountId)).SendAsync(VoiceCallHubContract.Offer,
-            new WebRtcDescriptionEvent(callId, sender, negotiationId, description));
+        VoiceDiagnostic("OfferForwarded", callId, sender, route.TargetAccountId,
+            negotiationGeneration, peerGeneration, signalId, route.TargetConnectionId);
+        await Clients.Client(route.TargetConnectionId).SendAsync(VoiceCallHubContract.Offer,
+            new WebRtcDescriptionEvent(callId, sender, negotiationId, negotiationGeneration, peerGeneration, signalId, description));
     }
 
-    public async Task SendWebRtcAnswer(Guid callId, Guid negotiationId, WebRtcSessionDescription description)
+    public async Task SendWebRtcAnswer(Guid callId, Guid negotiationId, int negotiationGeneration,
+        int peerGeneration, Guid signalId, WebRtcSessionDescription description)
     {
         var sender = await RequireAccountAsync();
-        var route = media.AuthorizeAnswer(callId, sender, negotiationId, description);
+        ValidateDiagnosticSignal(signalId, negotiationGeneration, peerGeneration);
+        // TODO: Remove temporary voice-call diagnostics once WebRTC calls are stable.
+        VoiceDiagnostic("AnswerReceivedByServer", callId, sender, null, negotiationGeneration, peerGeneration, signalId);
+        var route = media.AuthorizeAnswer(callId, sender, Context.ConnectionId, negotiationId, description);
         if (!route.ShouldForward)
         {
+            VoiceDiagnostic("AnswerIgnoredByServer", callId, sender, route.TargetAccountId,
+                negotiationGeneration, peerGeneration, signalId, route.TargetConnectionId);
             logger.LogDebug("Call {CallId} negotiation {NegotiationId}: WebRTC answer ignored by server ({IgnoreReason}).",
                 callId, negotiationId, route.IgnoreReason);
             return;
         }
-        logger.LogDebug("Call {CallId} negotiation {NegotiationId}: WebRTC answer forwarded once from account {SenderAccountId} on connection {ConnectionId} to account {TargetAccountId}.",
-            callId, negotiationId, sender, Context.ConnectionId, route.TargetAccountId);
-        await Clients.Group(AccountGroup(route.TargetAccountId)).SendAsync(VoiceCallHubContract.Answer,
-            new WebRtcDescriptionEvent(callId, sender, negotiationId, description));
+        VoiceDiagnostic("AnswerForwarded", callId, sender, route.TargetAccountId,
+            negotiationGeneration, peerGeneration, signalId, route.TargetConnectionId);
+        await Clients.Client(route.TargetConnectionId).SendAsync(VoiceCallHubContract.Answer,
+            new WebRtcDescriptionEvent(callId, sender, negotiationId, negotiationGeneration, peerGeneration, signalId, description));
     }
 
-    public async Task SendWebRtcIceCandidate(Guid callId, Guid negotiationId, WebRtcIceCandidate candidate)
+    public async Task SendWebRtcIceCandidate(Guid callId, Guid negotiationId, int negotiationGeneration,
+        int peerGeneration, Guid signalId, WebRtcIceCandidate candidate)
     {
         var sender = await RequireAccountAsync();
-        var route = media.AuthorizeIceCandidate(callId, sender, negotiationId, candidate);
+        ValidateDiagnosticSignal(signalId, negotiationGeneration, peerGeneration);
+        // TODO: Remove temporary voice-call diagnostics once WebRTC calls are stable.
+        VoiceDiagnostic("IceReceivedByServer", callId, sender, null, negotiationGeneration, peerGeneration, signalId);
+        var route = media.AuthorizeIceCandidate(callId, sender, Context.ConnectionId, negotiationId, candidate);
         if (!route.ShouldForward)
         {
+            VoiceDiagnostic("IceIgnoredByServer", callId, sender, route.TargetAccountId,
+                negotiationGeneration, peerGeneration, signalId, route.TargetConnectionId);
             logger.LogDebug("Call {CallId} negotiation {NegotiationId}: WebRTC ICE candidate ignored by server ({IgnoreReason}).",
                 callId, negotiationId, route.IgnoreReason);
             return;
         }
-        logger.LogDebug("Call {CallId} negotiation {NegotiationId}: WebRTC ICE candidate forwarded from account {SenderAccountId} on connection {ConnectionId} to account {TargetAccountId}.",
-            callId, negotiationId, sender, Context.ConnectionId, route.TargetAccountId);
-        await Clients.Group(AccountGroup(route.TargetAccountId)).SendAsync(VoiceCallHubContract.IceCandidate,
-            new WebRtcIceCandidateEvent(callId, sender, negotiationId, candidate));
+        VoiceDiagnostic("IceForwarded", callId, sender, route.TargetAccountId,
+            negotiationGeneration, peerGeneration, signalId, route.TargetConnectionId);
+        await Clients.Client(route.TargetConnectionId).SendAsync(VoiceCallHubContract.IceCandidate,
+            new WebRtcIceCandidateEvent(callId, sender, negotiationId, negotiationGeneration, peerGeneration, signalId, candidate));
     }
 
     public async Task<DirectMessageDto> SendDirectMessage(Guid conversationId, SendDirectMessageRequest request)
@@ -378,6 +608,7 @@ public sealed class ChatHub(
             reply = await db.DirectMessages.Include(value => value.AuthorAccount)
                 .SingleOrDefaultAsync(value => value.Id == replyId && value.ConversationId == conversationId);
             if (reply is null || reply.IsDeleted) throw new HubException("The message being replied to is no longer available.");
+            if (reply.Kind != MessageKind.User) throw new HubException("System messages cannot be replied to.");
         }
         var message = new DirectMessage
         {
@@ -413,6 +644,7 @@ public sealed class ChatHub(
         var accountId = await RequireAccountAsync();
         var conversation = await RequireDirectConversationAsync(conversationId, accountId);
         var message = await DirectMessageInContextAsync(conversationId, messageId);
+        if (message.Kind != MessageKind.User) throw new HubException("System messages cannot be edited.");
         if (message.AuthorAccountId != accountId) throw new HubException("You can only edit your own messages.");
         if (message.IsDeleted) throw new HubException("Deleted messages cannot be edited.");
         message.Content = ValidContent(request.Content);
@@ -428,6 +660,7 @@ public sealed class ChatHub(
         var accountId = await RequireAccountAsync();
         var conversation = await RequireDirectConversationAsync(conversationId, accountId);
         var message = await DirectMessageInContextAsync(conversationId, messageId);
+        if (message.Kind != MessageKind.User) throw new HubException("System messages cannot be deleted.");
         if (message.AuthorAccountId != accountId) throw new HubException("You can only delete your own messages.");
         if (message.IsDeleted) return;
         message.IsDeleted = true;
@@ -496,8 +729,33 @@ public sealed class ChatHub(
             throw new HubException("You are not a member of this Community.");
         if (!access.Has(permission))
             throw new HubException("You do not have permission to use this Community channel.");
-        if (!await db.CommunityChannels.AnyAsync(value => value.CommunityId == communityId && value.Id == channelId))
-            throw new HubException("Channel not found in this Community.");
+        if (!await db.CommunityChannels.AnyAsync(value => value.CommunityId == communityId && value.Id == channelId &&
+                value.Kind == CommunityChannelKind.Text))
+            throw new HubException("Text channel not found in this Community.");
+    }
+
+    private async Task RequireVoiceChannelAsync(Guid communityId, Guid channelId, Guid accountId,
+        CommunityPermission permission)
+    {
+        var access = await authorization.GetAccessAsync(communityId, accountId, db);
+        if (!access.IsOwner && !await authorization.IsMemberAsync(communityId, accountId, db))
+            throw new HubException("You are not a member of this Community.");
+        if (!access.Has(CommunityPermission.ViewChannels) || !access.Has(permission))
+            throw new HubException("You do not have permission to use this Community voice channel.");
+        if (!await db.CommunityChannels.AnyAsync(value => value.CommunityId == communityId &&
+                value.Id == channelId && value.Kind == CommunityChannelKind.Voice))
+            throw new HubException("Voice channel not found in this Community.");
+    }
+
+    private async Task BroadcastVoiceAsync(Guid communityId, string method, object payload)
+    {
+        var accounts = await db.CommunityMembers.AsNoTracking().Where(value => value.CommunityId == communityId)
+            .Select(value => value.AccountId).ToListAsync();
+        var owner = await db.Communities.AsNoTracking().Where(value => value.Id == communityId)
+            .Select(value => (Guid?)value.OwnerAccountId).SingleOrDefaultAsync();
+        if (owner.HasValue) accounts.Add(owner.Value);
+        var groups = accounts.Distinct().Select(AccountGroup).ToArray();
+        if (groups.Length > 0) await Clients.Groups(groups).SendAsync(method, payload);
     }
 
     private async Task<(IReadOnlyList<CommunityMentionDto> Mentions, HashSet<Guid> Recipients)> ValidateMentionsAsync(
@@ -616,4 +874,65 @@ public sealed class ChatHub(
     private static string GroupName(Guid communityId, Guid channelId) => $"community:{communityId:N}:channel:{channelId:N}";
     private static string DirectGroup(Guid conversationId) => $"direct:{conversationId:N}";
     internal static string AccountGroup(Guid accountId) => $"account:{accountId:N}";
+
+    private void RequireCommunityMediaRoute(string targetParticipantId)
+    {
+        if (communityVoiceMedia.Status != CommunityVoiceMediaStatus.Connected)
+            throw new HubException("Community voice media is unavailable on this Node.");
+        if (string.IsNullOrWhiteSpace(targetParticipantId) || targetParticipantId == Context.ConnectionId)
+            throw new HubException("The Community voice media target is invalid.");
+        var sourceRoom = communityVoice.RoomFor(Context.ConnectionId)
+            ?? throw new HubException("Join a Community voice channel before signaling media.");
+        var targetRoom = communityVoice.RoomFor(targetParticipantId);
+        if (targetRoom is null || targetRoom.Value != sourceRoom)
+            throw new HubException("The media target is not in your Community voice room.");
+    }
+
+    // TODO: Remove temporary Community voice diagnostics once voice channels are stable.
+    private void CommunityVoiceDiagnostic(string eventName, string remoteParticipantId, Guid negotiationId)
+    {
+        if (!environment.IsDevelopment()) return;
+        logger.LogDebug("COMMUNITY VOICE MEDIA Event={Event} LocalParticipant={LocalParticipant} " +
+            "RemoteParticipant={RemoteParticipant} NegotiationId={NegotiationId}",
+            eventName, Context.ConnectionId, remoteParticipantId, negotiationId);
+    }
+
+    // TODO: Remove temporary voice-call diagnostics once WebRTC calls are stable.
+    private void VoiceDiagnostic(string eventName, Guid callId, Guid senderAccountId, Guid? receiverAccountId,
+        int? negotiationGeneration, int? peerGeneration, Guid? signalId, string? receiverConnectionId = null)
+    {
+        if (!environment.IsDevelopment()) return;
+        var senderRole = "unknown";
+        try
+        {
+            var call = calls.RequireParticipant(callId, senderAccountId, CallState.Ringing, CallState.Active,
+                CallState.Ended, CallState.Rejected, CallState.Cancelled);
+            senderRole = call.CallerAccountId == senderAccountId ? "caller" : "callee";
+        }
+        catch (HubException) { }
+
+        var receiverConnectionIds = receiverAccountId is { } receiver
+            ? voiceConnections.ForAccount(receiver)
+            : [];
+        logger.LogDebug(
+            "VOICE TRACE Call={CallId} Account={AccountId} Role={Role} Peer={PeerGeneration} " +
+            "Negotiation={NegotiationGeneration} Event={Event} Signal={SignalId} " +
+            "ReceiverAccountId={ReceiverAccountId} " +
+            "HubConnectionId={ConnectionId} ReceiverConnectionId={ReceiverConnectionId} " +
+            "ReceiverConnections={ReceiverConnectionCount} ReceiverConnectionIds={ReceiverConnectionIds}",
+            callId, senderAccountId, senderRole, peerGeneration, negotiationGeneration, eventName, signalId,
+            receiverAccountId, ShortConnectionId(Context.ConnectionId),
+            receiverConnectionId is null ? null : ShortConnectionId(receiverConnectionId), receiverConnectionIds.Count,
+            receiverConnectionIds.Select(ShortConnectionId).ToArray());
+    }
+
+    private static string ShortConnectionId(string connectionId) =>
+        connectionId.Length <= 8 ? connectionId : connectionId[..8];
+
+    private static void ValidateDiagnosticSignal(Guid signalId, int negotiationGeneration, int peerGeneration)
+    {
+        if (signalId == Guid.Empty) throw new HubException("The WebRTC diagnostic signal identifier is invalid.");
+        if (negotiationGeneration <= 0) throw new HubException("The WebRTC negotiation generation is invalid.");
+        if (peerGeneration <= 0) throw new HubException("The WebRTC peer generation is invalid.");
+    }
 }

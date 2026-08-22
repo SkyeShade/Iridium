@@ -1,0 +1,33 @@
+@using Iridium.Client.Core
+@inject VoiceParticipantPreferencesService Preferences
+
+<div class="voice-user-popup" role="dialog" aria-label="Local voice settings for @DisplayName"
+     @onclick:stopPropagation="true" @oncontextmenu:preventDefault="true" @oncontextmenu:stopPropagation="true">
+    <header><ProfileAvatar DisplayName="DisplayName" Size="small" Surface="panel" /><div><strong>@DisplayName</strong><small>Local voice settings</small></div></header>
+    <div class="voice-popup-divider"></div>
+    @if (_preference is not null)
+    {
+        <label class="mute-row"><span>Mute locally</span><input type="checkbox" checked="@_preference.LocallyMuted" @onchange="SetMutedAsync" /></label>
+        <label class="volume-row"><span>User Volume</span><output>@_preference.VolumePercent%</output></label>
+        <input class="volume-slider" type="range" min="10" max="300" step="5" value="@_preference.VolumePercent" @oninput="SetVolumeAsync" />
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public required Guid AccountId { get; set; }
+    [Parameter, EditorRequired] public required string DisplayName { get; set; }
+    private VoiceParticipantPreference? _preference;
+    protected override async Task OnParametersSetAsync() => _preference = await Preferences.GetAsync(AccountId);
+    private async Task SetMutedAsync(ChangeEventArgs args)
+    {
+        var muted = args.Value is bool value && value;
+        await Preferences.SetLocallyMutedAsync(AccountId, muted);
+        _preference = await Preferences.GetAsync(AccountId);
+    }
+    private async Task SetVolumeAsync(ChangeEventArgs args)
+    {
+        if (!int.TryParse(args.Value?.ToString(), out var value)) return;
+        await Preferences.SetVolumeAsync(AccountId, value);
+        _preference = await Preferences.GetAsync(AccountId);
+    }
+}

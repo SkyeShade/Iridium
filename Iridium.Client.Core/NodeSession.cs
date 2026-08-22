@@ -35,6 +35,7 @@ public sealed class NodeSession(
     public bool IsAuthenticated => Account is not null;
     public event Action? Changed;
     public event Action<CommunityStateChangedEvent>? CommunityChanged;
+    public event Action? RealtimeReconnected;
     public event Action<CommunityAccessRevokedEvent>? CommunityAccessRevoked;
     public event Action<CommunityDto>? CommunityJoined;
     public event Action<PresenceChangedEvent>? PresenceChanged;
@@ -289,6 +290,8 @@ public sealed class NodeSession(
         await RefreshCommunitiesAsync();
         CommunityChanged?.Invoke(change);
     }
+
+    internal void ApplyRealtimeReconnected() => RealtimeReconnected?.Invoke();
 
     internal void ApplyCommunityAccessRevoked(CommunityAccessRevokedEvent change)
     {

@@ -11,6 +11,7 @@ public sealed class CallSession
     public required CallState State { get; set; }
     public required DateTimeOffset CreatedAt { get; init; }
     public required DateTimeOffset ExpiresAt { get; init; }
+    public DateTimeOffset? AcceptedAt { get; set; }
     public required Dictionary<Guid, CallParticipant> Participants { get; init; }
 }
 
@@ -24,4 +25,5 @@ public sealed class CallParticipant
     public DateTimeOffset? JoinedAt { get; set; }
     public CallConnectionState ConnectionState { get; set; } = CallConnectionState.New;
     public required DateTimeOffset LastSignalingAt { get; set; }
+    public string? SignalingConnectionId { get; set; }
 }

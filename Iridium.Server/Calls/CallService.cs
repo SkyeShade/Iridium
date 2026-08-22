@@ -12,7 +12,7 @@ public sealed class CallService(IOptions<MediaOptions> options, TimeProvider tim
     private readonly Dictionary<Guid, CallSession> _calls = [];
 
     public CallSessionDto CreateDirect(Guid conversationId, Guid callerId, string callerDisplayName,
-        Guid calleeId, string calleeDisplayName)
+        Guid calleeId, string calleeDisplayName, string callerConnectionId)
     {
         if (callerId == calleeId) throw new HubException("You cannot call yourself.");
         lock (_gate)
@@ -30,7 +30,8 @@ public sealed class CallService(IOptions<MediaOptions> options, TimeProvider tim
                 ExpiresAt = now.AddSeconds(Math.Clamp(options.Value.RingTimeoutSeconds, 5, 300)),
                 Participants = new Dictionary<Guid, CallParticipant>
                 {
-                    [callerId] = new() { AccountId = callerId, DisplayName = callerDisplayName, JoinedAt = now, LastSignalingAt = now },
+                    [callerId] = new() { AccountId = callerId, DisplayName = callerDisplayName, JoinedAt = now,
+                        LastSignalingAt = now, SignalingConnectionId = callerConnectionId },
                     [calleeId] = new() { AccountId = calleeId, DisplayName = calleeDisplayName, LastSignalingAt = now }
                 }
             };
@@ -41,14 +42,16 @@ public sealed class CallService(IOptions<MediaOptions> options, TimeProvider tim
         }
     }
 
-    public CallSessionDto Accept(Guid callId, Guid accountId)
+    public CallSessionDto Accept(Guid callId, Guid accountId, string calleeConnectionId)
     {
         lock (_gate)
         {
             var call = Require(callId, accountId, CallState.Ringing);
             if (accountId == call.CallerAccountId) throw new HubException("The caller cannot accept their own call.");
             call.State = CallState.Active;
-            call.Participants[accountId].JoinedAt = timeProvider.GetUtcNow();
+            call.AcceptedAt = timeProvider.GetUtcNow();
+            call.Participants[accountId].JoinedAt = call.AcceptedAt;
+            call.Participants[accountId].SignalingConnectionId = calleeConnectionId;
             foreach (var participant in call.Participants.Values) participant.LastSignalingAt = timeProvider.GetUtcNow();
             logger.LogInformation("Voice call {CallId} accepted.", callId);
             return ToDto(call);
@@ -112,6 +115,61 @@ public sealed class CallService(IOptions<MediaOptions> options, TimeProvider tim
         }
     }
 
+    public CallSignalingRoute RequireSignalingRoute(Guid callId, Guid accountId, string senderConnectionId,
+        params CallState[] allowedStates)
+    {
+        lock (_gate)
+        {
+            var call = Require(callId, accountId, allowedStates);
+            var sender = call.Participants[accountId];
+            if (!string.Equals(sender.SignalingConnectionId, senderConnectionId, StringComparison.Ordinal))
+                throw new HubException("This connection is not the selected media endpoint for the call.");
+            var target = call.Participants.Values.Single(value => value.AccountId != accountId);
+            if (string.IsNullOrWhiteSpace(target.SignalingConnectionId))
+                throw new HubException("The remote media endpoint has not accepted the call.");
+            sender.LastSignalingAt = timeProvider.GetUtcNow();
+            return new(target.AccountId, target.SignalingConnectionId);
+        }
+    }
+
+    public void RequireSelectedConnection(Guid callId, Guid accountId, string connectionId,
+        params CallState[] allowedStates)
+    {
+        lock (_gate)
+        {
+            var participant = Require(callId, accountId, allowedStates).Participants[accountId];
+            if (!string.Equals(participant.SignalingConnectionId, connectionId, StringComparison.Ordinal))
+                throw new HubException("This connection is not the selected media endpoint for the call.");
+        }
+    }
+
+    public void TouchSignaling(Guid callId, Guid accountId, string senderConnectionId)
+    {
+        lock (_gate)
+        {
+            var call = Require(callId, accountId, CallState.Active);
+            var participant = call.Participants[accountId];
+            if (!string.Equals(participant.SignalingConnectionId, senderConnectionId, StringComparison.Ordinal))
+                throw new HubException("This connection is not the selected media endpoint for the call.");
+            participant.LastSignalingAt = timeProvider.GetUtcNow();
+        }
+    }
+
+    public CallConnectionLoss? DisconnectSignaling(string connectionId)
+    {
+        lock (_gate)
+        {
+            var call = _calls.Values.FirstOrDefault(value => IsLive(value.State) && value.Participants.Values.Any(
+                participant => string.Equals(participant.SignalingConnectionId, connectionId, StringComparison.Ordinal)));
+            if (call is null) return null;
+            call.State = call.State == CallState.Ringing ? CallState.Cancelled : CallState.Ended;
+            CloseParticipants(call);
+            var remaining = call.Participants.Values.Single(value =>
+                !string.Equals(value.SignalingConnectionId, connectionId, StringComparison.Ordinal));
+            return new(ToDto(call), remaining.AccountId, remaining.SignalingConnectionId);
+        }
+    }
+
     public IReadOnlyList<CallSessionDto> ExpireRingingCalls()
     {
         lock (_gate)
@@ -135,11 +193,13 @@ public sealed class CallService(IOptions<MediaOptions> options, TimeProvider tim
         }
     }
 
-    public CallSessionDto? CurrentFor(Guid accountId)
+    public CallSessionDto? CurrentFor(Guid accountId, string connectionId)
     {
         lock (_gate)
         {
-            var call = _calls.Values.FirstOrDefault(value => IsLive(value.State) && value.Participants.ContainsKey(accountId));
+            var call = _calls.Values.FirstOrDefault(value => IsLive(value.State) && value.Participants.TryGetValue(accountId, out var participant) &&
+                (string.Equals(participant.SignalingConnectionId, connectionId, StringComparison.Ordinal) ||
+                 value.State == CallState.Ringing && accountId != value.CallerAccountId && participant.SignalingConnectionId is null));
             return call is null ? null : ToDto(call);
         }
     }
@@ -175,5 +235,6 @@ public sealed class CallService(IOptions<MediaOptions> options, TimeProvider tim
     private static CallSessionDto ToDto(CallSession call) => new(call.Id, call.Kind, call.DirectConversationId,
         call.CallerAccountId, call.State, call.CreatedAt, call.ExpiresAt,
         call.Participants.Values.Select(value => new CallParticipantDto(value.AccountId, value.DisplayName,
-            value.IsMuted, value.IsDeafened, value.IsSpeaking, value.JoinedAt, value.ConnectionState)).ToList());
+            value.IsMuted, value.IsDeafened, value.IsSpeaking, value.JoinedAt, value.ConnectionState)).ToList(),
+        call.AcceptedAt);
 }

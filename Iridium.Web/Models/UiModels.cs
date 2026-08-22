@@ -15,7 +15,8 @@ public sealed record ProfileSubmission(string DisplayName, string? Pronouns, str
 
 public sealed record CommunitySubmission(string Name, string? Description);
 
-public sealed record ChannelSettingsSubmission(Guid? ChannelId, string Name, Guid? CategoryId);
+public sealed record ChannelSettingsSubmission(Guid? ChannelId, string Name, Guid? CategoryId,
+    CommunityChannelKind Kind);
 
 public sealed record CategorySettingsSubmission(Guid? CategoryId, string Name, Guid? ParentCategoryId = null);
 

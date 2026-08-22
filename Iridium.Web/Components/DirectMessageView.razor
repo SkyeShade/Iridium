@@ -4,6 +4,7 @@
 @implements IDisposable
 @inject ChannelMessagingSession Messaging
 @inject CallClientService Calls
+@inject ActiveVoiceSessionCoordinator VoiceSessions
 @inject ILogger<DirectMessageView> Logger
 
 <section class="direct-message-view">
@@ -60,7 +61,8 @@
     private IReadOnlyList<ChannelMessageDto> ProjectedMessages => Messaging.DirectMessages.Select(message =>
         new ChannelMessageDto(message.Id, Guid.Empty, message.ConversationId, message.Author, message.Content,
             message.CreatedAt, message.EditedAt, message.IsDeleted, message.ReplyTo, null,
-            message.ClientMessageId, message.DeliveryState, message.DeliveryError, message.CanRetry, message.Attachments)).ToArray();
+            message.ClientMessageId, message.DeliveryState, message.DeliveryError, message.CanRetry,
+            message.Attachments, message.Kind)).ToArray();
 
     protected override void OnInitialized() { Messaging.Changed += MessagesChanged; Calls.Changed += CallsChanged; }
     protected override async Task OnParametersSetAsync()
@@ -91,6 +93,7 @@
     private void CallsChanged() => _ = InvokeAsync(StateHasChanged);
     private async Task BeginReply(ChannelMessageDto message)
     {
+        if (message.Kind != MessageKind.User) return;
         _replyTo = message;
         await InvokeAsync(StateHasChanged);
         if (_composer is not null) await _composer.FocusAsync();
@@ -152,7 +155,7 @@
         _error = null;
         try
         {
-            await Calls.StartAsync(Conversation);
+            await VoiceSessions.StartDirectAsync(Conversation);
             if (OnStartVoiceCall.HasDelegate) await OnStartVoiceCall.InvokeAsync();
         }
         catch (Exception exception)

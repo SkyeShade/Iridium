@@ -1,5 +1,6 @@
 @using Iridium.Protocol
 @inject CallClientService Calls
+@inject ActiveVoiceSessionCoordinator VoiceSessions
 
 @if (IncomingForConversation is { } incoming)
 {
@@ -11,8 +12,8 @@
         </div>
         @if (!string.IsNullOrWhiteSpace(Calls.ErrorMessage)) { <p class="call-error">@Calls.ErrorMessage</p> }
         <div class="incoming-actions">
-            <button type="button" class="answer-button" @onclick="AcceptAsync"><Icon Name="phone" /> Answer</button>
-            <button type="button" class="decline-button" @onclick="DeclineAsync"><Icon Name="hangup" /> Decline</button>
+            <button type="button" class="answer-button" disabled="@Calls.IsAccepting" @onclick="AcceptAsync"><Icon Name="phone" /> @(Calls.IsAccepting ? "Answering..." : "Answer")</button>
+            <button type="button" class="decline-button" disabled="@Calls.IsAccepting" @onclick="DeclineAsync"><Icon Name="hangup" /> Decline</button>
         </div>
     </section>
 }
@@ -34,7 +35,8 @@ else if (CallForConversation is { } call)
             <div class="call-participants">
                 @foreach (var callParticipant in call.Participants)
                 {
-                    <div class="call-participant">
+                    <div class="call-participant" @oncontextmenu="() => OpenParticipantMenu(callParticipant)"
+                         @oncontextmenu:preventDefault="true" @oncontextmenu:stopPropagation="true">
                         <div class="call-avatar @(callParticipant.IsSpeaking ? "speaking" : null)">
                             <ProfileAvatar DisplayName="@callParticipant.DisplayName"
                                            Presence="@(callParticipant.AccountId == CurrentAccountId ? PublicPresence.Online : Participant.Presence)"
@@ -42,6 +44,10 @@ else if (CallForConversation is { } call)
                         </div>
                         <strong>@callParticipant.DisplayName</strong>
                         @if (callParticipant.IsMuted) { <span>Muted</span> }
+                        @if (_menuRemoteAccountId == callParticipant.AccountId)
+                        {
+                            <VoiceParticipantMenu AccountId="callParticipant.AccountId" DisplayName="callParticipant.DisplayName" />
+                        }
                     </div>
                 }
             </div>
@@ -77,10 +83,13 @@ else if (CallForConversation is { } call)
         CallConnectionState.Disconnected => "Connection interrupted…",
         _ => "Connecting media…"
     };
-    private Task AcceptAsync() => Calls.AcceptAsync();
-    private Task DeclineAsync() => Calls.DeclineAsync();
-    private Task HangUpAsync() => Calls.HangUpAsync();
-    private Task ToggleMuteAsync() => Calls.ToggleMuteAsync();
-    private Task ToggleDeafenAsync() => Calls.ToggleDeafenAsync();
+    private Guid? _menuRemoteAccountId;
+    private void OpenParticipantMenu(CallParticipantDto participant) =>
+        _menuRemoteAccountId = participant.AccountId == CurrentAccountId ? null : participant.AccountId;
+    private Task AcceptAsync() => VoiceSessions.AcceptIncomingDirectAsync();
+    private Task DeclineAsync() => VoiceSessions.DeclineIncomingDirectAsync();
+    private Task HangUpAsync() => VoiceSessions.LeaveCurrentVoiceSessionAsync("Direct Call UI leave");
+    private Task ToggleMuteAsync() => VoiceSessions.ToggleMuteAsync();
+    private Task ToggleDeafenAsync() => VoiceSessions.ToggleDeafenAsync();
     private Task RetryAsync() => Calls.RetryMediaAsync();
 }

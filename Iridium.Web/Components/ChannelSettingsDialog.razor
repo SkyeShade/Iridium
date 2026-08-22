@@ -4,17 +4,13 @@
 
 <ModalShell Title="@(Channel is null ? "Create Channel" : "Channel Settings")" Size="compact" OnClose="OnCancel">
     <section class="settings-dialog create-channel-dialog">
-        <header class="dialog-heading"><h2 id="channel-dialog-title">@(Channel is null ? "Create Channel" : "Channel Settings")</h2><p>@(Channel is null ? $"in {DestinationName}" : "Configure this text Channel.")</p></header>
-        @if (Channel is null)
-        {
-            <div class="dialog-field"><span class="field-label">Channel Type</span><div class="channel-types" aria-label="Channel type">
-                <button type="button" class="channel-type selected"><Icon Name="channel" /><span><strong>Text</strong><small>Send messages, images, and files</small></span></button>
-                <button type="button" class="channel-type" disabled title="Coming later"><span class="type-symbol">☎</span><span><strong>Voice</strong><small>Coming later</small></span></button>
-                <button type="button" class="channel-type" disabled title="Coming later"><span class="type-symbol">▤</span><span><strong>Forum</strong><small>Coming later</small></span></button>
-            </div></div>
-        }
+        <header class="dialog-heading"><h2 id="channel-dialog-title">@(Channel is null ? "Create Channel" : "Channel Settings")</h2><p>@(Channel is null ? $"in {DestinationName}" : $"Configure this {_kind.ToString().ToLowerInvariant()} Channel.")</p></header>
+        <div class="dialog-field"><span class="field-label">Channel Type</span><div class="channel-types" aria-label="Channel type">
+            <button type="button" class="channel-type @(_kind == CommunityChannelKind.Text ? "selected" : null)" disabled="@(Channel is not null)" @onclick="() => _kind = CommunityChannelKind.Text"><Icon Name="channel" /><span><strong>Text</strong><small>Send messages, images, and files</small></span></button>
+            <button type="button" class="channel-type @(_kind == CommunityChannelKind.Voice ? "selected" : null)" disabled="@(Channel is not null)" @onclick="() => _kind = CommunityChannelKind.Voice"><Icon Name="speaker" /><span><strong>Voice</strong><small>Persistent joinable voice room</small></span></button>
+        </div></div>
         <label class="dialog-field"><span class="field-label">Channel Name</span>
-            <span class="channel-name-input"><span>#</span><input value="@_name" @oninput="NameChanged" maxlength="100" autofocus placeholder="new-channel" /></span>
+            <span class="channel-name-input"><Icon Name="@(_kind == CommunityChannelKind.Voice ? "speaker" : "channel")" /><input value="@_name" @oninput="NameChanged" maxlength="100" autofocus placeholder="new-channel" /></span>
         </label>
         @if (Channel is not null)
         {
@@ -54,6 +50,7 @@
     [Parameter] public EventCallback OnCancel { get; set; }
     private Guid? _initializedId; private bool _initializedCreate; private string _name = string.Empty;
     private string _categoryValue = string.Empty; private bool _confirmDelete; private string? _validationError;
+    private CommunityChannelKind _kind = CommunityChannelKind.Text;
     private Guid? DestinationId => Channel?.CategoryId ?? InitialCategoryId;
     private CommunityCategoryDto? Destination => Categories.FirstOrDefault(value => value.Id == DestinationId);
     private string DestinationName => Destination is null ? "Community root" : Breadcrumb(Destination);
@@ -65,6 +62,7 @@
         if (!createChanged && Channel?.Id == _initializedId) return;
         _initializedId = Channel?.Id; _initializedCreate = Channel is null; _name = Channel?.Name ?? string.Empty;
         _categoryValue = DestinationId?.ToString() ?? string.Empty; _confirmDelete = ConfirmDeleteInitially;
+        _kind = Channel?.Kind ?? CommunityChannelKind.Text;
         Validate();
     }
     private void NameChanged(ChangeEventArgs args) { _name = args.Value?.ToString() ?? string.Empty; Validate(); }
@@ -73,7 +71,7 @@
     private Task SaveAsync()
     {
         var categoryId = Channel is null ? InitialCategoryId : Guid.TryParse(_categoryValue, out var parsed) ? parsed : null;
-        return OnSave.InvokeAsync(new(Channel?.Id, _name, categoryId));
+        return OnSave.InvokeAsync(new(Channel?.Id, _name, categoryId, _kind));
     }
     private Task DeleteAsync() { if (!_confirmDelete) { _confirmDelete = true; return Task.CompletedTask; } return OnDelete.InvokeAsync(Channel!.Id); }
     private string Breadcrumb(CommunityCategoryDto category)

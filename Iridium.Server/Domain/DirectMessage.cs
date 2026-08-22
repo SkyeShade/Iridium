@@ -1,3 +1,5 @@
+using Iridium.Protocol;
+
 namespace Iridium.Server.Domain;
 
 public sealed class DirectMessage
@@ -6,6 +8,8 @@ public sealed class DirectMessage
     public Guid ConversationId { get; set; }
     public Guid AuthorAccountId { get; set; }
     public Guid? ClientMessageId { get; set; }
+    public MessageKind Kind { get; set; } = MessageKind.User;
+    public Guid? RelatedCallId { get; set; }
     public string Content { get; set; } = string.Empty;
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset? EditedAt { get; set; }

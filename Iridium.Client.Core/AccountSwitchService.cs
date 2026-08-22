@@ -6,7 +6,9 @@ public sealed class AccountSwitchService(
     NodeSession session,
     CommunitySession communities,
     ChannelMessagingSession messaging,
-    CallClientService? calls = null)
+    CallClientService? calls = null,
+    CommunityVoiceSession? communityVoice = null,
+    ActiveVoiceSessionCoordinator? voiceSessions = null)
 {
     public async Task InitializeAsync(IReadOnlyList<SavedNode> nodes, CancellationToken cancellationToken = default)
     {
@@ -74,6 +76,13 @@ public sealed class AccountSwitchService(
 
     private async Task ResetAccountContextAsync(CancellationToken cancellationToken)
     {
+        if (voiceSessions is not null)
+            await voiceSessions.LeaveCurrentVoiceSessionAsync("active account changed", cancellationToken);
+        else
+        {
+            if (communityVoice is not null) await communityVoice.LeaveAsync(cancellationToken);
+            else if (calls is not null) await calls.HangUpAsync(cancellationToken);
+        }
         if (calls is not null) await calls.EndForAccountSwitchAsync(cancellationToken);
         await messaging.DisconnectAsync(cancellationToken);
         communities.Clear();

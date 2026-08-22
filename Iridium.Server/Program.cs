@@ -10,6 +10,8 @@ using Microsoft.AspNetCore.Identity;
 using Iridium.Server.Domain;
 using Iridium.Server.Storage;
 using Iridium.Server.Calls;
+using Iridium.Server.Voice;
+using Iridium.Server.Communities;
 
 var builder = WebApplication.CreateBuilder(args);
 var configuredNodeOptions = builder.Configuration.GetSection(NodeOptions.SectionName).Get<NodeOptions>() ?? new NodeOptions();
@@ -20,6 +22,10 @@ builder.Services.AddOpenApi();
 builder.Services.AddSignalR();
 builder.Services.AddSingleton<ConnectionCounter>();
 builder.Services.AddSingleton<PresenceTracker>();
+builder.Services.AddSingleton<VoiceConnectionRegistry>();
+builder.Services.AddSingleton<VoiceTraceLogger>();
+builder.Services.AddSingleton<CommunityRevisionTracker>();
+builder.Services.AddSingleton<CommunityRealtimePublisher>();
 builder.Services.Configure<NodeOptions>(builder.Configuration.GetSection(NodeOptions.SectionName));
 builder.Services.Configure<MediaOptions>(builder.Configuration.GetSection(MediaOptions.SectionName));
 builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(options =>
@@ -36,6 +42,12 @@ builder.Services.AddSingleton<IImagePreviewGenerator, ImagePreviewGenerator>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<ICallService, CallService>();
 builder.Services.AddSingleton<IMediaService, DirectWebRtcMediaService>();
+if (builder.Environment.IsDevelopment() &&
+    builder.Configuration.GetValue<bool>("Media:EnableDevelopmentCommunityPeerMesh"))
+    builder.Services.AddSingleton<ICommunityVoiceMediaGateway, DevelopmentPeerMeshCommunityVoiceMediaGateway>();
+else
+    builder.Services.AddSingleton<ICommunityVoiceMediaGateway, UnavailableCommunityVoiceMediaGateway>();
+builder.Services.AddSingleton<CommunityVoiceRoomService>();
 builder.Services.AddScoped<DirectCallAuthorizationService>();
 builder.Services.AddHostedService<CallTimeoutService>();
 if (builder.Environment.IsDevelopment())
@@ -67,6 +79,7 @@ await using (var scope = app.Services.CreateAsyncScope())
     await DatabaseCompatibility.EnsureMessageClientIdsAsync(db);
     await DatabaseCompatibility.EnsureMessageHistoryIndexesAsync(db);
     await DatabaseCompatibility.EnsureCommunityManagementSchemaAsync(db);
+    await DatabaseCompatibility.EnsureCommunityVoiceSchemaAsync(db);
     await DatabaseCompatibility.EnsureAttachmentsTableAsync(db);
 }
 

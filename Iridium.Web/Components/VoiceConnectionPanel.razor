@@ -1,0 +1,42 @@
+@using Iridium.Client.Core
+@using Iridium.Protocol
+@implements IDisposable
+@inject ActiveVoiceSessionCoordinator Voice
+
+@if (Voice.Current is { } session)
+{
+    <section class="voice-connection-panel" aria-label="Active voice connection">
+        <div class="voice-connection-copy">
+            <strong><span class="connection-dot"></span>@Status(session)</strong>
+            <span>@PrimaryLabel(session)</span>
+            @if (session.StartedAt is { } startedAt) { <VoiceElapsedTimer StartedAt="startedAt" /> }
+        </div>
+        <div class="voice-controls">
+            <button class="@(session.Muted ? "active" : null)" title="@(session.Muted ? "Unmute" : "Mute")" @onclick="ToggleMuteAsync"><Icon Name="microphone" /></button>
+            <button class="@(session.Deafened ? "active" : null)" title="@(session.Deafened ? "Undeafen" : "Deafen")" @onclick="ToggleDeafenAsync"><Icon Name="headphones" /></button>
+            <button class="disconnect" title="Disconnect" @onclick="DisconnectAsync"><Icon Name="hangup" /></button>
+        </div>
+    </section>
+}
+
+@code {
+    protected override void OnInitialized() => Voice.Changed += OnChanged;
+    private void OnChanged() => _ = InvokeAsync(StateHasChanged);
+    private Task ToggleMuteAsync() => Voice.ToggleMuteAsync();
+    private Task ToggleDeafenAsync() => Voice.ToggleDeafenAsync();
+    private Task DisconnectAsync() => Voice.LeaveCurrentVoiceSessionAsync("voice connection panel disconnect");
+    private static string Status(ActiveVoiceSession session) => session.ConnectionState switch
+    {
+        CallConnectionState.Connected => "Connected",
+        CallConnectionState.Connecting => "Connecting",
+        CallConnectionState.Failed => "Media connection failed",
+        _ when session.Kind == ActiveVoiceSessionKind.CommunityVoiceChannel => "Control connected · Media unavailable",
+        _ => "Connecting"
+    };
+    private string PrimaryLabel(ActiveVoiceSession session) => session.Kind switch
+    {
+        ActiveVoiceSessionKind.DirectCall => $"{session.DisplayName} · Direct Call",
+        _ => $"{Voice.CommunityVoice.CurrentRoom?.CommunityName ?? "Community"} · {session.DisplayName}"
+    };
+    public void Dispose() => Voice.Changed -= OnChanged;
+}

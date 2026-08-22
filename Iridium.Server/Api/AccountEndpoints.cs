@@ -206,7 +206,8 @@ public static partial class AccountEndpoints
             Name = "@everyone",
             Position = 0,
             IsDefault = true,
-            Permissions = CommunityPermission.ViewChannels | CommunityPermission.SendMessages
+            Permissions = CommunityPermission.ViewChannels | CommunityPermission.SendMessages |
+                          CommunityPermission.ConnectVoice | CommunityPermission.SpeakVoice
         };
         var defaultCategory = new CommunityCategory
         {

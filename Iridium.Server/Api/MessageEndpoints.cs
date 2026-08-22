@@ -28,7 +28,8 @@ public static class MessageEndpoints
         if (session is null) return Results.Unauthorized();
         if (!await authorization.HasPermissionAsync(communityId, session.AccountId,
                 CommunityPermission.ViewChannels, db)) return Results.Forbid();
-        if (!await db.CommunityChannels.AnyAsync(value => value.CommunityId == communityId && value.Id == channelId))
+        if (!await db.CommunityChannels.AnyAsync(value => value.CommunityId == communityId && value.Id == channelId &&
+                value.Kind == CommunityChannelKind.Text))
             return Results.NotFound();
 
         var latest = await db.ChannelMessages
@@ -70,7 +71,8 @@ public static class MessageEndpoints
         if (session is null) return Results.Unauthorized();
         if (!await authorization.HasPermissionAsync(
                 communityId, session.AccountId, CommunityPermission.ViewChannels, db)) return Results.Forbid();
-        if (!await db.CommunityChannels.AnyAsync(value => value.CommunityId == communityId && value.Id == channelId))
+        if (!await db.CommunityChannels.AnyAsync(value => value.CommunityId == communityId && value.Id == channelId &&
+                value.Kind == CommunityChannelKind.Text))
             return Results.NotFound();
 
         var take = Math.Clamp(limit ?? MessageHistoryDefaults.PageSize, 1, MessageHistoryDefaults.MaximumPageSize);
