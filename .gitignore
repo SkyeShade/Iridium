@@ -66,6 +66,9 @@ Desktop.ini
 .testrun
 
 Iridium.Server/data/
+release/
+buildcheck/
+testruns/
 
 
 *.db

@@ -15,6 +15,7 @@ using Iridium.Server.Communities;
 using Iridium.Server.Profiles;
 
 var builder = WebApplication.CreateBuilder(args);
+DeploymentConfiguration.AddExternalConfiguration(builder.Configuration, builder.Environment);
 var configuredNodeOptions = builder.Configuration.GetSection(NodeOptions.SectionName).Get<NodeOptions>() ?? new NodeOptions();
 var maximumUploadRequestBytes = checked(configuredNodeOptions.MaxAttachmentBytes + 1024 * 1024);
 builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = maximumUploadRequestBytes);
@@ -98,7 +99,9 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
-app.UseHttpsRedirection();
+if (builder.Configuration.GetValue("Deployment:UseHttpsRedirection", true))
+    app.UseWhen(context => !context.Request.Path.Equals("/health", StringComparison.OrdinalIgnoreCase),
+        branch => branch.UseHttpsRedirection());
 if (app.Environment.IsDevelopment())
 {
     app.UseCors("DevelopmentClient");
@@ -120,6 +123,10 @@ app.MapGet("/api/server-info", (ConnectionCounter connections, ICommunityLimitsS
             limits.MaxMessageCharacters);
     })
     .WithName("GetServerInfo");
+
+app.MapGet("/health", () => Results.Text("Healthy\n", "text/plain"))
+    .AllowAnonymous()
+    .WithName("GetHealth");
 
 app.MapHub<ChatHub>("/hubs/chat");
 app.MapAccountEndpoints();
