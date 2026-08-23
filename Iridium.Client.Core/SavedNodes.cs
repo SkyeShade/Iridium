@@ -33,15 +33,32 @@ public sealed class SavedNodeState(ISavedNodeStore store)
 
     public IReadOnlyList<SavedNode> Nodes => _nodes;
 
-    public async Task InitializeAsync(SavedNode localNode, CancellationToken cancellationToken = default)
+    public async Task<SavedNode> InitializeAsync(
+        SavedNode defaultNode,
+        bool persistDefaultNode = false,
+        CancellationToken cancellationToken = default)
     {
-        _nodes.Clear();
-        _nodes.Add(localNode);
+        var normalizedDefault = defaultNode with { Address = NormalizeAddress(defaultNode.Address) };
+        var savedNodes = new List<SavedNode>();
         foreach (var saved in await store.LoadAsync(cancellationToken))
         {
-            if (_nodes.All(node => !SameAddress(node.Address, saved.Address)))
-                _nodes.Add(saved with { IsLocal = false });
+            var normalizedSaved = saved with { Address = NormalizeAddress(saved.Address), IsLocal = false };
+            if (savedNodes.All(node => !SameAddress(node.Address, normalizedSaved.Address)))
+                savedNodes.Add(normalizedSaved);
         }
+
+        var matchingSaved = savedNodes.FirstOrDefault(node => SameAddress(node.Address, normalizedDefault.Address));
+        var selectedDefault = persistDefaultNode && matchingSaved is not null ? matchingSaved : normalizedDefault;
+
+        _nodes.Clear();
+        _nodes.Add(selectedDefault);
+        foreach (var saved in savedNodes)
+        {
+            if (!SameAddress(selectedDefault.Address, saved.Address)) _nodes.Add(saved);
+        }
+
+        if (persistDefaultNode) await PersistAsync(cancellationToken);
+        return selectedDefault;
     }
 
     public async Task<SavedNode> AddAsync(string address, string? label = null, CancellationToken cancellationToken = default)

@@ -51,13 +51,20 @@
                     </button>
                 }
             }
-            <button class="add-node-button" @onclick="() => _addingNode = !_addingNode">＋ Add Node</button>
-            @if (_addingNode)
+            @if (!_addingNode)
             {
-                <div class="add-node-form">
-                    <input @bind="_newNodeAddress" placeholder="https://chat.example.com" />
-                    <button @onclick="AddNodeAsync">Add</button>
-                </div>
+                <button class="add-node-button" @onclick="ShowAddNodeForm">＋ Add Node</button>
+            }
+            else
+            {
+                <form class="add-node-form" @onsubmit="AddNodeAsync" @onsubmit:preventDefault="true">
+                    <input @bind="_newNodeAddress" aria-label="Node URL" autocomplete="url"
+                           placeholder="https://chat.example.com" />
+                    <div class="add-node-actions">
+                        <button class="add-node-submit" type="submit">Add Node</button>
+                        <button class="add-node-cancel" type="button" @onclick="CancelAddNode">Cancel</button>
+                    </div>
+                </form>
             }
         </div>
 
@@ -113,7 +120,7 @@
     [Parameter] public bool CanCancel { get; set; }
     [Parameter] public EventCallback<SavedNode> OnNodeSelected { get; set; }
     [Parameter] public EventCallback<SavedNode> OnNodeRemoved { get; set; }
-    [Parameter] public EventCallback<string> OnNodeAdded { get; set; }
+    [Parameter] public Func<string, Task<bool>>? OnNodeAdded { get; set; }
     [Parameter] public EventCallback<AuthenticationSubmission> OnSubmit { get; set; }
     [Parameter] public EventCallback<SavedAccountKey> OnSavedAccountSelected { get; set; }
     [Parameter] public EventCallback OnCancel { get; set; }
@@ -147,8 +154,16 @@
 
     private async Task AddNodeAsync()
     {
-        if (string.IsNullOrWhiteSpace(_newNodeAddress)) return;
-        await OnNodeAdded.InvokeAsync(_newNodeAddress);
+        if (string.IsNullOrWhiteSpace(_newNodeAddress) || OnNodeAdded is null) return;
+        if (!await OnNodeAdded(_newNodeAddress)) return;
+        _newNodeAddress = string.Empty;
+        _addingNode = false;
+    }
+
+    private void ShowAddNodeForm() => _addingNode = true;
+
+    private void CancelAddNode()
+    {
         _newNodeAddress = string.Empty;
         _addingNode = false;
     }

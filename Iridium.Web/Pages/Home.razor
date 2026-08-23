@@ -29,7 +29,7 @@ else if (_authenticationVisible || !Session.IsAuthenticated)
     <AuthenticationScreen Nodes="_nodeAvailability"
                           SelectedNode="Session.AuthenticationNode"
                           SavedAccounts="Session.SavedAccounts"
-                          InitialUsername="Session.ReauthenticationAccount?.Username"
+                          InitialUsername="@Session.ReauthenticationAccount?.Username"
                           CanCancel="@(_addingAccount && Session.IsAuthenticated)"
                           Busy="_busy"
                           Error="@_error"
@@ -285,10 +285,8 @@ else
     {
         await Appearance.InitializeAsync();
         await UiSounds.InitializeAsync();
-        var localAddress = new Uri(HostEnvironment.BaseAddress).Scheme == Uri.UriSchemeHttps
-            ? "https://localhost:7008"
-            : "http://localhost:5159";
-        await SavedNodes.InitializeAsync(new SavedNode(localAddress, "Local Iridium Node", true));
+        var defaultNode = CreateDefaultNode();
+        await SavedNodes.InitializeAsync(defaultNode, persistDefaultNode: !HostEnvironment.IsDevelopment());
         _nodeAvailability = await SavedNodes.ProbeAllAsync();
         Session.Changed += OnSessionChanged;
         Session.CommunityAccessRevoked += OnCommunityAccessRevoked;
@@ -315,7 +313,7 @@ else
         await Task.CompletedTask;
     }
 
-    private async Task AddNodeAsync(string address)
+    private async Task<bool> AddNodeAsync(string address)
     {
         _error = null;
         try
@@ -323,11 +321,31 @@ else
             var node = await SavedNodes.AddAsync(address);
             _nodeAvailability = await SavedNodes.ProbeAllAsync();
             if (_authenticationVisible) AccountSwitching.BeginAuthentication(node);
+            return true;
         }
         catch (Exception exception)
         {
             _error = UserMessage(exception);
+            return false;
         }
+    }
+
+    private SavedNode CreateDefaultNode()
+    {
+        if (!Uri.TryCreate(HostEnvironment.BaseAddress, UriKind.Absolute, out var clientUri) ||
+            (clientUri.Scheme != Uri.UriSchemeHttp && clientUri.Scheme != Uri.UriSchemeHttps))
+            throw new InvalidOperationException("The web client must be loaded from an HTTP or HTTPS origin.");
+
+        if (HostEnvironment.IsDevelopment())
+        {
+            var developmentAddress = clientUri.Scheme == Uri.UriSchemeHttps
+                ? "https://localhost:7008"
+                : "http://localhost:5159";
+            return new SavedNode(developmentAddress, "Local Iridium Node", true);
+        }
+
+        var currentOrigin = clientUri.GetLeftPart(UriPartial.Authority);
+        return new SavedNode(SavedNodeState.NormalizeAddress(currentOrigin), null);
     }
 
     private async Task RemoveNodeAsync(SavedNode node)
