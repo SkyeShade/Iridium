@@ -5,9 +5,10 @@ using Iridium.Server.Domain;
 using Iridium.Server.Persistence;
 using Iridium.Server.Security;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.Options;
 using Iridium.Server.Profiles;
+using System.Net.Mail;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace Iridium.Server.Api;
 
@@ -21,6 +22,12 @@ public static partial class AccountEndpoints
         accounts.MapGet("/current", CurrentAsync);
         accounts.MapPatch("/current", UpdateCurrentAsync);
         accounts.MapPost("/logout", LogoutAsync);
+        accounts.MapGet("/security", SecurityStatusAsync);
+        accounts.MapPost("/security/password", ChangePasswordAsync);
+        accounts.MapPut("/security/recovery-email", UpdateRecoveryEmailAsync);
+        accounts.MapPost("/recovery/request", RequestPasswordRecoveryAsync)
+            .RequireRateLimiting("password-recovery");
+        accounts.MapPost("/recovery/complete", CompletePasswordRecoveryAsync);
 
         var communities = endpoints.MapGroup("/api/communities");
         communities.MapGet("/", ListCommunitiesAsync);
@@ -31,7 +38,7 @@ public static partial class AccountEndpoints
     private static async Task<IResult> RegisterAsync(
         RegisterAccountRequest request,
         IridiumDbContext db,
-        IPasswordHasher<NodeAccount> passwords,
+        IAccountPasswordService passwords,
         SessionService sessions,
         IOptions<NodeOptions> options)
     {
@@ -72,14 +79,21 @@ public static partial class AccountEndpoints
     private static async Task<IResult> LoginAsync(
         LoginRequest request,
         IridiumDbContext db,
-        IPasswordHasher<NodeAccount> passwords,
+        IAccountPasswordService passwords,
         SessionService sessions)
     {
         var username = request.Username.Trim().ToLowerInvariant();
         var account = await db.Accounts.SingleOrDefaultAsync(value => value.Username == username);
-        if (account is null ||
-            passwords.VerifyHashedPassword(account, account.PasswordHash, request.Password) == PasswordVerificationResult.Failed)
+        if (account is null)
             return Results.Unauthorized();
+
+        var verification = passwords.VerifyPassword(account, request.Password);
+        if (verification == AccountPasswordVerificationResult.Failed) return Results.Unauthorized();
+        if (verification == AccountPasswordVerificationResult.SuccessRehashNeeded)
+        {
+            account.PasswordHash = passwords.HashPassword(account, request.Password);
+            await db.SaveChangesAsync();
+        }
 
         var (token, _) = await sessions.CreateAsync(account, db);
         return Results.Ok(new AuthenticationResultDto(token, ToDto(account)));
@@ -128,6 +142,204 @@ public static partial class AccountEndpoints
         db.AccountSessions.Remove(session);
         await db.SaveChangesAsync();
         return Results.NoContent();
+    }
+
+    private static async Task<IResult> SecurityStatusAsync(
+        HttpContext context,
+        IridiumDbContext db,
+        SessionService sessions,
+        IRecoveryEmailSender emailSender)
+    {
+        var session = await sessions.GetAsync(context, db);
+        if (session is null) return Results.Unauthorized();
+        return Results.Ok(new AccountSecurityStatusDto(
+            session.Account.RecoveryEmail is not null,
+            MaskEmail(session.Account.RecoveryEmail),
+            emailSender.IsConfigured));
+    }
+
+    private static async Task<IResult> ChangePasswordAsync(
+        ChangePasswordRequest request,
+        HttpContext context,
+        IridiumDbContext db,
+        SessionService sessions,
+        IAccountPasswordService passwords)
+    {
+        var session = await sessions.GetAsync(context, db);
+        if (session is null) return Results.Unauthorized();
+        if (passwords.VerifyPassword(session.Account, request.CurrentPassword) == AccountPasswordVerificationResult.Failed)
+            return Results.BadRequest(new { message = "The current password is incorrect." });
+
+        var errors = ValidateNewPassword(request.NewPassword, request.ConfirmNewPassword);
+        if (errors.Count != 0) return Results.ValidationProblem(errors);
+
+        await using var transaction = await db.Database.BeginTransactionAsync();
+        session.Account.PasswordHash = passwords.HashPassword(session.Account, request.NewPassword);
+        await db.SaveChangesAsync();
+        await db.AccountSessions
+            .Where(value => value.AccountId == session.AccountId && value.Id != session.Id)
+            .ExecuteDeleteAsync();
+        await transaction.CommitAsync();
+        return Results.NoContent();
+    }
+
+    private static async Task<IResult> UpdateRecoveryEmailAsync(
+        UpdateRecoveryEmailRequest request,
+        HttpContext context,
+        IridiumDbContext db,
+        SessionService sessions,
+        IAccountPasswordService passwords,
+        IRecoveryEmailSender emailSender)
+    {
+        var session = await sessions.GetAsync(context, db);
+        if (session is null) return Results.Unauthorized();
+        var verification = passwords.VerifyPassword(session.Account, request.CurrentPassword);
+        if (verification == AccountPasswordVerificationResult.Failed)
+            return Results.BadRequest(new { message = "The current password is incorrect." });
+
+        if (!TryNormalizeEmail(request.RecoveryEmail, out var displayEmail, out var normalizedEmail))
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                [nameof(request.RecoveryEmail)] = ["Enter a valid recovery email address."]
+            });
+
+        session.Account.RecoveryEmail = displayEmail;
+        session.Account.RecoveryEmailNormalized = normalizedEmail;
+        if (verification == AccountPasswordVerificationResult.SuccessRehashNeeded)
+            session.Account.PasswordHash = passwords.HashPassword(session.Account, request.CurrentPassword);
+        await db.SaveChangesAsync();
+        return Results.Ok(new AccountSecurityStatusDto(
+            displayEmail is not null, MaskEmail(displayEmail), emailSender.IsConfigured));
+    }
+
+    private static async Task<IResult> RequestPasswordRecoveryAsync(
+        PasswordRecoveryRequest request,
+        HttpContext context,
+        IridiumDbContext db,
+        IRecoveryEmailSender emailSender,
+        IOptions<NodeOptions> nodeOptions,
+        IOptions<AccountSecurityOptions> securityOptions,
+        TimeProvider timeProvider)
+    {
+        const string response = "If the account exists and has a recovery email configured, recovery instructions have been sent.";
+        var username = request.Username?.Trim().ToLowerInvariant() ?? string.Empty;
+        if (username.Length is < 1 or > 32 || !emailSender.IsConfigured)
+            return Results.Ok(new PasswordRecoveryRequestResultDto(response));
+
+        var account = await db.Accounts.SingleOrDefaultAsync(value => value.Username == username);
+        if (account?.RecoveryEmail is null)
+            return Results.Ok(new PasswordRecoveryRequestResultDto(response));
+
+        var now = timeProvider.GetUtcNow();
+        await db.PasswordRecoveryTokens
+            .Where(value => value.ExpiresAt <= now || value.UsedAt != null)
+            .ExecuteDeleteAsync();
+
+        var token = PasswordRecoveryTokens.Create();
+        db.PasswordRecoveryTokens.Add(new PasswordRecoveryToken
+        {
+            Id = Guid.NewGuid(),
+            AccountId = account.Id,
+            Account = account,
+            TokenHash = PasswordRecoveryTokens.Hash(token),
+            CreatedAt = now,
+            ExpiresAt = now.AddMinutes(Math.Clamp(securityOptions.Value.RecoveryTokenMinutes, 5, 1440))
+        });
+        await db.SaveChangesAsync();
+
+        var recoveryUri = RecoveryUri(context, nodeOptions.Value, username, token);
+        await emailSender.SendPasswordRecoveryAsync(account.RecoveryEmail, recoveryUri, context.RequestAborted);
+        return Results.Ok(new PasswordRecoveryRequestResultDto(response));
+    }
+
+    private static async Task<IResult> CompletePasswordRecoveryAsync(
+        CompletePasswordRecoveryRequest request,
+        IridiumDbContext db,
+        IAccountPasswordService passwords,
+        TimeProvider timeProvider)
+    {
+        var errors = ValidateNewPassword(request.NewPassword, request.ConfirmNewPassword);
+        if (errors.Count != 0) return Results.ValidationProblem(errors);
+        if (string.IsNullOrWhiteSpace(request.Token) ||
+            request.Token.Length > AccountSecurityLimits.MaximumRecoveryTokenLength ||
+            string.IsNullOrWhiteSpace(request.Username) || request.Username.Length > 32)
+            return InvalidRecoveryToken();
+
+        var username = request.Username.Trim().ToLowerInvariant();
+        var tokenHash = PasswordRecoveryTokens.Hash(request.Token);
+        var now = timeProvider.GetUtcNow();
+        var recovery = await db.PasswordRecoveryTokens.Include(value => value.Account)
+            .SingleOrDefaultAsync(value => value.TokenHash == tokenHash);
+        if (recovery is null || recovery.UsedAt is not null || recovery.ExpiresAt <= now ||
+            !string.Equals(recovery.Account.Username, username, StringComparison.OrdinalIgnoreCase))
+            return InvalidRecoveryToken();
+
+        await using var transaction = await db.Database.BeginTransactionAsync();
+        recovery.Account.PasswordHash = passwords.HashPassword(recovery.Account, request.NewPassword);
+        var activeTokens = await db.PasswordRecoveryTokens
+            .Where(value => value.AccountId == recovery.AccountId && value.UsedAt == null)
+            .ToListAsync();
+        foreach (var activeToken in activeTokens) activeToken.UsedAt = now;
+        await db.SaveChangesAsync();
+        await db.AccountSessions.Where(value => value.AccountId == recovery.AccountId).ExecuteDeleteAsync();
+        await transaction.CommitAsync();
+        return Results.NoContent();
+    }
+
+    private static IResult InvalidRecoveryToken() =>
+        Results.BadRequest(new { message = "This recovery link is invalid or has expired." });
+
+    private static Dictionary<string, string[]> ValidateNewPassword(string? password, string? confirmation)
+    {
+        var errors = new Dictionary<string, string[]>();
+        if (password is null || password.Length is < AccountSecurityLimits.MinimumPasswordLength or
+            > AccountSecurityLimits.MaximumPasswordLength)
+            errors[nameof(password)] =
+                [$"Passwords must be between {AccountSecurityLimits.MinimumPasswordLength} and {AccountSecurityLimits.MaximumPasswordLength} characters."];
+        if (!string.Equals(password, confirmation, StringComparison.Ordinal))
+            errors[nameof(confirmation)] = ["The new passwords do not match."];
+        return errors;
+    }
+
+    private static bool TryNormalizeEmail(string? input, out string? display, out string? normalized)
+    {
+        display = null;
+        normalized = null;
+        if (string.IsNullOrWhiteSpace(input)) return true;
+        var candidate = input.Trim();
+        if (candidate.Length > AccountSecurityLimits.MaximumRecoveryEmailLength ||
+            candidate.Contains('<') || candidate.Contains('>')) return false;
+        try
+        {
+            var address = new MailAddress(candidate);
+            if (!string.Equals(address.Address, candidate, StringComparison.OrdinalIgnoreCase)) return false;
+            display = $"{address.User}@{address.Host.ToLowerInvariant()}";
+            normalized = display.ToLowerInvariant();
+            return display.Length <= AccountSecurityLimits.MaximumRecoveryEmailLength;
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+    }
+
+    private static string? MaskEmail(string? email)
+    {
+        if (string.IsNullOrWhiteSpace(email)) return null;
+        var separator = email.LastIndexOf('@');
+        if (separator <= 0 || separator == email.Length - 1) return "***";
+        return $"{email[0]}***{email[separator..]}";
+    }
+
+    private static Uri RecoveryUri(HttpContext context, NodeOptions options, string username, string token)
+    {
+        var requestOrigin = $"{context.Request.Scheme}://{context.Request.Host}";
+        var baseAddress = Uri.TryCreate(options.PublicAuthority, UriKind.Absolute, out var configured) &&
+                          (configured.Scheme == Uri.UriSchemeHttp || configured.Scheme == Uri.UriSchemeHttps)
+            ? configured.GetLeftPart(UriPartial.Authority)
+            : requestOrigin;
+        var fragment = $"recover?username={Uri.EscapeDataString(username)}&token={Uri.EscapeDataString(token)}";
+        return new Uri($"{baseAddress.TrimEnd('/')}/#{fragment}");
     }
 
     private static async Task<IResult> ListCommunitiesAsync(HttpContext context, IridiumDbContext db, SessionService sessions)
@@ -301,8 +513,10 @@ public static partial class AccountEndpoints
             errors[nameof(username)] = ["Usernames must be 3-32 characters using letters, numbers, dots, underscores, or hyphens."];
         if (displayName.Trim().Length is < 1 or > 64)
             errors[nameof(displayName)] = ["Display names must be between 1 and 64 characters."];
-        if (password.Length is < 8 or > 256)
-            errors[nameof(password)] = ["Passwords must be between 8 and 256 characters."];
+        if (password.Length is < AccountSecurityLimits.MinimumPasswordLength or
+            > AccountSecurityLimits.MaximumPasswordLength)
+            errors[nameof(password)] =
+                [$"Passwords must be between {AccountSecurityLimits.MinimumPasswordLength} and {AccountSecurityLimits.MaximumPasswordLength} characters."];
         return errors;
     }
 

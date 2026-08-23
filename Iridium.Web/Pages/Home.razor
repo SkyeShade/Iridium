@@ -1,4 +1,5 @@
 @page "/"
+@page "/invite/{InviteToken}"
 @implements IDisposable
 @using Iridium.Client.Core
 @using Iridium.Protocol
@@ -17,6 +18,7 @@
 @inject ActiveVoiceSessionCoordinator VoiceSessions
 @inject UiSoundService UiSounds
 @inject ILogger<Home> Logger
+@inject NavigationManager Navigation
 
 <PageTitle>Iridium</PageTitle>
 
@@ -30,6 +32,8 @@ else if (_authenticationVisible || !Session.IsAuthenticated)
                           SelectedNode="Session.AuthenticationNode"
                           SavedAccounts="Session.SavedAccounts"
                           InitialUsername="@Session.ReauthenticationAccount?.Username"
+                          RecoveryUsername="_recoveryUsername"
+                          RecoveryToken="_recoveryToken"
                           CanCancel="@(_addingAccount && Session.IsAuthenticated)"
                           Busy="_busy"
                           Error="@_error"
@@ -38,6 +42,8 @@ else if (_authenticationVisible || !Session.IsAuthenticated)
                           OnNodeRemoved="RemoveNodeAsync"
                           OnSavedAccountSelected="SwitchAccountAsync"
                           OnSubmit="AuthenticateAsync"
+                          OnRecoveryRequested="RequestPasswordRecoveryAsync"
+                          OnRecoveryCompleted="CompletePasswordRecoveryAsync"
                           OnCancel="CancelAddAccount" />
 }
 else
@@ -218,8 +224,16 @@ else
     }
     @if (_showQuickInvite && _quickInviteUrl is not null)
     {
-        <InvitePeopleModal Friends="Session.Friends" NodeAuthority="@(Session.SelectedNode!.PublicAuthority)" InviteUrl="_quickInviteUrl"
+        <InvitePeopleModal Friends="Session.Friends" NodeAuthority="@(Session.SelectedNode!.PublicAuthority)" InviteUrl="@_quickInviteUrl"
                            Error="@_quickInviteError" Send="SendQuickInviteAsync" OnClose="CloseQuickInvite" />
+    }
+    @if (!string.IsNullOrWhiteSpace(InviteToken))
+    {
+        <div class="route-invite-backdrop">
+            <div class="route-invite" role="dialog" aria-modal="true" aria-label="Community invite">
+                <InviteEmbed Content="@Navigation.Uri" />
+            </div>
+        </div>
     }
     @if (_showLeaveConfirm && _selectedCommunity is not null)
     {
@@ -236,6 +250,7 @@ else
 }
 
 @code {
+    [Parameter] public string? InviteToken { get; set; }
     private IReadOnlyList<NodeAvailability> _nodeAvailability = [];
     private bool _initialized;
     private bool _busy;
@@ -283,6 +298,7 @@ else
 
     protected override async Task OnInitializedAsync()
     {
+        ReadRecoveryFragment();
         await Appearance.InitializeAsync();
         await UiSounds.InitializeAsync();
         var defaultNode = CreateDefaultNode();
@@ -298,12 +314,80 @@ else
         Messaging.Changed += OnSessionChanged;
         VoiceSessions.Changed += OnSessionChanged;
         await AccountSwitching.InitializeAsync(SavedNodes.Nodes);
+        if (_recoveryToken is not null)
+        {
+            AccountSwitching.BeginAuthentication(defaultNode);
+            _authenticationVisible = true;
+        }
         if (!Session.IsAuthenticated)
         {
             if (Session.AuthenticationNode is null) AccountSwitching.BeginAuthentication(SavedNodes.Nodes[0]);
             _authenticationVisible = true;
         }
         _initialized = true;
+    }
+
+    private string? _recoveryUsername;
+    private string? _recoveryToken;
+
+    private void ReadRecoveryFragment()
+    {
+        var fragment = new Uri(Navigation.Uri).Fragment.TrimStart('#');
+        if (!fragment.StartsWith("recover?", StringComparison.OrdinalIgnoreCase)) return;
+        foreach (var pair in fragment[8..].Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var separator = pair.IndexOf('=');
+            if (separator <= 0) continue;
+            var name = pair[..separator];
+            string value;
+            try { value = Uri.UnescapeDataString(pair[(separator + 1)..]); }
+            catch (UriFormatException) { continue; }
+            if (name.Equals("username", StringComparison.OrdinalIgnoreCase) && value.Length <= 32)
+                _recoveryUsername = value;
+            else if (name.Equals("token", StringComparison.OrdinalIgnoreCase) &&
+                     value.Length <= AccountSecurityLimits.MaximumRecoveryTokenLength)
+                _recoveryToken = value;
+        }
+        if (string.IsNullOrWhiteSpace(_recoveryUsername) || string.IsNullOrWhiteSpace(_recoveryToken))
+        {
+            _recoveryUsername = null;
+            _recoveryToken = null;
+        }
+    }
+
+    private async Task<string> RequestPasswordRecoveryAsync(string username)
+    {
+        try
+        {
+            var result = await Session.RequestPasswordRecoveryAsync(username);
+            return result.Message;
+        }
+        catch
+        {
+            return "If the account exists and has a recovery email configured, recovery instructions have been sent.";
+        }
+    }
+
+    private async Task<bool> CompletePasswordRecoveryAsync(PasswordRecoverySubmission submission)
+    {
+        _error = null;
+        if (submission.NewPassword != submission.ConfirmPassword)
+        {
+            _error = "The new passwords do not match.";
+            return false;
+        }
+        try
+        {
+            await Session.CompletePasswordRecoveryAsync(submission.Username, submission.Token,
+                submission.NewPassword, submission.ConfirmPassword);
+            Navigation.NavigateTo(Navigation.BaseUri, forceLoad: true, replace: true);
+            return true;
+        }
+        catch (Exception exception)
+        {
+            _error = UserMessage(exception);
+            return false;
+        }
     }
 
     private async Task SelectNodeAsync(SavedNode node)

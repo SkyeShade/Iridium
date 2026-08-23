@@ -456,8 +456,17 @@
     private async Task CopyInviteAsync()
     {
         if (string.IsNullOrWhiteSpace(_createdInviteUrl)) return;
-        await JS.InvokeVoidAsync("navigator.clipboard.writeText", _createdInviteUrl);
-        _inviteCopied = true;
+        _error = null;
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", _createdInviteUrl);
+            _inviteCopied = true;
+        }
+        catch
+        {
+            _inviteCopied = false;
+            _error = "The invite link could not be copied. Please try again.";
+        }
     }
     private Task RevokeInviteAsync(Guid inviteId) => RunAsync(() => State.RevokeInviteAsync(inviteId));
     private async Task RunAsync(Func<Task> action)

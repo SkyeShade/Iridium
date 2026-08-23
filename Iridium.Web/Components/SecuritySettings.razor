@@ -1,0 +1,203 @@
+@using Iridium.Protocol
+@inject NodeSession Session
+
+<div class="security-settings">
+    <h1>Security</h1>
+    <section class="security-section">
+        <div class="section-copy">
+            <h2>Change Password</h2>
+            <p>Choose a strong password you do not use elsewhere. Other active sessions will be signed out.</p>
+        </div>
+        <div class="security-form">
+            <label>Current Password
+                <input type="password" @bind="_currentPassword" autocomplete="current-password"
+                       maxlength="@AccountSecurityLimits.MaximumPasswordLength" />
+            </label>
+            <label>New Password
+                <input type="password" @bind="_newPassword" autocomplete="new-password"
+                       maxlength="@AccountSecurityLimits.MaximumPasswordLength" />
+            </label>
+            <label>Confirm New Password
+                <input type="password" @bind="_confirmPassword" autocomplete="new-password"
+                       maxlength="@AccountSecurityLimits.MaximumPasswordLength" />
+            </label>
+            @if (_passwordMessage is not null)
+            {
+                <p class="form-message @(_passwordSucceeded ? "success" : "error")" role="status">@_passwordMessage</p>
+            }
+            <button class="primary" disabled="@_passwordBusy" @onclick="ChangePasswordAsync">
+                @(_passwordBusy ? "Saving…" : "Change Password")
+            </button>
+        </div>
+    </section>
+
+    <section class="security-section">
+        <div class="section-copy">
+            <h2>Recovery Email</h2>
+            <p>Optional and associated only with this account on the current Node. It is used solely for account recovery and security purposes.</p>
+        </div>
+        <div class="recovery-callout">
+            Add a recovery email so you can regain access if you forget your password. Without one, Iridium may not be able to recover your account.
+        </div>
+        @if (_status is { RecoveryDeliveryAvailable: false })
+        {
+            <p class="delivery-note">Recovery email delivery is not currently enabled on this Node. You may still save an address for when the Node operator enables it.</p>
+        }
+        @if (_loading)
+        {
+            <p class="loading">Loading security settings…</p>
+        }
+        else if (_loadError is not null)
+        {
+            <p class="form-message error" role="alert">@_loadError</p>
+        }
+        else if (_status is not null && !_editingRecoveryEmail)
+        {
+            <div class="recovery-summary">
+                <span>
+                    <small>RECOVERY EMAIL</small>
+                    <strong>@(_status.MaskedRecoveryEmail ?? "Not configured")</strong>
+                </span>
+                <div>
+                    <button class="secondary" @onclick="BeginRecoveryEmailEdit">
+                        @(_status.HasRecoveryEmail ? "Change" : "Add")
+                    </button>
+                    @if (_status.HasRecoveryEmail)
+                    {
+                        <button class="danger-link" @onclick="BeginRecoveryEmailRemoval">Remove</button>
+                    }
+                </div>
+            </div>
+        }
+        else if (_editingRecoveryEmail)
+        {
+            <div class="security-form">
+                @if (!_removingRecoveryEmail)
+                {
+                    <label>Recovery Email
+                        <input type="email" @bind="_recoveryEmail" autocomplete="email"
+                               maxlength="@AccountSecurityLimits.MaximumRecoveryEmailLength"
+                               placeholder="name@example.com" />
+                    </label>
+                }
+                else
+                {
+                    <p class="remove-copy">Enter your current password to remove the configured recovery email.</p>
+                }
+                <label>Current Password
+                    <input type="password" @bind="_recoveryCurrentPassword" autocomplete="current-password"
+                           maxlength="@AccountSecurityLimits.MaximumPasswordLength" />
+                </label>
+                @if (_recoveryMessage is not null)
+                {
+                    <p class="form-message error" role="alert">@_recoveryMessage</p>
+                }
+                <div class="form-actions">
+                    <button class="secondary" disabled="@_recoveryBusy" @onclick="CancelRecoveryEmailEdit">Cancel</button>
+                    <button class="@(_removingRecoveryEmail ? "danger" : "primary")" disabled="@_recoveryBusy"
+                            @onclick="SaveRecoveryEmailAsync">
+                        @(_recoveryBusy ? "Saving…" : _removingRecoveryEmail ? "Remove Email" : "Save Recovery Email")
+                    </button>
+                </div>
+            </div>
+        }
+    </section>
+</div>
+
+@code {
+    private AccountSecurityStatusDto? _status;
+    private bool _loading = true;
+    private bool _passwordBusy;
+    private bool _passwordSucceeded;
+    private string _currentPassword = string.Empty;
+    private string _newPassword = string.Empty;
+    private string _confirmPassword = string.Empty;
+    private string? _passwordMessage;
+    private bool _editingRecoveryEmail;
+    private bool _removingRecoveryEmail;
+    private bool _recoveryBusy;
+    private string _recoveryEmail = string.Empty;
+    private string _recoveryCurrentPassword = string.Empty;
+    private string? _recoveryMessage;
+    private string? _loadError;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try { _status = await Session.GetAccountSecurityStatusAsync(); }
+        catch { _loadError = "Security settings could not be loaded. Please try again."; }
+        finally { _loading = false; }
+    }
+
+    private async Task ChangePasswordAsync()
+    {
+        _passwordMessage = null;
+        _passwordSucceeded = false;
+        if (_newPassword != _confirmPassword)
+        {
+            _passwordMessage = "The new passwords do not match.";
+            return;
+        }
+        if (_newPassword.Length is < AccountSecurityLimits.MinimumPasswordLength or
+            > AccountSecurityLimits.MaximumPasswordLength)
+        {
+            _passwordMessage = $"Passwords must be between {AccountSecurityLimits.MinimumPasswordLength} and {AccountSecurityLimits.MaximumPasswordLength} characters.";
+            return;
+        }
+
+        _passwordBusy = true;
+        try
+        {
+            await Session.ChangePasswordAsync(_currentPassword, _newPassword, _confirmPassword);
+            _currentPassword = _newPassword = _confirmPassword = string.Empty;
+            _passwordSucceeded = true;
+            _passwordMessage = "Password changed. Other active sessions have been signed out.";
+        }
+        catch (Exception exception) { _passwordMessage = UserMessage(exception); }
+        finally { _passwordBusy = false; }
+    }
+
+    private void BeginRecoveryEmailEdit()
+    {
+        _editingRecoveryEmail = true;
+        _removingRecoveryEmail = false;
+        _recoveryEmail = string.Empty;
+        _recoveryCurrentPassword = string.Empty;
+        _recoveryMessage = null;
+    }
+
+    private void BeginRecoveryEmailRemoval()
+    {
+        BeginRecoveryEmailEdit();
+        _removingRecoveryEmail = true;
+    }
+
+    private void CancelRecoveryEmailEdit()
+    {
+        _editingRecoveryEmail = false;
+        _recoveryEmail = _recoveryCurrentPassword = string.Empty;
+        _recoveryMessage = null;
+    }
+
+    private async Task SaveRecoveryEmailAsync()
+    {
+        _recoveryMessage = null;
+        if (!_removingRecoveryEmail && string.IsNullOrWhiteSpace(_recoveryEmail))
+        {
+            _recoveryMessage = "Enter a recovery email address.";
+            return;
+        }
+        _recoveryBusy = true;
+        try
+        {
+            _status = await Session.UpdateRecoveryEmailAsync(
+                _recoveryCurrentPassword, _removingRecoveryEmail ? null : _recoveryEmail);
+            CancelRecoveryEmailEdit();
+        }
+        catch (Exception exception) { _recoveryMessage = UserMessage(exception); }
+        finally { _recoveryBusy = false; }
+    }
+
+    private static string UserMessage(Exception exception) => exception is NodeApiException
+        ? exception.Message
+        : "The security setting could not be updated. Please try again.";
+}

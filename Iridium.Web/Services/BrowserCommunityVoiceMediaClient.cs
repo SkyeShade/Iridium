@@ -5,7 +5,7 @@ using Microsoft.JSInterop;
 namespace Iridium.Web.Services;
 
 public sealed class BrowserCommunityVoiceMediaClient(IJSRuntime js, ILogger<BrowserCommunityVoiceMediaClient> logger,
-    VoiceParticipantPreferencesService preferences)
+    VoiceParticipantPreferencesService preferences, IWebRtcConfigurationProvider webRtcConfiguration)
     : ICommunityVoiceMediaClient
 {
     private IJSObjectReference? _module;
@@ -31,8 +31,9 @@ public sealed class BrowserCommunityVoiceMediaClient(IJSRuntime js, ILogger<Brow
         foreach (var participant in room.Participants.Where(value => value.AccountId != localAccountId)
                      .GroupBy(value => value.AccountId).Select(value => value.First()))
             remotePreferences.Add(await preferences.GetAsync(participant.AccountId, cancellationToken));
+        var iceConfiguration = await webRtcConfiguration.GetAsync(cancellationToken);
         _sessionId = await _module.InvokeAsync<string>("connect", cancellationToken, _callback,
-            mediaSession, room, localAccountId, remotePreferences);
+            mediaSession, room, localAccountId, remotePreferences, iceConfiguration);
         await _module.InvokeVoidAsync("start", cancellationToken, _sessionId);
         if (!_preferenceSubscribed) { preferences.Changed += PreferenceChanged; _preferenceSubscribed = true; }
         logger.LogDebug("Community voice media prepared for Channel={ChannelId}; Provider={Provider}; Status={Status}.",
@@ -131,20 +132,26 @@ public sealed class BrowserCommunityVoiceMediaClient(IJSRuntime js, ILogger<Brow
     {
         // TODO: Remove temporary Community voice diagnostics once voice channels are stable.
         logger.LogDebug("COMMUNITY VOICE MEDIA Event={Event} Remote={RemoteParticipant} LocalStream={LocalStream} " +
-            "LocalTracks={LocalTracks} Senders={Senders} Connection={Connection} ICE={Ice} LocalIce={LocalIce} " +
+            "LocalTracks={LocalTracks} Senders={Senders} Signaling={Signaling} Gathering={Gathering} Connection={Connection} ICE={Ice} LocalIce={LocalIce} " +
             "RemoteIce={RemoteIce} RemoteTracks={RemoteTracks} AudioElements={AudioElements} Play={Play} " +
             "PacketsSent={PacketsSent} PacketsReceived={PacketsReceived} BytesSent={BytesSent} BytesReceived={BytesReceived} " +
             "TrackState={TrackState} TrackMuted={TrackMuted} ElementMuted={ElementMuted} ElementVolume={ElementVolume} " +
             "AudioContext={AudioContext} Gain={Gain} FramesEncoded={FramesEncoded} FramesDecoded={FramesDecoded} " +
-            "FramesDropped={FramesDropped} Frame={FrameWidth}x{FrameHeight} Error={ErrorName}:{ErrorMessage}",
+            "FramesDropped={FramesDropped} Frame={FrameWidth}x{FrameHeight} Candidates=host:{Host}/srflx:{Srflx}/prflx:{Prflx}/relay:{Relay} " +
+            "SelectedPair={SelectedLocal}/{SelectedRemote}/{Protocol} Error={ErrorName}:{ErrorMessage}",
             snapshot.Event, snapshot.RemoteParticipantId, snapshot.LocalStreamPresent, snapshot.LocalAudioTracks,
-            snapshot.AttachedSenderCount, snapshot.ConnectionState, snapshot.IceConnectionState,
+            snapshot.AttachedSenderCount, snapshot.SignalingState, snapshot.IceGatheringState,
+            snapshot.ConnectionState, snapshot.IceConnectionState,
             snapshot.LocalIceGenerated, snapshot.RemoteIceReceived, snapshot.RemoteTrackCount,
             snapshot.RemoteAudioElements, snapshot.RemoteAudioPlaySucceeded, snapshot.PacketsSent,
             snapshot.PacketsReceived, snapshot.BytesSent, snapshot.BytesReceived, snapshot.RemoteTrackReadyState,
             snapshot.RemoteTrackMuted, snapshot.ElementMuted, snapshot.ElementVolume, snapshot.AudioContextState,
             snapshot.GainValue, snapshot.FramesEncoded, snapshot.FramesDecoded, snapshot.FramesDropped,
-            snapshot.FrameWidth, snapshot.FrameHeight, snapshot.ErrorName, snapshot.ErrorMessage);
+            snapshot.FrameWidth, snapshot.FrameHeight, snapshot.HostCandidateAvailable,
+            snapshot.ServerReflexiveCandidateAvailable, snapshot.PeerReflexiveCandidateAvailable,
+            snapshot.RelayCandidateAvailable, snapshot.SelectedLocalCandidateType,
+            snapshot.SelectedRemoteCandidateType, snapshot.SelectedCandidateProtocol,
+            snapshot.ErrorName, snapshot.ErrorMessage);
         return Task.CompletedTask;
     }
 

@@ -14,6 +14,7 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
     public DbSet<CommunityInvite> CommunityInvites => Set<CommunityInvite>();
     public DbSet<CommunityBan> CommunityBans => Set<CommunityBan>();
     public DbSet<AccountSession> AccountSessions => Set<AccountSession>();
+    public DbSet<PasswordRecoveryToken> PasswordRecoveryTokens => Set<PasswordRecoveryToken>();
     public DbSet<Friendship> Friendships => Set<Friendship>();
     public DbSet<AccountBlock> AccountBlocks => Set<AccountBlock>();
     public DbSet<CommunityCategory> CommunityCategories => Set<CommunityCategory>();
@@ -39,8 +40,11 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
         account.Property(value => value.DisplayName).HasMaxLength(64);
         account.Property(value => value.Pronouns).HasMaxLength(64);
         account.Property(value => value.Description).HasMaxLength(400);
+        account.Property(value => value.RecoveryEmail).HasMaxLength(Iridium.Protocol.AccountSecurityLimits.MaximumRecoveryEmailLength);
+        account.Property(value => value.RecoveryEmailNormalized).HasMaxLength(Iridium.Protocol.AccountSecurityLimits.MaximumRecoveryEmailLength);
         account.Property(value => value.PreferredPresence).HasDefaultValue(Iridium.Protocol.UserPresence.Online);
         account.HasIndex(value => value.Username).IsUnique();
+        account.HasIndex(value => value.RecoveryEmailNormalized);
 
         var avatarPreset = modelBuilder.Entity<AccountAvatarPreset>();
         avatarPreset.HasKey(value => value.Id);
@@ -152,6 +156,14 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
         session.HasKey(value => value.Id);
         session.HasIndex(value => value.TokenHash).IsUnique();
         session.HasOne(value => value.Account).WithMany().HasForeignKey(value => value.AccountId);
+
+        var recoveryToken = modelBuilder.Entity<PasswordRecoveryToken>();
+        recoveryToken.HasKey(value => value.Id);
+        recoveryToken.Property(value => value.TokenHash).HasMaxLength(64);
+        recoveryToken.HasIndex(value => value.TokenHash).IsUnique();
+        recoveryToken.HasIndex(value => value.AccountId);
+        recoveryToken.HasOne(value => value.Account).WithMany(value => value.PasswordRecoveryTokens)
+            .HasForeignKey(value => value.AccountId).OnDelete(DeleteBehavior.Cascade);
 
         var friendship = modelBuilder.Entity<Friendship>();
         friendship.HasKey(value => value.Id);

@@ -6,13 +6,13 @@ using Iridium.Server.Hubs;
 using Iridium.Server.Persistence;
 using Iridium.Server.Security;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.AspNetCore.Identity;
-using Iridium.Server.Domain;
 using Iridium.Server.Storage;
 using Iridium.Server.Calls;
 using Iridium.Server.Voice;
 using Iridium.Server.Communities;
 using Iridium.Server.Profiles;
+using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
 DeploymentConfiguration.AddExternalConfiguration(builder.Configuration, builder.Environment);
@@ -31,14 +31,28 @@ builder.Services.AddSingleton<CommunityRealtimePublisher>();
 builder.Services.AddScoped<CommunityVoicePermissionEnforcer>();
 builder.Services.AddSingleton<ProfileRealtimePublisher>();
 builder.Services.Configure<NodeOptions>(builder.Configuration.GetSection(NodeOptions.SectionName));
+builder.Services.Configure<EmailOptions>(builder.Configuration.GetSection(EmailOptions.SectionName));
+builder.Services.Configure<AccountSecurityOptions>(builder.Configuration.GetSection(AccountSecurityOptions.SectionName));
 builder.Services.Configure<MediaOptions>(builder.Configuration.GetSection(MediaOptions.SectionName));
+builder.Services.Configure<WebRtcOptions>(builder.Configuration.GetSection(WebRtcOptions.SectionName));
 builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(options =>
     options.MultipartBodyLengthLimit = maximumUploadRequestBytes);
 builder.Services.AddSingleton<ICommunityLimitsService, CommunityLimitsService>();
 builder.Services.AddDbContext<IridiumDbContext>(options =>
     options.UseSqlite(builder.Configuration.GetConnectionString("Iridium")));
-builder.Services.AddSingleton<IPasswordHasher<NodeAccount>, PasswordHasher<NodeAccount>>();
+builder.Services.AddSingleton<IAccountPasswordService, AccountPasswordService>();
 builder.Services.AddScoped<SessionService>();
+builder.Services.AddSingleton<IRecoveryEmailSender, SmtpRecoveryEmailSender>();
+builder.Services.AddRateLimiter(options => options.AddPolicy("password-recovery", context =>
+    RateLimitPartition.GetFixedWindowLimiter(
+        context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 5,
+            Window = TimeSpan.FromMinutes(15),
+            QueueLimit = 0,
+            AutoReplenishment = true
+        })));
 builder.Services.AddScoped<CommunityAuthorizationService>();
 builder.Services.AddScoped<CommunityInviteService>();
 builder.Services.AddSingleton<IAttachmentStorage, LocalAttachmentStorage>();
@@ -47,6 +61,7 @@ builder.Services.AddSingleton<IAvatarImageValidator, AvatarImageValidator>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<ICallService, CallService>();
 builder.Services.AddSingleton<IMediaService, DirectWebRtcMediaService>();
+builder.Services.AddSingleton<IWebRtcIceConfigurationService, WebRtcIceConfigurationService>();
 if (builder.Environment.IsDevelopment() &&
     builder.Configuration.GetValue<bool>("Media:EnableDevelopmentCommunityPeerMesh"))
     builder.Services.AddSingleton<ICommunityVoiceMediaGateway, DevelopmentPeerMeshCommunityVoiceMediaGateway>();
@@ -72,6 +87,7 @@ await using (var scope = app.Services.CreateAsyncScope())
     var db = scope.ServiceProvider.GetRequiredService<IridiumDbContext>();
     await db.Database.EnsureCreatedAsync();
     await DatabaseCompatibility.EnsureAccountSessionActivityColumnAsync(db);
+    await DatabaseCompatibility.EnsureAccountSecuritySchemaAsync(db);
     await DatabaseCompatibility.EnsurePronounsColumnAsync(db);
     await DatabaseCompatibility.EnsurePresenceColumnAsync(db);
     await DatabaseCompatibility.EnsureFriendsTableAsync(db);
@@ -106,6 +122,7 @@ if (app.Environment.IsDevelopment())
 {
     app.UseCors("DevelopmentClient");
 }
+app.UseRateLimiter();
 
 app.MapGet("/api/server-info", (ConnectionCounter connections, ICommunityLimitsService limitService) =>
     {
@@ -140,5 +157,6 @@ app.MapAvatarPresetEndpoints();
 app.MapBannerPresetEndpoints();
 app.MapCommunityMediaEndpoints();
 app.MapCommunityEmojiEndpoints();
+app.MapWebRtcEndpoints();
 
 app.Run();

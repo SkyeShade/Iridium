@@ -1,4 +1,4 @@
-.profile-panel { display: grid; grid-template-columns: 2.45rem minmax(0, 1fr) 2rem; gap: .65rem; align-items: start; margin: .55rem; padding: .6rem; border: 1px solid transparent; border-radius: var(--radius-md); background: var(--surface-raised); cursor: pointer; transition: background .15s ease, border-color .15s ease; }
+.profile-panel { min-height: var(--bottom-control-height); display: grid; grid-template-columns: 2.45rem minmax(0, 1fr) 2rem; gap: .65rem; align-items: start; margin: var(--bottom-control-inset); padding: .6rem; border: 1px solid transparent; border-radius: var(--radius-md); background: var(--surface-raised); cursor: pointer; transition: background .15s ease, border-color .15s ease; }
 .profile-panel:hover { border-color: var(--border); background: var(--surface-hover); }
 .profile-copy { min-width: 0; padding-top: .05rem; }
 .profile-copy span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

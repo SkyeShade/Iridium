@@ -17,6 +17,13 @@ function normalizeIceServers(servers) {
     }));
 }
 
+function normalizeIceTransportPolicy(policy) { return policy === "relay" ? "relay" : "all"; }
+
+function candidateType(candidate) {
+    if (candidate?.type) return candidate.type;
+    return candidate?.candidate?.match(/\btyp\s+(host|srflx|prflx|relay)\b/i)?.[1]?.toLowerCase() ?? null;
+}
+
 function publishSpeaking(session, speaking) {
     speaking = speaking && !session.muted;
     if (session.speaking === speaking) return;
@@ -34,6 +41,8 @@ async function diagnostic(session, event, peerState = null, values = {}) {
         attachedSenderCount: peerState?.peer.getSenders().filter(sender => sender.track?.kind === "audio").length ?? 0,
         connectionState: peerState?.peer.connectionState ?? null,
         iceConnectionState: peerState?.peer.iceConnectionState ?? null,
+        signalingState: peerState?.peer.signalingState ?? null,
+        iceGatheringState: peerState?.peer.iceGatheringState ?? null,
         localIceGenerated: peerState?.localIceGenerated ?? 0,
         remoteIceReceived: peerState?.remoteIceReceived ?? 0,
         remoteTrackCount: peerState?.remoteStream.getAudioTracks().length ?? 0,
@@ -52,6 +61,13 @@ async function diagnostic(session, event, peerState = null, values = {}) {
         framesEncoded: values.framesEncoded ?? null, framesDecoded: values.framesDecoded ?? null,
         framesDropped: values.framesDropped ?? null, frameWidth: values.frameWidth ?? null,
         frameHeight: values.frameHeight ?? null,
+        hostCandidateAvailable: (peerState?.localCandidateTypes.host ?? 0) > 0,
+        serverReflexiveCandidateAvailable: (peerState?.localCandidateTypes.srflx ?? 0) > 0,
+        peerReflexiveCandidateAvailable: (peerState?.localCandidateTypes.prflx ?? 0) > 0,
+        relayCandidateAvailable: (peerState?.localCandidateTypes.relay ?? 0) > 0,
+        selectedLocalCandidateType: values.selectedLocalCandidateType ?? null,
+        selectedRemoteCandidateType: values.selectedRemoteCandidateType ?? null,
+        selectedCandidateProtocol: values.selectedCandidateProtocol ?? null,
         errorName: values.name ?? null,
         errorMessage: values.message ?? null
     };
@@ -123,18 +139,27 @@ function createPeer(session, remoteParticipantId, negotiationId) {
         if (negotiationId) existing.negotiationId = negotiationId;
         return existing;
     }
-    const peer = new RTCPeerConnection({ iceServers: normalizeIceServers(session.mediaSession.iceServers) });
+    const peer = new RTCPeerConnection({
+        iceServers: normalizeIceServers(session.iceConfiguration.iceServers),
+        iceTransportPolicy: normalizeIceTransportPolicy(session.iceConfiguration.iceTransportPolicy)
+    });
     const state = {
         remoteParticipantId, negotiationId, peer, remoteStream: new MediaStream(),
         pendingIce: [], localIceGenerated: 0, remoteIceReceived: 0,
         remoteAudioPlaySucceeded: false, connectionTimer: null, playback: null, visualStreams:new Map(),
-        negotiationChain:Promise.resolve(),
+        negotiationChain:Promise.resolve(), localCandidateTypes:{}, selectedPairReported:false,
         remoteAccountId: session.participantAccounts.get(remoteParticipantId) ?? null
     };
     session.peers.set(remoteParticipantId, state);
 
     peer.onicecandidate = event => {
-        if (!event.candidate || !state.negotiationId) return;
+        if (!event.candidate) {
+            void diagnostic(session, "IceGatheringComplete", state);
+            return;
+        }
+        const type = candidateType(event.candidate);
+        if (type) state.localCandidateTypes[type] = (state.localCandidateTypes[type] ?? 0) + 1;
+        if (!state.negotiationId) return;
         state.localIceGenerated++;
         void diagnostic(session, "IceGenerated", state);
         session.callback.invokeMethodAsync("OnIceCandidate", remoteParticipantId, state.negotiationId,
@@ -146,8 +171,17 @@ function createPeer(session, remoteParticipantId, negotiationId) {
             state.connectionTimer = null;
         }
         void diagnostic(session, `ConnectionState:${peer.connectionState}`, state);
+        if (peer.connectionState === "connected" && !state.selectedPairReported) {
+            state.selectedPairReported = true;
+            void collectPeerStats(session, state, "SelectedCandidatePair");
+        } else if (peer.connectionState === "failed") {
+            void diagnostic(session, "MediaConnectionFailed", state);
+            session.callback.invokeMethodAsync("OnMediaError", "Unable to establish the media connection.").catch(() => {});
+        }
     };
     peer.oniceconnectionstatechange = () => void diagnostic(session, `IceConnectionState:${peer.iceConnectionState}`, state);
+    peer.onicegatheringstatechange = () => void diagnostic(session, `IceGatheringState:${peer.iceGatheringState}`, state);
+    peer.onsignalingstatechange = () => void diagnostic(session, `SignalingState:${peer.signalingState}`, state);
     peer.ontrack = async event => {
         const stream = event.streams?.[0];
         const visualStream = stream?.getVideoTracks().length > 0 || event.track.kind === "video";
@@ -194,8 +228,8 @@ function createPeer(session, remoteParticipantId, negotiationId) {
     void diagnostic(session, "PeerCreated", state);
     state.connectionTimer = setTimeout(() => {
         if (peer.connectionState !== "connected") {
-            reportError(session, `Community media connection to ${remoteParticipantId} timed out`,
-                new DOMException(`Peer remained ${peer.connectionState}.`, "TimeoutError"));
+            void diagnostic(session, "MediaConnectionTimedOut", state);
+            session.callback.invokeMethodAsync("OnMediaError", "Unable to establish the media connection.").catch(() => {});
             closePeer(session, remoteParticipantId, "connection timeout");
         }
     }, 20000);
@@ -225,18 +259,20 @@ async function startOffer(session, remoteParticipantId) {
 }
 
 function reportError(session, prefix, error) {
-    const message = `${prefix}: ${error?.name ?? "MediaError"}: ${error?.message ?? error}`;
-    console.error("[Iridium Community Voice]", message);
-    session.callback.invokeMethodAsync("OnMediaError", message).catch(() => {});
+    console.error("[Iridium Community Voice]", { event:prefix, name:error?.name ?? "MediaError" });
+    void diagnostic(session, "SignalingFailure", null,
+        { name:error?.name ?? "MediaError", message:error?.message ?? String(error) });
+    session.callback.invokeMethodAsync("OnMediaError", "Community voice signaling failed.").catch(() => {});
 }
 
-async function collectStats(session) {
-    const snapshots = [];
-    for (const state of session.peers.values()) {
+async function collectPeerStats(session, state, event = "StatsSnapshot") {
         let packetsSent = 0, packetsReceived = 0, bytesSent = 0, bytesReceived = 0;
         let framesEncoded = 0, framesDecoded = 0, framesDropped = 0, frameWidth = null, frameHeight = null;
         const reports = await state.peer.getStats();
+        const byId = new Map();
+        let selectedPair = null;
         reports.forEach(report => {
+            byId.set(report.id, report);
             if (report.type === "outbound-rtp") {
                 packetsSent += report.packetsSent ?? 0;
                 bytesSent += report.bytesSent ?? 0;
@@ -247,15 +283,30 @@ async function collectStats(session) {
                 bytesReceived += report.bytesReceived ?? 0;
                 if (report.kind === "video") { framesDecoded += report.framesDecoded ?? 0;
                     framesDropped += report.framesDropped ?? 0; frameWidth = report.frameWidth ?? frameWidth;
-                    frameHeight = report.frameHeight ?? frameHeight; }
+                frameHeight = report.frameHeight ?? frameHeight; }
             }
+            if (report.type === "transport" && report.selectedCandidatePairId)
+                selectedPair = report.selectedCandidatePairId;
+            if (report.type === "candidate-pair" && report.selected === true) selectedPair = report.id;
         });
-        await diagnostic(session, "StatsSnapshot", state,
+        const pair = selectedPair ? byId.get(selectedPair) : [...byId.values()].find(value =>
+            value.type === "candidate-pair" && value.state === "succeeded" && value.nominated);
+        const local = pair ? byId.get(pair.localCandidateId) : null;
+        const remote = pair ? byId.get(pair.remoteCandidateId) : null;
+        await diagnostic(session, event, state,
             { packetsSent, packetsReceived, bytesSent, bytesReceived, framesEncoded, framesDecoded,
-                framesDropped, frameWidth, frameHeight });
-        snapshots.push({ remoteParticipantId: state.remoteParticipantId, packetsSent, packetsReceived,
+                framesDropped, frameWidth, frameHeight, selectedLocalCandidateType:local?.candidateType ?? null,
+                selectedRemoteCandidateType:remote?.candidateType ?? null,
+                selectedCandidateProtocol:local?.protocol ?? remote?.protocol ?? null });
+        return { remoteParticipantId: state.remoteParticipantId, packetsSent, packetsReceived,
             bytesSent, bytesReceived, remoteTrackCount: state.remoteStream.getAudioTracks().length,
-            remoteAudioPlaySucceeded: state.remoteAudioPlaySucceeded });
+            remoteAudioPlaySucceeded: state.remoteAudioPlaySucceeded };
+}
+
+async function collectStats(session) {
+    const snapshots = [];
+    for (const state of session.peers.values()) {
+        snapshots.push(await collectPeerStats(session, state));
     }
     return snapshots;
 }
@@ -264,7 +315,7 @@ export async function getStatsSnapshot(id) {
     return collectStats(requireSession(id));
 }
 
-export async function connect(callback, mediaSession, room, localAccountId, preferences = []) {
+export async function connect(callback, mediaSession, room, localAccountId, preferences = [], iceConfiguration = null) {
     if (!navigator.mediaDevices?.getUserMedia)
         throw new Error("This browser does not support microphone capture.");
     let localStream;
@@ -276,11 +327,12 @@ export async function connect(callback, mediaSession, room, localAccountId, pref
     const id = crypto.randomUUID();
     const localParticipant = (room.participants ?? []).find(value => value.participantId === mediaSession.participantId);
     const session = {
-        id, callback, mediaSession, room, localAccountId, localParticipantId: mediaSession.participantId,
+        id, callback, mediaSession, iceConfiguration: iceConfiguration ?? { iceServers:[], iceTransportPolicy:"all" },
+        room, localAccountId, localParticipantId: mediaSession.participantId,
         localStream, peers: new Map(), muted: localParticipant?.muted === true,
         deafened: localParticipant?.deafened === true, speaking: false,
         vadFrame: null, context: null, source: null, analyser: null,
-        diagnostics: mediaSession.diagnosticsEnabled === true, statsTimer: null,
+        diagnostics: mediaSession.diagnosticsEnabled === true,
         participantAccounts:new Map((room.participants ?? []).map(value => [value.participantId, value.accountId])),
         preferences:new Map((preferences ?? []).map(value => [value.remoteAccountId, value])),
         visualStreams:new Map(), viewers:new Map(), screenShare:null
@@ -307,7 +359,6 @@ export async function start(id) {
         if (participant.participantId !== session.localParticipantId)
             await startOffer(session, participant.participantId);
     }
-    session.statsTimer = setInterval(() => void collectStats(session), 10000);
 }
 
 export function setMuted(id, muted) {
@@ -546,7 +597,6 @@ export async function disconnect(id, reason = "unspecified") {
         for (const track of session.screenShare.stream.getTracks()) track.stop();
         session.screenShare = null;
     }
-    if (session.statsTimer !== null) clearInterval(session.statsTimer);
     if (session.vadFrame !== null) cancelAnimationFrame(session.vadFrame);
     publishSpeaking(session, false);
     for (const participantId of [...session.peers.keys()]) closePeer(session, participantId, reason);

@@ -6,7 +6,7 @@ namespace Iridium.Client.Core;
 public sealed class NodeSession(
     ISavedAccountStore accountStore,
     IActiveAccountSelectionStore activeSelectionStore,
-    INodeTokenStore legacyTokenStore)
+    INodeTokenStore legacyTokenStore) : IWebRtcConfigurationSource
 {
     private readonly List<SavedAccountRecord> _records = [];
     private readonly List<SavedAccount> _savedAccounts = [];
@@ -45,6 +45,14 @@ public sealed class NodeSession(
 
     public Task<ServerInfoDto> GetServerInfoAsync(CancellationToken cancellationToken = default) =>
         AuthorizedClient.GetServerInfoAsync(cancellationToken);
+
+    public Task<WebRtcIceConfigurationDto> GetWebRtcIceConfigurationAsync(
+        CancellationToken cancellationToken = default) =>
+        AuthorizedClient.GetWebRtcIceConfigurationAsync(cancellationToken);
+
+    string IWebRtcConfigurationSource.CacheKey => $"{SelectedNode?.Address}|{Account?.Id:N}";
+    Task<WebRtcIceConfigurationDto> IWebRtcConfigurationSource.FetchAsync(CancellationToken cancellationToken) =>
+        GetWebRtcIceConfigurationAsync(cancellationToken);
 
     public Task<AttachmentUploadDto> UploadAttachmentAsync(Stream content, string fileName, string contentType,
         bool isSpoiler = false, int? width = null, int? height = null, string? averageColor = null,
@@ -300,6 +308,29 @@ public sealed class NodeSession(
         }
         NotifyChanged();
     }
+
+    public Task<AccountSecurityStatusDto> GetAccountSecurityStatusAsync(
+        CancellationToken cancellationToken = default) =>
+        AuthorizedClient.GetAccountSecurityStatusAsync(cancellationToken);
+
+    public Task ChangePasswordAsync(string currentPassword, string newPassword, string confirmation,
+        CancellationToken cancellationToken = default) =>
+        AuthorizedClient.ChangePasswordAsync(new ChangePasswordRequest(currentPassword, newPassword, confirmation),
+            cancellationToken);
+
+    public Task<AccountSecurityStatusDto> UpdateRecoveryEmailAsync(string currentPassword, string? recoveryEmail,
+        CancellationToken cancellationToken = default) =>
+        AuthorizedClient.UpdateRecoveryEmailAsync(new UpdateRecoveryEmailRequest(currentPassword, recoveryEmail),
+            cancellationToken);
+
+    public Task<PasswordRecoveryRequestResultDto> RequestPasswordRecoveryAsync(string username,
+        CancellationToken cancellationToken = default) =>
+        AuthenticationClient().RequestPasswordRecoveryAsync(new PasswordRecoveryRequest(username), cancellationToken);
+
+    public Task CompletePasswordRecoveryAsync(string username, string token, string newPassword, string confirmation,
+        CancellationToken cancellationToken = default) =>
+        AuthenticationClient().CompletePasswordRecoveryAsync(
+            new CompletePasswordRecoveryRequest(username, token, newPassword, confirmation), cancellationToken);
 
     public async Task<CommunityDto> CreateCommunityAsync(
         string name,

@@ -7,6 +7,29 @@ namespace Iridium.Server.Persistence;
 
 public static class DatabaseCompatibility
 {
+    public static async Task EnsureAccountSecuritySchemaAsync(IridiumDbContext db)
+    {
+        await EnsureColumnAsync(db, "Accounts", "RecoveryEmail", "TEXT NULL");
+        await EnsureColumnAsync(db, "Accounts", "RecoveryEmailNormalized", "TEXT NULL");
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE INDEX IF NOT EXISTS IX_Accounts_RecoveryEmailNormalized
+                ON Accounts (RecoveryEmailNormalized);
+            CREATE TABLE IF NOT EXISTS PasswordRecoveryTokens (
+                Id TEXT NOT NULL CONSTRAINT PK_PasswordRecoveryTokens PRIMARY KEY,
+                AccountId TEXT NOT NULL,
+                TokenHash TEXT NOT NULL,
+                CreatedAt TEXT NOT NULL,
+                ExpiresAt TEXT NOT NULL,
+                UsedAt TEXT NULL,
+                CONSTRAINT FK_PasswordRecoveryTokens_Accounts_AccountId FOREIGN KEY (AccountId) REFERENCES Accounts (Id) ON DELETE CASCADE
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS IX_PasswordRecoveryTokens_TokenHash
+                ON PasswordRecoveryTokens (TokenHash);
+            CREATE INDEX IF NOT EXISTS IX_PasswordRecoveryTokens_AccountId
+                ON PasswordRecoveryTokens (AccountId);
+            """);
+    }
+
     public static async Task EnsureAvatarPresetSchemaAsync(IridiumDbContext db)
     {
         await EnsureColumnAsync(db, "Accounts", "ActiveAvatarPresetId", "TEXT NULL");

@@ -7,7 +7,7 @@
     <aside class="settings-nav">
         <div class="nav-inner">
             <p>USER SETTINGS</p>
-            @foreach (var section in new[] { "My Account", "Appearance", "Connections / Nodes", "About" })
+            @foreach (var section in new[] { "My Account", "Appearance", "Security", "Connections / Nodes", "About" })
             {
                 <button class="@(section == _section ? "active" : null)" @onclick="() => _section = section">@section</button>
             }
@@ -21,13 +21,21 @@
             {
                 <h1>My Account</h1>
                 <div class="account-card">
-                    <div class="account-banner"></div>
-                    <div class="account-heading"><div class="avatar">@Account.DisplayName[..1].ToUpperInvariant()</div><div><strong class="display-name">@Account.DisplayName</strong><span>@PublicIdentity</span></div></div>
+                    <div class="account-banner"><ProfileBanner AccountId="Account.Id" BannerRevision="Account.BannerRevision" /></div>
+                    <div class="account-heading">
+                        <div class="account-avatar"><ProfileAvatar AccountId="Account.Id" AvatarRevision="Account.AvatarRevision"
+                            DisplayName="@Account.DisplayName" BadgeMode="AvatarBadgeMode.None" Size="fill" Surface="panel" /></div>
+                        <div><strong class="display-name">@Account.DisplayName</strong><span>@PublicIdentity</span></div>
+                    </div>
                     <div class="readonly"><span>Public identity</span><strong>@PublicIdentity</strong></div>
                     <div class="readonly"><span>Current Node</span><strong>@CurrentNode.Address</strong></div>
                     @if (!string.IsNullOrWhiteSpace(Error)) { <p class="error">@Error</p> }
                     <button class="primary edit-profile" @onclick="OnEditProfile">Edit Profile</button>
                 </div>
+            }
+            else if (_section == "Security")
+            {
+                <SecuritySettings />
             }
             else if (_section == "Connections / Nodes")
             {

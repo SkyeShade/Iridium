@@ -44,6 +44,7 @@ h1 { margin: 0; color: var(--text-strong); text-align: center; font-size: 1.5rem
 .mode-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: .3rem; margin: 1.15rem 0 .9rem; padding: .25rem; border-radius: .5rem; background: var(--bg-deep); }
 .mode-tabs button { border: 0; border-radius: .35rem; color: var(--text-muted); background: transparent; padding: .5rem; cursor: pointer; }
 .mode-tabs button.active { color: var(--text-strong); background: var(--surface-active); }
+.recovery-heading{margin:1.1rem 0 .9rem}.recovery-heading h2{margin:0;color:var(--text-strong);font-size:1rem}.recovery-heading p{margin:.35rem 0 0;color:var(--text-muted);font-size:.76rem;line-height:1.45}.recovery-message{margin:0;padding:.65rem;border:1px solid color-mix(in srgb,var(--accent) 34%,var(--border));border-radius:.4rem;color:var(--text);background:color-mix(in srgb,var(--accent) 8%,transparent);font-size:.74rem;line-height:1.45}
 .auth-form { display: grid; gap: .75rem; }
 label { color: var(--text-muted); font-size: .72rem; font-weight: 700; letter-spacing: .02em; }
 input { width: 100%; margin-top: .3rem; padding: .68rem .75rem; border: 1px solid var(--border); border-radius: .42rem; outline: none; color: var(--text-strong); background: var(--input-bg); }
@@ -55,6 +56,7 @@ input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in sr
 .submit:active { transform: translateY(1px); }
 .submit:disabled { opacity: .55; cursor: default; }
 .mode-switch { width: 100%; margin-top: .85rem; border: 0; color: var(--accent-soft); background: transparent; font-size: .75rem; cursor: pointer; }
+.forgot-password{width:100%;margin-top:.7rem;border:0;color:var(--text-muted);background:transparent;font:inherit;font-size:.72rem;cursor:pointer}.forgot-password:hover{color:var(--accent-soft)}
 .cancel-auth { width: 100%; margin-top: .35rem; padding: .4rem; border: 0; color: var(--text-muted); background: transparent; font-size: .72rem; cursor: pointer; }
 .cancel-auth:hover { color: var(--text-strong); }
 .auth-error { margin: 0; padding: .55rem; border-radius: .35rem; color: #ffc4c4; background: #7c313138; font-size: .75rem; }

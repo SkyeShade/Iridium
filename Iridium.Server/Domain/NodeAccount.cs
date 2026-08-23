@@ -15,10 +15,13 @@ public sealed class NodeAccount
     public long BannerRevision { get; set; }
     public UserPresence PreferredPresence { get; set; } = UserPresence.Online;
     public required string PasswordHash { get; set; }
+    public string? RecoveryEmail { get; set; }
+    public string? RecoveryEmailNormalized { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
     public ICollection<CommunityMember> CommunityMemberships { get; set; } = [];
     public ICollection<Community> OwnedCommunities { get; set; } = [];
     public ICollection<ChannelMessage> Messages { get; set; } = [];
     public ICollection<AccountAvatarPreset> AvatarPresets { get; set; } = [];
     public ICollection<AccountBannerPreset> BannerPresets { get; set; } = [];
+    public ICollection<PasswordRecoveryToken> PasswordRecoveryTokens { get; set; } = [];
 }

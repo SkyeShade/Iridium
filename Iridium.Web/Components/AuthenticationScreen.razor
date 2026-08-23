@@ -68,6 +68,36 @@
             }
         </div>
 
+        @if (RecoveryToken is not null)
+        {
+            <div class="recovery-heading"><h2>Reset Password</h2><p>Choose a new password for <strong>@RecoveryUsername</strong> on this Node.</p></div>
+            <div class="auth-form">
+                <label>New Password <input type="password" @bind="_password" autocomplete="new-password"
+                    maxlength="@AccountSecurityLimits.MaximumPasswordLength" /></label>
+                <label>Confirm New Password <input type="password" @bind="_confirmPassword" autocomplete="new-password"
+                    maxlength="@AccountSecurityLimits.MaximumPasswordLength" /></label>
+                @if (!string.IsNullOrWhiteSpace(Error)) { <p class="auth-error">@Error</p> }
+                <button class="submit" disabled="@(Busy || SelectedNode is null)" @onclick="CompleteRecoveryAsync">
+                    @(Busy ? "Please wait…" : "Reset Password")
+                </button>
+            </div>
+        }
+        else if (_forgotPasswordMode)
+        {
+            <div class="recovery-heading"><h2>Recover Account</h2><p>Enter your username. The Node will send instructions if a recovery email is configured.</p></div>
+            <div class="auth-form">
+                <label>Username <input @bind="_username" autocomplete="username" maxlength="32" /></label>
+                @if (_recoveryRequestMessage is not null)
+                {
+                    <p class="recovery-message" role="status">@_recoveryRequestMessage</p>
+                }
+                <button class="submit" disabled="@(Busy || SelectedNode is null || string.IsNullOrWhiteSpace(_username))"
+                        @onclick="RequestRecoveryAsync">Send Recovery Instructions</button>
+            </div>
+            <button class="mode-switch" @onclick="CloseRecoveryRequest">Back to Login</button>
+        }
+        else
+        {
         <div class="mode-tabs">
             <button class="@(!_registerMode ? "active" : null)" @onclick="() => SwitchMode(false)">Login</button>
             <button class="@(_registerMode ? "active" : null)" @onclick="() => SwitchMode(true)">Register</button>
@@ -100,9 +130,14 @@
             </button>
         </div>
 
+        @if (!_registerMode)
+        {
+            <button class="forgot-password" @onclick="OpenRecoveryRequest">Forgot password?</button>
+        }
         <button class="mode-switch" @onclick="() => SwitchMode(!_registerMode)">
             @(_registerMode ? "Already have an account? Login" : "New to this Node? Register")
         </button>
+        }
         @if (CanCancel)
         {
             <button class="cancel-auth" @onclick="OnCancel">Cancel</button>
@@ -117,11 +152,15 @@
     [Parameter] public string? Error { get; set; }
     [Parameter] public IReadOnlyList<SavedAccount> SavedAccounts { get; set; } = [];
     [Parameter] public string? InitialUsername { get; set; }
+    [Parameter] public string? RecoveryUsername { get; set; }
+    [Parameter] public string? RecoveryToken { get; set; }
     [Parameter] public bool CanCancel { get; set; }
     [Parameter] public EventCallback<SavedNode> OnNodeSelected { get; set; }
     [Parameter] public EventCallback<SavedNode> OnNodeRemoved { get; set; }
     [Parameter] public Func<string, Task<bool>>? OnNodeAdded { get; set; }
     [Parameter] public EventCallback<AuthenticationSubmission> OnSubmit { get; set; }
+    [Parameter] public Func<string, Task<string>>? OnRecoveryRequested { get; set; }
+    [Parameter] public Func<PasswordRecoverySubmission, Task<bool>>? OnRecoveryCompleted { get; set; }
     [Parameter] public EventCallback<SavedAccountKey> OnSavedAccountSelected { get; set; }
     [Parameter] public EventCallback OnCancel { get; set; }
 
@@ -133,13 +172,15 @@
     private string _password = string.Empty;
     private string _confirmPassword = string.Empty;
     private string? _authenticationContext;
+    private bool _forgotPasswordMode;
+    private string? _recoveryRequestMessage;
 
     protected override void OnParametersSet()
     {
-        var context = $"{SelectedNode?.Address}|{InitialUsername}";
+        var context = $"{SelectedNode?.Address}|{InitialUsername}|{RecoveryUsername}|{RecoveryToken}";
         if (_authenticationContext == context) return;
         _authenticationContext = context;
-        _username = InitialUsername ?? string.Empty;
+        _username = RecoveryUsername ?? InitialUsername ?? string.Empty;
         _password = string.Empty;
         _confirmPassword = string.Empty;
     }
@@ -170,6 +211,31 @@
 
     private Task SubmitAsync() => OnSubmit.InvokeAsync(new AuthenticationSubmission(
         _registerMode, _username, _displayName, _password, _confirmPassword));
+
+    private void OpenRecoveryRequest()
+    {
+        _forgotPasswordMode = true;
+        _recoveryRequestMessage = null;
+        _password = _confirmPassword = string.Empty;
+    }
+
+    private void CloseRecoveryRequest()
+    {
+        _forgotPasswordMode = false;
+        _recoveryRequestMessage = null;
+    }
+
+    private async Task RequestRecoveryAsync()
+    {
+        if (OnRecoveryRequested is null || string.IsNullOrWhiteSpace(_username)) return;
+        _recoveryRequestMessage = await OnRecoveryRequested(_username);
+    }
+
+    private async Task CompleteRecoveryAsync()
+    {
+        if (OnRecoveryCompleted is null || RecoveryUsername is null || RecoveryToken is null) return;
+        await OnRecoveryCompleted(new(RecoveryUsername, RecoveryToken, _password, _confirmPassword));
+    }
 
     private void SwitchMode(bool register)
     {

@@ -24,9 +24,7 @@ public sealed class DirectWebRtcMediaService(ICallService calls, IOptions<MediaO
     // colliding offer invalidating that answer at the server.
     private readonly ConcurrentDictionary<(Guid CallId, Guid NegotiationId), NegotiationState> _negotiations = [];
 
-    public CallMediaConfigurationDto GetConfiguration() => new(options.Value.Mode,
-        options.Value.IceServers.Where(value => value.Urls.Count > 0)
-            .Select(value => new IceServerDto(value.Urls, value.Username, value.Credential)).ToList());
+    public CallMediaConfigurationDto GetConfiguration() => new(options.Value.Mode, []);
 
     public MediaSignalRoute AuthorizeOffer(Guid callId, Guid senderAccountId, string senderConnectionId,
         Guid negotiationId, WebRtcNegotiationKind negotiationKind, WebRtcSessionDescription description)

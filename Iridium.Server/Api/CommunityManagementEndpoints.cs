@@ -322,7 +322,8 @@ public static class CommunityManagementEndpoints
 
     private static async Task<IResult> CreateInviteAsync(
         Guid communityId, CreateCommunityInviteRequest request, HttpContext context, IridiumDbContext db,
-        SessionService sessions, CommunityAuthorizationService authorization, CommunityRealtimePublisher realtime)
+        SessionService sessions, CommunityAuthorizationService authorization, CommunityRealtimePublisher realtime,
+        IOptions<NodeOptions> options)
     {
         var actor = await RequirePermissionAsync(communityId, CommunityPermission.CreateInvites, context, db, sessions, authorization);
         if (actor.Error is not null) return actor.Error;
@@ -340,7 +341,7 @@ public static class CommunityManagementEndpoints
         db.CommunityInvites.Add(invite);
         await db.SaveChangesAsync();
         await realtime.PublishAsync(communityId, "invite-created", db);
-        var url = $"{context.Request.Scheme}://{context.Request.Host}/invite/{token}";
+        var url = $"{PublicOrigin(context, options.Value)}/invite/{Uri.EscapeDataString(token)}";
         return Results.Created($"/api/communities/{communityId}/invites/{invite.Id}",
             new CommunityInviteDto(invite.Id, communityId, invite.CodePrefix, actor.DisplayName!, invite.CreatedAt,
                 invite.ExpiresAt, invite.MaxUses, invite.Uses, invite.Revoked, url));
@@ -468,12 +469,16 @@ public static class CommunityManagementEndpoints
         Results.ValidationProblem(new Dictionary<string, string[]> { [key] = [message] });
     private static string NodeAuthority(HttpContext context, NodeOptions options) =>
         string.IsNullOrWhiteSpace(options.PublicAuthority) ? context.Request.Host.Value ?? "localhost" : options.PublicAuthority!;
+    private static string PublicOrigin(HttpContext context, NodeOptions options)
+    {
+        if (Uri.TryCreate(options.PublicAuthority, UriKind.Absolute, out var configured) &&
+            configured.Scheme is "http" or "https" && !string.IsNullOrWhiteSpace(configured.Host))
+            return configured.GetLeftPart(UriPartial.Authority).TrimEnd('/');
+        return $"{context.Request.Scheme}://{context.Request.Host}".TrimEnd('/');
+    }
     private static string AbsoluteCommunityMedia(HttpContext context, NodeOptions options, Guid communityId,
         string kind, long revision)
     {
-        var authority = NodeAuthority(context, options);
-        var origin = authority.Contains("://", StringComparison.Ordinal) ? authority.TrimEnd('/') :
-            $"{context.Request.Scheme}://{authority}";
-        return $"{origin}/api/communities/{communityId}/{kind}?v={revision}";
+        return $"{PublicOrigin(context, options)}/api/communities/{communityId}/{kind}?v={revision}";
     }
 }

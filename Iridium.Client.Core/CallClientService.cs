@@ -802,7 +802,7 @@ public sealed class CallClientService(
         }
         if (CurrentCall is not null && IsSignalingConnected) await PublishParticipantStateAsync();
         NotifyChanged();
-        if (state == CallConnectionState.Failed) await FailMediaAsync("The WebRTC connection failed.", "WEBRTC FAILED");
+        if (state == CallConnectionState.Failed) await FailMediaAsync("Unable to establish the media connection.", "WEBRTC FAILED");
     }
 
     private Task MediaIceConnectionChangedAsync(string state)
@@ -1076,7 +1076,7 @@ public sealed class CallClientService(
                     NotifyChanged();
                     return;
                 }
-                await FailMediaAsync("WebRTC negotiation timed out after 18 seconds.", "WEBRTC NEGOTIATION TIMED OUT");
+                await FailMediaAsync("Unable to establish the media connection.", "WEBRTC NEGOTIATION TIMED OUT");
             }
         }
         finally { _gate.Release(); }

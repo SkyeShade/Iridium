@@ -34,6 +34,8 @@
     --radius-sm: .4rem;
     --radius-md: .65rem;
     --radius-lg: .9rem;
+    --bottom-control-height: calc(3.7rem + 2px);
+    --bottom-control-inset: .55rem;
     --layer-context-menu: 92;
     --layer-floating-media: 95;
     --layer-modal: 100;

@@ -14,6 +14,10 @@ public sealed class NodeClient(Uri nodeAddress)
     public Task<ServerInfoDto> GetServerInfoAsync(CancellationToken cancellationToken = default) =>
         SendAsync<ServerInfoDto>(HttpMethod.Get, "api/server-info", null, cancellationToken);
 
+    public Task<WebRtcIceConfigurationDto> GetWebRtcIceConfigurationAsync(
+        CancellationToken cancellationToken = default) =>
+        SendAsync<WebRtcIceConfigurationDto>(HttpMethod.Get, "api/webrtc/ice-configuration", null, cancellationToken);
+
     public async Task<AuthenticationResultDto> RegisterAsync(
         RegisterAccountRequest request,
         CancellationToken cancellationToken = default)
@@ -35,6 +39,30 @@ public sealed class NodeClient(Uri nodeAddress)
 
     public Task<NodeAccountDto> UpdateProfileAsync(UpdateProfileRequest request, CancellationToken cancellationToken = default) =>
         SendAsync<NodeAccountDto>(HttpMethod.Patch, "api/account/current", request, cancellationToken);
+
+    public Task<AccountSecurityStatusDto> GetAccountSecurityStatusAsync(
+        CancellationToken cancellationToken = default) =>
+        SendAsync<AccountSecurityStatusDto>(HttpMethod.Get, "api/account/security", null, cancellationToken);
+
+    public Task ChangePasswordAsync(ChangePasswordRequest request, CancellationToken cancellationToken = default) =>
+        SendNoContentAsync(HttpMethod.Post, "api/account/security/password", request, cancellationToken);
+
+    public Task<AccountSecurityStatusDto> UpdateRecoveryEmailAsync(
+        UpdateRecoveryEmailRequest request,
+        CancellationToken cancellationToken = default) =>
+        SendAsync<AccountSecurityStatusDto>(HttpMethod.Put, "api/account/security/recovery-email", request,
+            cancellationToken);
+
+    public Task<PasswordRecoveryRequestResultDto> RequestPasswordRecoveryAsync(
+        PasswordRecoveryRequest request,
+        CancellationToken cancellationToken = default) =>
+        SendAsync<PasswordRecoveryRequestResultDto>(HttpMethod.Post, "api/account/recovery/request", request,
+            cancellationToken);
+
+    public Task CompletePasswordRecoveryAsync(
+        CompletePasswordRecoveryRequest request,
+        CancellationToken cancellationToken = default) =>
+        SendNoContentAsync(HttpMethod.Post, "api/account/recovery/complete", request, cancellationToken);
 
     public Task<AccountAvatarPresetsDto> GetAvatarPresetsAsync(CancellationToken cancellationToken = default) =>
         SendAsync<AccountAvatarPresetsDto>(HttpMethod.Get, "api/account/avatar-presets", null, cancellationToken);

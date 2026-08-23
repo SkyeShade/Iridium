@@ -10,12 +10,4 @@ public sealed class MediaOptions
     public int SignalingLossTimeoutSeconds { get; set; } = 45;
     public bool EnableDevelopmentCommunityPeerMesh { get; set; }
     public int DevelopmentCommunityPeerLimit { get; set; } = 6;
-    public List<IceServerOptions> IceServers { get; set; } = [];
-}
-
-public sealed class IceServerOptions
-{
-    public List<string> Urls { get; set; } = [];
-    public string? Username { get; set; }
-    public string? Credential { get; set; }
 }

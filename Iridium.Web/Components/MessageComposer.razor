@@ -52,12 +52,13 @@
                 <div class="composer-rich-editor iridium-textarea-scrollbar" @ref="_textarea" contenteditable="true" spellcheck="true"
                      data-placeholder="@ComposerPlaceholder" aria-label="@ComposerPlaceholder" role="textbox" aria-multiline="true"></div>
             </div>
-            <button type="button" class="emoji-button" title="Emoji" aria-label="Emoji" @onclick="ToggleEmojiPicker"><Icon Name="emoji" /></button>
+            <button @ref="_emojiButton" type="button" class="emoji-button" title="Emoji" aria-label="Emoji" @onclick="ToggleEmojiPicker"><Icon Name="emoji" /></button>
             <span class="character-counter @(RemainingCharacters < 0 ? "over-limit" : null)" aria-label="@($"{RemainingCharacters} characters remaining")">@RemainingCharacters</span>
         </div>
         @if (_emojiPickerOpen)
         {
-            <EmojiPicker Community="Community" AccountId="AccountId" OnSelected="InsertEmojiAsync" />
+            <EmojiPicker Community="Community" AccountId="AccountId" Anchor="_emojiButton" OnSelected="InsertEmojiAsync"
+                         OnClose="CloseEmojiPicker" />
         }
         @if (Suggestions.Count > 0)
         {
@@ -118,6 +119,7 @@
     private string _content = string.Empty;
     private ElementReference _textarea;
     private ElementReference _composerShell;
+    private ElementReference _emojiButton;
     private IJSObjectReference? _module;
     private DotNetObjectReference<MessageComposer>? _selfReference;
     private bool _submitting;
@@ -390,6 +392,7 @@
     }
 
     private void ToggleEmojiPicker() => _emojiPickerOpen = !_emojiPickerOpen;
+    private void CloseEmojiPicker() => _emojiPickerOpen = false;
     private async Task InsertEmojiAsync(EmojiSelection selection)
     {
         if (_module is null) return;

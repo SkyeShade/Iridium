@@ -5,8 +5,8 @@
 @inject IJSRuntime JS
 @implements IAsyncDisposable
 
-<section class="emoji-picker" role="dialog" aria-label="Emoji picker">
-    <header><strong>Emoji</strong><input placeholder="Search emoji..." value="@_searchInput" @oninput="SearchChanged" autofocus /></header>
+<section @ref="_picker" class="emoji-picker" role="dialog" aria-label="Emoji picker">
+    <header><input aria-label="Search emoji" placeholder="Search emoji..." value="@_searchInput" @oninput="SearchChanged" autofocus /></header>
     <div class="picker-body">
         <nav aria-label="Emoji sources">
             @foreach (var group in _communityGroups)
@@ -84,6 +84,8 @@
     [Parameter] public CommunityDto? Community { get; set; }
     [Parameter, EditorRequired] public required Guid AccountId { get; set; }
     [Parameter] public EventCallback<EmojiSelection> OnSelected { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public ElementReference Anchor { get; set; }
     private static readonly IReadOnlyList<IndexedStandardEmoji> StandardIndex = StandardEmojiCatalog.All
         .Select(value => new IndexedStandardEmoji(value,
             string.Join(' ', value.Name, value.Keywords).ToLowerInvariant())).ToArray();
@@ -102,6 +104,7 @@
     private IReadOnlyList<EmojiPickerSearchResult> _recentResults = [];
     private CancellationTokenSource? _searchDebounce;
     private ElementReference _viewport;
+    private ElementReference _picker;
     private IJSObjectReference? _module;
     private DotNetObjectReference<EmojiPicker>? _self;
     private int _columns = 8;
@@ -124,6 +127,7 @@
         _module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/emojiPicker.js");
         _self = DotNetObjectReference.Create(this);
         await _module.InvokeVoidAsync("observeGridWidth", _viewport, _self);
+        await _module.InvokeVoidAsync("wireDismiss", _picker, Anchor, _self);
     }
 
     [JSInvokable]
@@ -134,6 +138,9 @@
         _columns = columns;
         StateHasChanged();
     }
+
+    [JSInvokable]
+    public Task DismissAsync() => OnClose.InvokeAsync();
 
     private async Task SearchChanged(ChangeEventArgs args)
     {
@@ -248,7 +255,12 @@
         _searchDebounce?.Dispose();
         if (_module is not null)
         {
-            try { await _module.InvokeVoidAsync("disposeGridWidth"); await _module.DisposeAsync(); }
+            try
+            {
+                await _module.InvokeVoidAsync("disposeDismiss", _picker);
+                await _module.InvokeVoidAsync("disposeGridWidth", _viewport);
+                await _module.DisposeAsync();
+            }
             catch (JSDisconnectedException) { }
         }
         _self?.Dispose();

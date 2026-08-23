@@ -129,6 +129,10 @@ function normalizeIceServers(servers) {
     }));
 }
 
+function normalizeIceTransportPolicy(policy) {
+    return policy === "relay" ? "relay" : "all";
+}
+
 function diagnostic(session, event, details = {}) {
     if (!session.diagnostics) return Promise.resolve();
     console.debug("[Iridium Voice]", {
@@ -495,7 +499,7 @@ async function startVoiceActivityDetection(session) {
     diagnostic(session, "voice activity detector started");
 }
 
-export async function initialize(callback, iceServers, diagnostics = false, callId = null, localAccountId = null,
+export async function initialize(callback, iceServers, iceTransportPolicy = "all", diagnostics = false, callId = null, localAccountId = null,
     role = "unknown", peerGeneration = 0, negotiationId = null, negotiationGeneration = 0,
     iceInteropProtocolVersion = null, remoteAccountId = null, participantPreference = null, polite = false) {
     if (iceInteropProtocolVersion !== 2) {
@@ -522,7 +526,10 @@ export async function initialize(callback, iceServers, diagnostics = false, call
     const id = crypto.randomUUID();
     let session;
     try {
-        const peer = new RTCPeerConnection({ iceServers: normalizeIceServers(iceServers) });
+        const peer = new RTCPeerConnection({
+            iceServers: normalizeIceServers(iceServers),
+            iceTransportPolicy: normalizeIceTransportPolicy(iceTransportPolicy)
+        });
         session = {
             id, callback, peer, localStream, remoteStream: new MediaStream(), diagnostics,
             callId, localAccountId, role, peerGeneration, negotiationId, negotiationGeneration,

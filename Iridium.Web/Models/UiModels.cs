@@ -11,6 +11,12 @@ public sealed record AuthenticationSubmission(
     string Password,
     string ConfirmPassword);
 
+public sealed record PasswordRecoverySubmission(
+    string Username,
+    string Token,
+    string NewPassword,
+    string ConfirmPassword);
+
 public sealed record ProfileSubmission(string DisplayName, string? Pronouns, string? Description);
 
 public sealed record CommunitySubmission(string Name, string? Description);

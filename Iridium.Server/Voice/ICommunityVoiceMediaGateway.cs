@@ -54,10 +54,8 @@ public sealed class DevelopmentPeerMeshCommunityVoiceMediaGateway(IOptions<Media
         if (!environment.IsDevelopment() || !options.Value.EnableDevelopmentCommunityPeerMesh)
             return ValueTask.FromResult(new CommunityVoiceMediaSessionDto(
                 CommunityVoiceMediaStatus.MediaUnavailable, "none"));
-        var iceServers = options.Value.IceServers.Where(value => value.Urls.Count > 0)
-            .Select(value => new IceServerDto(value.Urls, value.Username, value.Credential)).ToArray();
         return ValueTask.FromResult(new CommunityVoiceMediaSessionDto(Status, "development-peer-mesh",
-            ParticipantId: participantId, IceServers: iceServers, DiagnosticsEnabled: true));
+            ParticipantId: participantId, DiagnosticsEnabled: true));
     }
 
     public ValueTask ParticipantJoinedAsync(Guid communityId, Guid channelId, string participantId,

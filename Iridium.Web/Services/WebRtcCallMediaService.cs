@@ -9,7 +9,8 @@ public sealed class WebRtcCallMediaService(
     IJSRuntime js,
     IWebAssemblyHostEnvironment environment,
     ILogger<WebRtcCallMediaService> logger,
-    VoiceParticipantPreferencesService preferences) : ICallMediaService
+    VoiceParticipantPreferencesService preferences,
+    IWebRtcConfigurationProvider webRtcConfiguration) : ICallMediaService
 {
     private const string ModuleDirectoryAndName = "./js/voiceCall";
     private const int IceInteropProtocolVersion = 2;
@@ -40,10 +41,12 @@ public sealed class WebRtcCallMediaService(
         _module ??= await js.InvokeAsync<IJSObjectReference>("import", cancellationToken, modulePath);
         _callback = DotNetObjectReference.Create(this);
         _context = context;
+        var iceConfiguration = await webRtcConfiguration.GetAsync(cancellationToken);
         var preference = context.RemoteAccountId is { } remote
             ? await preferences.GetAsync(remote, cancellationToken) : null;
         _sessionId = await _module.InvokeAsync<string>("initialize", cancellationToken,
-            _callback, configuration.IceServers, environment.IsDevelopment(), context.CallId, context.LocalAccountId,
+            _callback, iceConfiguration.IceServers, iceConfiguration.IceTransportPolicy,
+            environment.IsDevelopment(), context.CallId, context.LocalAccountId,
             context.Role, context.PeerGeneration, context.NegotiationId, context.NegotiationGeneration,
             IceInteropProtocolVersion, context.RemoteAccountId, preference,
             context.RemoteAccountId is { } remoteAccountId && context.LocalAccountId.CompareTo(remoteAccountId) > 0);

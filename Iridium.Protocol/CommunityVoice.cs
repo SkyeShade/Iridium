@@ -51,6 +51,8 @@ public sealed record CommunityVoiceMediaDiagnosticDto(
     int? AttachedSenderCount = null,
     string? ConnectionState = null,
     string? IceConnectionState = null,
+    string? SignalingState = null,
+    string? IceGatheringState = null,
     int? LocalIceGenerated = null,
     int? RemoteIceReceived = null,
     int? RemoteTrackCount = null,
@@ -71,6 +73,13 @@ public sealed record CommunityVoiceMediaDiagnosticDto(
     long? FramesDropped = null,
     int? FrameWidth = null,
     int? FrameHeight = null,
+    bool? HostCandidateAvailable = null,
+    bool? ServerReflexiveCandidateAvailable = null,
+    bool? PeerReflexiveCandidateAvailable = null,
+    bool? RelayCandidateAvailable = null,
+    string? SelectedLocalCandidateType = null,
+    string? SelectedRemoteCandidateType = null,
+    string? SelectedCandidateProtocol = null,
     string? ErrorName = null,
     string? ErrorMessage = null);
 

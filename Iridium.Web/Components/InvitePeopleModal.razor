@@ -6,9 +6,9 @@
         <header><span>COMMUNITY INVITE</span><h1>Invite People</h1><p>Send this 24-hour invite as a Direct Message.</p>
             <button class="copy-quick" @onclick="CopyAsync">@(_copied ? "Copied" : "Copy Link")</button>
         </header>
-        @if (!string.IsNullOrWhiteSpace(Error))
+        @if (!string.IsNullOrWhiteSpace(_copyError ?? Error))
         {
-            <p class="invite-error" role="alert">@Error</p>
+            <p class="invite-error" role="alert">@(_copyError ?? Error)</p>
         }
         <div class="people-list">
             @foreach (var friend in People)
@@ -40,6 +40,7 @@
     private readonly HashSet<Guid> _sending = [];
     private readonly HashSet<Guid> _sent = [];
     private bool _copied;
+    private string? _copyError;
     private IEnumerable<FriendDto> People => Friends.Where(value => value.Status == FriendshipStatus.Accepted)
         .GroupBy(value => value.AccountId).Select(value => value.First())
         .OrderBy(value => value.DisplayName, StringComparer.OrdinalIgnoreCase)
@@ -56,7 +57,16 @@
     }
     private async Task CopyAsync()
     {
-        await JS.InvokeVoidAsync("navigator.clipboard.writeText", InviteUrl);
-        _copied = true;
+        _copyError = null;
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", InviteUrl);
+            _copied = true;
+        }
+        catch
+        {
+            _copied = false;
+            _copyError = "The invite link could not be copied. Please try again.";
+        }
     }
 }
