@@ -39,6 +39,39 @@
     --layer-modal: 100;
 }
 
+.inline-emoji-token {
+    box-sizing: border-box;
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    width: 1.3em !important;
+    height: 1.3em !important;
+    min-width: 1.3em;
+    min-height: 1.3em;
+    padding: 0 !important;
+    margin: 0 .08em !important;
+    border: 0;
+    line-height: 1 !important;
+    vertical-align: middle !important;
+    background: transparent;
+    flex: none;
+}
+
+.inline-emoji-token > .standard-emoji-artwork,
+.inline-emoji-token > .community-emoji,
+.inline-emoji-token > .community-emoji-placeholder,
+.inline-emoji-token > img {
+    display: block;
+    width: 100% !important;
+    height: 100% !important;
+    max-width: 100% !important;
+    max-height: 100% !important;
+    margin: 0;
+    padding: 0;
+    object-fit: contain;
+    background: transparent;
+}
+
 .display-name {
     font-weight: 400 !important;
 }

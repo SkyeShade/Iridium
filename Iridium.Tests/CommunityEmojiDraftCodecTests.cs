@@ -79,6 +79,20 @@ public sealed class CommunityEmojiDraftCodecTests
             CommunityEmojiDraftCodec.MapDocumentPositionToSerialized(8, references));
     }
 
+    [Fact]
+    public void AtomicStandardAndCustomSlotsSerializeAndMapToTheirVisibleValues()
+    {
+        var emojiId = Guid.NewGuid();
+        CommunityEmojiDraftReference[] custom = [new(0, 1, emojiId, "mudrock", Guid.NewGuid())];
+        StandardEmojiDraftReference[] standard = [new(1, 1, "1f1e9-1f1f0", "\U0001F1E9\U0001F1F0", "denmark")];
+        var document = $"{CommunityEmojiDraftCodec.ObjectReplacementCharacter}{CommunityEmojiDraftCodec.ObjectReplacementCharacter}x";
+
+        var serialized = CommunityEmojiDraftCodec.SerializeDocument(document, custom, standard);
+
+        Assert.Equal($"{CommunityEmojiNames.Token(emojiId, "mudrock")}\U0001F1E9\U0001F1F0x", serialized);
+        Assert.Equal(serialized.Length, CommunityEmojiDraftCodec.MapDocumentPositionToSerialized(3, custom, standard));
+    }
+
     private static CommunityDto Community(string name) =>
         new(Guid.NewGuid(), name, null, Guid.NewGuid(), DateTimeOffset.UtcNow);
 

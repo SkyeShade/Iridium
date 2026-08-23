@@ -50,4 +50,25 @@ public sealed class EmojiMessageParserTests
         Assert.Equal(glyph, part.StandardGlyph);
         Assert.True(EmojiMessageParser.IsLargeEmojiOnly(glyph));
     }
+
+    [Fact]
+    public void StandardMessagePartCarriesCanonicalAlias()
+    {
+        var part = Assert.Single(EmojiMessageParser.Parse("\U0001F44B"));
+        Assert.Equal("wave", part.StandardName);
+    }
+
+    [Theory]
+    [InlineData("\U0001F600", "1f600")]
+    [InlineData("\U0001F61B", "1f61b")]
+    [InlineData("\U0001F44B", "1f44b")]
+    [InlineData("\u2705", "2705")]
+    [InlineData("\u2764\uFE0F", "2764")]
+    [InlineData("\U0001F1E9\U0001F1F0", "1f1e9-1f1f0")]
+    public void ComposerStandardParsingUsesTheSharedArtworkKey(string glyph, string artworkKey)
+    {
+        var part = Assert.Single(EmojiMessageParser.ParseStandard(glyph));
+        Assert.Equal(artworkKey, part.StandardArtworkKey);
+        Assert.Equal(glyph, part.StandardGlyph);
+    }
 }

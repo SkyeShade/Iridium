@@ -1,2 +1,2 @@
-.message-text{white-space:pre-wrap;overflow-wrap:anywhere}.message-text ::deep .inline-custom-emoji{width:1.25em;height:1.25em;line-height:1;vertical-align:text-bottom}
-.message-text.emoji-only-message{font-size:3em;line-height:1.15}.message-text.emoji-only-message ::deep .inline-custom-emoji{width:1em;height:1em}
+.message-text{white-space:pre-wrap;overflow-wrap:anywhere}.message-text ::deep .inline-custom-emoji{width:auto;height:auto;max-width:2.25em;max-height:1.25em;line-height:1;vertical-align:text-bottom}.message-text ::deep .community-emoji-placeholder.inline-custom-emoji{height:1.25em}
+.message-text.emoji-only-message{font-size:3em;line-height:1.15}.message-text.emoji-only-message ::deep .inline-emoji-token{width:1em!important;height:1em!important;min-width:1em;min-height:1em;margin:0 .04em!important}

@@ -2,7 +2,24 @@
 
 @foreach (var segment in Segments)
 {
-    <span class="@Classes(segment)">@segment.Text</span>
+    <span class="@Classes(segment)">
+        @foreach (var part in EmojiMessageParser.ParseStandard(segment.Text))
+        {
+            if (part.StandardArtworkKey is { } artworkKey)
+            {
+                var glyph = part.StandardGlyph ?? part.Text;
+                <span class="composer-standard-emoji-slot">
+                    <span class="composer-standard-emoji-metric" aria-hidden="true">@glyph</span>
+                    <StandardEmojiArtwork ArtworkKey="@artworkKey" Glyph="@glyph"
+                                          Class="composer-standard-emoji" />
+                </span>
+            }
+            else
+            {
+                @part.Text
+            }
+        }
+    </span>
 }
 
 @code {

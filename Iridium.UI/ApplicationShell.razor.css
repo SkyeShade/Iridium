@@ -1,6 +1,7 @@
 .app-shell { width: 100vw; height: 100dvh; display: grid; grid-template-columns: 4.75rem 15.5rem minmax(0, 1fr); overflow: hidden; color: var(--text); background: var(--bg-base); }
 .app-shell.has-context-sidebar { grid-template-columns: 4.75rem 15.5rem minmax(24rem, 1fr) 16.2rem; }
 .secondary-sidebar { min-width: 0; display: flex; flex-direction: column; background: var(--bg-sidebar); border-right: 1px solid var(--border-subtle); }
+.secondary-sidebar.selected-community-sidebar { background: linear-gradient(var(--bg-deep), var(--bg-deep)) left top / var(--radius-lg) var(--radius-lg) no-repeat, var(--bg-sidebar); }
 .community-header { height: 3.45rem; display: flex; align-items: center; justify-content: space-between; padding: 0 1rem; color: var(--text-strong); border-bottom: 1px solid var(--border-subtle); box-shadow: 0 1px 4px #0003; }
 .community-header.selected-community-header{height:7.75rem;flex:0 0 7.75rem;padding:0;overflow:hidden;border-radius:var(--radius-lg) 0 0 0;background:var(--bg-deep)}
 .sidebar-body { flex: 1; min-height: 0; overflow-y: auto; }

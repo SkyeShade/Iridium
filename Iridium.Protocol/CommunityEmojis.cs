@@ -17,7 +17,7 @@ public sealed record CommunityEmojiDto(Guid Id, Guid CommunityId, string Name, s
     Guid CreatedByAccountId);
 public sealed record RenameCommunityEmojiRequest(string Name);
 public sealed record EmojiSelection(string InsertText, string Name, Guid? CustomEmojiId = null,
-    Guid? CommunityId = null);
+    Guid? CommunityId = null, string? StandardArtworkKey = null);
 
 public static partial class CommunityEmojiNames
 {
@@ -44,6 +44,10 @@ public sealed record StandardEmoji(string Glyph, string Name, string Category, s
 
 public static class StandardEmojiCatalog
 {
+    private static readonly IReadOnlyDictionary<string, string> PrimaryAliases = new Dictionary<string, string>(StringComparer.Ordinal)
+    {
+        ["1f44b"] = "wave"
+    };
     public static IReadOnlyList<StandardEmoji> All { get; } = Load();
     private static readonly IReadOnlyDictionary<char, StandardEmoji[]> ByFirstCharacter = All
         .GroupBy(value => value.Glyph[0]).ToDictionary(value => value.Key,
@@ -88,6 +92,7 @@ public static class StandardEmojiCatalog
             var name = NormalizeName(displayName);
             if (string.IsNullOrWhiteSpace(name)) continue;
             var artwork = string.Join('-', codePoints.Where(value => value != 0xFE0F).Select(value => value.ToString("x")));
+            if (PrimaryAliases.TryGetValue(artwork, out var primaryAlias)) name = primaryAlias;
             var keywords = displayName.Split([' ', '-', ':', ','], StringSplitOptions.RemoveEmptyEntries)
                 .Select(value => value.Trim().ToLowerInvariant()).Where(value => value.Length > 1).Distinct().ToArray();
             values.Add(new(glyph, name, group, artwork, keywords));

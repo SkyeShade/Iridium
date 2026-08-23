@@ -1,13 +1,15 @@
 @using Iridium.Protocol
+@using Iridium.Web.Models
 @inject CommunityEmojiService Emojis
+@inject EmojiPickerPreferencesService Preferences
 @inject IJSRuntime JS
-@implements IDisposable
+@implements IAsyncDisposable
 
 <section class="emoji-picker" role="dialog" aria-label="Emoji picker">
-    <header><strong>Emoji</strong><input placeholder="Search emoji..." @bind="_search" @bind:event="oninput" autofocus /></header>
+    <header><strong>Emoji</strong><input placeholder="Search emoji..." value="@_searchInput" @oninput="SearchChanged" autofocus /></header>
     <div class="picker-body">
         <nav aria-label="Emoji sources">
-            @foreach (var group in CommunityGroups)
+            @foreach (var group in _communityGroups)
             {
                 <button @key="group.Community.Id" title="@group.Community.Name" @onclick="() => ScrollCommunity(group.Community.Id)">
                     @if (CommunityAvatarState(group.Community) is { } avatar) { <AvatarCroppedPreview State="avatar" /> }
@@ -17,124 +19,242 @@
             <span class="source-separator"></span>
             <button title="Standard Emoji" @onclick="ScrollStandard"><Icon Name="emoji" /></button>
         </nav>
-        <main class="iridium-message-scrollbar">
-            @foreach (var group in CommunityGroups)
+        <main class="iridium-message-scrollbar" @ref="_viewport">
+            @if (IsSearching)
+            {
+                <section class="emoji-section search-section">
+                    <div class="search-heading">Search Results</div>
+                    <EmojiSearchGrid Results="_searchResults" Columns="_columns" OnSelected="OnSelected" />
+                </section>
+            }
+            else
+            {
+            <section @key="RecentKey" class="emoji-section recent-section">
+                <button type="button" class="section-heading" aria-expanded="@IsExpanded(RecentKey)" @onclick="() => ToggleAsync(RecentKey)">
+                    <span class="section-chevron"><Icon Name="chevron" /></span><span>Recent</span>
+                </button>
+                @if (IsExpanded(RecentKey))
+                {
+                    @if (_recentResults.Count > 0)
+                    {
+                        <RecentEmojiGrid Results="_recentResults" Columns="_columns" OnSelected="OnSelected" />
+                    }
+                    else
+                    {
+                        <p class="recent-empty">Emoji you use will appear here.</p>
+                    }
+                }
+            </section>
+            @foreach (var group in _communityGroups)
             {
                 var sectionKey = CommunityKey(group.Community.Id);
                 <section id="@CommunitySectionId(group.Community.Id)" @key="sectionKey" class="emoji-section">
-                    <button type="button" class="section-heading" aria-expanded="@IsExpanded(sectionKey)" @onclick="() => Toggle(sectionKey)">
+                    <button type="button" class="section-heading" aria-expanded="@IsExpanded(sectionKey)" @onclick="() => ToggleAsync(sectionKey)">
                         <span class="section-chevron"><Icon Name="chevron" /></span>
                         @if (CommunityAvatarState(group.Community) is { } sectionAvatar) { <span class="section-avatar"><AvatarCroppedPreview State="sectionAvatar" /></span> }
                         <span>@group.Community.Name</span>
                     </button>
-                    @if (IsExpanded(sectionKey) || IsSearching)
+                    @if (IsExpanded(sectionKey))
                     {
-                    <div class="emoji-grid custom">
-                    @foreach (var emoji in group.Emojis)
-                    {
-                        <button title=":@emoji.Name: · @group.Community.Name"
-                                @onclick="() => ChooseCustom(group.Community, emoji)"
-                                @oncontextmenu="args => ShowDetailAsync(emoji, args)" @oncontextmenu:preventDefault="true"
-                                @oncontextmenu:stopPropagation="true"><CommunityEmojiImage Emoji="emoji" /></button>
-                    }
-                    </div>
+                        <CommunityEmojiGrid Emojis="group.Emojis" Columns="_columns"
+                            OnSelected="emoji => ChooseCustom(group.Community, emoji)" />
                     }
                 </section>
             }
             <div id="standard-emoji-section"></div>
-            @foreach (var group in StandardGroups)
+            @foreach (var group in _standardGroups)
             {
-                var sectionKey = StandardKey(group.Key);
+                var sectionKey = StandardKey(group.Category);
                 <section @key="sectionKey" class="emoji-section">
-                    <button type="button" class="section-heading" aria-expanded="@IsExpanded(sectionKey)" @onclick="() => Toggle(sectionKey)">
-                        <span class="section-chevron"><Icon Name="chevron" /></span><span>@group.Key</span>
+                    <button type="button" class="section-heading" aria-expanded="@IsExpanded(sectionKey)" @onclick="() => ToggleAsync(sectionKey)">
+                        <span class="section-chevron"><Icon Name="chevron" /></span><span>@group.Category</span>
                     </button>
-                    @if (IsExpanded(sectionKey) || IsSearching)
+                    @if (IsExpanded(sectionKey))
                     {
-                    <div class="emoji-grid">
-                    @foreach (var emoji in group)
-                    {
-                        <button title=":@emoji.Name:" @onclick="() => ChooseStandard(emoji)">
-                            <StandardEmojiArtwork Glyph="@emoji.Glyph" ArtworkKey="@emoji.ArtworkKey" />
-                        </button>
-                    }
-                    </div>
+                        <StandardEmojiGrid Emojis="group.Emojis" Columns="_columns" OnSelected="ChooseStandard" />
                     }
                 </section>
             }
+            }
         </main>
     </div>
-    @if (_detailEmoji is not null)
-    {
-        <EmojiDetailPopup Emoji="_detailEmoji" X="_detailX" Y="_detailY" OnClose="CloseDetail" />
-    }
 </section>
 
 @code {
     [Parameter] public CommunityDto? Community { get; set; }
+    [Parameter, EditorRequired] public required Guid AccountId { get; set; }
     [Parameter] public EventCallback<EmojiSelection> OnSelected { get; set; }
+    private static readonly IReadOnlyList<IndexedStandardEmoji> StandardIndex = StandardEmojiCatalog.All
+        .Select(value => new IndexedStandardEmoji(value,
+            string.Join(' ', value.Name, value.Keywords).ToLowerInvariant())).ToArray();
+    private static readonly IReadOnlyList<StandardEmojiGroup> AllStandardGroups = StandardEmojiCatalog.All
+        .GroupBy(value => value.Category).Select(group => new StandardEmojiGroup(group.Key, group.ToArray())).ToArray();
+    private static readonly IReadOnlyDictionary<string, StandardEmoji> StandardByArtwork = StandardEmojiCatalog.All
+        .ToDictionary(value => value.ArtworkKey, StringComparer.Ordinal);
+    private const string RecentKey = "recent";
+    private string _searchInput = string.Empty;
     private string _search = string.Empty;
-    private readonly HashSet<string> _expandedSections = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, bool> _collapsedSections = new(StringComparer.Ordinal);
     private IReadOnlyList<AvailableCommunityEmoji> _available = [];
-    private CommunityEmojiDto? _detailEmoji;
-    private double _detailX, _detailY;
+    private IReadOnlyList<CommunityEmojiGroup> _communityGroups = [];
+    private IReadOnlyList<StandardEmojiGroup> _standardGroups = AllStandardGroups;
+    private IReadOnlyList<EmojiPickerSearchResult> _searchResults = [];
+    private IReadOnlyList<EmojiPickerSearchResult> _recentResults = [];
+    private CancellationTokenSource? _searchDebounce;
+    private ElementReference _viewport;
+    private IJSObjectReference? _module;
+    private DotNetObjectReference<EmojiPicker>? _self;
+    private int _columns = 8;
     private bool IsSearching => !string.IsNullOrWhiteSpace(_search);
-    private IEnumerable<IGrouping<string, StandardEmoji>> StandardGroups => StandardEmojiCatalog.All
-        .Where(value => !IsSearching || Match(value.Name, value.Keywords))
-        .Take(IsSearching ? 240 : int.MaxValue).GroupBy(value => value.Category);
-    private IReadOnlyList<CommunityEmojiGroup> CommunityGroups => CommunityEmojiDraftCodec.Order(_available, Community?.Id)
-        .Where(value => string.IsNullOrWhiteSpace(_search) || value.Emoji.Name.Contains(_search, StringComparison.OrdinalIgnoreCase) ||
-                        value.Community.Name.Contains(_search, StringComparison.OrdinalIgnoreCase))
-        .GroupBy(value => value.Community.Id).Select(values => new CommunityEmojiGroup(values.First().Community,
-            values.Select(value => value.Emoji).OrderBy(value => value.Name, StringComparer.OrdinalIgnoreCase).ToArray()))
-        .Where(value => value.Emojis.Count > 0).ToArray();
 
     protected override async Task OnInitializedAsync()
     {
         Emojis.Changed += OnChanged;
+        Preferences.Changed += OnPreferencesChanged;
         _available = await Emojis.GetAvailableAsync();
-        foreach (var group in CommunityGroups) _expandedSections.Add(CommunityKey(group.Community.Id));
-        _expandedSections.Add(StandardKey("Smileys & Emotion"));
+        var saved = await Preferences.GetAsync(AccountId);
+        foreach (var (key, collapsed) in saved.Categories) _collapsedSections[key] = collapsed;
+        RebuildGroups();
+        RebuildRecent(saved.UsageHistory);
     }
-    private bool Match(string name, IReadOnlyList<string> keywords) => string.IsNullOrWhiteSpace(_search) ||
-        name.Contains(_search, StringComparison.OrdinalIgnoreCase) || keywords.Any(value => value.Contains(_search, StringComparison.OrdinalIgnoreCase));
-    private Task ChooseStandard(StandardEmoji emoji) => OnSelected.InvokeAsync(new(emoji.Glyph, emoji.Name));
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        _module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/emojiPicker.js");
+        _self = DotNetObjectReference.Create(this);
+        await _module.InvokeVoidAsync("observeGridWidth", _viewport, _self);
+    }
+
+    [JSInvokable]
+    public void SetEmojiColumns(int columns)
+    {
+        columns = Math.Clamp(columns, 4, 12);
+        if (_columns == columns) return;
+        _columns = columns;
+        StateHasChanged();
+    }
+
+    private async Task SearchChanged(ChangeEventArgs args)
+    {
+        _searchInput = args.Value?.ToString() ?? string.Empty;
+        _searchDebounce?.Cancel();
+        _searchDebounce?.Dispose();
+        _searchDebounce = new CancellationTokenSource();
+        try
+        {
+            await Task.Delay(75, _searchDebounce.Token);
+            _search = _searchInput.Trim().ToLowerInvariant();
+            RebuildGroups();
+        }
+        catch (OperationCanceledException) { }
+    }
+
+    private void RebuildGroups()
+    {
+        _communityGroups = CommunityEmojiDraftCodec.Order(_available, Community?.Id)
+            .Where(value => !IsSearching || value.Emoji.Name.Contains(_search, StringComparison.OrdinalIgnoreCase) ||
+                            value.Community.Name.Contains(_search, StringComparison.OrdinalIgnoreCase))
+            .GroupBy(value => value.Community.Id).Select(values => new CommunityEmojiGroup(values.First().Community,
+                values.Select(value => value.Emoji).OrderBy(value => value.Name, StringComparer.OrdinalIgnoreCase).ToArray()))
+            .Where(value => value.Emojis.Count > 0).ToArray();
+        _standardGroups = !IsSearching ? AllStandardGroups : StandardIndex
+            .Where(value => value.SearchText.Contains(_search, StringComparison.Ordinal))
+            .GroupBy(value => value.Emoji.Category)
+            .Select(group => new StandardEmojiGroup(group.Key, group.Select(value => value.Emoji).ToArray())).ToArray();
+        _searchResults = !IsSearching ? [] : _available
+            .Where(value => value.Emoji.Name.Contains(_search, StringComparison.OrdinalIgnoreCase) ||
+                            value.Community.Name.Contains(_search, StringComparison.OrdinalIgnoreCase))
+            .Select(value => new EmojiPickerSearchResult(Community: value.Community, Custom: value.Emoji))
+            .Concat(StandardIndex.Where(value => value.SearchText.Contains(_search, StringComparison.Ordinal))
+                .Select(value => new EmojiPickerSearchResult(Standard: value.Emoji))).ToArray();
+        StateHasChanged();
+    }
+
+    private Task ChooseStandard(StandardEmoji emoji) => OnSelected.InvokeAsync(
+        new(emoji.Glyph, emoji.Name, StandardArtworkKey: emoji.ArtworkKey));
     private Task ChooseCustom(CommunityDto community, CommunityEmojiDto emoji) => OnSelected.InvokeAsync(
         new($":{emoji.Name}:", emoji.Name, emoji.Id, community.Id));
     private async Task ScrollCommunity(Guid communityId)
     {
-        var module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/emojiPicker.js");
-        await module.InvokeVoidAsync("scrollToCommunity", CommunitySectionId(communityId));
-        await module.DisposeAsync();
+        if (_module is not null) await _module.InvokeVoidAsync("scrollToCommunity", CommunitySectionId(communityId));
     }
     private async Task ScrollStandard()
     {
-        var module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/emojiPicker.js");
-        await module.InvokeVoidAsync("scrollToCommunity", "standard-emoji-section");
-        await module.DisposeAsync();
-    }
-    private async Task ShowDetailAsync(CommunityEmojiDto emoji, MouseEventArgs args)
-    {
-        var module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/emojiPicker.js");
-        var position = await module.InvokeAsync<PopupPosition>("detailPosition", args.ClientX, args.ClientY);
-        await module.DisposeAsync();
-        _detailEmoji = emoji; _detailX = position.X; _detailY = position.Y;
+        if (_module is not null) await _module.InvokeVoidAsync("scrollToCommunity", "standard-emoji-section");
     }
     private static string CommunitySectionId(Guid id) => $"community-emoji-{id:N}";
     private static string CommunityKey(Guid id) => $"server:{id:N}";
-    private static string StandardKey(string category) => $"standard:{category}";
-    private bool IsExpanded(string key) => _expandedSections.Contains(key);
-    private void Toggle(string key)
+    private static string StandardKey(string category)
     {
-        if (!_expandedSections.Add(key)) _expandedSections.Remove(key);
+        var normalized = string.Join('_', category.ToLowerInvariant().Split(
+            [' ', '&', '/', '-'], StringSplitOptions.RemoveEmptyEntries));
+        return $"standard:{normalized}";
+    }
+    private bool IsExpanded(string key) => !_collapsedSections.GetValueOrDefault(key, !IsExpandedByDefault(key));
+    private bool IsExpandedByDefault(string key) => key == RecentKey || key == StandardKey("Smileys & Emotion") ||
+        (_communityGroups.Count > 0 && key == CommunityKey(_communityGroups[0].Community.Id));
+    private async Task ToggleAsync(string key)
+    {
+        var collapsed = IsExpanded(key);
+        _collapsedSections[key] = collapsed;
+        StateHasChanged();
+        await Preferences.SetCategoryCollapsedAsync(AccountId, key, collapsed);
+    }
+
+    private void RebuildRecent(IReadOnlyList<EmojiUsageEntry> usage)
+    {
+        var results = new List<EmojiPickerSearchResult>(20);
+        foreach (var entry in usage.OrderByDescending(value => value.UseCount).ThenByDescending(value => value.LastUsedAt))
+        {
+            if (entry.EmojiKey.StartsWith("standard:", StringComparison.Ordinal) &&
+                StandardByArtwork.TryGetValue(entry.EmojiKey[9..], out var standard))
+                results.Add(new(Standard: standard));
+            else if (entry.EmojiKey.StartsWith("custom:", StringComparison.Ordinal) &&
+                     Guid.TryParseExact(entry.EmojiKey[7..], "N", out var emojiId) &&
+                     _available.FirstOrDefault(value => value.Emoji.Id == emojiId) is { } custom)
+                results.Add(new(Community: custom.Community, Custom: custom.Emoji));
+            if (results.Count == 20) break;
+        }
+        _recentResults = results;
     }
     private static ProfileMediaEditState? CommunityAvatarState(CommunityDto community) => community.AvatarUrl is null
         ? null : new AvatarEditState(community.AvatarUrl, Math.Max(1, community.AvatarWidth), Math.Max(1, community.AvatarHeight),
             760, 1000, 1000, Math.Max(1, community.AvatarZoom), community.AvatarCropX, community.AvatarCropY);
-    private void CloseDetail() => _detailEmoji = null;
     private void OnChanged(Guid communityId) => _ = InvokeAsync(async () =>
-    { _available = await Emojis.GetAvailableAsync(); StateHasChanged(); });
-    public void Dispose() => Emojis.Changed -= OnChanged;
-    private sealed record PopupPosition(double X, double Y);
+    {
+        _available = await Emojis.GetAvailableAsync();
+        RebuildGroups();
+        RebuildRecent((await Preferences.GetAsync(AccountId)).UsageHistory);
+        StateHasChanged();
+    });
+    private void OnPreferencesChanged(Guid accountId)
+    {
+        if (accountId == AccountId) _ = InvokeAsync(async () =>
+        {
+            var saved = await Preferences.GetAsync(AccountId);
+            _collapsedSections.Clear();
+            foreach (var (key, collapsed) in saved.Categories) _collapsedSections[key] = collapsed;
+            RebuildRecent(saved.UsageHistory);
+            StateHasChanged();
+        });
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        Emojis.Changed -= OnChanged;
+        Preferences.Changed -= OnPreferencesChanged;
+        _searchDebounce?.Cancel();
+        _searchDebounce?.Dispose();
+        if (_module is not null)
+        {
+            try { await _module.InvokeVoidAsync("disposeGridWidth"); await _module.DisposeAsync(); }
+            catch (JSDisconnectedException) { }
+        }
+        _self?.Dispose();
+    }
+
+    private sealed record IndexedStandardEmoji(StandardEmoji Emoji, string SearchText);
+    private sealed record StandardEmojiGroup(string Category, IReadOnlyList<StandardEmoji> Emojis);
     private sealed record CommunityEmojiGroup(CommunityDto Community, IReadOnlyList<CommunityEmojiDto> Emojis);
 }

@@ -1,0 +1,27 @@
+@using Iridium.Protocol
+@inject EmojiDetailPopupCoordinator Popup
+
+<button type="button" class="message-emoji-token inline-emoji-token" title="View :@Alias: details" aria-label="View :@Alias: details"
+        @ref="_anchor" @onclick="Open" @onclick:stopPropagation="true">
+    @if (Standard is not null)
+    {
+        <StandardEmojiArtwork ArtworkKey="@Standard.ArtworkKey" Glyph="@Standard.Glyph" Class="inline-standard-emoji" />
+    }
+    else if (Custom is not null)
+    {
+        <CommunityEmojiImage Emoji="Custom" Class="inline-custom-emoji" />
+    }
+</button>
+
+@code {
+    [Parameter] public StandardEmoji? Standard { get; set; }
+    [Parameter] public CommunityEmojiDto? Custom { get; set; }
+    [Parameter, EditorRequired] public required string Alias { get; set; }
+    private ElementReference _anchor;
+
+    private void Open()
+    {
+        if (Standard is not null) Popup.Open(Standard, _anchor);
+        else if (Custom is not null) Popup.Open(Custom, Alias, _anchor);
+    }
+}

@@ -2,13 +2,20 @@ export function scrollToCommunity(sectionId) {
     document.getElementById(sectionId)?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-export function detailPosition(clientX, clientY) {
-    const width = 176;
-    const height = 208;
-    const margin = 10;
-    const x = clientX + width + margin <= window.innerWidth ? clientX + margin : clientX - width - margin;
-    return {
-        x: Math.max(margin, Math.min(window.innerWidth - width - margin, x)),
-        y: Math.max(margin, Math.min(window.innerHeight - height - margin, clientY - height / 2))
+let gridObserver = null;
+
+export function observeGridWidth(element, dotnet) {
+    disposeGridWidth();
+    const update = width => {
+        const columns = Math.max(4, Math.min(12, Math.floor((width - 20) / 39)));
+        dotnet.invokeMethodAsync("SetEmojiColumns", columns);
     };
+    gridObserver = new ResizeObserver(entries => update(entries[0].contentRect.width));
+    gridObserver.observe(element);
+    update(element.clientWidth);
+}
+
+export function disposeGridWidth() {
+    gridObserver?.disconnect();
+    gridObserver = null;
 }

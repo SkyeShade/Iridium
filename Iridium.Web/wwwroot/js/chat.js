@@ -358,7 +358,9 @@ function composerNodeLength(node) {
 function appendComposerSnapshot(node, result) {
     if (node.nodeType === Node.TEXT_NODE) { result.content += node.data; return; }
     if (isComposerEmoji(node)) {
-        result.tokens.push({ start: result.content.length, emojiId: node.dataset.emojiId, name: node.dataset.name, communityId: node.dataset.communityId });
+        result.tokens.push({ start: result.content.length, emojiId: node.dataset.emojiId || null,
+            name: node.dataset.name, communityId: node.dataset.communityId || null,
+            standardArtworkKey: node.dataset.standardArtworkKey || null, glyph: node.dataset.glyph || null });
         result.content += composerObjectCharacter;
         return;
     }
@@ -416,10 +418,17 @@ function setComposerCaret(editor, position) {
 }
 function createComposerEmoji(token) {
     const span = document.createElement("span");
-    span.className = "composer-inline-emoji"; span.contentEditable = "false";
-    span.dataset.emojiId = token.emojiId; span.dataset.name = token.name; span.dataset.communityId = token.communityId;
+    span.className = "composer-inline-emoji inline-emoji-token"; span.contentEditable = "false";
+    if (token.emojiId) span.dataset.emojiId = token.emojiId;
+    if (token.communityId) span.dataset.communityId = token.communityId;
+    if (token.standardArtworkKey) span.dataset.standardArtworkKey = token.standardArtworkKey;
+    if (token.glyph) span.dataset.glyph = token.glyph;
+    span.dataset.name = token.name;
     span.setAttribute("role", "img"); span.setAttribute("aria-label", `:${token.name}:`);
     const image = document.createElement("img"); image.src = token.mediaUrl; image.alt = `:${token.name}:`; image.draggable = false;
+    if (token.standardArtworkKey) image.addEventListener("error", () => {
+        image.remove(); span.classList.add("composer-standard-fallback"); span.textContent = token.glyph || "";
+    }, { once:true });
     span.appendChild(image); return span;
 }
 function replaceComposerRange(editor, start, end, replacement) {
@@ -509,7 +518,7 @@ export function wireComposer(textarea, dotNetReference, composerRoot) {
         const selection = window.getSelection();
         if (selection?.isCollapsed && textarea.contains(selection.focusNode)) {
             const caret = composerSelectionOffset(textarea), snapshot = composerSnapshot(textarea);
-            const before = snapshot.tokens.find(token => token.start + 1 === caret);
+        const before = snapshot.tokens.find(token => token.start + 1 === caret);
             const after = snapshot.tokens.find(token => token.start === caret);
             if ((event.key === "Backspace" && before) || (event.key === "Delete" && after)) {
                 event.preventDefault();
@@ -560,7 +569,9 @@ export function wireComposer(textarea, dotNetReference, composerRoot) {
         const snapshot = composerSnapshot(textarea);
         let plain = snapshot.content.slice(start, end);
         for (const token of snapshot.tokens.filter(value => value.start >= start && value.start < end).sort((a,b) => b.start-a.start)) {
-            const offset = token.start - start; plain = plain.slice(0, offset) + `:${token.name}:` + plain.slice(offset + 1);
+            const offset = token.start - start;
+            const replacement = token.standardArtworkKey ? token.glyph : `:${token.name}:`;
+            plain = plain.slice(0, offset) + replacement + plain.slice(offset + 1);
         }
         event.preventDefault(); event.clipboardData.setData("text/plain", plain);
     };

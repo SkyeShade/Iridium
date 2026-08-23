@@ -5,7 +5,7 @@ using Iridium.Protocol;
 namespace Iridium.Client.Core;
 
 public sealed record EmojiTextPart(string Text, Guid? EmojiId = null, string? EmojiName = null,
-    string? StandardArtworkKey = null, string? StandardGlyph = null);
+    string? StandardArtworkKey = null, string? StandardGlyph = null, string? StandardName = null);
 
 public static partial class EmojiMessageParser
 {
@@ -25,6 +25,13 @@ public static partial class EmojiMessageParser
         return result;
     }
 
+    public static IReadOnlyList<EmojiTextPart> ParseStandard(string content)
+    {
+        var result = new List<EmojiTextPart>();
+        if (content.Length > 0) AddStandardParts(result, content);
+        return result;
+    }
+
     private static void AddStandardParts(List<EmojiTextPart> result, string text)
     {
         var position = 0;
@@ -33,7 +40,8 @@ public static partial class EmojiMessageParser
             var match = StandardEmojiCatalog.MatchAt(text, position);
             if (match is not null)
             {
-                result.Add(new(string.Empty, StandardArtworkKey: match.ArtworkKey, StandardGlyph: match.Glyph));
+                result.Add(new(string.Empty, StandardArtworkKey: match.ArtworkKey, StandardGlyph: match.Glyph,
+                    StandardName: match.Name));
                 position += match.Glyph.Length;
                 continue;
             }

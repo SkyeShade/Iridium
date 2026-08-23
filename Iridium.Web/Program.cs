@@ -19,6 +19,7 @@ builder.Services.AddScoped(sp => new HttpClient { BaseAddress = new Uri(builder.
 builder.Services.AddScoped<BrowserClientStorage>();
 builder.Services.AddScoped<AppearanceService>();
 builder.Services.AddScoped<MessageMenuCoordinator>();
+builder.Services.AddScoped<EmojiDetailPopupCoordinator>();
 builder.Services.AddScoped<UiSoundService>();
 builder.Services.AddScoped<IAttachmentComposerService, AttachmentComposerService>();
 builder.Services.AddScoped<ISavedNodeStore>(sp => sp.GetRequiredService<BrowserClientStorage>());
@@ -27,6 +28,8 @@ builder.Services.AddScoped<ISavedAccountStore>(sp => sp.GetRequiredService<Brows
 builder.Services.AddScoped<IActiveAccountSelectionStore>(sp => sp.GetRequiredService<BrowserClientStorage>());
 builder.Services.AddScoped<IVoiceParticipantPreferenceStore>(sp => sp.GetRequiredService<BrowserClientStorage>());
 builder.Services.AddScoped<VoiceParticipantPreferencesService>();
+builder.Services.AddScoped<IEmojiPickerPreferenceStore>(sp => sp.GetRequiredService<BrowserClientStorage>());
+builder.Services.AddScoped<EmojiPickerPreferencesService>();
 builder.Services.AddScoped<ProfileMediaService>();
 builder.Services.AddScoped<CommunityEmojiService>();
 builder.Services.AddScoped<SavedNodeState>();

@@ -3,9 +3,9 @@
 
 @foreach (var node in Nodes)
 {
-    if (node.Emoji is not null)
+    if (node.IsEmoji)
     {
-        <span class="composer-emoji-token" aria-hidden="true"></span>
+        <span class="composer-emoji-token inline-emoji-token" aria-hidden="true"></span>
     }
     else if (!string.IsNullOrEmpty(node.Text))
     {
@@ -16,6 +16,7 @@
 @code {
     [Parameter, EditorRequired] public required string Content { get; set; }
     [Parameter] public IReadOnlyList<CommunityEmojiDraftReference> References { get; set; } = [];
+    [Parameter] public IReadOnlyList<StandardEmojiDraftReference> StandardReferences { get; set; } = [];
     [Parameter] public IReadOnlyList<AvailableCommunityEmoji> Available { get; set; } = [];
 
     private IReadOnlyList<PreviewNode> Nodes
@@ -24,18 +25,22 @@
         {
             var nodes = new List<PreviewNode>();
             var position = 0;
-            foreach (var reference in References.OrderBy(value => value.Start))
+            var references = References.Select(value => new PreviewReference(value.Start, value.Length, value.EmojiId))
+                .Concat(StandardReferences.Select(value => new PreviewReference(value.Start, value.Length, null)))
+                .OrderBy(value => value.Start);
+            foreach (var reference in references)
             {
                 if (reference.Start < position || reference.Start + reference.Length > Content.Length) continue;
-                if (reference.Start > position) nodes.Add(new(Content[position..reference.Start], null));
-                var emoji = Available.FirstOrDefault(value => value.Emoji.Id == reference.EmojiId)?.Emoji;
-                nodes.Add(emoji is null ? new(Content.Substring(reference.Start, reference.Length), null) : new(null, emoji));
+                if (reference.Start > position) nodes.Add(new(Content[position..reference.Start], false));
+                var isAvailable = reference.EmojiId is null || Available.Any(value => value.Emoji.Id == reference.EmojiId);
+                nodes.Add(isAvailable ? new(null, true) : new(Content.Substring(reference.Start, reference.Length), false));
                 position = reference.Start + reference.Length;
             }
-            if (position < Content.Length) nodes.Add(new(Content[position..], null));
+            if (position < Content.Length) nodes.Add(new(Content[position..], false));
             return nodes;
         }
     }
 
-    private sealed record PreviewNode(string? Text, CommunityEmojiDto? Emoji);
+    private sealed record PreviewNode(string? Text, bool IsEmoji);
+    private sealed record PreviewReference(int Start, int Length, Guid? EmojiId);
 }

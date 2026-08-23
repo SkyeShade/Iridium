@@ -5,7 +5,7 @@ namespace Iridium.Web.Services;
 
 public sealed class BrowserClientStorage(IJSRuntime js) : ISavedNodeStore, INodeTokenStore, ISavedAccountStore,
     IActiveAccountSelectionStore, ICategoryCollapseStore, ILastCommunityChannelStore,
-    IVoiceParticipantPreferenceStore, IAsyncDisposable
+    IVoiceParticipantPreferenceStore, IEmojiPickerPreferenceStore, IAsyncDisposable
 {
     private IJSObjectReference? _module;
 
@@ -113,6 +113,21 @@ public sealed class BrowserClientStorage(IJSRuntime js) : ISavedNodeStore, INode
     {
         var module = await ModuleAsync(cancellationToken);
         await module.InvokeVoidAsync("save", cancellationToken, "iridium.voiceParticipantPreferences", preferences);
+    }
+
+    async Task<EmojiPickerPreferenceData> IEmojiPickerPreferenceStore.LoadAsync(Guid accountId,
+        CancellationToken cancellationToken)
+    {
+        var module = await ModuleAsync(cancellationToken);
+        return await module.InvokeAsync<EmojiPickerPreferenceData?>("loadValue", cancellationToken,
+                   $"iridium.emoji-picker:{accountId:N}") ?? new();
+    }
+
+    async Task IEmojiPickerPreferenceStore.SaveAsync(Guid accountId, EmojiPickerPreferenceData preferences,
+        CancellationToken cancellationToken)
+    {
+        var module = await ModuleAsync(cancellationToken);
+        await module.InvokeVoidAsync("save", cancellationToken, $"iridium.emoji-picker:{accountId:N}", preferences);
     }
 
     private async Task<IJSObjectReference> ModuleAsync(CancellationToken cancellationToken)

@@ -1,12 +1,24 @@
 @using Iridium.Protocol
 @inject CommunityEmojiService Emojis
 
-@if (_source is not null) { <img class="community-emoji @Class" src="@_source" alt=":@Emoji.Name:" title=":@Emoji.Name:" /> }
+@if (_source is not null) { <img class="community-emoji @Class" src="@_source" alt=":@Emoji.Name:" title=":@Emoji.Name:"
+                                width="@NaturalWidth" height="@NaturalHeight" style="aspect-ratio:@NaturalWidth / @NaturalHeight"
+                                loading="lazy" decoding="async" /> }
+else if (_loading) { <span class="community-emoji-placeholder @Class" style="aspect-ratio:@NaturalWidth / @NaturalHeight" aria-hidden="true"></span> }
 else { <span class="community-emoji-missing @Class">:@Emoji.Name:</span> }
 
 @code {
     [Parameter, EditorRequired] public required CommunityEmojiDto Emoji { get; set; }
     [Parameter] public string? Class { get; set; }
     private string? _source;
-    protected override async Task OnParametersSetAsync() => _source = await Emojis.GetMediaDataUrlAsync(Emoji);
+    private bool _loading;
+    private int NaturalWidth => Math.Max(1, Emoji.Width);
+    private int NaturalHeight => Math.Max(1, Emoji.Height);
+    protected override async Task OnParametersSetAsync()
+    {
+        _source = null;
+        _loading = true;
+        _source = await Emojis.GetMediaDataUrlAsync(Emoji);
+        _loading = false;
+    }
 }

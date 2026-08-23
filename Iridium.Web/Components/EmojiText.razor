@@ -5,12 +5,14 @@
 {
     if (part.StandardArtworkKey is { } artworkKey)
     {
-        <StandardEmojiArtwork ArtworkKey="@artworkKey" Glyph="@(part.StandardGlyph ?? part.Text)" Class="inline-standard-emoji" />
+        var standard = new StandardEmoji(part.StandardGlyph ?? part.Text, part.StandardName ?? artworkKey,
+            string.Empty, artworkKey);
+        <MessageEmojiToken Standard="standard" Alias="@standard.Name" />
     }
     else if (part.EmojiId is { } id)
     {
         var emoji = CustomEmojis.FirstOrDefault(value => value.Id == id);
-        if (emoji is not null) { <CommunityEmojiImage Emoji="emoji" Class="inline-custom-emoji" /> }
+        if (emoji is not null) { <MessageEmojiToken Custom="emoji" Alias="@(part.EmojiName ?? emoji.Name)" /> }
         else { <span>:@part.EmojiName:</span> }
     }
     else { @part.Text }

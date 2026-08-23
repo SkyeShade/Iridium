@@ -1,0 +1,39 @@
+@using Iridium.Protocol
+@using Iridium.Web.Models
+@inject EmojiDetailPopupCoordinator Popup
+
+<div class="recent-emoji-grid" style="--emoji-columns:@Columns" role="grid">
+    @foreach (var result in Results)
+    {
+        <button @key="result.Key" type="button" role="gridcell" title="@Title(result)"
+                @onclick="() => Select(result)"
+                @oncontextmenu="args => Detail(result, args)" @oncontextmenu:preventDefault="true"
+                @oncontextmenu:stopPropagation="true">
+            @if (result.Standard is { } standard)
+            {
+                <StandardEmojiArtwork Glyph="@standard.Glyph" ArtworkKey="@standard.ArtworkKey" />
+            }
+            else if (result.Custom is { } custom)
+            {
+                <CommunityEmojiImage Emoji="custom" />
+            }
+        </button>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public required IReadOnlyList<EmojiPickerSearchResult> Results { get; set; }
+    [Parameter] public int Columns { get; set; } = 8;
+    [Parameter] public EventCallback<EmojiSelection> OnSelected { get; set; }
+
+    private static string Title(EmojiPickerSearchResult result) => result.Standard is { } standard
+        ? $":{standard.Name}:" : $":{result.Custom!.Name}: · {result.Community!.Name}";
+    private Task Select(EmojiPickerSearchResult result) => result.Standard is { } standard
+        ? OnSelected.InvokeAsync(new(standard.Glyph, standard.Name, StandardArtworkKey: standard.ArtworkKey))
+        : OnSelected.InvokeAsync(new($":{result.Custom!.Name}:", result.Custom.Name, result.Custom.Id,
+            result.Community!.Id));
+    private void Detail(EmojiPickerSearchResult result, MouseEventArgs args)
+    {
+        if (result.Custom is { } custom) Popup.Open(custom, custom.Name, args.ClientX, args.ClientY);
+    }
+}

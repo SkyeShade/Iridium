@@ -6,6 +6,7 @@ namespace Iridium.Client.Core;
 
 public sealed record CommunityEmojiDraftReference(int Start, int Length, Guid EmojiId, string Name,
     Guid CommunityId);
+public sealed record StandardEmojiDraftReference(int Start, int Length, string ArtworkKey, string Glyph, string Name);
 public sealed record CommunityEmojiDraftDocument(string Text, IReadOnlyList<CommunityEmojiDraftReference> References);
 
 public static partial class CommunityEmojiDraftCodec
@@ -70,13 +71,20 @@ public static partial class CommunityEmojiDraftCodec
     }
 
     public static string SerializeDocument(string content, IReadOnlyList<CommunityEmojiDraftReference> references)
+        => SerializeDocument(content, references, []);
+
+    public static string SerializeDocument(string content, IReadOnlyList<CommunityEmojiDraftReference> references,
+        IReadOnlyList<StandardEmojiDraftReference> standardReferences)
     {
         var byPosition = references.ToDictionary(value => value.Start);
+        var standardByPosition = standardReferences.ToDictionary(value => value.Start);
         var result = new StringBuilder(content.Length);
         for (var position = 0; position < content.Length; position++)
         {
             if (content[position] == ObjectReplacementCharacter && byPosition.TryGetValue(position, out var emoji))
                 result.Append(CommunityEmojiNames.Token(emoji.EmojiId, emoji.Name));
+            else if (content[position] == ObjectReplacementCharacter &&
+                     standardByPosition.TryGetValue(position, out var standard)) result.Append(standard.Glyph);
             else
                 result.Append(content[position]);
         }
@@ -87,6 +95,12 @@ public static partial class CommunityEmojiDraftCodec
         IReadOnlyList<CommunityEmojiDraftReference> references) => position + references
         .Where(value => value.Start < position)
         .Sum(value => CommunityEmojiNames.Token(value.EmojiId, value.Name).Length - value.Length);
+
+    public static int MapDocumentPositionToSerialized(int position,
+        IReadOnlyList<CommunityEmojiDraftReference> references,
+        IReadOnlyList<StandardEmojiDraftReference> standardReferences) =>
+        MapDocumentPositionToSerialized(position, references) + standardReferences
+            .Where(value => value.Start < position).Sum(value => value.Glyph.Length - value.Length);
 
     public static IReadOnlyList<AvailableCommunityEmoji> Order(IReadOnlyList<AvailableCommunityEmoji> values,
         Guid? currentCommunityId) => values.OrderBy(value => value.Community.Name, StringComparer.OrdinalIgnoreCase)

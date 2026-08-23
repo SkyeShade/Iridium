@@ -1,0 +1,28 @@
+@using Iridium.Protocol
+@inject EmojiDetailPopupCoordinator Popup
+
+<div class="virtual-emoji-grid" style="--emoji-columns:@Columns" role="grid">
+    <Virtualize @key="Columns" Items="_rows" Context="row" ItemSize="42" OverscanCount="2">
+        <div class="emoji-grid-row" role="row">
+            @foreach (var emoji in row)
+            {
+                <button @key="emoji.Id" type="button" title=":@emoji.Name:" role="gridcell"
+                        @onclick="() => OnSelected.InvokeAsync(emoji)"
+                        @oncontextmenu="args => Popup.Open(emoji, emoji.Name, args.ClientX, args.ClientY)"
+                        @oncontextmenu:preventDefault="true" @oncontextmenu:stopPropagation="true">
+                    <CommunityEmojiImage Emoji="emoji" />
+                </button>
+            }
+        </div>
+    </Virtualize>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public required IReadOnlyList<CommunityEmojiDto> Emojis { get; set; }
+    [Parameter] public int Columns { get; set; } = 8;
+    [Parameter] public EventCallback<CommunityEmojiDto> OnSelected { get; set; }
+    private ICollection<IReadOnlyList<CommunityEmojiDto>> _rows = [];
+
+    protected override void OnParametersSet() => _rows = Emojis
+        .Chunk(Math.Max(1, Columns)).Select(row => (IReadOnlyList<CommunityEmojiDto>)row).ToArray();
+}
