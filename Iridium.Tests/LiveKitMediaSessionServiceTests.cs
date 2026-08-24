@@ -49,6 +49,21 @@ public sealed class LiveKitMediaSessionServiceTests
         Assert.Equal($"iridium-community-{communityId:N}-voice-{channelId:N}", session.RoomName);
         Assert.Equal(accountId.ToString("N"), session.ParticipantIdentity);
         Assert.Equal("livekit", session.Provider);
+        Assert.Equal(VoiceMediaOptions.DefaultBitrate, session.VoiceBitrate);
+    }
+
+    [Theory]
+    [InlineData(1, VoiceMediaOptions.MinimumBitrate)]
+    [InlineData(64_000, 64_000)]
+    [InlineData(96_000, 96_000)]
+    [InlineData(128_000, 128_000)]
+    [InlineData(999_999, VoiceMediaOptions.MaximumBitrate)]
+    public void VoiceBitrateIsClampedAndIncludedInClientSession(int configured, int expected)
+    {
+        var session = Create(voiceBitrate: configured)
+            .CreateDirectCallSession(Guid.NewGuid(), Guid.NewGuid());
+
+        Assert.Equal(expected, session.VoiceBitrate);
     }
 
     [Fact]
@@ -74,9 +89,10 @@ public sealed class LiveKitMediaSessionServiceTests
     }
 
     private static LiveKitMediaSessionService Create(string? url = "wss://media.example.net",
-        string? key = "iridium-api-key", string? secret = Secret) => new(
+        string? key = "iridium-api-key", string? secret = Secret, int? voiceBitrate = null) => new(
         Options.Create(new MediaOptions { Provider = MediaProvider.LiveKit, PublicUrl = url, ApiKey = key,
-            ApiSecret = secret, JoinTokenLifetimeSeconds = 300 }),
+            ApiSecret = secret, JoinTokenLifetimeSeconds = 300,
+            Voice = new VoiceMediaOptions { Bitrate = voiceBitrate ?? VoiceMediaOptions.DefaultBitrate } }),
         new TestTimeProvider(Now), new TestEnvironment(), NullLogger<LiveKitMediaSessionService>.Instance);
 
     private static byte[] Decode(string value)

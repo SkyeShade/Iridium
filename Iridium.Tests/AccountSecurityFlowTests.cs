@@ -137,6 +137,12 @@ public sealed class AccountSecurityFlowTests
                 property.Name.Contains("Recovery", StringComparison.OrdinalIgnoreCase));
             Assert.DoesNotContain(typeof(ResolvedProfileDto).GetProperties(), property =>
                 property.Name.Contains("Recovery", StringComparison.OrdinalIgnoreCase));
+            Assert.DoesNotContain(typeof(FriendSearchResultDto).GetProperties(), property =>
+                property.Name.Contains("Email", StringComparison.OrdinalIgnoreCase) ||
+                property.Name.Contains("Password", StringComparison.OrdinalIgnoreCase) ||
+                property.Name.Contains("Session", StringComparison.OrdinalIgnoreCase) ||
+                property.Name.Contains("Token", StringComparison.OrdinalIgnoreCase) ||
+                property.Name.Contains("Recovery", StringComparison.OrdinalIgnoreCase));
             await AssertRecoveryEmailAsync(databasePath, accountId, "User@example.com", "user@example.com");
 
             await Assert.ThrowsAsync<NodeApiException>(() =>

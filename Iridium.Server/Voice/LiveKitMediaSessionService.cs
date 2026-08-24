@@ -23,8 +23,8 @@ public sealed class LiveKitMediaSessionService : INodeMediaSessionService
         if (_options.Provider == MediaProvider.LiveKit && !TryValidate(out var error))
             logger.LogError("LiveKit media is enabled but its configuration is unusable: {Error}", error);
         else if (Enabled)
-            logger.LogInformation("LiveKit media enabled at {PublicUrl}; join-token lifetime={LifetimeSeconds}s.",
-                _options.PublicUrl, Lifetime.TotalSeconds);
+            logger.LogInformation("LiveKit media enabled at {PublicUrl}; join-token lifetime={LifetimeSeconds}s; voice bitrate={VoiceBitrate}bps.",
+                _options.PublicUrl, Lifetime.TotalSeconds, VoiceBitrate);
     }
 
     public bool Enabled => _options.Provider == MediaProvider.LiveKit && TryValidate(out _);
@@ -59,10 +59,11 @@ public sealed class LiveKitMediaSessionService : INodeMediaSessionService
             }
         });
         return new NodeMediaSessionDto("livekit", _options.PublicUrl!, token, roomName, identity, kind,
-            expires, _development);
+            expires, _development, VoiceBitrate);
     }
 
     private TimeSpan Lifetime => TimeSpan.FromSeconds(Math.Clamp(_options.JoinTokenLifetimeSeconds, 60, 900));
+    private int VoiceBitrate => _options.Voice?.EffectiveBitrate ?? VoiceMediaOptions.DefaultBitrate;
 
     private bool TryValidate(out string error)
     {

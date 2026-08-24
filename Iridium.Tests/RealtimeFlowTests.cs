@@ -33,6 +33,8 @@ public sealed class RealtimeFlowTests
             {
                 using var openApi = await http.GetAsync("openapi/v1.json");
                 Assert.Equal(HttpStatusCode.OK, openApi.StatusCode);
+                using var unauthenticatedSearch = await http.GetAsync("api/accounts/search?q=sky");
+                Assert.Equal(HttpStatusCode.Unauthorized, unauthenticatedSearch.StatusCode);
             }
 
             var owner = new NodeClient(nodeAddress);
@@ -44,6 +46,40 @@ public sealed class RealtimeFlowTests
             var intruder = new NodeClient(nodeAddress);
             var intruderAuth = await intruder.RegisterAsync(new RegisterAccountRequest("intruder", "Intruder", "test-password"));
 
+            var needle = new NodeClient(nodeAddress);
+            await needle.RegisterAsync(new RegisterAccountRequest("needle", "Exact", "test-password"));
+            var needlePrefix = new NodeClient(nodeAddress);
+            await needlePrefix.RegisterAsync(new RegisterAccountRequest("needle-prefix", "Prefix", "test-password"));
+            var displayPrefix = new NodeClient(nodeAddress);
+            await displayPrefix.RegisterAsync(new RegisterAccountRequest("alpha-search", "Needle Display", "test-password"));
+            var usernameContains = new NodeClient(nodeAddress);
+            await usernameContains.RegisterAsync(new RegisterAccountRequest("hasneedle", "Contains", "test-password"));
+            var displayContains = new NodeClient(nodeAddress);
+            await displayContains.RegisterAsync(new RegisterAccountRequest("omega-search", "Has Needle Inside", "test-password"));
+            var sixthMatch = new NodeClient(nodeAddress);
+            await sixthMatch.RegisterAsync(new RegisterAccountRequest("xneedle", "Sixth", "test-password"));
+
+            var rankedSearch = await owner.SearchAccountsAsync("NEEDLE");
+            Assert.Equal(5, rankedSearch.Count);
+            Assert.Equal("needle", rankedSearch[0].Username);
+            Assert.True(rankedSearch.FindIndex(value => value.Username == "needle-prefix") <
+                        rankedSearch.FindIndex(value => value.Username == "alpha-search"));
+            Assert.True(rankedSearch.FindIndex(value => value.Username == "alpha-search") <
+                        rankedSearch.FindIndex(value => value.Username == "hasneedle"));
+            Assert.Empty(await owner.SearchAccountsAsync("owner"));
+
+            var searchRequest = await owner.SendFriendRequestAsync("needle");
+            var outgoingSearch = (await owner.SearchAccountsAsync("needle")).Single(value => value.Username == "needle");
+            Assert.Equal(ProfileRelationshipStatus.OutgoingPending, outgoingSearch.Relationship);
+            Assert.Equal(searchRequest.FriendshipId, outgoingSearch.FriendshipId);
+            await owner.RemoveFriendshipAsync(searchRequest.FriendshipId);
+
+            var incomingRequest = await needle.SendFriendRequestAsync("owner");
+            var incomingSearch = (await owner.SearchAccountsAsync("needle")).Single(value => value.Username == "needle");
+            Assert.Equal(ProfileRelationshipStatus.IncomingPending, incomingSearch.Relationship);
+            Assert.Equal(incomingRequest.FriendshipId, incomingSearch.FriendshipId);
+            await owner.RemoveFriendshipAsync(incomingRequest.FriendshipId);
+
             var selfProfile = await owner.ResolveProfileAsync("owner");
             Assert.Equal(ProfileRelationshipStatus.Self, selfProfile.Relationship);
             Assert.Equal(HttpStatusCode.BadRequest,
@@ -54,6 +90,7 @@ public sealed class RealtimeFlowTests
             Assert.Equal(FriendshipStatus.Accepted, reverseRequest.Status);
             Assert.Equal(FriendshipStatus.Accepted, Assert.Single(await owner.GetFriendsAsync()).Status);
             Assert.Equal(FriendshipStatus.Accepted, Assert.Single(await outsider.GetFriendsAsync()).Status);
+            Assert.Empty(await owner.SearchAccountsAsync("outsider"));
             Assert.Equal(HttpStatusCode.Conflict,
                 (await Assert.ThrowsAsync<NodeApiException>(() => owner.SendFriendRequestAsync("outsider"))).StatusCode);
 

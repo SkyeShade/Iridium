@@ -147,6 +147,14 @@ public sealed record ResolvedProfileDto(
     public bool IsOnline => Presence != PublicPresence.Offline;
 }
 
+public sealed record FriendSearchResultDto(
+    Guid AccountId,
+    string Username,
+    string DisplayName,
+    ProfileRelationshipStatus Relationship,
+    Guid? FriendshipId,
+    PublicPresence Presence);
+
 public sealed record SendFriendRequest(string Username);
 public sealed record ProfileBlockChange(Guid AccountId, bool IsBlocked);
 

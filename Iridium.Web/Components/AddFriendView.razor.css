@@ -5,6 +5,10 @@
 .add-friend-content label { display:block; color:var(--text-muted); font-size:.72rem; font-weight:750; text-transform:uppercase; letter-spacing:.04em; }
 .add-friend-content input { width:100%; margin-top:.45rem; padding:.8rem .9rem; border:1px solid var(--border); border-radius:var(--radius-md); outline:0; color:var(--text-strong); background:var(--input-bg); font:.9rem ui-monospace,monospace; }
 .add-friend-content input:focus { border-color:var(--accent); box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 20%,transparent); }
+.friend-suggestions { display:grid; gap:.4rem; margin-top:.55rem; }
+.resolved-card.suggestion-card { padding:.55rem .65rem; cursor:pointer; }
+.resolved-card.suggestion-card.highlighted { border-color:var(--accent); background:var(--surface-hover); }
+.search-state { min-height:1.25rem; margin:.55rem 0 0; color:var(--text-faint); font-size:.72rem; }
 .resolution { margin-top:1rem; }.resolution-state,.friend-error { padding:.8rem; color:var(--text-muted); font-size:.8rem; }.friend-error { color:var(--danger-text); }
 .resolved-card { display:grid; grid-template-columns:2.5rem minmax(0,1fr) auto; align-items:center; gap:.75rem; min-width:0; padding:.75rem .8rem; border:1px solid var(--border); border-radius:var(--radius-lg); background:var(--bg-sidebar); transition:border-color 120ms ease,background 120ms ease; }
 .resolved-card.clickable { cursor:pointer; }.resolved-card.clickable:hover,.resolved-card.clickable:focus-visible { border-color:var(--accent); background:var(--surface-hover); outline:0; }

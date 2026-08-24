@@ -15,12 +15,15 @@ Keep these values in external production configuration (for example `/opt/iridiu
   "ApiKey": "replace-with-livekit-api-key",
   "ApiSecret": "replace-with-livekit-api-secret",
   "JoinTokenLifetimeSeconds": 300,
+  "Voice": {
+    "Bitrate": 96000
+  },
   "RingTimeoutSeconds": 30,
   "SignalingLossTimeoutSeconds": 45
 }
 ```
 
-Equivalent environment variables are `Media__Provider`, `Media__PublicUrl`, `Media__ApiKey`, `Media__ApiSecret`, and `Media__JoinTokenLifetimeSeconds`. The API key and secret must match LiveKit's `keys` configuration. `ApiSecret` stays server-side. Iridium issues short-lived HS256 participant JWTs whose subject is the stable AccountId and whose video grant fixes the room name plus publish/subscribe permissions.
+Equivalent environment variables are `Media__Provider`, `Media__PublicUrl`, `Media__ApiKey`, `Media__ApiSecret`, `Media__JoinTokenLifetimeSeconds`, and `Media__Voice__Bitrate`. Voice bitrate defaults to 96000 bps and is clamped to 64000–128000 bps. The API key and secret must match LiveKit's `keys` configuration. `ApiSecret` stays server-side. Iridium issues short-lived HS256 participant JWTs whose subject is the stable AccountId and whose video grant fixes the room name plus publish/subscribe permissions.
 
 Set `Provider` to `Disabled` to run a text-only Node. `/api/server-info` then reports voice and screen sharing disabled, and authenticated media requests fail cleanly. Invalid LiveKit configuration is logged clearly without printing secrets, and does not prevent text chat from starting.
 

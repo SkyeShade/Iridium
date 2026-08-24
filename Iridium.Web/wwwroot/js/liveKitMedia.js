@@ -2,6 +2,17 @@ import { createRemoteVoicePlayback, updateRemoteVoicePlayback, destroyRemoteVoic
 
 const sessions = new Map();
 
+// getDisplayMedia treats these as an upper capture target, so smaller sources retain their
+// native dimensions while 1440p/4K displays are no longer downscaled to LiveKit's 1080p30 default.
+const screenCaptureTarget = Object.freeze({ width: 3840, height: 2160, frameRate: 60 });
+const screenBitrateAnchors = Object.freeze([
+    { pixels: 640 * 360, fps30: 1_000_000, fps60: 1_500_000 },
+    { pixels: 1280 * 720, fps30: 3_500_000, fps60: 6_000_000 },
+    { pixels: 1920 * 1080, fps30: 6_000_000, fps60: 10_000_000 },
+    { pixels: 2560 * 1440, fps30: 10_000_000, fps60: 16_000_000 },
+    { pixels: 3840 * 2160, fps30: 20_000_000, fps60: 30_000_000 }
+]);
+
 function sdk() {
     if (!globalThis.LivekitClient?.Room) throw new Error("The LiveKit browser SDK is unavailable.");
     return globalThis.LivekitClient;
@@ -23,6 +34,197 @@ function allPublications(participant) {
     return Array.from(participant?.trackPublications?.values?.() ?? []);
 }
 
+function interpolate(value, lowerValue, upperValue, lowerResult, upperResult) {
+    if (upperValue === lowerValue) return upperResult;
+    const amount = Math.max(0, Math.min(1, (value - lowerValue) / (upperValue - lowerValue)));
+    return lowerResult + (upperResult - lowerResult) * amount;
+}
+
+// Exported to keep the automatic profile independently testable without involving capture/UI state.
+export function screenShareBitrate(width, height, frameRate) {
+    const pixels = Math.max(1, Number(width) || 1920) * Math.max(1, Number(height) || 1080);
+    const fps = Math.max(1, Math.min(60, Number(frameRate) || 30));
+    let lower = screenBitrateAnchors[0], upper = screenBitrateAnchors[screenBitrateAnchors.length - 1];
+    for (let index = 1; index < screenBitrateAnchors.length; index++) {
+        if (pixels <= screenBitrateAnchors[index].pixels) {
+            lower = screenBitrateAnchors[index - 1]; upper = screenBitrateAnchors[index]; break;
+        }
+    }
+    const at30 = interpolate(pixels, lower.pixels, upper.pixels, lower.fps30, upper.fps30);
+    const at60 = interpolate(pixels, lower.pixels, upper.pixels, lower.fps60, upper.fps60);
+    const target = fps <= 30 ? at30 * Math.max(.5, fps / 30) : interpolate(fps, 30, 60, at30, at60);
+    return Math.max(1_000_000, Math.min(30_000_000, Math.round(target / 250_000) * 250_000));
+}
+
+function screenSharePublishOptions(track, mediaStreamId) {
+    const { VideoPreset } = sdk();
+    const settings = track.mediaStreamTrack.getSettings();
+    const width = settings.width || 1920, height = settings.height || 1080;
+    const frameRate = Math.max(1, Math.min(60, settings.frameRate || 30));
+    const maxBitrate = screenShareBitrate(width, height, frameRate);
+    const lowWidth = Math.max(1, Math.floor(width / 2)), lowHeight = Math.max(1, Math.floor(height / 2));
+    return {
+        settings: { width, height, frameRate }, maxBitrate,
+        options: {
+            name: mediaStreamId, stream: mediaStreamId, source: track.source,
+            videoCodec: "vp8", simulcast: true,
+            screenShareEncoding: { maxBitrate, maxFramerate: frameRate, priority: "high" },
+            screenShareSimulcastLayers: [
+                new VideoPreset(lowWidth, lowHeight, Math.max(500_000, Math.round(maxBitrate / 4)), Math.min(30, frameRate), "medium")
+            ],
+            degradationPreference: "maintain-resolution"
+        }
+    };
+}
+
+export function microphoneProfile(configuredBitrate) {
+    const bitrate = Math.max(64_000, Math.min(128_000, Number(configuredBitrate) || 96_000));
+    return {
+        bitrate,
+        capture: {
+            channelCount: 1,
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+        },
+        publish: {
+            audioPreset: { maxBitrate: bitrate, priority: "high" },
+            dtx: true,
+            red: true,
+            forceStereo: false
+        }
+    };
+}
+
+function statsSummary(report, direction) {
+    if (!report?.forEach) return null;
+    const codecs = new Map(), rows = [], remoteInbound = [], pairs = [];
+    report.forEach(stat => {
+        if (stat.type === "codec") codecs.set(stat.id, stat.mimeType);
+        const wanted = direction === "outbound" ? stat.type === "outbound-rtp" : stat.type === "inbound-rtp";
+        if (wanted && !stat.isRemote && (stat.kind === "video" || stat.mediaType === "video")) rows.push(stat);
+        if (direction === "outbound" && stat.type === "remote-inbound-rtp" &&
+            (stat.kind === "video" || stat.mediaType === "video")) remoteInbound.push(stat);
+        if (stat.type === "candidate-pair" && (stat.selected || stat.nominated) && stat.state === "succeeded") pairs.push(stat);
+    });
+    const lossRows = direction === "outbound" && remoteInbound.length ? remoteInbound : rows;
+    const rttSeconds = remoteInbound.map(row => Number(row.roundTripTime)).find(Number.isFinite) ??
+        pairs.map(row => Number(row.currentRoundTripTime)).find(Number.isFinite);
+    return {
+        timestamp: Math.max(0, ...rows.map(row => Number(row.timestamp) || 0)),
+        bytes: rows.reduce((sum, row) => sum + Number((direction === "outbound" ? row.bytesSent : row.bytesReceived) || 0), 0),
+        codec: rows.map(row => codecs.get(row.codecId)).find(Boolean)?.replace(/^video\//i, "")?.toLowerCase() || "unknown",
+        layers: rows.filter(row => row.active !== false).length,
+        framesPerSecond: Math.max(0, ...rows.map(row => Number(row.framesPerSecond) || 0)),
+        frameWidth: Math.max(0, ...rows.map(row => Number(row.frameWidth) || 0)),
+        frameHeight: Math.max(0, ...rows.map(row => Number(row.frameHeight) || 0)),
+        qualityLimitationReasons: [...new Set(rows.map(row => row.qualityLimitationReason).filter(Boolean))],
+        packetsLost: lossRows.reduce((sum, row) => sum + Number(row.packetsLost || 0), 0),
+        rttMs: Number.isFinite(rttSeconds) ? Math.round(rttSeconds * 1000 * 10) / 10 : null
+    };
+}
+
+function senderEncodingSummary(track) {
+    try {
+        return Array.from(track?.sender?.getParameters?.().encodings ?? []).map(encoding => ({
+            rid: encoding.rid || null,
+            active: encoding.active !== false,
+            maxBitrate: encoding.maxBitrate ?? null,
+            maxFramerate: encoding.maxFramerate ?? null,
+            scaleResolutionDownBy: encoding.scaleResolutionDownBy ?? 1
+        }));
+    } catch {
+        return [];
+    }
+}
+
+async function diagnoseVideoBitrate(session, track, direction, details) {
+    if (!session.diagnostics || typeof track.getRTCStatsReport !== "function") return;
+    try {
+        const first = statsSummary(await track.getRTCStatsReport(), direction);
+        await new Promise(resolve => globalThis.setTimeout(resolve, 1000));
+        if (!sessions.has(session.id)) return;
+        const second = statsSummary(await track.getRTCStatsReport(), direction);
+        const elapsed = second && first ? second.timestamp - first.timestamp : 0;
+        const bitrate = elapsed > 0 ? Math.max(0, Math.round((second.bytes - first.bytes) * 8000 / elapsed)) : null;
+        console.debug(`LiveKit screen share ${direction}`, {
+            ...details, codec: second?.codec || "unknown", activeLayers: second?.layers ?? 0,
+            bitrateBps: bitrate, framesPerSecond: second?.framesPerSecond ?? 0,
+            frameWidth: second?.frameWidth ?? 0, frameHeight: second?.frameHeight ?? 0,
+            qualityLimitationReasons: second?.qualityLimitationReasons ?? [],
+            packetsLost: second?.packetsLost ?? 0, rttMs: second?.rttMs ?? null,
+            senderEncodings: direction === "outbound" ? senderEncodingSummary(track) : undefined
+        });
+    } catch (error) {
+        console.debug("LiveKit screen share stats unavailable", { direction, error: error?.name });
+    }
+}
+
+function audioStatsSummary(report, direction) {
+    if (!report?.forEach) return null;
+    const codecs = new Map(), rtp = [], remoteInbound = [], pairs = [];
+    report.forEach(stat => {
+        if (stat.type === "codec") codecs.set(stat.id, stat);
+        const wanted = direction === "outbound" ? stat.type === "outbound-rtp" : stat.type === "inbound-rtp";
+        if (wanted && !stat.isRemote && (stat.kind === "audio" || stat.mediaType === "audio")) rtp.push(stat);
+        if (direction === "outbound" && stat.type === "remote-inbound-rtp" &&
+            (stat.kind === "audio" || stat.mediaType === "audio")) remoteInbound.push(stat);
+        if (stat.type === "candidate-pair" && (stat.selected || stat.nominated) && stat.state === "succeeded") pairs.push(stat);
+    });
+    const lossRows = direction === "outbound" && remoteInbound.length ? remoteInbound : rtp;
+    const bytesField = direction === "outbound" ? "bytesSent" : "bytesReceived";
+    const packetsField = direction === "outbound" ? "packetsSent" : "packetsReceived";
+    const rttSeconds = remoteInbound.map(row => Number(row.roundTripTime)).find(Number.isFinite) ??
+        pairs.map(row => Number(row.currentRoundTripTime)).find(Number.isFinite);
+    const selectedCodec = rtp.map(row => codecs.get(row.codecId)).find(Boolean);
+    const opusCodec = Array.from(codecs.values()).find(codec => /^audio\/opus$/i.test(codec.mimeType || ""));
+    return {
+        timestamp: Math.max(0, ...rtp.map(row => Number(row.timestamp) || 0)),
+        bytes: rtp.reduce((sum, row) => sum + Number(row[bytesField] || 0), 0),
+        packets: rtp.reduce((sum, row) => sum + Number(row[packetsField] || 0), 0),
+        packetsLost: lossRows.reduce((sum, row) => sum + Number(row.packetsLost || 0), 0),
+        jitterMs: Math.round(Math.max(0, ...lossRows.map(row => Number(row.jitter) || 0)) * 1000 * 10) / 10,
+        rttMs: Number.isFinite(rttSeconds) ? Math.round(rttSeconds * 1000 * 10) / 10 : null,
+        codec: selectedCodec?.mimeType?.replace(/^audio\//i, "")?.toLowerCase() || "unknown",
+        opusInBandFec: opusCodec?.sdpFmtpLine
+            ? /(?:^|;)\s*useinbandfec=1(?:;|$)/i.test(opusCodec.sdpFmtpLine) : null
+    };
+}
+
+async function diagnoseAudioTransport(session, track, direction) {
+    if (!session.diagnostics || typeof track?.getRTCStatsReport !== "function") return;
+    try {
+        const first = audioStatsSummary(await track.getRTCStatsReport(), direction);
+        await new Promise(resolve => globalThis.setTimeout(resolve, 1000));
+        if (!sessions.has(session.id)) return;
+        const second = audioStatsSummary(await track.getRTCStatsReport(), direction);
+        const elapsed = second && first ? second.timestamp - first.timestamp : 0;
+        const bytes = second && first ? Math.max(0, second.bytes - first.bytes) : 0;
+        const packets = second && first ? Math.max(0, second.packets - first.packets) : 0;
+        const packetsLost = second && first ? Math.max(0, second.packetsLost - first.packetsLost) : 0;
+        console.debug(`LiveKit microphone ${direction}`, {
+            codec: second?.codec || "unknown", targetBitrateBps: session.voiceBitrate,
+            actualBitrateBps: elapsed > 0 ? Math.round(bytes * 8000 / elapsed) : null,
+            packetsLost, packetLossPercent: packets + packetsLost > 0
+                ? Math.round(packetsLost * 10_000 / (packets + packetsLost)) / 100 : 0,
+            jitterMs: second?.jitterMs ?? null, rttMs: second?.rttMs ?? null,
+            opusInBandFec: second?.opusInBandFec ?? null,
+            senderEncodings: direction === "outbound" ? senderEncodingSummary(track) : undefined
+        });
+    } catch (error) {
+        console.debug("LiveKit microphone stats unavailable", { direction, error: error?.name });
+    }
+}
+
+function setScreenSubscription(session, publication, subscribed) {
+    const { Track, VideoQuality } = sdk();
+    publication.setSubscribed?.(subscribed);
+    if (subscribed && publication.source === Track.Source.ScreenShare && publication.setVideoQuality) {
+        publication.setVideoQuality(VideoQuality.HIGH);
+        if (session.diagnostics) console.debug("LiveKit screen share subscription", { selectedQuality: "HIGH" });
+    }
+}
+
 async function callback(session, method, ...args) {
     try { await session.callback.invokeMethodAsync(method, ...args); }
     catch (error) { if (session.diagnostics) console.debug("LiveKit callback unavailable", method, error?.name); }
@@ -41,6 +243,7 @@ function makeAudioPlayback(session, participant, track) {
         ...preferenceFor(session, identity), deafened: session.deafened,
         diagnostic: (event, details) => session.diagnostics && console.debug("LiveKit audio", event, details)
     }).then(playback => session.playbacks.set(identity, playback));
+    diagnoseAudioTransport(session, track, "inbound");
 }
 
 function configurePublication(session, publication) {
@@ -48,7 +251,7 @@ function configurePublication(session, publication) {
     const { Track } = sdk();
     const microphone = source === Track.Source.Microphone;
     const screen = source === Track.Source.ScreenShare || source === Track.Source.ScreenShareAudio;
-    if (publication.setSubscribed) publication.setSubscribed(microphone || (screen && session.watched.has(publicationName(publication))));
+    if (publication.setSubscribed) setScreenSubscription(session, publication, microphone || (screen && session.watched.has(publicationName(publication))));
 }
 
 function wireRoom(session) {
@@ -57,6 +260,8 @@ function wireRoom(session) {
     room.on(RoomEvent.TrackPublished, publication => configurePublication(session, publication));
     room.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
         if (publication.source === Track.Source.Microphone) makeAudioPlayback(session, participant, track);
+        if (publication.source === Track.Source.ScreenShare)
+            diagnoseVideoBitrate(session, track, "inbound", { selectedQuality: "HIGH" });
         refreshViewers(session, publicationName(publication));
     });
     room.on(RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
@@ -131,9 +336,13 @@ async function connectCore(callbackRef, nodeSession, preferences, kind, peerGene
     if (!nodeSession?.accessToken || !nodeSession?.publicUrl) throw new Error("The Node did not provide LiveKit room access.");
     const { Room, RoomEvent } = sdk();
     const id = crypto.randomUUID();
+    const microphone = microphoneProfile(nodeSession.voiceBitrate);
+    const voiceBitrate = microphone.bitrate;
     const session = {
         id, kind, peerGeneration, callback: callbackRef, diagnostics: nodeSession.diagnosticsEnabled === true,
-        room: new Room({ autoSubscribe: false, adaptiveStream: true, dynacast: true }),
+        voiceBitrate,
+        // Screen viewers are deliberately subscribed by Watch/Stop Watching rather than SDK-managed elements.
+        room: new Room({ autoSubscribe: false, adaptiveStream: false, dynacast: true }),
         preferences: new Map((preferences ?? []).map(p => [accountKey(p.remoteAccountId), p])),
         playbacks: new Map(), viewers: new Map(), watched: new Set(), deafened: false,
         screenTracks: [], screenStreamId: null,
@@ -144,7 +353,21 @@ async function connectCore(callbackRef, nodeSession, preferences, kind, peerGene
     wireRoom(session);
     try {
         await session.room.connect(nodeSession.publicUrl, nodeSession.accessToken, { autoSubscribe: false });
-        await session.room.localParticipant.setMicrophoneEnabled(true);
+        const microphonePublication = await session.room.localParticipant.setMicrophoneEnabled(
+            true, microphone.capture, microphone.publish);
+        if (session.diagnostics && microphonePublication?.track) {
+            const settings = microphonePublication.track.mediaStreamTrack.getSettings();
+            console.debug("LiveKit microphone published", {
+                codec: "opus", targetBitrateBps: voiceBitrate,
+                channelCount: settings.channelCount || 1, sampleRate: settings.sampleRate || null,
+                dtx: true, red: true, inBandFec: "browser-negotiated",
+                echoCancellation: settings.echoCancellation ?? true,
+                noiseSuppression: settings.noiseSuppression ?? true,
+                autoGainControl: settings.autoGainControl ?? true,
+                senderEncodings: senderEncodingSummary(microphonePublication.track)
+            });
+            diagnoseAudioTransport(session, microphonePublication.track, "outbound");
+        }
         startLocalSpeaking(session);
         for (const participant of session.room.remoteParticipants.values())
             allPublications(participant).forEach(p => configurePublication(session, p));
@@ -190,11 +413,36 @@ export async function startScreenShare(id) {
     await stopScreenShare(id, "Replaced");
     const { createLocalScreenTracks } = sdk();
     const streamId = crypto.randomUUID(), mediaStreamId = `iridium-screen-${streamId.replaceAll("-", "")}`;
-    const tracks = await createLocalScreenTracks({ audio: true });
+    const captureOptions = { audio: true, contentHint: "detail" };
+    // LiveKit intentionally leaves Safari screen capture uncapped because applying a resolution
+    // constraint can produce a low-resolution track there; other browsers target native up to 4K60.
+    if (sdk().getBrowser?.()?.name !== "Safari") captureOptions.resolution = screenCaptureTarget;
+    const tracks = await createLocalScreenTracks(captureOptions);
     session.screenTracks = tracks; session.screenStreamId = streamId;
     for (const track of tracks) {
         track.mediaStreamTrack.addEventListener("ended", () => stopScreenShare(id, "BrowserEnded"), { once: true });
-        await session.room.localParticipant.publishTrack(track, { name: mediaStreamId, source: track.source });
+        if (track.kind === "video") {
+            // Preserve source glyph/detail fidelity; bitrate is selected after the browser reports actual capture geometry.
+            track.mediaStreamTrack.contentHint = "detail";
+            const profile = screenSharePublishOptions(track, mediaStreamId);
+            await session.room.localParticipant.publishTrack(track, profile.options);
+            if (session.diagnostics) console.debug("LiveKit screen share captured", {
+                ...profile.settings, contentHint: track.mediaStreamTrack.contentHint,
+                codec: profile.options.videoCodec, targetMaxBitrateBps: profile.maxBitrate,
+                configuredSimulcastLayers: profile.options.screenShareSimulcastLayers.length + 1,
+                degradationPreference: profile.options.degradationPreference,
+                senderEncodings: senderEncodingSummary(track)
+            });
+            diagnoseVideoBitrate(session, track, "outbound", {
+                capturedWidth: profile.settings.width, capturedHeight: profile.settings.height,
+                capturedFrameRate: profile.settings.frameRate, targetMaxBitrateBps: profile.maxBitrate,
+                configuredSimulcastLayers: profile.options.screenShareSimulcastLayers.length + 1
+            });
+        } else {
+            await session.room.localParticipant.publishTrack(track, {
+                name: mediaStreamId, stream: mediaStreamId, source: track.source
+            });
+        }
     }
     return { streamId, kind: 0, hasAudio: tracks.some(t => t.kind === "audio"), mediaStreamId };
 }
@@ -214,7 +462,7 @@ export function setStreamSubscription(id, mediaStreamId, subscribed) {
     if (subscribed) session.watched.add(mediaStreamId); else session.watched.delete(mediaStreamId);
     for (const participant of session.room.remoteParticipants.values())
         for (const publication of allPublications(participant))
-            if (publicationName(publication) === mediaStreamId) publication.setSubscribed(subscribed);
+            if (publicationName(publication) === mediaStreamId) setScreenSubscription(session, publication, subscribed);
     refreshViewers(session, mediaStreamId);
 }
 

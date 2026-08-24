@@ -15,6 +15,7 @@ public static class FriendEndpoints
         var group = endpoints.MapGroup("/api/friends");
         group.MapGet("/", ListAsync);
         endpoints.MapGet("/api/profiles/{username}", ResolveProfileAsync);
+        endpoints.MapGet("/api/accounts/search", SearchAccountsAsync);
         group.MapPost("/requests", RequestAsync);
         group.MapPost("/requests/{friendshipId:guid}/accept", AcceptAsync);
         group.MapDelete("/{friendshipId:guid}", RemoveAsync);
@@ -22,6 +23,77 @@ public static class FriendEndpoints
         endpoints.MapDelete("/api/profiles/{accountId:guid}/block", UnblockAsync);
         return endpoints;
     }
+
+    private static async Task<IResult> SearchAccountsAsync(
+        string? q,
+        int? limit,
+        HttpContext context,
+        IridiumDbContext db,
+        SessionService sessions,
+        PresenceTracker presence)
+    {
+        const int maximumResults = 5;
+        const int maximumQueryLength = 64;
+        var session = await sessions.GetAsync(context, db);
+        if (session is null) return Results.Unauthorized();
+
+        var query = q?.Trim() ?? string.Empty;
+        if (query.Length is < 2 or > maximumQueryLength) return Results.Ok(Array.Empty<FriendSearchResultDto>());
+        var normalized = query.ToLowerInvariant();
+        var escaped = EscapeLike(normalized);
+        var prefix = $"{escaped}%";
+        var contains = $"%{escaped}%";
+        var take = Math.Clamp(limit ?? maximumResults, 1, maximumResults);
+        var accountId = session.AccountId;
+
+        // Keep filtering/ranking in SQLite and project only public directory fields. Accepted friends are
+        // already available in the Friends view; pending relationships remain discoverable for their action state.
+        var candidates = await db.Accounts.AsNoTracking()
+            .Where(account => account.Id != accountId)
+            .Where(account => EF.Functions.Like(account.Username, contains, "\\") ||
+                              EF.Functions.Like(account.DisplayName.ToLower(), contains, "\\"))
+            .Where(account => !db.Friendships.Any(friendship =>
+                friendship.Status == FriendshipState.Accepted &&
+                ((friendship.RequesterAccountId == accountId && friendship.AddresseeAccountId == account.Id) ||
+                 (friendship.RequesterAccountId == account.Id && friendship.AddresseeAccountId == accountId))))
+            .OrderBy(account => account.Username == normalized ? 0 :
+                EF.Functions.Like(account.Username, prefix, "\\") ? 1 :
+                EF.Functions.Like(account.DisplayName.ToLower(), prefix, "\\") ? 2 :
+                EF.Functions.Like(account.Username, contains, "\\") ? 3 : 4)
+            .ThenBy(account => account.Username.Length)
+            .ThenBy(account => account.Username)
+            .Select(account => new { account.Id, account.Username, account.DisplayName })
+            .Take(take)
+            .ToListAsync(context.RequestAborted);
+
+        var candidateIds = candidates.Select(value => value.Id).ToArray();
+        var friendships = await db.Friendships.AsNoTracking()
+            .Where(friendship => friendship.Status == FriendshipState.Pending &&
+                ((friendship.RequesterAccountId == accountId && candidateIds.Contains(friendship.AddresseeAccountId)) ||
+                 (friendship.AddresseeAccountId == accountId && candidateIds.Contains(friendship.RequesterAccountId))))
+            .ToDictionaryAsync(
+                friendship => friendship.RequesterAccountId == accountId
+                    ? friendship.AddresseeAccountId
+                    : friendship.RequesterAccountId,
+                context.RequestAborted);
+
+        return Results.Ok(candidates.Select(account =>
+        {
+            friendships.TryGetValue(account.Id, out var friendship);
+            var relationship = friendship is null
+                ? ProfileRelationshipStatus.None
+                : friendship.RequesterAccountId == accountId
+                    ? ProfileRelationshipStatus.OutgoingPending
+                    : ProfileRelationshipStatus.IncomingPending;
+            return new FriendSearchResultDto(account.Id, account.Username, account.DisplayName, relationship,
+                friendship?.Id, presence.GetPublic(account.Id));
+        }).ToArray());
+    }
+
+    private static string EscapeLike(string value) => value
+        .Replace("\\", "\\\\", StringComparison.Ordinal)
+        .Replace("%", "\\%", StringComparison.Ordinal)
+        .Replace("_", "\\_", StringComparison.Ordinal);
 
     private static async Task<IResult> ResolveProfileAsync(
         string username,

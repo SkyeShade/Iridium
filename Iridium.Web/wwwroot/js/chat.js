@@ -346,6 +346,64 @@ export function updateComposerEmojiRanges(textarea, ranges) {
 }
 
 const composerObjectCharacter = "\uFFFC";
+const composerPlaceholderCharacters = /[\u200B\uFEFF]/gu;
+const clipboardImageExtensions = new Map([
+    ["image/png", ".png"], ["image/jpeg", ".jpg"], ["image/webp", ".webp"],
+    ["image/gif", ".gif"], ["image/avif", ".avif"], ["image/svg+xml", ".svg"]
+]);
+
+export function clipboardFileExtension(contentType) {
+    const normalized = String(contentType || "").trim().toLowerCase();
+    if (clipboardImageExtensions.has(normalized)) return clipboardImageExtensions.get(normalized);
+    const subtype = normalized.startsWith("image/") ? normalized.slice(6).split("+")[0] : "";
+    return /^[a-z0-9]+$/.test(subtype) ? `.${subtype}` : ".bin";
+}
+
+export function clipboardFileName(file, now = new Date()) {
+    if (String(file?.name || "").trim()) return file.name;
+    const pad = value => String(value).padStart(2, "0");
+    const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-` +
+        `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+    return `${String(file?.type || "").toLowerCase().startsWith("image/") ? "pasted-image" : "pasted-file"}-${stamp}${clipboardFileExtension(file?.type)}`;
+}
+
+export function composerClipboardFiles(clipboardData, now = new Date()) {
+    if (!clipboardData) return [];
+    const fileItems = Array.from(clipboardData.items || []).filter(item => item.kind === "file");
+    let sawDirectory = false;
+    const itemFiles = fileItems.map(item => {
+        if (item.webkitGetAsEntry?.()?.isDirectory) { sawDirectory = true; return null; }
+        return item.getAsFile?.();
+    }).filter(Boolean);
+    const exposed = itemFiles.length ? itemFiles : sawDirectory ? [] : Array.from(clipboardData.files || []);
+    const seen = new Set();
+    return exposed.filter(file => {
+        if (seen.has(file)) return false;
+        seen.add(file); return true;
+    }).map(file => {
+        const name = clipboardFileName(file, now);
+        if (name === file.name) return file;
+        return new File([file], name, { type: file.type || "application/octet-stream", lastModified: file.lastModified || now.getTime() });
+    });
+}
+
+function stageComposerFiles(composerRoot, files) {
+    const input = composerRoot?.querySelector('input[type="file"]');
+    if (!input || !files?.length || typeof DataTransfer !== "function") return null;
+    try {
+        const transfer = new DataTransfer();
+        for (const file of files) transfer.items.add(file);
+        input.files = transfer.files;
+        return { input, dispatch: () => input.dispatchEvent(new Event("change", { bubbles: true })) };
+    } catch { return null; }
+}
+
+function queueComposerFiles(composerRoot, files) {
+    const staged = stageComposerFiles(composerRoot, files);
+    if (!staged) return false;
+    staged.dispatch();
+    return true;
+}
 
 function isComposerEmoji(node) { return node?.nodeType === Node.ELEMENT_NODE && node.classList?.contains("composer-inline-emoji"); }
 function composerNodeLength(node) {
@@ -371,8 +429,26 @@ function composerSnapshot(editor) {
     const result = { content: "", caret: 0, tokens: [] };
     if (!editor) return result;
     for (const child of editor.childNodes) appendComposerSnapshot(child, result);
+    // Chromium represents an emptied contenteditable with a lone <br> (and some engines may
+    // retain a zero-width caret sentinel). Those DOM placeholders are not authored Markdown.
+    // Iridium-authored newlines are text nodes, so a placeholder-only DOM can safely collapse
+    // to the canonical empty source without changing multiline source/caret mapping.
+    const placeholderOnly = result.tokens.length === 0 && result.content.length > 0 &&
+        Array.from(editor.childNodes).every(composerPlaceholderNode);
+    if (placeholderOnly) {
+        result.content = "";
+        result.caret = 0;
+        return result;
+    }
     result.caret = composerSelectionOffset(editor);
     return result;
+}
+function composerPlaceholderNode(node) {
+    if (node.nodeType === Node.TEXT_NODE)
+        return node.data.replace(composerPlaceholderCharacters, "").length === 0;
+    if (isComposerEmoji(node)) return false;
+    if (node.nodeName === "BR") return true;
+    return Array.from(node.childNodes).every(composerPlaceholderNode);
 }
 function composerOffsetWithin(root, target, targetOffset) {
     let total = 0, found = false;
@@ -494,6 +570,32 @@ export function unwireSearchAutocomplete(input) {
     searchAutocompleteHandlers.delete(input);
 }
 
+const friendAutocompleteHandlers = new WeakMap();
+export function wireFriendAutocomplete(input, root, dotNetReference) {
+    if (!input || friendAutocompleteHandlers.has(input)) return;
+    const keydown = async event => {
+        const suggestions = root?.querySelector(".friend-suggestions");
+        if (!["ArrowDown", "ArrowUp", "Enter", "Escape"].includes(event.key) ||
+            (!suggestions && event.key !== "Escape")) return;
+        event.preventDefault();
+        await dotNetReference.invokeMethodAsync("HandleFriendSearchKeyAsync", event.key);
+    };
+    const outside = async event => {
+        if (!root?.contains(event.target)) await dotNetReference.invokeMethodAsync("CloseFriendSearchAsync");
+    };
+    input.addEventListener("keydown", keydown);
+    document.addEventListener("pointerdown", outside);
+    friendAutocompleteHandlers.set(input, { keydown, outside });
+}
+
+export function unwireFriendAutocomplete(input) {
+    const handlers = input ? friendAutocompleteHandlers.get(input) : null;
+    if (!handlers) return;
+    input.removeEventListener("keydown", handlers.keydown);
+    document.removeEventListener("pointerdown", handlers.outside);
+    friendAutocompleteHandlers.delete(input);
+}
+
 export function profileCardPosition(clientX, clientY, context) {
     const target = document.elementFromPoint(clientX, clientY);
     const rootFontSize = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
@@ -583,6 +685,16 @@ export function wireComposer(textarea, dotNetReference, composerRoot) {
         event.preventDefault(); event.clipboardData.setData("text/plain", plain);
     };
     const paste = async event => {
+        const files = composerClipboardFiles(event.clipboardData);
+        const stagedFiles = stageComposerFiles(composerRoot, files);
+        if (stagedFiles) {
+            event.preventDefault();
+            const caret = composerSelectionOffset(textarea);
+            await dotNetReference.invokeMethodAsync("PrepareAttachmentPasteAsync", caret);
+            stagedFiles.dispatch();
+            textarea.focus({ preventScroll: true });
+            return;
+        }
         event.preventDefault();
         const text = event.clipboardData?.getData("text/plain") || "";
         const selection = window.getSelection();
@@ -632,12 +744,7 @@ export function wireComposer(textarea, dotNetReference, composerRoot) {
         event.preventDefault();
         dragDepth = 0;
         setDragHighlight(false);
-        const input = composerRoot?.querySelector('input[type="file"]');
-        if (!input || !event.dataTransfer?.files?.length) return;
-        const transfer = new DataTransfer();
-        for (const file of event.dataTransfer.files) transfer.items.add(file);
-        input.files = transfer.files;
-        input.dispatchEvent(new Event("change", { bubbles: true }));
+        queueComposerFiles(composerRoot, Array.from(event.dataTransfer?.files || []));
     };
 
     Object.assign(state, { keydown, input, copy, paste, scroll, observer, highlightObserver, composerRoot, dropRegion, dragenter, dragover, dragleave, drop });

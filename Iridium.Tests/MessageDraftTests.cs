@@ -94,6 +94,21 @@ public sealed class MessageDraftTests
     }
 
     [Fact]
+    public void EmptyContentEditablePlaceholderCanonicalizesToEmptyComposerSource()
+    {
+        var chat = Source("Iridium.Web", "wwwroot", "js", "chat.js");
+        var composer = Source("Iridium.Web", "Components", "MessageComposer.razor");
+
+        Assert.Contains("node.nodeName === \"BR\"", chat);
+        Assert.Contains("const placeholderOnly = result.tokens.length === 0", chat);
+        Assert.Contains("result.content = \"\"", chat);
+        Assert.Contains("result.caret = 0", chat);
+        Assert.Contains("composerPlaceholderCharacters", chat);
+        Assert.Contains("private int RemainingCharacters => _maxMessageCharacters - CommunityEmojiDraftCodec.CountCharacters(_content", composer);
+        Assert.Contains("if (string.IsNullOrWhiteSpace(source)) await Drafts.RemoveAsync", composer);
+    }
+
+    [Fact]
     public void ComposerDebouncesRestoresBeforeFocusAndClearsOnlyInsideSuccessfulSend()
     {
         var composer = Source("Iridium.Web", "Components", "MessageComposer.razor");

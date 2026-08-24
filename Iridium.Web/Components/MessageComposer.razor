@@ -307,6 +307,13 @@
     }
 
     [JSInvokable]
+    public Task PrepareAttachmentPasteAsync(int caret)
+    {
+        _pickerCaret = Math.Clamp(caret, 0, _content.Length);
+        return Task.CompletedTask;
+    }
+
+    [JSInvokable]
     public async Task ComposerDocumentChangedAsync(ComposerDocumentSnapshot snapshot)
     {
         ApplySnapshot(snapshot);

@@ -221,6 +221,12 @@ public sealed class NodeClient(Uri nodeAddress)
     public Task<ResolvedProfileDto> ResolveProfileAsync(string username, CancellationToken cancellationToken = default) =>
         SendAsync<ResolvedProfileDto>(HttpMethod.Get, $"api/profiles/{Uri.EscapeDataString(username)}", null, cancellationToken);
 
+    public Task<List<FriendSearchResultDto>> SearchAccountsAsync(string query, int limit = 5,
+        CancellationToken cancellationToken = default) =>
+        SendAsync<List<FriendSearchResultDto>>(HttpMethod.Get,
+            $"api/accounts/search?q={Uri.EscapeDataString(query)}&limit={Math.Clamp(limit, 1, 5)}", null,
+            cancellationToken);
+
     public Task BlockAccountAsync(Guid accountId, CancellationToken cancellationToken = default) =>
         SendNoContentAsync(HttpMethod.Put, $"api/profiles/{accountId}/block", null, cancellationToken);
 

@@ -497,6 +497,13 @@ public sealed class NodeSession(
         return await _client!.ResolveProfileAsync(username, cancellationToken);
     }
 
+    public async Task<IReadOnlyList<FriendSearchResultDto>> SearchAccountsAsync(string query,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureAuthenticated();
+        return await _client!.SearchAccountsAsync(query, cancellationToken: cancellationToken);
+    }
+
     public async Task RemoveFriendshipAsync(Guid friendshipId, CancellationToken cancellationToken = default)
     {
         EnsureAuthenticated();

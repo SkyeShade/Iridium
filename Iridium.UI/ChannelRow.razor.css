@@ -4,6 +4,7 @@
 .channel-row:hover { color: var(--text); background: var(--surface-hover); }
 .channel-row.selected { color: var(--text-strong); background: var(--surface-active); }
 .channel-row.unread:not(.selected) { color: var(--text-strong); }
+.channel-unread-marker { position:absolute;left:-.4rem;top:50%;width:.2rem;height:.72rem;transform:translateY(-50%);border-radius:999px;background:var(--text-strong);pointer-events:none; }
 .channel-row.voice-connected{color:#75d9a7;background:color-mix(in srgb,#43c58a 9%,transparent)}
 .channel-row.drop-target::before { content: ""; position: absolute; z-index: 2; inset: -2px .25rem auto; height: 2px; border-radius: 2px; background: var(--accent-soft); box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 65%, transparent); }
 .channel-symbol { width: 1.05rem; height: 1.05rem; display: grid; place-items: center; align-self: center; flex: 0 0 auto; color: var(--text-faint); }

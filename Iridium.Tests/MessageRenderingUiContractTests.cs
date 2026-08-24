@@ -22,6 +22,25 @@ public sealed class MessageRenderingUiContractTests
     }
 
     [Fact]
+    public void SameNodeFriendAutocompleteReusesCompactRowsAndHasStaleAndKeyboardProtection()
+    {
+        var view = Source("Iridium.Web", "Components", "AddFriendView.razor");
+        var css = Source("Iridium.Web", "Components", "AddFriendView.razor.css");
+        var javascript = Source("Iridium.Web", "wwwroot", "js", "chat.js");
+
+        Assert.Contains("Task.Delay(225", view);
+        Assert.Contains("generation == _queryGeneration", view);
+        Assert.Contains("!query.Contains('@')", view);
+        Assert.Contains("HandleFriendSearchKeyAsync", view);
+        Assert.Contains("ArrowDown", view);
+        Assert.Contains("wireFriendAutocomplete", javascript);
+        Assert.Contains("document.addEventListener(\"pointerdown\", outside)", javascript);
+        Assert.Contains("resolved-card suggestion-card", view);
+        Assert.Contains("<ProfileAvatar AccountId=\"suggestion.AccountId\"", view);
+        Assert.Contains(".suggestion-card", css);
+    }
+
+    [Fact]
     public void ReplyPreviewUsesSharedAvatarRoleColorAndMarkdownRendererWithClamp()
     {
         var row = Source("Iridium.Web", "Components", "MessageRow.razor");
@@ -50,6 +69,29 @@ public sealed class MessageRenderingUiContractTests
         Assert.DoesNotContain("text-decoration-style:dotted", previewCss);
         Assert.DoesNotContain("font-weight:700", previewCss);
         Assert.DoesNotContain("display:none", previewCss);
+    }
+
+    [Fact]
+    public void ClipboardFilesReuseThePickerAttachmentPipelineWithoutChangingMessageSource()
+    {
+        var composer = Source("Iridium.Web", "Components", "MessageComposer.razor");
+        var javascript = Source("Iridium.Web", "wwwroot", "js", "chat.js");
+        var pasteStart = javascript.IndexOf("const paste = async event =>", StringComparison.Ordinal);
+        var pasteEnd = javascript.IndexOf("const scroll = () =>", pasteStart, StringComparison.Ordinal);
+        Assert.True(pasteStart >= 0 && pasteEnd > pasteStart);
+        var paste = javascript[pasteStart..pasteEnd];
+
+        Assert.Contains("composerClipboardFiles(event.clipboardData)", paste);
+        Assert.Contains("stageComposerFiles(composerRoot, files)", paste);
+        Assert.Contains("PrepareAttachmentPasteAsync", paste);
+        Assert.Contains("stagedFiles.dispatch()", paste);
+        Assert.True(paste.IndexOf("return;", StringComparison.Ordinal) <
+                    paste.IndexOf("getData(\"text/plain\")", StringComparison.Ordinal));
+        Assert.DoesNotContain("ComposerDocumentChangedAsync", paste[..paste.IndexOf("return;", StringComparison.Ordinal)]);
+
+        Assert.Contains("OnChange=\"FilesSelectedAsync\"", composer);
+        Assert.Contains("Attachments.AddAsync(key, args.GetMultipleFiles(100), metadata)", composer);
+        Assert.Contains("_focusCaretAfterRender = _pickerCaret ?? _content.Length", composer);
     }
 
     [Fact]
@@ -97,6 +139,61 @@ public sealed class MessageRenderingUiContractTests
         Assert.Contains(".message-text.emoji-only-message{font-size:3em", mentioned);
         Assert.Contains("width:1em!important", mentioned);
     }
+
+    [Fact]
+    public void TextChannelUnreadMarkerUsesAuthoritativeCountWithoutReplacingMentions()
+    {
+        var row = Source("Iridium.UI", "ChannelRow.razor");
+        var css = Source("Iridium.UI", "ChannelRow.razor.css");
+        var home = Source("Iridium.Web", "Pages", "Home.razor");
+        var session = Source("Iridium.Client.Core", "CommunitySession.cs");
+
+        Assert.Contains("Channel.Kind == CommunityChannelKind.Text && Channel.UnreadCount > 0 && !Selected", row);
+        Assert.Contains("channel-unread-marker", row);
+        Assert.Contains("Channel.MentionCount > 0", row);
+        Assert.Contains("channel-mention-badge", row);
+        Assert.Contains("position:absolute", css);
+        Assert.Contains("pointer-events:none", css);
+        Assert.Contains("CommunityState.MarkChannelRead(channel.Id)", home);
+        Assert.Contains("await CommunityState.LoadAsync(activity.CommunityId)", home);
+        Assert.Contains("UnreadCount = 0, MentionCount = 0", session);
+    }
+
+    [Theory]
+    [InlineData("", 412.5, "412.5px")]
+    [InlineData("da-DK", 412.5, "412.5px")]
+    [InlineData("da-DK", 9999, "9999px")]
+    public void ProfileCardPixelCoordinatesRemainInvariant(string cultureName, double coordinate, string expected)
+    {
+        var culture = string.IsNullOrEmpty(cultureName)
+            ? System.Globalization.CultureInfo.InvariantCulture
+            : System.Globalization.CultureInfo.GetCultureInfo(cultureName);
+        var currentCulture = System.Globalization.CultureInfo.CurrentCulture;
+        try
+        {
+            System.Globalization.CultureInfo.CurrentCulture = culture;
+            Assert.Equal(expected, InvariantPixel(coordinate));
+        }
+        finally { System.Globalization.CultureInfo.CurrentCulture = currentCulture; }
+    }
+
+    [Fact]
+    public void ProfileCardUsesFiniteInvariantFormattingForBothAxes()
+    {
+        var card = Source("Iridium.Web", "Components", "AnchoredProfileCard.razor");
+
+        Assert.Contains("--profile-x:@CssPixel(X);--profile-y:@CssPixel(Y)", card);
+        Assert.Contains("double.IsFinite(value)", card);
+        Assert.Contains("value.ToString(CultureInfo.InvariantCulture) + \"px\"", card);
+        Assert.Contains(": \"0px\"", card);
+        Assert.Equal("0px", InvariantPixel(double.NaN));
+        Assert.Equal("0px", InvariantPixel(double.PositiveInfinity));
+        Assert.Equal("0px", InvariantPixel(double.NegativeInfinity));
+    }
+
+    private static string InvariantPixel(double value) => double.IsFinite(value)
+        ? value.ToString(System.Globalization.CultureInfo.InvariantCulture) + "px"
+        : "0px";
 
     private static string Source(params string[] parts) => File.ReadAllText(Path.Combine([Root, .. parts]));
 }

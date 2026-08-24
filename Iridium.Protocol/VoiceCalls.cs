@@ -183,7 +183,8 @@ public sealed record NodeMediaSessionDto(
     string ParticipantIdentity,
     NodeMediaRoomKind RoomKind,
     DateTimeOffset ExpiresAt,
-    bool DiagnosticsEnabled = false);
+    bool DiagnosticsEnabled = false,
+    int VoiceBitrate = 96_000);
 
 public sealed record CallMediaConfigurationDto(
     MediaMode Mode,

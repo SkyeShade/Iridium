@@ -1,10 +1,11 @@
 @using Iridium.Protocol
 @using Iridium.Web.Models
+@using System.Globalization
 @inject NodeSession Session
 @inject ChannelMessagingSession Messaging
 
 <div class="profile-card-layer" @onclick="OnClose">
-    <section class="profile-card" style="--profile-x:@($"{X}px");--profile-y:@($"{Y}px")" @onclick:stopPropagation="true">
+    <section class="profile-card" style="--profile-x:@CssPixel(X);--profile-y:@CssPixel(Y)" @onclick:stopPropagation="true">
         <button type="button" class="profile-more" title="Profile actions" @onclick="ToggleActionMenu" @onclick:stopPropagation="true"><Icon Name="more" /></button>
         @if (_actionMenuOpen)
         {
@@ -100,6 +101,8 @@
     private bool _blocked;
     private bool _sendingMessage;
     private string _quickMessage = string.Empty;
+    private static string CssPixel(double value) =>
+        double.IsFinite(value) ? value.ToString(CultureInfo.InvariantCulture) + "px" : "0px";
     private string? NameStyle
     {
         get

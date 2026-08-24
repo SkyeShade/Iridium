@@ -221,7 +221,9 @@ else
     }
     @if (_showAddFriend)
     {
-        <AddFriendView Resolve="ProfileResolver.ResolveAsync" OnRequest="SendFriendRequestAsync"
+        <AddFriendView Resolve="ProfileResolver.ResolveAsync" Search="Session.SearchAccountsAsync"
+                       NodeAuthority="@(Session.SelectedNode!.PublicAuthority)" Friends="Session.Friends"
+                       OnRequest="SendFriendRequestAsync"
                        OnAccept="AcceptFriendRequestAsync" OnMessage="OpenDirectMessageAsync"
                        OnClose="CloseAddFriend" />
     }
