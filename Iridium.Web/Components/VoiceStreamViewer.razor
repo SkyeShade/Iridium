@@ -103,7 +103,8 @@
             _error = null;
             if (Floating && _floatingHandle is null)
             {
-                _floatingModule ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/floatingStreamViewer.js");
+                _floatingModule ??= await JS.InvokeAsync<IJSObjectReference>("import",
+                    $"./js/floatingStreamViewer.js?build={Uri.EscapeDataString(MediaBuildInfo.Id)}");
                 _floatingHandle = await _floatingModule.InvokeAsync<IJSObjectReference>("initialize", _containerId);
             }
         }

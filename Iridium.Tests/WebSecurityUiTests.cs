@@ -37,4 +37,34 @@ public sealed class WebSecurityUiTests
         var request = source.IndexOf("Session.ChangePasswordAsync", StringComparison.Ordinal);
         Assert.True(mismatch >= 0 && request > mismatch);
     }
+
+    [Fact]
+    public void PasswordResetRequiresExplicitValidatedRecoveryRoute()
+    {
+        var home = File.ReadAllText(Path.Combine(Root, "Iridium.Web", "Pages", "Home.razor"));
+        var authentication = File.ReadAllText(Path.Combine(Root, "Iridium.Web", "Components", "AuthenticationScreen.razor"));
+
+        Assert.Contains("@page \"/recover-password\"", home);
+        Assert.Contains("IsRecoveryRoute()", home);
+        Assert.Contains("ValidatePasswordRecoveryAsync(token)", home);
+        Assert.Contains("_recoveryState = PasswordRecoveryUiState.Valid", home);
+        Assert.Contains("RecoveryState == PasswordRecoveryUiState.Valid", authentication);
+        Assert.Contains("!string.IsNullOrWhiteSpace(RecoveryToken)", authentication);
+        Assert.DoesNotContain("RecoveryToken is not null", authentication);
+        Assert.DoesNotContain("_recoveryUsername", home);
+        Assert.DoesNotContain("_recoveryUsername", authentication);
+        Assert.DoesNotContain("RecoveryToken=\"_recoveryToken\"", home);
+        Assert.Contains("RecoveryToken=\"@_recoveryToken\"", home);
+    }
+
+    [Fact]
+    public void RecoveryCompletionAndCancellationClearTransientUrlState()
+    {
+        var home = File.ReadAllText(Path.Combine(Root, "Iridium.Web", "Pages", "Home.razor"));
+        Assert.Contains("ClearPasswordRecoveryState();", home);
+        Assert.Contains("OnRecoveryCancelled=\"CancelPasswordRecovery\"", home);
+        Assert.Contains("Navigation.NavigateTo(Navigation.BaseUri, forceLoad: true, replace: true)", home);
+        Assert.DoesNotContain("localStorage", home, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("sessionStorage", home, StringComparison.OrdinalIgnoreCase);
+    }
 }

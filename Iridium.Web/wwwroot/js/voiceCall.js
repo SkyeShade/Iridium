@@ -1,4 +1,4 @@
-import { createRemoteVoicePlayback, updateRemoteVoicePlayback, destroyRemoteVoicePlayback } from './voicePlayback.js';
+let createRemoteVoicePlayback, updateRemoteVoicePlayback, destroyRemoteVoicePlayback;
 const sessions = new Map();
 
 // TODO: Remove temporary voice-call diagnostics once WebRTC calls are stable.
@@ -499,15 +499,13 @@ async function startVoiceActivityDetection(session) {
     diagnostic(session, "voice activity detector started");
 }
 
-export async function initialize(callback, iceServers, iceTransportPolicy = "all", diagnostics = false, callId = null, localAccountId = null,
+export async function initialize(mediaBuildId, callback, iceServers, iceTransportPolicy = "all", diagnostics = false, callId = null, localAccountId = null,
     role = "unknown", peerGeneration = 0, negotiationId = null, negotiationGeneration = 0,
-    iceInteropProtocolVersion = null, remoteAccountId = null, participantPreference = null, polite = false) {
-    if (iceInteropProtocolVersion !== 2) {
-        console.error("[Iridium Voice] ICE interop protocol mismatch", {
-            expected: 2, received: iceInteropProtocolVersion, peerGeneration
-        });
-        throw new Error("VersionMismatchError: Voice-call JavaScript and WebAssembly assets are from different builds. Reload after restarting the development client.");
-    }
+    remoteAccountId = null, participantPreference = null, polite = false) {
+    const build = await import(`./mediaBuild.js?build=${encodeURIComponent(mediaBuildId)}`);
+    await build.requireMatchingMediaBuild(mediaBuildId);
+    ({ createRemoteVoicePlayback, updateRemoteVoicePlayback, destroyRemoteVoicePlayback } =
+        await build.loadVoicePlayback(mediaBuildId));
     if (!navigator.mediaDevices?.getUserMedia) throw new Error("NotSupportedError: This browser does not support microphone capture.");
     const initializing = { callback, diagnostics, callId, localAccountId, role, peerGeneration,
         negotiationGeneration, peer: null };

@@ -66,6 +66,7 @@ Desktop.ini
 .testrun
 
 Iridium.Server/data/
+/Iridium.Web/wwwroot/media-build.json
 release/
 buildcheck/
 testruns/

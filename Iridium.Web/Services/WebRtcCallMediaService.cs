@@ -12,8 +12,6 @@ public sealed class WebRtcCallMediaService(
     VoiceParticipantPreferencesService preferences,
     IWebRtcConfigurationProvider webRtcConfiguration) : ICallMediaService
 {
-    private const string ModuleDirectoryAndName = "./js/voiceCall";
-    private const int IceInteropProtocolVersion = 2;
     private IJSObjectReference? _module;
     private DotNetObjectReference<WebRtcCallMediaService>? _callback;
     private string? _sessionId;
@@ -34,22 +32,32 @@ public sealed class WebRtcCallMediaService(
         CancellationToken cancellationToken = default)
     {
         await CleanupAsync("peer replacement during initialization", cancellationToken);
-        // Compose at runtime so the WebAssembly static-asset fingerprint rewriter does not
-        // turn this dynamic import into a precompressed development asset URL. Chromium can
-        // fetch that URL but rejects it as an ES module in the dev server.
-        var modulePath = string.Concat(ModuleDirectoryAndName, ".js?module=screen-v1");
+        var modulePath = $"./js/voiceCall.js?build={Uri.EscapeDataString(MediaBuildInfo.Id)}";
         _module ??= await js.InvokeAsync<IJSObjectReference>("import", cancellationToken, modulePath);
         _callback = DotNetObjectReference.Create(this);
         _context = context;
         var iceConfiguration = await webRtcConfiguration.GetAsync(cancellationToken);
         var preference = context.RemoteAccountId is { } remote
             ? await preferences.GetAsync(remote, cancellationToken) : null;
-        _sessionId = await _module.InvokeAsync<string>("initialize", cancellationToken,
-            _callback, iceConfiguration.IceServers, iceConfiguration.IceTransportPolicy,
-            environment.IsDevelopment(), context.CallId, context.LocalAccountId,
-            context.Role, context.PeerGeneration, context.NegotiationId, context.NegotiationGeneration,
-            IceInteropProtocolVersion, context.RemoteAccountId, preference,
-            context.RemoteAccountId is { } remoteAccountId && context.LocalAccountId.CompareTo(remoteAccountId) > 0);
+        try
+        {
+            _sessionId = await _module.InvokeAsync<string>("initialize", cancellationToken,
+                MediaBuildInfo.Id, _callback, iceConfiguration.IceServers, iceConfiguration.IceTransportPolicy,
+                environment.IsDevelopment(), context.CallId, context.LocalAccountId,
+                context.Role, context.PeerGeneration, context.NegotiationId, context.NegotiationGeneration,
+                context.RemoteAccountId, preference,
+                context.RemoteAccountId is { } remoteAccountId && context.LocalAccountId.CompareTo(remoteAccountId) > 0);
+        }
+        catch (JSException exception) when (IsBuildMismatch(exception))
+        {
+            var updates = await js.InvokeAsync<IJSObjectReference>("import", cancellationToken,
+                $"./js/clientUpdate.js?build={Uri.EscapeDataString(MediaBuildInfo.Id)}");
+            if (!await updates.InvokeAsync<bool>("recoverMediaMismatch", cancellationToken, MediaBuildInfo.Id))
+                throw new InvalidOperationException(
+                    "Iridium was updated, but this tab is still using older client files. Close and reopen this tab.",
+                    exception);
+            throw;
+        }
         if (!_preferenceSubscribed) { preferences.Changed += PreferenceChanged; _preferenceSubscribed = true; }
     }
 
@@ -232,6 +240,9 @@ public sealed class WebRtcCallMediaService(
         if (_context?.RemoteAccountId != preference.RemoteAccountId || _sessionId is null) return;
         _ = InvokeVoidAsync("setParticipantPreference", CancellationToken.None, preference);
     }
+
+    private static bool IsBuildMismatch(JSException exception) =>
+        exception.Message.Contains("VersionMismatch", StringComparison.OrdinalIgnoreCase);
 
     public async ValueTask DisposeAsync()
     {

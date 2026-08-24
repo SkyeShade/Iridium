@@ -8,7 +8,23 @@
     <RootNamespace>Iridium.Web</RootNamespace>
     <OverrideHtmlAssetPlaceholders>true</OverrideHtmlAssetPlaceholders>
     <ServiceWorkerAssetsManifest>service-worker-assets.js</ServiceWorkerAssetsManifest>
+    <IridiumMediaBuildId Condition="'$(IridiumMediaBuildId)' == ''">$([System.DateTime]::UtcNow.ToString('yyyyMMddHHmmssfffffff'))</IridiumMediaBuildId>
   </PropertyGroup>
+
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>IridiumMediaBuildId</_Parameter1>
+      <_Parameter2>$(IridiumMediaBuildId)</_Parameter2>
+    </AssemblyAttribute>
+    <Content Remove="wwwroot\media-build.json" />
+    <Content Include="wwwroot\media-build.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <Target Name="GenerateIridiumMediaBuildManifest" BeforeTargets="PrepareForBuild">
+    <WriteLinesToFile File="wwwroot\media-build.json"
+                      Lines="{ &quot;buildId&quot;: &quot;$(IridiumMediaBuildId)&quot; }"
+                      Overwrite="true" Encoding="UTF-8" />
+  </Target>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly" Version="10.0.8" />

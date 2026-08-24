@@ -64,6 +64,12 @@ public sealed class NodeClient(Uri nodeAddress)
         CancellationToken cancellationToken = default) =>
         SendNoContentAsync(HttpMethod.Post, "api/account/recovery/complete", request, cancellationToken);
 
+    public Task<PasswordRecoveryValidationResultDto> ValidatePasswordRecoveryAsync(
+        ValidatePasswordRecoveryRequest request,
+        CancellationToken cancellationToken = default) =>
+        SendAsync<PasswordRecoveryValidationResultDto>(HttpMethod.Post, "api/account/recovery/validate", request,
+            cancellationToken);
+
     public Task<AccountAvatarPresetsDto> GetAvatarPresetsAsync(CancellationToken cancellationToken = default) =>
         SendAsync<AccountAvatarPresetsDto>(HttpMethod.Get, "api/account/avatar-presets", null, cancellationToken);
 

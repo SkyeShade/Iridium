@@ -12,10 +12,11 @@ public sealed record AuthenticationSubmission(
     string ConfirmPassword);
 
 public sealed record PasswordRecoverySubmission(
-    string Username,
     string Token,
     string NewPassword,
     string ConfirmPassword);
+
+public enum PasswordRecoveryUiState { None, Valid, Invalid }
 
 public sealed record ProfileSubmission(string DisplayName, string? Pronouns, string? Description);
 

@@ -327,10 +327,15 @@ public sealed class NodeSession(
         CancellationToken cancellationToken = default) =>
         AuthenticationClient().RequestPasswordRecoveryAsync(new PasswordRecoveryRequest(username), cancellationToken);
 
-    public Task CompletePasswordRecoveryAsync(string username, string token, string newPassword, string confirmation,
+    public Task<PasswordRecoveryValidationResultDto> ValidatePasswordRecoveryAsync(string token,
+        CancellationToken cancellationToken = default) =>
+        AuthenticationClient().ValidatePasswordRecoveryAsync(new ValidatePasswordRecoveryRequest(token),
+            cancellationToken);
+
+    public Task CompletePasswordRecoveryAsync(string token, string newPassword, string confirmation,
         CancellationToken cancellationToken = default) =>
         AuthenticationClient().CompletePasswordRecoveryAsync(
-            new CompletePasswordRecoveryRequest(username, token, newPassword, confirmation), cancellationToken);
+            new CompletePasswordRecoveryRequest(string.Empty, token, newPassword, confirmation), cancellationToken);
 
     public async Task<CommunityDto> CreateCommunityAsync(
         string name,

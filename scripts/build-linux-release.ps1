@@ -24,8 +24,14 @@ function Invoke-Checked {
         [string[]] $Arguments
     )
 
-    & $FilePath @Arguments
-    if ($LASTEXITCODE -ne 0) {
+    for ($attempt = 1; $attempt -le 2; $attempt++) {
+        & $FilePath @Arguments
+        if ($LASTEXITCODE -eq 0) { return }
+        if ($attempt -eq 1 -and $FilePath -eq "dotnet") {
+            Write-Warning "dotnet publish exited with $LASTEXITCODE; retrying once after the build host settles."
+            Start-Sleep -Seconds 1
+            continue
+        }
         throw "Command failed with exit code $LASTEXITCODE`: $FilePath $($Arguments -join ' ')"
     }
 }
@@ -46,12 +52,29 @@ try {
     Write-Host "[Iridium] Publishing Blazor WebAssembly client..."
     Invoke-Checked -FilePath dotnet -Arguments @(
         "publish", (Join-Path $repositoryRoot "Iridium.Web/Iridium.Web.csproj"),
-        "-c", "Release", "--disable-build-servers", "-m:1", "-p:DebugType=None", "-p:DebugSymbols=false",
+        "-c", "Release", "-m:1", "-p:DebugType=None", "-p:DebugSymbols=false",
         "-o", $webPublishOutput)
 
     $publishedWebRoot = Join-Path $webPublishOutput "wwwroot"
     if (-not (Test-Path -LiteralPath (Join-Path $publishedWebRoot "index.html"))) {
         throw "The Blazor publish output does not contain wwwroot/index.html."
+    }
+    $mediaManifestPath = Join-Path $publishedWebRoot "media-build.json"
+    if (-not (Test-Path -LiteralPath $mediaManifestPath)) {
+        throw "The Blazor publish output does not contain media-build.json."
+    }
+    $mediaBuildId = (Get-Content -LiteralPath $mediaManifestPath -Raw | ConvertFrom-Json).buildId
+    if ([string]::IsNullOrWhiteSpace($mediaBuildId)) {
+        throw "The generated media build identifier is empty."
+    }
+    $assemblyInfo = Join-Path $repositoryRoot "Iridium.Web/obj/Release/net10.0/Iridium.Web.AssemblyInfo.cs"
+    if (-not (Test-Path -LiteralPath $assemblyInfo) -or
+        -not (Select-String -LiteralPath $assemblyInfo -SimpleMatch "IridiumMediaBuildId`", `"$mediaBuildId" -Quiet)) {
+        throw "The WASM assembly metadata does not match media-build.json."
+    }
+    $voiceModule = Get-Content -LiteralPath (Join-Path $publishedWebRoot "js/voiceCall.js") -Raw
+    if ($voiceModule -notmatch "requireMatchingMediaBuild\(mediaBuildId\)" -or $voiceModule -match "screen-v1") {
+        throw "The published voice module is not using the generated media build identifier."
     }
     Get-ChildItem -LiteralPath $publishedWebRoot -Force | Copy-Item -Destination $webOutput -Recurse -Force
 
@@ -59,7 +82,7 @@ try {
     Invoke-Checked -FilePath dotnet -Arguments @(
         "publish", (Join-Path $repositoryRoot "Iridium.Server/Iridium.Server.csproj"),
         "-c", "Release", "-r", "linux-x64", "--self-contained", "true",
-        "--disable-build-servers", "-m:1", "-p:DebugType=None", "-p:DebugSymbols=false", "-o", $serverOutput)
+        "-m:1", "-p:DebugType=None", "-p:DebugSymbols=false", "-o", $serverOutput)
 
     $developmentSettings = Join-Path $serverOutput "appsettings.Development.json"
     if (Test-Path -LiteralPath $developmentSettings) {
@@ -70,6 +93,7 @@ try {
         version = $Version
         runtime = "linux-x64"
         serverPublish = "self-contained"
+        mediaBuildId = $mediaBuildId
         createdAtUtc = [DateTimeOffset]::UtcNow.ToString("O")
     } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $stagingRoot "release.json") -Encoding utf8
 

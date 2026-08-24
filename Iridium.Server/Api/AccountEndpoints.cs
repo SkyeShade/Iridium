@@ -27,6 +27,7 @@ public static partial class AccountEndpoints
         accounts.MapPut("/security/recovery-email", UpdateRecoveryEmailAsync);
         accounts.MapPost("/recovery/request", RequestPasswordRecoveryAsync)
             .RequireRateLimiting("password-recovery");
+        accounts.MapPost("/recovery/validate", ValidatePasswordRecoveryAsync);
         accounts.MapPost("/recovery/complete", CompletePasswordRecoveryAsync);
 
         var communities = endpoints.MapGroup("/api/communities");
@@ -247,7 +248,7 @@ public static partial class AccountEndpoints
         });
         await db.SaveChangesAsync();
 
-        var recoveryUri = RecoveryUri(context, nodeOptions.Value, username, token);
+        var recoveryUri = RecoveryUri(context, nodeOptions.Value, token);
         await emailSender.SendPasswordRecoveryAsync(account.RecoveryEmail, recoveryUri, context.RequestAborted);
         return Results.Ok(new PasswordRecoveryRequestResultDto(response));
     }
@@ -261,17 +262,14 @@ public static partial class AccountEndpoints
         var errors = ValidateNewPassword(request.NewPassword, request.ConfirmNewPassword);
         if (errors.Count != 0) return Results.ValidationProblem(errors);
         if (string.IsNullOrWhiteSpace(request.Token) ||
-            request.Token.Length > AccountSecurityLimits.MaximumRecoveryTokenLength ||
-            string.IsNullOrWhiteSpace(request.Username) || request.Username.Length > 32)
+            request.Token.Length > AccountSecurityLimits.MaximumRecoveryTokenLength)
             return InvalidRecoveryToken();
 
-        var username = request.Username.Trim().ToLowerInvariant();
         var tokenHash = PasswordRecoveryTokens.Hash(request.Token);
         var now = timeProvider.GetUtcNow();
         var recovery = await db.PasswordRecoveryTokens.Include(value => value.Account)
             .SingleOrDefaultAsync(value => value.TokenHash == tokenHash);
-        if (recovery is null || recovery.UsedAt is not null || recovery.ExpiresAt <= now ||
-            !string.Equals(recovery.Account.Username, username, StringComparison.OrdinalIgnoreCase))
+        if (recovery is null || recovery.UsedAt is not null || recovery.ExpiresAt <= now)
             return InvalidRecoveryToken();
 
         await using var transaction = await db.Database.BeginTransactionAsync();
@@ -288,6 +286,24 @@ public static partial class AccountEndpoints
 
     private static IResult InvalidRecoveryToken() =>
         Results.BadRequest(new { message = "This recovery link is invalid or has expired." });
+
+    private static async Task<IResult> ValidatePasswordRecoveryAsync(
+        ValidatePasswordRecoveryRequest request,
+        IridiumDbContext db,
+        TimeProvider timeProvider)
+    {
+        const string invalidMessage = "This recovery link is invalid or has expired.";
+        if (string.IsNullOrWhiteSpace(request.Token) ||
+            request.Token.Length > AccountSecurityLimits.MaximumRecoveryTokenLength)
+            return Results.Ok(new PasswordRecoveryValidationResultDto(false, invalidMessage));
+        var tokenHash = PasswordRecoveryTokens.Hash(request.Token);
+        var now = timeProvider.GetUtcNow();
+        var recovery = await db.PasswordRecoveryTokens.AsNoTracking()
+            .SingleOrDefaultAsync(value => value.TokenHash == tokenHash);
+        var valid = recovery is not null && recovery.UsedAt is null && recovery.ExpiresAt > now;
+        return Results.Ok(new PasswordRecoveryValidationResultDto(valid,
+            valid ? "This recovery link is ready." : invalidMessage));
+    }
 
     private static Dictionary<string, string[]> ValidateNewPassword(string? password, string? confirmation)
     {
@@ -331,15 +347,14 @@ public static partial class AccountEndpoints
         return $"{email[0]}***{email[separator..]}";
     }
 
-    private static Uri RecoveryUri(HttpContext context, NodeOptions options, string username, string token)
+    private static Uri RecoveryUri(HttpContext context, NodeOptions options, string token)
     {
         var requestOrigin = $"{context.Request.Scheme}://{context.Request.Host}";
         var baseAddress = Uri.TryCreate(options.PublicAuthority, UriKind.Absolute, out var configured) &&
                           (configured.Scheme == Uri.UriSchemeHttp || configured.Scheme == Uri.UriSchemeHttps)
             ? configured.GetLeftPart(UriPartial.Authority)
             : requestOrigin;
-        var fragment = $"recover?username={Uri.EscapeDataString(username)}&token={Uri.EscapeDataString(token)}";
-        return new Uri($"{baseAddress.TrimEnd('/')}/#{fragment}");
+        return new Uri($"{baseAddress.TrimEnd('/')}/recover-password?token={Uri.EscapeDataString(token)}");
     }
 
     private static async Task<IResult> ListCommunitiesAsync(HttpContext context, IridiumDbContext db, SessionService sessions)

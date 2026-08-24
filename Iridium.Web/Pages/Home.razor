@@ -1,5 +1,6 @@
 @page "/"
 @page "/invite/{InviteToken}"
+@page "/recover-password"
 @implements IDisposable
 @using Iridium.Client.Core
 @using Iridium.Protocol
@@ -32,8 +33,9 @@ else if (_authenticationVisible || !Session.IsAuthenticated)
                           SelectedNode="Session.AuthenticationNode"
                           SavedAccounts="Session.SavedAccounts"
                           InitialUsername="@Session.ReauthenticationAccount?.Username"
-                          RecoveryUsername="_recoveryUsername"
-                          RecoveryToken="_recoveryToken"
+                          RecoveryToken="@_recoveryToken"
+                          RecoveryState="@_recoveryState"
+                          RecoveryMessage="@_recoveryMessage"
                           CanCancel="@(_addingAccount && Session.IsAuthenticated)"
                           Busy="_busy"
                           Error="@_error"
@@ -44,6 +46,7 @@ else if (_authenticationVisible || !Session.IsAuthenticated)
                           OnSubmit="AuthenticateAsync"
                           OnRecoveryRequested="RequestPasswordRecoveryAsync"
                           OnRecoveryCompleted="CompletePasswordRecoveryAsync"
+                          OnRecoveryCancelled="CancelPasswordRecovery"
                           OnCancel="CancelAddAccount" />
 }
 else
@@ -251,6 +254,7 @@ else
 
 @code {
     [Parameter] public string? InviteToken { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "token")] public string? RecoveryTokenQuery { get; set; }
     private IReadOnlyList<NodeAvailability> _nodeAvailability = [];
     private bool _initialized;
     private bool _busy;
@@ -298,7 +302,6 @@ else
 
     protected override async Task OnInitializedAsync()
     {
-        ReadRecoveryFragment();
         await Appearance.InitializeAsync();
         await UiSounds.InitializeAsync();
         var defaultNode = CreateDefaultNode();
@@ -314,10 +317,11 @@ else
         Messaging.Changed += OnSessionChanged;
         VoiceSessions.Changed += OnSessionChanged;
         await AccountSwitching.InitializeAsync(SavedNodes.Nodes);
-        if (_recoveryToken is not null)
+        if (IsRecoveryRoute())
         {
             AccountSwitching.BeginAuthentication(defaultNode);
             _authenticationVisible = true;
+            await InitializePasswordRecoveryAsync();
         }
         if (!Session.IsAuthenticated)
         {
@@ -327,31 +331,37 @@ else
         _initialized = true;
     }
 
-    private string? _recoveryUsername;
     private string? _recoveryToken;
+    private PasswordRecoveryUiState _recoveryState;
+    private string? _recoveryMessage;
 
-    private void ReadRecoveryFragment()
+    private bool IsRecoveryRoute()
     {
-        var fragment = new Uri(Navigation.Uri).Fragment.TrimStart('#');
-        if (!fragment.StartsWith("recover?", StringComparison.OrdinalIgnoreCase)) return;
-        foreach (var pair in fragment[8..].Split('&', StringSplitOptions.RemoveEmptyEntries))
+        var relative = Navigation.ToBaseRelativePath(Navigation.Uri);
+        var separator = relative.IndexOfAny(['?', '#']);
+        if (separator >= 0) relative = relative[..separator];
+        return string.Equals(relative.Trim('/'), "recover-password", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task InitializePasswordRecoveryAsync()
+    {
+        _recoveryToken = null;
+        _recoveryState = PasswordRecoveryUiState.Invalid;
+        _recoveryMessage = "This recovery link is invalid or has expired.";
+        var token = RecoveryTokenQuery?.Trim();
+        if (string.IsNullOrWhiteSpace(token) || token.Length > AccountSecurityLimits.MaximumRecoveryTokenLength)
+            return;
+        try
         {
-            var separator = pair.IndexOf('=');
-            if (separator <= 0) continue;
-            var name = pair[..separator];
-            string value;
-            try { value = Uri.UnescapeDataString(pair[(separator + 1)..]); }
-            catch (UriFormatException) { continue; }
-            if (name.Equals("username", StringComparison.OrdinalIgnoreCase) && value.Length <= 32)
-                _recoveryUsername = value;
-            else if (name.Equals("token", StringComparison.OrdinalIgnoreCase) &&
-                     value.Length <= AccountSecurityLimits.MaximumRecoveryTokenLength)
-                _recoveryToken = value;
+            var validation = await Session.ValidatePasswordRecoveryAsync(token);
+            if (!validation.IsValid) { _recoveryMessage = validation.Message; return; }
+            _recoveryToken = token;
+            _recoveryState = PasswordRecoveryUiState.Valid;
+            _recoveryMessage = null;
         }
-        if (string.IsNullOrWhiteSpace(_recoveryUsername) || string.IsNullOrWhiteSpace(_recoveryToken))
+        catch
         {
-            _recoveryUsername = null;
-            _recoveryToken = null;
+            _recoveryMessage = "This recovery link could not be validated. Return to Login and request a new link.";
         }
     }
 
@@ -378,8 +388,9 @@ else
         }
         try
         {
-            await Session.CompletePasswordRecoveryAsync(submission.Username, submission.Token,
+            await Session.CompletePasswordRecoveryAsync(submission.Token,
                 submission.NewPassword, submission.ConfirmPassword);
+            ClearPasswordRecoveryState();
             Navigation.NavigateTo(Navigation.BaseUri, forceLoad: true, replace: true);
             return true;
         }
@@ -390,8 +401,22 @@ else
         }
     }
 
+    private void CancelPasswordRecovery()
+    {
+        ClearPasswordRecoveryState();
+        Navigation.NavigateTo(Navigation.BaseUri, forceLoad: true, replace: true);
+    }
+
+    private void ClearPasswordRecoveryState()
+    {
+        _recoveryToken = null;
+        _recoveryState = PasswordRecoveryUiState.None;
+        _recoveryMessage = null;
+    }
+
     private async Task SelectNodeAsync(SavedNode node)
     {
+        if (_recoveryState != PasswordRecoveryUiState.None) { CancelPasswordRecovery(); return; }
         _error = null;
         AccountSwitching.BeginAuthentication(node);
         await Task.CompletedTask;

@@ -68,9 +68,9 @@
             }
         </div>
 
-        @if (RecoveryToken is not null)
+        @if (RecoveryState == PasswordRecoveryUiState.Valid && !string.IsNullOrWhiteSpace(RecoveryToken))
         {
-            <div class="recovery-heading"><h2>Reset Password</h2><p>Choose a new password for <strong>@RecoveryUsername</strong> on this Node.</p></div>
+            <div class="recovery-heading"><h2>Reset Password</h2><p>Choose a new password for your account on this Node.</p></div>
             <div class="auth-form">
                 <label>New Password <input type="password" @bind="_password" autocomplete="new-password"
                     maxlength="@AccountSecurityLimits.MaximumPasswordLength" /></label>
@@ -81,6 +81,13 @@
                     @(Busy ? "Please wait…" : "Reset Password")
                 </button>
             </div>
+            <button class="mode-switch" @onclick="CancelRecoveryAsync">Back to Login</button>
+        }
+        else if (RecoveryState == PasswordRecoveryUiState.Invalid)
+        {
+            <div class="recovery-heading"><h2>Recovery Link Unavailable</h2>
+                <p role="alert">@(RecoveryMessage ?? "This recovery link is invalid or has expired.")</p></div>
+            <button class="mode-switch" @onclick="CancelRecoveryAsync">Return to Login</button>
         }
         else if (_forgotPasswordMode)
         {
@@ -152,8 +159,9 @@
     [Parameter] public string? Error { get; set; }
     [Parameter] public IReadOnlyList<SavedAccount> SavedAccounts { get; set; } = [];
     [Parameter] public string? InitialUsername { get; set; }
-    [Parameter] public string? RecoveryUsername { get; set; }
     [Parameter] public string? RecoveryToken { get; set; }
+    [Parameter] public PasswordRecoveryUiState RecoveryState { get; set; }
+    [Parameter] public string? RecoveryMessage { get; set; }
     [Parameter] public bool CanCancel { get; set; }
     [Parameter] public EventCallback<SavedNode> OnNodeSelected { get; set; }
     [Parameter] public EventCallback<SavedNode> OnNodeRemoved { get; set; }
@@ -161,6 +169,7 @@
     [Parameter] public EventCallback<AuthenticationSubmission> OnSubmit { get; set; }
     [Parameter] public Func<string, Task<string>>? OnRecoveryRequested { get; set; }
     [Parameter] public Func<PasswordRecoverySubmission, Task<bool>>? OnRecoveryCompleted { get; set; }
+    [Parameter] public EventCallback OnRecoveryCancelled { get; set; }
     [Parameter] public EventCallback<SavedAccountKey> OnSavedAccountSelected { get; set; }
     [Parameter] public EventCallback OnCancel { get; set; }
 
@@ -177,10 +186,10 @@
 
     protected override void OnParametersSet()
     {
-        var context = $"{SelectedNode?.Address}|{InitialUsername}|{RecoveryUsername}|{RecoveryToken}";
+        var context = $"{SelectedNode?.Address}|{InitialUsername}|{RecoveryState}|{RecoveryToken}";
         if (_authenticationContext == context) return;
         _authenticationContext = context;
-        _username = RecoveryUsername ?? InitialUsername ?? string.Empty;
+        _username = InitialUsername ?? string.Empty;
         _password = string.Empty;
         _confirmPassword = string.Empty;
     }
@@ -233,9 +242,12 @@
 
     private async Task CompleteRecoveryAsync()
     {
-        if (OnRecoveryCompleted is null || RecoveryUsername is null || RecoveryToken is null) return;
-        await OnRecoveryCompleted(new(RecoveryUsername, RecoveryToken, _password, _confirmPassword));
+        if (OnRecoveryCompleted is null || RecoveryState != PasswordRecoveryUiState.Valid ||
+            string.IsNullOrWhiteSpace(RecoveryToken)) return;
+        await OnRecoveryCompleted(new(RecoveryToken, _password, _confirmPassword));
     }
+
+    private Task CancelRecoveryAsync() => OnRecoveryCancelled.InvokeAsync();
 
     private void SwitchMode(bool register)
     {

@@ -157,15 +157,20 @@ public sealed class AccountSecurityFlowTests
 
             var expiredToken = "expired-recovery-token";
             await AddRecoveryTokenAsync(databasePath, accountId, expiredToken, DateTimeOffset.UtcNow.AddMinutes(-1));
+            Assert.False((await recoveryClient.ValidatePasswordRecoveryAsync(new(expiredToken))).IsValid);
             await Assert.ThrowsAsync<NodeApiException>(() => recoveryClient.CompletePasswordRecoveryAsync(
                 new("security-user", expiredToken, "recovered-password", "recovered-password")));
 
             var validToken = PasswordRecoveryTokens.Create();
             await AddRecoveryTokenAsync(databasePath, accountId, validToken, DateTimeOffset.UtcNow.AddMinutes(30));
+            Assert.True((await recoveryClient.ValidatePasswordRecoveryAsync(new(validToken))).IsValid);
+            Assert.False((await recoveryClient.ValidatePasswordRecoveryAsync(new(string.Empty))).IsValid);
+            Assert.False((await recoveryClient.ValidatePasswordRecoveryAsync(new("invalid-recovery-token"))).IsValid);
             var secondActive = new NodeClient(new Uri(address));
             await secondActive.LoginAsync(new("security-user", "new-password"));
             await recoveryClient.CompletePasswordRecoveryAsync(
                 new("security-user", validToken, "recovered-password", "recovered-password"));
+            Assert.False((await recoveryClient.ValidatePasswordRecoveryAsync(new(validToken))).IsValid);
 
             await Assert.ThrowsAsync<NodeApiException>(() => recoveryClient.CompletePasswordRecoveryAsync(
                 new("security-user", validToken, "another-password", "another-password")));

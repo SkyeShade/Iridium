@@ -1,4 +1,4 @@
-import { createRemoteVoicePlayback, updateRemoteVoicePlayback, destroyRemoteVoicePlayback } from './voicePlayback.js';
+let createRemoteVoicePlayback, updateRemoteVoicePlayback, destroyRemoteVoicePlayback;
 // Community voice media stays behind this module so DevelopmentPeerMesh can be replaced by NodeSfu.
 // TODO: Remove temporary Community voice diagnostics once voice channels are stable.
 const sessions = new Map();
@@ -315,7 +315,11 @@ export async function getStatsSnapshot(id) {
     return collectStats(requireSession(id));
 }
 
-export async function connect(callback, mediaSession, room, localAccountId, preferences = [], iceConfiguration = null) {
+export async function connect(mediaBuildId, callback, mediaSession, room, localAccountId, preferences = [], iceConfiguration = null) {
+    const build = await import(`./mediaBuild.js?build=${encodeURIComponent(mediaBuildId)}`);
+    await build.requireMatchingMediaBuild(mediaBuildId);
+    ({ createRemoteVoicePlayback, updateRemoteVoicePlayback, destroyRemoteVoicePlayback } =
+        await build.loadVoicePlayback(mediaBuildId));
     if (!navigator.mediaDevices?.getUserMedia)
         throw new Error("This browser does not support microphone capture.");
     let localStream;

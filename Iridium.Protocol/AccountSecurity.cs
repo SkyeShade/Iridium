@@ -21,3 +21,5 @@ public sealed record CompletePasswordRecoveryRequest(
     string NewPassword,
     string ConfirmNewPassword);
 public sealed record PasswordRecoveryRequestResultDto(string Message);
+public sealed record ValidatePasswordRecoveryRequest(string Token);
+public sealed record PasswordRecoveryValidationResultDto(bool IsValid, string Message);

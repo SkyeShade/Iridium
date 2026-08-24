@@ -25,15 +25,28 @@ public sealed class BrowserCommunityVoiceMediaClient(IJSRuntime js, ILogger<Brow
     {
         await DisconnectAsync("Community media replacement", cancellationToken);
         _module ??= await js.InvokeAsync<IJSObjectReference>("import", cancellationToken,
-            "./js/communityVoiceMedia.js?module=screen-v1");
+            $"./js/communityVoiceMedia.js?build={Uri.EscapeDataString(MediaBuildInfo.Id)}");
         _callback = DotNetObjectReference.Create(this);
         var remotePreferences = new List<VoiceParticipantPreference>();
         foreach (var participant in room.Participants.Where(value => value.AccountId != localAccountId)
                      .GroupBy(value => value.AccountId).Select(value => value.First()))
             remotePreferences.Add(await preferences.GetAsync(participant.AccountId, cancellationToken));
         var iceConfiguration = await webRtcConfiguration.GetAsync(cancellationToken);
-        _sessionId = await _module.InvokeAsync<string>("connect", cancellationToken, _callback,
-            mediaSession, room, localAccountId, remotePreferences, iceConfiguration);
+        try
+        {
+            _sessionId = await _module.InvokeAsync<string>("connect", cancellationToken, MediaBuildInfo.Id, _callback,
+                mediaSession, room, localAccountId, remotePreferences, iceConfiguration);
+        }
+        catch (JSException exception) when (exception.Message.Contains("VersionMismatch", StringComparison.OrdinalIgnoreCase))
+        {
+            var updates = await js.InvokeAsync<IJSObjectReference>("import", cancellationToken,
+                $"./js/clientUpdate.js?build={Uri.EscapeDataString(MediaBuildInfo.Id)}");
+            if (!await updates.InvokeAsync<bool>("recoverMediaMismatch", cancellationToken, MediaBuildInfo.Id))
+                throw new InvalidOperationException(
+                    "Iridium was updated, but this tab is still using older client files. Close and reopen this tab.",
+                    exception);
+            throw;
+        }
         await _module.InvokeVoidAsync("start", cancellationToken, _sessionId);
         if (!_preferenceSubscribed) { preferences.Changed += PreferenceChanged; _preferenceSubscribed = true; }
         logger.LogDebug("Community voice media prepared for Channel={ChannelId}; Provider={Provider}; Status={Status}.",
