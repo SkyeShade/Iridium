@@ -6,6 +6,7 @@
 @inject IIdentityProfileResolver ProfileResolver
 @inject Iridium.Web.Services.MessageMenuCoordinator MessageMenus
 @inject CommunityEmojiService Emojis
+@inject ExternalEmbedResolver ExternalEmbeds
 
 <article class="message-row @(StartsGroup ? "group-start" : "compact") @(Message.IsDeleted ? "deleted" : null) @DeliveryClass"
          data-message-id="@Message.Id" @onpointerenter="MessageEntered" @onpointerleave="MessageLeft">
@@ -23,8 +24,11 @@
             </button>
             @if (!reply.IsDeleted)
             {
-                <div class="reply-excerpt" aria-hidden="true"><MentionedMessageContent Content="@(reply.Excerpt ?? string.Empty)"
-                    CommunityId="@(Message.CommunityId == Guid.Empty ? null : Message.CommunityId)" Compact="true" /></div>
+                <div class="reply-excerpt" aria-hidden="true">
+                    @if (ReplySummary(reply) is { } summary) { <span>@summary</span> }
+                    else { <MentionedMessageContent Content="@(reply.Excerpt ?? string.Empty)"
+                        CommunityId="@(Message.CommunityId == Guid.Empty ? null : Message.CommunityId)" Compact="true" /> }
+                </div>
             }
         </div>
     }
@@ -58,6 +62,7 @@
                                          CommunityId="@(Message.CommunityId == Guid.Empty ? null : Message.CommunityId)" OnProfile="OpenMentionProfileAsync" />
                 @if (Message.EditedAt is not null) { <span class="edited" title="Edited @Message.EditedAt.Value.ToLocalTime().ToString("g")">(edited)</span> }
                 <InviteEmbed Content="@Message.Content" />
+                <MessageExternalEmbeds Content="@Message.Content" />
                 <MessageAttachments Attachments="Message.Attachments" DeliveryState="Message.DeliveryState" />
             }
             @if (Message.DeliveryState == MessageDeliveryState.Failed)
@@ -170,6 +175,12 @@
             return null;
         var color = CommunityRolePresentation.MemberColor(member, CommunityManagement.Roles);
         return color is null ? null : $"color:{color}";
+    }
+    private string? ReplySummary(MessageReplyDto reply)
+    {
+        if (!string.IsNullOrWhiteSpace(reply.AttachmentSummary) && string.IsNullOrWhiteSpace(reply.Excerpt))
+            return reply.AttachmentSummary;
+        return ExternalEmbeds.Resolve(reply.Excerpt ?? string.Empty, 1).Count > 0 ? "YouTube video" : null;
     }
     private Task ReplyAsync() => OnReply.InvokeAsync(Message);
     private Task ReplyFromMenuAsync() { MessageMenus.Close(Message.Id); return ReplyAsync(); }

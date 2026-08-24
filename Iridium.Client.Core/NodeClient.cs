@@ -449,6 +449,15 @@ public sealed class NodeClient(Uri nodeAddress)
         return await response.Content.ReadAsByteArrayAsync(cancellationToken);
     }
 
+    public async Task<AttachmentPlaybackAccessDto> GetAttachmentPlaybackAccessAsync(Guid attachmentId,
+        CancellationToken cancellationToken = default)
+    {
+        var access = await SendAsync<AttachmentPlaybackAccessDto>(HttpMethod.Get,
+            $"api/attachments/{attachmentId}/playback-access", null, cancellationToken);
+        var absolute = new Uri(_http.BaseAddress!, access.Url).AbsoluteUri;
+        return access with { Url = absolute };
+    }
+
     private async Task MoveSidebarItemByPositionAsync(Guid communityId, Guid itemId,
         CommunitySidebarItemType itemType, Guid? parentCategoryId, int position, CancellationToken cancellationToken)
     {

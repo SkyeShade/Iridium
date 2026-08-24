@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Sockets;
 using Iridium.Client.Core;
 using Iridium.Protocol;
@@ -87,6 +88,40 @@ public sealed class AttachmentFlowTests
             Assert.Equal(fileBytes, await member.DownloadAttachmentAsync(directUpload.Id));
             Assert.Equal(HttpStatusCode.Forbidden,
                 (await Assert.ThrowsAsync<NodeApiException>(() => intruder.DownloadAttachmentAsync(directUpload.Id))).StatusCode);
+
+            var videoBytes = AttachmentMediaTypeValidatorTests.Mp4();
+            var videoUpload = await owner.UploadAttachmentAsync(new MemoryStream(videoBytes), "clip.mp4", "video/mp4",
+                width: 1920, height: 1080);
+            Assert.Equal("video/mp4", videoUpload.ContentType);
+            Assert.Equal(1920, videoUpload.Width);
+            Assert.Equal(1080, videoUpload.Height);
+            var videoMessage = await ownerHub.InvokeAsync<ChannelMessageDto>(ChatHubContract.SendMessage,
+                community.Id, channel.Id, new SendChannelMessageRequest(string.Empty, null,
+                    ClientMessageId: Guid.NewGuid(), AttachmentIds: [videoUpload.Id]));
+            Assert.Equal("video/mp4", Assert.Single(videoMessage.Attachments!).ContentType);
+            var playback = await member.GetAttachmentPlaybackAccessAsync(videoUpload.Id);
+            using var playbackClient = new HttpClient();
+            using (var full = await playbackClient.GetAsync(playback.Url))
+            {
+                Assert.Equal(HttpStatusCode.OK, full.StatusCode);
+                Assert.Equal("video/mp4", full.Content.Headers.ContentType?.MediaType);
+                Assert.Equal(videoBytes, await full.Content.ReadAsByteArrayAsync());
+            }
+            using (var rangeRequest = new HttpRequestMessage(HttpMethod.Get, playback.Url))
+            {
+                rangeRequest.Headers.Range = new RangeHeaderValue(4, 11);
+                using var range = await playbackClient.SendAsync(rangeRequest);
+                Assert.Equal(HttpStatusCode.PartialContent, range.StatusCode);
+                Assert.Contains("bytes", range.Headers.AcceptRanges);
+                Assert.Equal(4, range.Content.Headers.ContentRange?.From);
+                Assert.Equal(11, range.Content.Headers.ContentRange?.To);
+                Assert.Equal(videoBytes.LongLength, range.Content.Headers.ContentRange?.Length);
+                Assert.Equal(videoBytes[4..12], await range.Content.ReadAsByteArrayAsync());
+            }
+            Assert.Equal(HttpStatusCode.Forbidden,
+                (await Assert.ThrowsAsync<NodeApiException>(() => intruder.GetAttachmentPlaybackAccessAsync(videoUpload.Id))).StatusCode);
+            await Assert.ThrowsAsync<NodeApiException>(() => owner.UploadAttachmentAsync(
+                new MemoryStream("not an mp4"u8.ToArray()), "fake.mp4", "video/mp4"));
 
             var limits = await owner.GetServerInfoAsync();
             Assert.True(limits.MaxAttachmentBytes > 0);

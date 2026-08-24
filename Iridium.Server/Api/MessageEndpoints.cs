@@ -94,6 +94,7 @@ public static class MessageEndpoints
         var newest = await query
             .Include(value => value.AuthorAccount)
             .Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
+            .Include(value => value.ReplyToMessage).ThenInclude(value => value!.Attachments)
             .Include(value => value.Attachments)
             .OrderByDescending(value => value.CreatedAt)
             .ThenByDescending(value => value.Id)
@@ -114,6 +115,7 @@ public static class MessageEndpoints
         var target = await db.ChannelMessages.AsNoTracking()
             .Include(value => value.AuthorAccount)
             .Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
+            .Include(value => value.ReplyToMessage).ThenInclude(value => value!.Attachments)
             .Include(value => value.Attachments)
             .SingleOrDefaultAsync(value => value.Id == targetId && value.CommunityId == communityId &&
                                            value.ChannelId == channelId && !value.IsDeleted);
@@ -124,6 +126,7 @@ public static class MessageEndpoints
                             !value.IsDeleted &&
                             (value.CreatedAt < target.CreatedAt || value.CreatedAt == target.CreatedAt && value.Id.CompareTo(target.Id) < 0))
             .Include(value => value.AuthorAccount).Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
+            .Include(value => value.ReplyToMessage).ThenInclude(value => value!.Attachments)
             .Include(value => value.Attachments)
             .OrderByDescending(value => value.CreatedAt).ThenByDescending(value => value.Id).Take(half + 1).ToListAsync();
         var hasOlder = before.Count > half;
@@ -133,6 +136,7 @@ public static class MessageEndpoints
                             !value.IsDeleted &&
                             (value.CreatedAt > target.CreatedAt || value.CreatedAt == target.CreatedAt && value.Id.CompareTo(target.Id) > 0))
             .Include(value => value.AuthorAccount).Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
+            .Include(value => value.ReplyToMessage).ThenInclude(value => value!.Attachments)
             .Include(value => value.Attachments)
             .OrderBy(value => value.CreatedAt).ThenBy(value => value.Id).Take(half).ToListAsync();
         var entities = before.OrderBy(value => value.CreatedAt).ThenBy(value => value.Id).Append(target).Concat(after);

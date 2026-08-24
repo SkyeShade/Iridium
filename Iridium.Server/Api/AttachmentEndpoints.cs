@@ -16,11 +16,14 @@ public static class AttachmentEndpoints
         endpoints.MapPost("/api/attachments", UploadAsync).DisableAntiforgery();
         endpoints.MapGet("/api/attachments/{attachmentId:guid}", DownloadOriginalAsync);
         endpoints.MapGet("/api/attachments/{attachmentId:guid}/preview", DownloadPreviewAsync);
+        endpoints.MapGet("/api/attachments/{attachmentId:guid}/playback-access", PlaybackAccessAsync);
+        endpoints.MapGet("/api/attachments/{attachmentId:guid}/playback", PlaybackAsync);
         return endpoints;
     }
 
     private static async Task<IResult> UploadAsync(HttpContext context, IridiumDbContext db,
         SessionService sessions, IAttachmentStorage storage, IImagePreviewGenerator previewGenerator,
+        IAttachmentMediaTypeValidator mediaTypeValidator,
         IOptions<NodeOptions> options,
         CancellationToken cancellationToken)
     {
@@ -39,7 +42,18 @@ public static class AttachmentEndpoints
         var fileName = Path.GetFileName(file.FileName);
         if (string.IsNullOrWhiteSpace(fileName)) fileName = "attachment";
         if (fileName.Length > 255) fileName = fileName[..255];
-        var contentType = string.IsNullOrWhiteSpace(file.ContentType) ? "application/octet-stream" : file.ContentType[..Math.Min(255, file.ContentType.Length)];
+        string contentType;
+        try
+        {
+            await using var validationStream = file.OpenReadStream();
+            contentType = await mediaTypeValidator.ValidateAsync(validationStream, file.ContentType, cancellationToken);
+        }
+        catch (AttachmentMediaValidationException exception)
+        {
+            return Results.BadRequest(new { message = exception.Message });
+        }
+        if (string.IsNullOrWhiteSpace(contentType)) contentType = "application/octet-stream";
+        if (contentType.Length > 255) contentType = contentType[..255];
         var isSpoiler = bool.TryParse(form["isSpoiler"], out var requestedSpoiler) && requestedSpoiler;
         var width = ValidDimension(form["width"].ToString());
         var height = ValidDimension(form["height"].ToString());
@@ -99,25 +113,51 @@ public static class AttachmentEndpoints
         CancellationToken cancellationToken) => DownloadAsync(attachmentId, true, context, db, sessions,
             authorization, storage, cancellationToken);
 
+    private static async Task<IResult> PlaybackAccessAsync(Guid attachmentId, HttpContext context,
+        IridiumDbContext db, SessionService sessions, CommunityAuthorizationService authorization,
+        IAttachmentPlaybackTokenService tokens, CancellationToken cancellationToken)
+    {
+        var session = await sessions.GetAsync(context, db);
+        if (session is null) return Results.Unauthorized();
+        var attachment = await FindAttachmentAsync(attachmentId, db, cancellationToken);
+        if (attachment is null) return Results.NotFound();
+        if (!await CanAccessAsync(attachment, session.AccountId, authorization, db))
+            return Results.StatusCode(StatusCodes.Status403Forbidden);
+        if (!attachment.OriginalContentType.Equals("video/mp4", StringComparison.OrdinalIgnoreCase))
+            return Results.StatusCode(StatusCodes.Status415UnsupportedMediaType);
+        var access = tokens.Issue(attachmentId, session.AccountId);
+        var url = $"api/attachments/{attachmentId}/playback?token={Uri.EscapeDataString(access.Token)}";
+        return Results.Ok(new AttachmentPlaybackAccessDto(url, access.ExpiresAt));
+    }
+
+    private static async Task<IResult> PlaybackAsync(Guid attachmentId, HttpContext context,
+        IridiumDbContext db, CommunityAuthorizationService authorization, IAttachmentStorage storage,
+        IAttachmentPlaybackTokenService tokens, CancellationToken cancellationToken)
+    {
+        if (!tokens.TryValidate(attachmentId, context.Request.Query["token"], out var accountId))
+            return Results.Unauthorized();
+        var attachment = await FindAttachmentAsync(attachmentId, db, cancellationToken);
+        if (attachment is null) return Results.NotFound();
+        if (!attachment.OriginalContentType.Equals("video/mp4", StringComparison.OrdinalIgnoreCase))
+            return Results.StatusCode(StatusCodes.Status415UnsupportedMediaType);
+        if (!await CanAccessAsync(attachment, accountId, authorization, db))
+            return Results.StatusCode(StatusCodes.Status403Forbidden);
+        var stream = await storage.OpenReadAsync(attachment.OriginalObjectKey, cancellationToken);
+        if (stream is null) return Results.NotFound();
+        context.Response.Headers.CacheControl = "private,max-age=3600";
+        return Results.File(stream, "video/mp4", enableRangeProcessing: true);
+    }
+
     private static async Task<IResult> DownloadAsync(Guid attachmentId, bool preview, HttpContext context,
         IridiumDbContext db, SessionService sessions, CommunityAuthorizationService authorization,
         IAttachmentStorage storage, CancellationToken cancellationToken)
     {
         var session = await sessions.GetAsync(context, db);
         if (session is null) return Results.Unauthorized();
-        var attachment = await db.Attachments.AsNoTracking()
-            .Include(value => value.ChannelMessage)
-            .Include(value => value.DirectMessage).ThenInclude(value => value!.Conversation)
-            .SingleOrDefaultAsync(value => value.Id == attachmentId, cancellationToken);
+        var attachment = await FindAttachmentAsync(attachmentId, db, cancellationToken);
         if (attachment is null) return Results.NotFound();
-
-        var allowed = attachment.ChannelMessage is { } channelMessage
-            ? await authorization.HasChannelPermissionAsync(channelMessage.CommunityId, channelMessage.ChannelId,
-                session.AccountId, CommunityPermission.ViewChannels, db)
-            : attachment.DirectMessage?.Conversation is { } conversation
-                ? conversation.ParticipantAAccountId == session.AccountId || conversation.ParticipantBAccountId == session.AccountId
-                : attachment.UploaderAccountId == session.AccountId;
-        if (!allowed) return Results.StatusCode(StatusCodes.Status403Forbidden);
+        if (!await CanAccessAsync(attachment, session.AccountId, authorization, db))
+            return Results.StatusCode(StatusCodes.Status403Forbidden);
         var usePreview = preview && attachment.PreviewObjectKey is not null;
         var stream = await storage.OpenReadAsync(
             usePreview ? attachment.PreviewObjectKey! : attachment.OriginalObjectKey, cancellationToken);
@@ -128,6 +168,21 @@ public static class AttachmentEndpoints
             : Results.File(stream, usePreview ? attachment.PreviewContentType! : attachment.OriginalContentType,
                 usePreview ? null : attachment.OriginalFileName, enableRangeProcessing: true);
     }
+
+    private static Task<Attachment?> FindAttachmentAsync(Guid attachmentId, IridiumDbContext db,
+        CancellationToken cancellationToken) => db.Attachments.AsNoTracking()
+        .Include(value => value.ChannelMessage)
+        .Include(value => value.DirectMessage).ThenInclude(value => value!.Conversation)
+        .SingleOrDefaultAsync(value => value.Id == attachmentId, cancellationToken);
+
+    private static async Task<bool> CanAccessAsync(Attachment attachment, Guid accountId,
+        CommunityAuthorizationService authorization, IridiumDbContext db) =>
+        attachment.ChannelMessage is { } channelMessage
+            ? await authorization.HasChannelPermissionAsync(channelMessage.CommunityId, channelMessage.ChannelId,
+                accountId, CommunityPermission.ViewChannels, db)
+            : attachment.DirectMessage?.Conversation is { } conversation
+                ? conversation.ParticipantAAccountId == accountId || conversation.ParticipantBAccountId == accountId
+                : attachment.UploaderAccountId == accountId;
 
     private static int? ValidDimension(string value) =>
         int.TryParse(value, out var dimension) && dimension is > 0 and <= 100_000 ? dimension : null;

@@ -18,7 +18,8 @@ internal static class ChannelMessageMapper
                 original.AuthorAccountId,
                 original.AuthorAccount.DisplayName,
                 original.IsDeleted ? null : Excerpt(original.Content),
-                original.IsDeleted);
+                original.IsDeleted,
+                original.IsDeleted ? null : AttachmentSummary(original.Attachments));
         }
 
         return new ChannelMessageDto(
@@ -44,6 +45,11 @@ internal static class ChannelMessageMapper
 
     private static string Excerpt(string content)
         => content;
+
+    internal static string? AttachmentSummary(IEnumerable<Attachment> attachments) =>
+        attachments.FirstOrDefault(value => value.OriginalContentType.Equals("video/mp4", StringComparison.OrdinalIgnoreCase)) is { } video
+            ? $"Video attachment: {video.OriginalFileName}"
+            : null;
 
     internal static IReadOnlyList<CommunityMentionDto> DeserializeMentions(string? json)
     {

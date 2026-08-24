@@ -57,6 +57,8 @@ builder.Services.AddScoped<CommunityAuthorizationService>();
 builder.Services.AddScoped<CommunityInviteService>();
 builder.Services.AddSingleton<IAttachmentStorage, LocalAttachmentStorage>();
 builder.Services.AddSingleton<IImagePreviewGenerator, ImagePreviewGenerator>();
+builder.Services.AddSingleton<IAttachmentMediaTypeValidator, AttachmentMediaTypeValidator>();
+builder.Services.AddSingleton<IAttachmentPlaybackTokenService, AttachmentPlaybackTokenService>();
 builder.Services.AddSingleton<IAvatarImageValidator, AvatarImageValidator>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<ICallService, CallService>();

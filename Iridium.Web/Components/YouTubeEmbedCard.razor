@@ -1,0 +1,24 @@
+<section class="youtube-embed" aria-label="YouTube video">
+    <div class="youtube-player">
+        @if (_activated)
+        {
+            <iframe src="@Embed.EmbedUrl" title="YouTube video player" loading="lazy"
+                    sandbox="allow-scripts allow-same-origin allow-presentation allow-popups"
+                    allow="encrypted-media; picture-in-picture; fullscreen" allowfullscreen></iframe>
+        }
+        else
+        {
+            <img src="@Embed.ThumbnailUrl" alt="" loading="lazy" referrerpolicy="no-referrer" />
+            <button type="button" class="youtube-play" aria-label="Play YouTube video" @onclick="Activate">
+                <span aria-hidden="true">&#9654;</span>
+            </button>
+        }
+    </div>
+    <div class="youtube-footer"><span>YouTube</span><a href="@Embed.OriginalUrl" target="_blank" rel="noopener noreferrer">Open on YouTube</a></div>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public required ExternalEmbedReference Embed { get; set; }
+    private bool _activated;
+    private void Activate() => _activated = true;
+}

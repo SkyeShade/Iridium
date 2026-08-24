@@ -141,6 +141,50 @@ public sealed class MessageRenderingUiContractTests
     }
 
     [Fact]
+    public void YouTubeEmbedIsLazyTrustedCappedAndLeavesMessageLinkRenderingIntact()
+    {
+        var row = Source("Iridium.Web", "Components", "MessageRow.razor");
+        var card = Source("Iridium.Web", "Components", "YouTubeEmbedCard.razor");
+        var resolver = Source("Iridium.Client.Core", "ExternalEmbeds.cs");
+        var content = Source("Iridium.Web", "Components", "MessageContentNodeView.razor");
+        var index = Source("Iridium.Web", "wwwroot", "index.html");
+
+        Assert.Contains("<MessageExternalEmbeds Content=\"@Message.Content\"", row);
+        Assert.Contains("@if (_activated)", card);
+        Assert.Contains("youtube-nocookie.com/embed", resolver);
+        Assert.Contains("MaximumEmbedsPerMessage = 3", resolver);
+        Assert.Contains("i.ytimg.com/vi", resolver);
+        Assert.DoesNotContain("autoplay", card, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("target=\"_blank\" rel=\"noopener noreferrer\"", content);
+        Assert.Contains("frame-src https://www.youtube-nocookie.com", index);
+    }
+
+    [Fact]
+    public void ValidatedMp4UsesNativeMetadataOnlyVideoAndCacheKeepsMetadataOnly()
+    {
+        var attachments = Source("Iridium.Web", "Components", "MessageAttachments.razor");
+        var video = Source("Iridium.Web", "Components", "PostedVideo.razor");
+        var cache = Source("Iridium.Web", "wwwroot", "js", "messageHistoryCache.js");
+        var endpoint = Source("Iridium.Server", "Api", "AttachmentEndpoints.cs");
+        var chat = Source("Iridium.Web", "wwwroot", "js", "chat.js");
+        var lazy = Source("Iridium.Web", "wwwroot", "js", "mediaEmbeds.js");
+
+        Assert.Contains("attachment.ContentType.Equals(\"video/mp4\"", attachments);
+        Assert.Contains("<video src=\"@_source\" controls preload=\"metadata\" playsinline", video);
+        Assert.DoesNotContain("autoplay", video, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("aspect-ratio:var(--video-aspect)", Source("Iridium.Web", "Components", "PostedVideo.razor.css"));
+        Assert.Contains("metadata: attachment", cache);
+        Assert.DoesNotContain("arrayBuffer", cache, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("enableRangeProcessing: true", endpoint);
+        Assert.Contains("CanAccessAsync(attachment, accountId", endpoint);
+        Assert.Contains("video.videoWidth", chat);
+        Assert.Contains("video.videoHeight", chat);
+        Assert.Contains("URL.revokeObjectURL(objectUrl)", chat);
+        Assert.Contains("IntersectionObserver", lazy);
+        Assert.Contains("VideoBecameVisibleAsync", video);
+    }
+
+    [Fact]
     public void TextChannelUnreadMarkerUsesAuthoritativeCountWithoutReplacingMentions()
     {
         var row = Source("Iridium.UI", "ChannelRow.razor");

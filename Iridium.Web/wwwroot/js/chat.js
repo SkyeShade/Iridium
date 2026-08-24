@@ -790,6 +790,32 @@ export async function analyzeComposerFiles(composerRoot) {
     const files = Array.from(composerRoot?.querySelector('input[type="file"]')?.files || []);
     return Promise.all(files.map(async file => {
         const result = { name: file.name, size: file.size, lastModified: file.lastModified, width: null, height: null, averageColor: null };
+        if (file.type?.toLowerCase() === "video/mp4") {
+            if (typeof URL === "undefined" || typeof URL.createObjectURL !== "function") return result;
+            const objectUrl = URL.createObjectURL(file);
+            const video = document.createElement("video");
+            video.preload = "metadata";
+            try {
+                await new Promise(resolve => {
+                    let settled = false;
+                    let timeout;
+                    const finish = () => { if (!settled) { settled = true; clearTimeout(timeout); resolve(); } };
+                    video.onloadedmetadata = () => {
+                        result.width = video.videoWidth || null;
+                        result.height = video.videoHeight || null;
+                        finish();
+                    };
+                    video.onerror = finish;
+                    timeout = setTimeout(finish, 3000);
+                    video.src = objectUrl;
+                });
+            } finally {
+                video.removeAttribute("src");
+                video.load();
+                URL.revokeObjectURL(objectUrl);
+            }
+            return result;
+        }
         if (!file.type?.startsWith("image/") || typeof createImageBitmap !== "function") return result;
         let bitmap;
         try {

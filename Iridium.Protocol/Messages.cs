@@ -80,6 +80,8 @@ public sealed record AttachmentUploadDto(Guid Id, string OriginalFileName, strin
     public long OriginalSizeBytes => SizeBytes;
 }
 
+public sealed record AttachmentPlaybackAccessDto(string Url, DateTimeOffset ExpiresAt);
+
 public sealed record RegisterAccountRequest(string Username, string DisplayName, string Password);
 public sealed record LoginRequest(string Username, string Password);
 public sealed record NodeAccountDto(

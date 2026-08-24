@@ -1,0 +1,16 @@
+@inject ExternalEmbedResolver Resolver
+
+@if (Embeds.Count > 0)
+{
+    <div class="external-embeds">
+        @foreach (var embed in Embeds)
+        {
+            <YouTubeEmbedCard @key="embed.EmbedUrl" Embed="embed" />
+        }
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public required string Content { get; set; }
+    private IReadOnlyList<ExternalEmbedReference> Embeds => Resolver.Resolve(Content);
+}

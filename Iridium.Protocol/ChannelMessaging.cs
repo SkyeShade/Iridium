@@ -36,7 +36,8 @@ public sealed record MessageReplyDto(
     Guid AuthorAccountId,
     string AuthorDisplayName,
     string? Excerpt,
-    bool IsDeleted);
+    bool IsDeleted,
+    string? AttachmentSummary = null);
 
 public sealed record ChannelMessageDto(
     Guid Id,

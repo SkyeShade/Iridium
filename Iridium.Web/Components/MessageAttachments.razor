@@ -12,6 +12,10 @@
             {
                 <PostedImage @key="attachment.Id" Attachment="attachment" DeliveryState="DeliveryState" />
             }
+            else if (IsInlineVideo(attachment) && DeliveryState == MessageDeliveryState.Confirmed)
+            {
+                <PostedVideo @key="attachment.Id" Attachment="attachment" />
+            }
             else
             {
                 <button type="button" class="message-file" @onclick="() => DownloadAsync(attachment)">
@@ -32,6 +36,8 @@
 
     private static bool IsInlineImage(AttachmentDto attachment) => attachment.ContentType.ToLowerInvariant() is
         "image/jpeg" or "image/png" or "image/gif" or "image/webp";
+    private static bool IsInlineVideo(AttachmentDto attachment) =>
+        attachment.ContentType.Equals("video/mp4", StringComparison.OrdinalIgnoreCase);
 
     private async Task DownloadAsync(AttachmentDto attachment)
     {

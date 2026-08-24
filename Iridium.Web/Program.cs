@@ -61,6 +61,8 @@ builder.Services.AddScoped<ActiveVoiceSessionCoordinator>();
 builder.Services.AddScoped<AccountSwitchService>();
 builder.Services.AddScoped<IIdentityProfileResolver, SameNodeIdentityProfileResolver>();
 builder.Services.AddScoped<ICommunityInviteResolver, CommunityInviteResolver>();
+builder.Services.AddSingleton<IExternalEmbedProvider, YouTubeEmbedProvider>();
+builder.Services.AddSingleton<ExternalEmbedResolver>();
 builder.Services.AddScoped<ICategoryCollapseStore>(sp => sp.GetRequiredService<BrowserClientStorage>());
 builder.Services.AddScoped<ILastCommunityChannelStore>(sp => sp.GetRequiredService<BrowserClientStorage>());
 

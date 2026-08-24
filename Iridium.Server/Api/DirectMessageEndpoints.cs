@@ -125,6 +125,7 @@ public static class DirectMessageEndpoints
         var messages = await query
             .Include(value => value.AuthorAccount)
             .Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
+            .Include(value => value.ReplyToMessage).ThenInclude(value => value!.Attachments)
             .Include(value => value.Attachments)
             .OrderByDescending(value => value.CreatedAt)
             .ThenByDescending(value => value.Id)
@@ -142,6 +143,7 @@ public static class DirectMessageEndpoints
     {
         var target = await db.DirectMessages.AsNoTracking().Include(value => value.AuthorAccount)
             .Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
+            .Include(value => value.ReplyToMessage).ThenInclude(value => value!.Attachments)
             .Include(value => value.Attachments)
             .SingleOrDefaultAsync(value => value.Id == targetId && value.ConversationId == conversationId && !value.IsDeleted);
         if (target is null) return Results.NotFound(new { message = "Message not found in this conversation." });
@@ -151,6 +153,7 @@ public static class DirectMessageEndpoints
                             !value.IsDeleted &&
                             (value.CreatedAt < target.CreatedAt || value.CreatedAt == target.CreatedAt && value.Id.CompareTo(target.Id) < 0))
             .Include(value => value.AuthorAccount).Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
+            .Include(value => value.ReplyToMessage).ThenInclude(value => value!.Attachments)
             .Include(value => value.Attachments)
             .OrderByDescending(value => value.CreatedAt).ThenByDescending(value => value.Id).Take(half + 1).ToListAsync();
         var hasOlder = older.Count > half;
@@ -160,6 +163,7 @@ public static class DirectMessageEndpoints
                             !value.IsDeleted &&
                             (value.CreatedAt > target.CreatedAt || value.CreatedAt == target.CreatedAt && value.Id.CompareTo(target.Id) > 0))
             .Include(value => value.AuthorAccount).Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
+            .Include(value => value.ReplyToMessage).ThenInclude(value => value!.Attachments)
             .Include(value => value.Attachments)
             .OrderBy(value => value.CreatedAt).ThenBy(value => value.Id).Take(half).ToListAsync();
         var result = older.OrderBy(value => value.CreatedAt).ThenBy(value => value.Id).Append(target).Concat(newer)

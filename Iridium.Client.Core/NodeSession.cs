@@ -67,6 +67,10 @@ public sealed class NodeSession(
     public Task<byte[]> DownloadAttachmentPreviewAsync(Guid attachmentId, CancellationToken cancellationToken = default) =>
         AuthorizedClient.DownloadAttachmentPreviewAsync(attachmentId, cancellationToken);
 
+    public Task<AttachmentPlaybackAccessDto> GetAttachmentPlaybackAccessAsync(Guid attachmentId,
+        CancellationToken cancellationToken = default) =>
+        AuthorizedClient.GetAttachmentPlaybackAccessAsync(attachmentId, cancellationToken);
+
     public Task<AccountAvatarPresetsDto> GetAvatarPresetsAsync(CancellationToken cancellationToken = default) =>
         AuthorizedClient.GetAvatarPresetsAsync(cancellationToken);
 

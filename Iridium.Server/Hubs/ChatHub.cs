@@ -296,6 +296,7 @@ public sealed class ChatHub(
         {
             var existing = await db.ChannelMessages.Include(value => value.AuthorAccount)
                 .Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
+                .Include(value => value.ReplyToMessage).ThenInclude(value => value!.Attachments)
                 .Include(value => value.Attachments)
                 .SingleOrDefaultAsync(value => value.AuthorAccountId == session.AccountId &&
                     value.CommunityId == communityId && value.ChannelId == channelId &&
@@ -313,6 +314,7 @@ public sealed class ChatHub(
         if (request.ReplyToMessageId is { } replyId)
         {
             reply = await db.ChannelMessages.Include(value => value.AuthorAccount)
+                .Include(value => value.Attachments)
                 .SingleOrDefaultAsync(value => value.Id == replyId && value.CommunityId == communityId && value.ChannelId == channelId);
             if (reply is null || reply.IsDeleted) throw new HubException("The message being replied to is no longer available.");
         }
@@ -684,6 +686,7 @@ public sealed class ChatHub(
         {
             var existing = await db.DirectMessages.Include(value => value.AuthorAccount)
                 .Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
+                .Include(value => value.ReplyToMessage).ThenInclude(value => value!.Attachments)
                 .Include(value => value.Attachments)
                 .SingleOrDefaultAsync(value => value.AuthorAccountId == session.AccountId &&
                     value.ConversationId == conversationId && value.ClientMessageId == existingClientId);
@@ -694,6 +697,7 @@ public sealed class ChatHub(
         if (request.ReplyToMessageId is { } replyId)
         {
             reply = await db.DirectMessages.Include(value => value.AuthorAccount)
+                .Include(value => value.Attachments)
                 .SingleOrDefaultAsync(value => value.Id == replyId && value.ConversationId == conversationId);
             if (reply is null || reply.IsDeleted) throw new HubException("The message being replied to is no longer available.");
             if (reply.Kind != MessageKind.User) throw new HubException("System messages cannot be replied to.");
@@ -765,6 +769,7 @@ public sealed class ChatHub(
         var message = await db.ChannelMessages
             .Include(value => value.AuthorAccount)
             .Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
+            .Include(value => value.ReplyToMessage).ThenInclude(value => value!.Attachments)
             .Include(value => value.Attachments)
             .SingleOrDefaultAsync(value => value.Id == messageId && value.CommunityId == communityId && value.ChannelId == channelId);
         return message ?? throw new HubException("Message not found in this Server channel.");
@@ -782,6 +787,7 @@ public sealed class ChatHub(
         var message = await db.DirectMessages
             .Include(value => value.AuthorAccount)
             .Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
+            .Include(value => value.ReplyToMessage).ThenInclude(value => value!.Attachments)
             .Include(value => value.Attachments)
             .SingleOrDefaultAsync(value => value.Id == messageId && value.ConversationId == conversationId);
         return message ?? throw new HubException("Direct message not found in this conversation.");
