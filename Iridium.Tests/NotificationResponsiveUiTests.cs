@@ -82,15 +82,45 @@ public sealed class NotificationResponsiveUiTests
         var shell = File.ReadAllText(Path.Combine(root, "Iridium.UI", "ApplicationShell.razor"));
         var css = File.ReadAllText(Path.Combine(root, "Iridium.UI", "ApplicationShell.razor.css"));
 
-        Assert.Contains("const threshold = 84", swipe);
-        Assert.Contains("const dominance = 1.35", swipe);
+        Assert.Contains("const completionRatio = 0.5", swipe);
+        Assert.Contains("const directionDeadZone = 14", swipe);
+        Assert.Contains("const dominance = 1.2", swipe);
+        Assert.Contains("return 'horizontal'", swipe);
+        Assert.Contains("return 'vertical'", swipe);
+        Assert.Contains("classifyMobileSwipeDirection(dx, dy)", swipe);
+        Assert.Contains("setPointerCapture(event.pointerId)", swipe);
+        Assert.Contains("releasePointerCapture(event.pointerId)", swipe);
         Assert.Contains("pointerType !== 'touch'", swipe);
         Assert.Contains("textarea", swipe);
         Assert.Contains("video", swipe);
-        Assert.Contains("dx >= threshold && dx > 0", swipe);
+        Assert.Contains("dx > width * completionRatio", swipe);
+        Assert.Contains("Math.min(width, Math.max(0, dx))", swipe);
         Assert.Contains("MobileConversationSwipeBackAsync", shell);
         Assert.Contains("? OnMobileBack.InvokeAsync()", shell);
         Assert.Contains("width:3rem; height:3rem", css);
+    }
+
+    [Fact]
+    public void MobileComposerUsesCanonicalSendabilityAndMatchingSourceGeometry()
+    {
+        var root = FindRepositoryRoot();
+        var composer = File.ReadAllText(Path.Combine(root, "Iridium.Web", "Components", "MessageComposer.razor"));
+        var css = File.ReadAllText(Path.Combine(root, "Iridium.Web", "Components", "MessageComposer.razor.css"));
+        var shell = File.ReadAllText(Path.Combine(root, "Iridium.UI", "ApplicationShell.razor.css"));
+        var swipe = File.ReadAllText(Path.Combine(root, "Iridium.UI", "wwwroot", "js", "mobileConversationSwipe.js"));
+
+        Assert.Contains("private bool HasSendableText => !string.IsNullOrWhiteSpace(_content)", composer);
+        Assert.Contains("@onclick=\"SubmitFromKeyboardAsync\"", composer);
+        Assert.Contains(".mobile-send-button{display:none}", css);
+        Assert.Contains("@media (max-width:860px)", css);
+        Assert.Contains(".composer-highlight,.composer-rich-editor", css);
+        Assert.Contains("overflow-wrap:anywhere;word-break:normal", css);
+        Assert.Contains("--iridium-mobile-viewport-height", shell);
+        Assert.Contains("window.visualViewport", swipe);
+        Assert.Contains("keyboardInset > 80 ? '0px'", swipe);
+        Assert.Contains(".attachment-button{align-self:end;margin:0 0 calc((var(--composer-min-height) - 2.25rem)/2)}", css);
+        Assert.Contains(".emoji-button{grid-column:3;align-self:end;margin:0 .2rem calc((var(--composer-min-height) - 2.3rem)/2) 0}", css);
+        Assert.Contains("top:auto;bottom:calc((var(--composer-min-height) - 2.35rem)/2 + 2.45rem)", css);
     }
 
     private static ChannelMessageDto Message(IReadOnlyList<CommunityMentionDto> mentions) => new(

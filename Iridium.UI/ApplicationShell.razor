@@ -3,7 +3,7 @@
 @implements IAsyncDisposable
 @inject IJSRuntime JS
 
-<div class="app-shell @(ShowRightSidebar ? "has-context-sidebar" : null) mobile-@ActiveMobilePanel.ToString().ToLowerInvariant()"
+<div class="app-shell @(ShowRightSidebar ? "has-context-sidebar" : null) mobile-@ActiveMobilePanel.ToString().ToLowerInvariant()" @ref="_shell"
      @onclick="OnBackgroundInteraction" @onkeydown="ShellKeyDown">
     <CommunityRail Communities="Communities" SelectedCommunityId="SelectedCommunity?.Id"
                    DirectConversations="DirectConversations" NodeAuthority="@NodeAuthority"
@@ -76,6 +76,7 @@
     [Parameter] public EventCallback OnMobileContext { get; set; }
     [Parameter] public EventCallback OnMobileContextClose { get; set; }
     private ElementReference _mainContent;
+    private ElementReference _shell;
     private IJSObjectReference? _swipeModule;
     private DotNetObjectReference<ApplicationShell>? _selfReference;
     private Task ShellKeyDown(KeyboardEventArgs args) => args.Key == "Escape" && ActiveMobilePanel == MobilePanel.Context
@@ -87,6 +88,7 @@
         if (!firstRender) return;
         _swipeModule = await JS.InvokeAsync<IJSObjectReference>("import", "./_content/Iridium.UI/js/mobileConversationSwipe.js");
         _selfReference = DotNetObjectReference.Create(this);
+        await _swipeModule.InvokeVoidAsync("wireMobileViewport", _shell);
         await _swipeModule.InvokeVoidAsync("wireMobileConversationSwipe", _mainContent, _selfReference);
     }
 
@@ -102,6 +104,7 @@
             try
             {
                 await _swipeModule.InvokeVoidAsync("unwireMobileConversationSwipe", _mainContent);
+                await _swipeModule.InvokeVoidAsync("unwireMobileViewport", _shell);
                 await _swipeModule.DisposeAsync();
             }
             catch (JSDisconnectedException) { }

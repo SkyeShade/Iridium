@@ -1,68 +1,202 @@
-const bindings = new WeakMap();
-const threshold = 84;
-const dominance = 1.35;
-const ignoredSelector = 'input,textarea,select,button,a,img,video,audio,canvas,iframe,[draggable="true"],[contenteditable="true"],[role="button"],[role="slider"],[data-no-mobile-swipe],.composer-wrap,.message-actions,.youtube-embed,.video-attachment,.voice-stream-viewer';
+const swipeBindings = new WeakMap();
+const viewportBindings = new WeakMap();
+const directionDeadZone = 14;
+const dominance = 1.2;
+const completionRatio = 0.5;
+const ignoredSelector = 'input,textarea,select,button,a,img,video,audio,canvas,iframe,[draggable="true"],[contenteditable="true"],[role="button"],[role="slider"],[data-no-mobile-swipe],.composer-wrap,.message-actions,.context-menu,.emoji-picker,.youtube-embed,.video-attachment,.voice-stream-viewer';
 
-export function qualifiesMobileBackSwipe(dx, dy, horizontal = true, abandoned = false) {
-    return !abandoned && horizontal && dx >= threshold && dx > 0 &&
-        Math.abs(dx) > Math.abs(dy) * dominance;
+const mobileQuery = () => matchMedia('(max-width: 860px)');
+const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+export function qualifiesMobileBackSwipe(dx, dy, width, horizontal = true, abandoned = false) {
+    return !abandoned && horizontal && width > 0 && dx > width * completionRatio;
+}
+
+export function classifyMobileSwipeDirection(dx, dy) {
+    const ax = Math.abs(dx);
+    const ay = Math.abs(dy);
+    if (Math.hypot(dx, dy) < directionDeadZone) return 'undecided';
+    if (ay > ax * dominance) return 'vertical';
+    if (dx > 0 && ax > ay * dominance) return 'horizontal';
+    if (dx < 0 && ax > ay * dominance) return 'rejected';
+    return 'undecided';
+}
+
+function clearSwipeStyles(element) {
+    element.style.removeProperty('transition');
+    element.style.removeProperty('transform');
+}
+
+function animateSwipe(element, destination) {
+    return new Promise(resolve => {
+        const transform = getComputedStyle(element).transform;
+        const current = transform === 'none' ? 0 : new DOMMatrixReadOnly(transform).m41;
+        if (Math.abs(current - destination) < 0.5) {
+            element.style.transform = `translate3d(${destination}px,0,0)`;
+            resolve();
+            return;
+        }
+        if (reducedMotion()) {
+            element.style.transform = `translate3d(${destination}px,0,0)`;
+            resolve();
+            return;
+        }
+        const finished = event => {
+            if (event.target !== element || event.propertyName !== 'transform') return;
+            element.removeEventListener('transitionend', finished);
+            resolve();
+        };
+        element.addEventListener('transitionend', finished);
+        element.style.transition = 'transform 170ms cubic-bezier(.2,.75,.25,1)';
+        requestAnimationFrame(() => { element.style.transform = `translate3d(${destination}px,0,0)`; });
+    });
 }
 
 export function wireMobileConversationSwipe(element, dotnet) {
-    if (!element || bindings.has(element)) return;
-    const state = { pointerId: null, startX: 0, startY: 0, horizontal: false, abandoned: false };
+    if (!element || swipeBindings.has(element)) return;
+    const state = { pointerId: null, startX: 0, startY: 0, direction: 'undecided', dragging: false };
 
     const reset = () => {
         state.pointerId = null;
-        state.horizontal = false;
-        state.abandoned = false;
+        state.direction = 'undecided';
+        state.dragging = false;
+    };
+    const snapBack = async () => {
+        const hadOffset = state.dragging || Boolean(element.style.transform);
+        reset();
+        if (!hadOffset) return;
+        await animateSwipe(element, 0);
+        clearSwipeStyles(element);
     };
     const down = event => {
-        if (!matchMedia('(max-width: 860px)').matches || !event.isPrimary ||
+        if (state.pointerId !== null) { void snapBack(); return; }
+        if (!mobileQuery().matches || !event.isPrimary ||
             (event.pointerType !== 'touch' && event.pointerType !== 'pen') || event.button !== 0 ||
             event.target?.closest?.(ignoredSelector)) return;
         state.pointerId = event.pointerId;
         state.startX = event.clientX;
         state.startY = event.clientY;
-        state.horizontal = false;
-        state.abandoned = false;
+        state.direction = 'undecided';
     };
     const move = event => {
-        if (state.pointerId !== event.pointerId || state.abandoned) return;
+        if (state.pointerId !== event.pointerId || state.direction === 'vertical' || state.direction === 'rejected') return;
         const dx = event.clientX - state.startX;
         const dy = event.clientY - state.startY;
-        const ax = Math.abs(dx);
-        const ay = Math.abs(dy);
-        if (!state.horizontal && ay > 16 && ay > ax) {
-            state.abandoned = true;
-            return;
+
+        if (state.direction === 'undecided') {
+            state.direction = classifyMobileSwipeDirection(dx, dy);
         }
-        if (!state.horizontal && dx > 18 && ax > ay * dominance) state.horizontal = true;
-        if (state.horizontal && event.cancelable) event.preventDefault();
+        if (state.direction === 'horizontal' && !state.dragging) {
+            state.dragging = true;
+            element.style.transition = 'none';
+            try { element.setPointerCapture(event.pointerId); } catch { }
+        }
+        if (state.direction !== 'horizontal') return;
+        if (event.cancelable) event.preventDefault();
+        const width = element.getBoundingClientRect().width;
+        const translation = Math.min(width, Math.max(0, dx));
+        element.style.transform = `translate3d(${translation}px,0,0)`;
     };
-    const up = event => {
+    const up = async event => {
         if (state.pointerId !== event.pointerId) return;
         const dx = event.clientX - state.startX;
         const dy = event.clientY - state.startY;
+        const width = element.getBoundingClientRect().width;
         const hasSelection = Boolean(window.getSelection?.()?.toString());
-        const shouldNavigate = !hasSelection && qualifiesMobileBackSwipe(dx, dy, state.horizontal, state.abandoned);
+        const complete = !hasSelection && qualifiesMobileBackSwipe(dx, dy, width, state.direction === 'horizontal', state.direction === 'vertical');
+        const hadPointerCapture = element.hasPointerCapture?.(event.pointerId);
         reset();
-        if (shouldNavigate) void dotnet.invokeMethodAsync('MobileConversationSwipeBackAsync');
+        if (hadPointerCapture) {
+            try { element.releasePointerCapture(event.pointerId); } catch { }
+        }
+        if (!complete) {
+            await animateSwipe(element, 0);
+            clearSwipeStyles(element);
+            return;
+        }
+        await animateSwipe(element, width);
+        await dotnet.invokeMethodAsync('MobileConversationSwipeBackAsync');
+        clearSwipeStyles(element);
     };
-    const cancel = event => { if (state.pointerId === event.pointerId) reset(); };
+    const cancel = event => { if (state.pointerId === event.pointerId) void snapBack(); };
+    const resize = () => {
+        if (state.pointerId === null && !element.style.transform) return;
+        reset();
+        clearSwipeStyles(element);
+    };
     element.addEventListener('pointerdown', down);
     element.addEventListener('pointermove', move, { passive: false });
     element.addEventListener('pointerup', up);
     element.addEventListener('pointercancel', cancel);
-    bindings.set(element, { down, move, up, cancel });
+    element.addEventListener('lostpointercapture', cancel);
+    window.addEventListener('resize', resize, { passive: true });
+    window.addEventListener('orientationchange', resize, { passive: true });
+    swipeBindings.set(element, { down, move, up, cancel, resize });
 }
 
 export function unwireMobileConversationSwipe(element) {
-    const binding = bindings.get(element);
+    const binding = swipeBindings.get(element);
     if (!binding) return;
     element.removeEventListener('pointerdown', binding.down);
     element.removeEventListener('pointermove', binding.move);
     element.removeEventListener('pointerup', binding.up);
     element.removeEventListener('pointercancel', binding.cancel);
-    bindings.delete(element);
+    element.removeEventListener('lostpointercapture', binding.cancel);
+    window.removeEventListener('resize', binding.resize);
+    window.removeEventListener('orientationchange', binding.resize);
+    clearSwipeStyles(element);
+    swipeBindings.delete(element);
+}
+
+export function wireMobileViewport(shell) {
+    if (!shell || viewportBindings.has(shell)) return;
+    let frame = 0;
+    const update = () => {
+        frame = 0;
+        if (!mobileQuery().matches) {
+            shell.style.removeProperty('--iridium-mobile-viewport-height');
+            shell.style.removeProperty('--iridium-mobile-viewport-offset');
+            shell.style.removeProperty('--iridium-mobile-safe-bottom');
+            return;
+        }
+        const viewport = window.visualViewport;
+        const height = viewport?.height ?? window.innerHeight;
+        const offset = viewport?.offsetTop ?? 0;
+        const keyboardInset = Math.max(0, window.innerHeight - height - offset);
+        shell.style.setProperty('--iridium-mobile-viewport-height', `${height}px`);
+        shell.style.setProperty('--iridium-mobile-viewport-offset', `${offset}px`);
+        shell.style.setProperty('--iridium-mobile-safe-bottom', keyboardInset > 80 ? '0px' : 'env(safe-area-inset-bottom, 0px)');
+    };
+    const schedule = () => {
+        if (frame) cancelAnimationFrame(frame);
+        frame = requestAnimationFrame(update);
+    };
+    const focusin = event => {
+        if (event.target?.matches?.('.composer-rich-editor')) schedule();
+    };
+    window.visualViewport?.addEventListener('resize', schedule, { passive: true });
+    window.visualViewport?.addEventListener('scroll', schedule, { passive: true });
+    window.addEventListener('resize', schedule, { passive: true });
+    window.addEventListener('orientationchange', schedule, { passive: true });
+    window.addEventListener('iridium-composer-focus', schedule);
+    document.addEventListener('focusin', focusin, { passive: true });
+    viewportBindings.set(shell, { schedule, focusin, frame: () => frame });
+    update();
+}
+
+export function unwireMobileViewport(shell) {
+    const binding = viewportBindings.get(shell);
+    if (!binding) return;
+    window.visualViewport?.removeEventListener('resize', binding.schedule);
+    window.visualViewport?.removeEventListener('scroll', binding.schedule);
+    window.removeEventListener('resize', binding.schedule);
+    window.removeEventListener('orientationchange', binding.schedule);
+    window.removeEventListener('iridium-composer-focus', binding.schedule);
+    document.removeEventListener('focusin', binding.focusin);
+    const frame = binding.frame();
+    if (frame) cancelAnimationFrame(frame);
+    shell.style.removeProperty('--iridium-mobile-viewport-height');
+    shell.style.removeProperty('--iridium-mobile-viewport-offset');
+    shell.style.removeProperty('--iridium-mobile-safe-bottom');
+    viewportBindings.delete(shell);
 }

@@ -42,7 +42,7 @@
         {
             <div class="attachment-error" role="alert">@_attachmentError</div>
         }
-        <div class="composer-input-row">
+        <div class="composer-input-row @(HasSendableText ? "has-mobile-send" : null)">
             @if (CanAttachFiles)
             {
                 <InputFile @key="_inputRevision" id="@FileInputId" style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;pointer-events:none" tabindex="-1" OnChange="FilesSelectedAsync" multiple />
@@ -54,6 +54,11 @@
                      data-placeholder="@ComposerPlaceholder" aria-label="@ComposerPlaceholder" role="textbox" aria-multiline="true"></div>
             </div>
             <button @ref="_emojiButton" type="button" class="emoji-button" title="Emoji" aria-label="Emoji" @onclick="ToggleEmojiPicker"><Icon Name="emoji" /></button>
+            @if (HasSendableText)
+            {
+                <button type="button" class="mobile-send-button" title="Send message" aria-label="Send message"
+                        disabled="@(Busy || _submitting || RemainingCharacters < 0)" @onclick="SubmitFromKeyboardAsync"><Icon Name="send" /></button>
+            }
             <span class="character-counter @(RemainingCharacters < 0 ? "over-limit" : null)" aria-label="@($"{RemainingCharacters} characters remaining")">@RemainingCharacters</span>
         </div>
         @if (_emojiPickerOpen)
@@ -153,6 +158,7 @@
     private string FileInputId => $"attachment-{ConversationKind}-{ConversationId:N}-{_inputRevision}";
     private IReadOnlyList<PendingAttachment> PendingAttachments => _attachmentKey is { } key ? Attachments.Get(key) : [];
     private int RemainingCharacters => _maxMessageCharacters - CommunityEmojiDraftCodec.CountCharacters(_content, _emojiReferences);
+    private bool HasSendableText => !string.IsNullOrWhiteSpace(_content);
     private MessageDraftScope DraftScope => new(NodeAuthority, AccountId, ConversationKind, ConversationId);
 
     protected override void OnInitialized() => Emojis.Changed += OnEmojiCollectionChanged;

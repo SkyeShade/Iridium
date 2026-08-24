@@ -328,6 +328,7 @@ export function focusComposer(textarea) {
     if (!textarea) return;
     textarea.focus({ preventScroll: true });
     setComposerCaret(textarea, composerSnapshot(textarea).content.length);
+    window.dispatchEvent(new Event("iridium-composer-focus"));
 }
 
 export function composerCaret(textarea) {
@@ -339,6 +340,7 @@ export function focusComposerAt(textarea, position) {
     if (!textarea) return;
     textarea.focus({ preventScroll: true });
     setComposerCaret(textarea, position);
+    window.dispatchEvent(new Event("iridium-composer-focus"));
 }
 
 export function updateComposerEmojiRanges(textarea, ranges) {
