@@ -11,7 +11,7 @@ public sealed class MediaBuildVersionTests
     [Fact]
     public void GeneratedManifestMatchesTheWasmAssemblyBuildMetadata()
     {
-        var manifestPath = Path.Combine(Root, "Iridium.Web", "wwwroot", "media-build.json");
+        var manifestPath = Path.Combine(Root, "Iridium.Web", "obj", "Debug", "net10.0", "media-build.json");
         var assemblyPath = Path.Combine(Root, "Iridium.Web", "bin", "Debug", "net10.0", "Iridium.Web.dll");
         using var manifest = JsonDocument.Parse(File.ReadAllText(manifestPath));
         var manifestId = manifest.RootElement.GetProperty("buildId").GetString();
@@ -47,6 +47,24 @@ public sealed class MediaBuildVersionTests
     }
 
     [Fact]
+    public void ReleaseScriptCreatesOneIdAndPropagatesItToMsBuildManifestAssemblyAndArchiveGuard()
+    {
+        var project = Source("Iridium.Web", "Iridium.Web.csproj");
+        var script = Source("scripts", "build-linux-release.ps1");
+        var verifier = Source("scripts", "MediaBuildVerifier", "Program.cs");
+
+        Assert.Equal(1, Count(script, "[Guid]::NewGuid()"));
+        Assert.Contains("-p:IridiumMediaBuildId=$mediaBuildId", script);
+        Assert.Contains("-AssemblyBuildId $assemblyBuildId", script);
+        Assert.Contains("Assert-PublishedMediaBuild -WebRoot $packagedWebRoot", script);
+        Assert.Contains("$packagedRelease.mediaBuildId -ne $mediaBuildId", script);
+        Assert.Contains("$(BaseIntermediateOutputPath)$(Configuration)/$(TargetFramework)/media-build.json", project);
+        Assert.Contains("Lines=\"{ &quot;buildId&quot;: &quot;$(IridiumMediaBuildId)&quot; }\"", project);
+        Assert.Contains("Release builds require one explicit IridiumMediaBuildId", project);
+        Assert.Contains("GetCustomAttributes<AssemblyMetadataAttribute>()", verifier);
+    }
+
+    [Fact]
     public void MismatchRecoveryIsSessionScopedAndReloadsOnlyOncePerBuild()
     {
         var recovery = Source("Iridium.Web", "wwwroot", "js", "clientUpdate.js");
@@ -72,4 +90,6 @@ public sealed class MediaBuildVersionTests
     }
 
     private static string Source(params string[] parts) => File.ReadAllText(Path.Combine([Root, .. parts]));
+    private static int Count(string source, string value) =>
+        (source.Length - source.Replace(value, string.Empty, StringComparison.Ordinal).Length) / value.Length;
 }
