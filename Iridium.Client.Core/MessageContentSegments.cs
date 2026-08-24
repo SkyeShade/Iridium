@@ -204,7 +204,8 @@ public static partial class MessageContentSegments
             var cursor = start;
             while (cursor < end)
             {
-                if (_content[cursor] == '\\' && cursor + 1 < end && TryEscapedMarker(cursor + 1, end, out var escaped))
+                if (_content[cursor] == '\\' && cursor + 1 < end &&
+                    MessageMarkdownGrammar.TryEscapedMarker(_content, cursor + 1, end, out var escaped))
                 {
                     text.Append(escaped);
                     cursor += escaped.Length + 1;
@@ -226,17 +227,17 @@ public static partial class MessageContentSegments
                     FlushText(); nodes.Add(automaticLink); cursor = automaticNext; continue;
                 }
 
-                if (TryDelimiter(cursor, end, out var marker, out var kind, out var combined, out var closing))
+                if (MessageMarkdownGrammar.TryDelimiter(_content, cursor, end, out var delimiter, out var closing))
                 {
                     FlushText();
-                    var innerStart = cursor + marker.Length;
-                    IReadOnlyList<MessageContentNode> children = kind == MessageContentKind.InlineCode
+                    var innerStart = cursor + delimiter.Marker.Length;
+                    IReadOnlyList<MessageContentNode> children = delimiter.ContentKind == MessageContentKind.InlineCode
                         ? [new MessageTextNode(_content[innerStart..closing])]
                         : ParseInline(innerStart, closing);
-                    if (combined) children = [new MessageContainerNode(MessageContentKind.Italic, children)];
-                    nodes.Add(new MessageContainerNode(kind, children,
-                        kind == MessageContentKind.Spoiler ? _spoilerId++ : null));
-                    cursor = closing + marker.Length;
+                    if (delimiter.Combined) children = [new MessageContainerNode(MessageContentKind.Italic, children)];
+                    nodes.Add(new MessageContainerNode(delimiter.ContentKind, children,
+                        delimiter.ContentKind == MessageContentKind.Spoiler ? _spoilerId++ : null));
+                    cursor = closing + delimiter.Marker.Length;
                     continue;
                 }
                 text.Append(_content[cursor++]);
@@ -280,49 +281,6 @@ public static partial class MessageContentSegments
             link = new([new MessageTextNode(url)], url);
             next = cursor + length;
             return true;
-        }
-
-        private bool TryDelimiter(int cursor, int end, out string marker, out MessageContentKind kind,
-            out bool combined, out int closing)
-        {
-            (string Marker, MessageContentKind Kind, bool Combined)[] candidates =
-            [
-                ("***", MessageContentKind.Bold, true), ("||", MessageContentKind.Spoiler, false),
-                ("**", MessageContentKind.Bold, false), ("__", MessageContentKind.Underline, false),
-                ("~~", MessageContentKind.Strikethrough, false), ("`", MessageContentKind.InlineCode, false),
-                ("*", MessageContentKind.Italic, false), ("_", MessageContentKind.Italic, false)
-            ];
-            foreach (var candidate in candidates)
-            {
-                if (!_content.AsSpan(cursor, end - cursor).StartsWith(candidate.Marker)) continue;
-                var found = FindUnescaped(candidate.Marker, cursor + candidate.Marker.Length, end);
-                if (found < 0 || found == cursor + candidate.Marker.Length) continue;
-                marker = candidate.Marker; kind = candidate.Kind; combined = candidate.Combined; closing = found;
-                return true;
-            }
-            marker = string.Empty; kind = default; combined = false; closing = -1; return false;
-        }
-
-        private int FindUnescaped(string marker, int start, int end)
-        {
-            var cursor = start;
-            while (cursor < end)
-            {
-                var found = _content.IndexOf(marker, cursor, StringComparison.Ordinal);
-                if (found < 0 || found >= end) return -1;
-                var slashes = 0;
-                for (var index = found - 1; index >= 0 && _content[index] == '\\'; index--) slashes++;
-                if (slashes % 2 == 0) return found;
-                cursor = found + marker.Length;
-            }
-            return -1;
-        }
-
-        private bool TryEscapedMarker(int cursor, int end, out string marker)
-        {
-            foreach (var candidate in new[] { "***", "```", "||", "**", "__", "~~", "-#", "#", "*", "_", "`", ">", "[", "]", "\\" })
-                if (_content.AsSpan(cursor, end - cursor).StartsWith(candidate)) { marker = candidate; return true; }
-            marker = string.Empty; return false;
         }
 
         private int LineEnd(int start)

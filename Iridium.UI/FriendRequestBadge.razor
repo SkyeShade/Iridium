@@ -1,0 +1,9 @@
+<span class="friend-request-badge surface-@Surface" aria-label="@Label">
+    <span class="red-notification-count">@(Count > 99 ? "99+" : Count)</span>
+</span>
+
+@code {
+    [Parameter] public int Count { get; set; }
+    [Parameter] public string Surface { get; set; } = "base";
+    private string Label => $"{Count} pending friend request{(Count == 1 ? string.Empty : "s")}";
+}

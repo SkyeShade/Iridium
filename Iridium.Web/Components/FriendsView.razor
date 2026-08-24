@@ -9,9 +9,9 @@
             {
                 <button class="tab @(_filter == tab ? "active" : null)" @onclick="() => _filter = tab">
                     @tab
-                    @if (tab == "Pending" && IncomingPendingCount > 0)
+                    @if (tab == "Pending" && ShowPendingFriendRequestNotification && IncomingPendingCount > 0)
                     {
-                        <span class="pending-badge"><span class="red-notification-count">@IncomingPendingCount</span></span>
+                        <FriendRequestBadge Count="IncomingPendingCount" Surface="base" />
                     }
                 </button>
             }
@@ -62,6 +62,8 @@
 
 @code {
     [Parameter] public IReadOnlyList<FriendDto> Friends { get; set; } = [];
+    [Parameter] public int IncomingPendingCount { get; set; }
+    [Parameter] public bool ShowPendingFriendRequestNotification { get; set; } = true;
     [Parameter, EditorRequired] public required string NodeAuthority { get; set; }
     [Parameter] public bool RequestsOnly { get; set; }
     [Parameter] public string? Error { get; set; }
@@ -76,8 +78,6 @@
     private FriendDto? _profileFriend;
     private double _profileX;
     private double _profileY;
-    private int IncomingPendingCount => Friends.Count(friend => friend.Status == FriendshipStatus.Pending && !friend.IsOutgoing);
-
     private IEnumerable<FriendDto> VisibleFriends => Friends
         .Where(friend => RequestsOnly ? friend.Status == FriendshipStatus.Pending : _filter switch
         {

@@ -9,7 +9,7 @@ public static class DirectMessageMapper
         message.Id,
         message.ConversationId,
         new MessageAuthorDto(message.AuthorAccountId, message.AuthorAccount.Username, message.AuthorAccount.DisplayName),
-        message.Content,
+        message.IsDeleted ? string.Empty : message.Content,
         message.CreatedAt,
         message.EditedAt,
         message.IsDeleted,
@@ -45,8 +45,5 @@ public static class DirectMessageMapper
     }
 
     private static string Excerpt(string content)
-    {
-        var oneLine = string.Join(' ', content.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)).Trim();
-        return oneLine;
-    }
+        => content;
 }

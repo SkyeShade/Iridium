@@ -47,6 +47,8 @@
     [Parameter] public EventCallback<Guid> OnMessage { get; set; }
     [Parameter] public EventCallback OnStartVoiceCall { get; set; }
     [Parameter] public Guid? TargetMessageId { get; set; }
+    [Parameter] public long FocusRequest { get; set; }
+    [Parameter] public EventCallback<long> OnFocusConsumed { get; set; }
     private Guid? _loadedConversationId;
     private ChannelMessageDto? _replyTo;
     private MessageComposer? _composer;
@@ -56,6 +58,8 @@
     private bool _shouldShowJumpToLatest;
     private bool _loading;
     private bool _sending;
+    private bool _focusAfterRender;
+    private long _consumedFocusRequest;
     private string? _error;
 
     private IReadOnlyList<ChannelMessageDto> ProjectedMessages => Messaging.DirectMessages.Select(message =>
@@ -67,6 +71,7 @@
     protected override void OnInitialized() { Messaging.Changed += MessagesChanged; Calls.Changed += CallsChanged; }
     protected override async Task OnParametersSetAsync()
     {
+        if (FocusRequest > _consumedFocusRequest) _focusAfterRender = true;
         if (_loadedConversationId == Conversation.Id && Messaging.DirectConversationId == Conversation.Id &&
             _loadedTargetMessageId == TargetMessageId) return;
         _replyTo = null;
@@ -87,6 +92,14 @@
             _error = exception.Message;
         }
         finally { _loading = false; }
+    }
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_focusAfterRender || _loading) return;
+        _focusAfterRender = false;
+        _consumedFocusRequest = FocusRequest;
+        if (_composer is not null) await _composer.FocusAsync();
+        await OnFocusConsumed.InvokeAsync(FocusRequest);
     }
 
     private void MessagesChanged() => _ = InvokeAsync(StateHasChanged);

@@ -11,18 +11,22 @@
          data-message-id="@Message.Id" @onpointerenter="MessageEntered" @onpointerleave="MessageLeft">
     @if (Message.ReplyTo is { } reply)
     {
-        <button class="reply-reference" title="Go to replied message" @onclick="() => OnFocusReply.InvokeAsync(reply.MessageId)">
-            <span class="reply-avatar">@Initial(reply.AuthorDisplayName)</span>
-            @if (reply.IsDeleted)
+        <div class="reply-reference">
+            <button type="button" class="reply-focus" title="Go to replied message"
+                    aria-label="Go to message from @reply.AuthorDisplayName" @onclick="() => OnFocusReply.InvokeAsync(reply.MessageId)">
+                <ProfileAvatar AccountId="reply.AuthorAccountId" DisplayName="@reply.AuthorDisplayName"
+                               BadgeMode="AvatarBadgeMode.None" Size="tiny" Surface="base" />
+                @if (reply.IsDeleted) { <span class="reply-deleted">Deleted message</span> }
+                else {
+                <strong class="display-name" style="@ReplyAuthorStyle(reply.AuthorAccountId)">@reply.AuthorDisplayName</strong>
+                }
+            </button>
+            @if (!reply.IsDeleted)
             {
-                <span class="reply-deleted">Original message deleted</span>
+                <div class="reply-excerpt" aria-hidden="true"><MentionedMessageContent Content="@(reply.Excerpt ?? string.Empty)"
+                    CommunityId="@(Message.CommunityId == Guid.Empty ? null : Message.CommunityId)" Compact="true" /></div>
             }
-            else
-            {
-                <strong class="display-name">@reply.AuthorDisplayName</strong>
-                <span class="reply-excerpt">@CommunityEmojiNames.ToUserFacing(reply.Excerpt ?? string.Empty)</span>
-            }
-        </button>
+        </div>
     }
     @if (StartsGroup)
     {
@@ -47,10 +51,6 @@
                     <span class="separator">•</span><span>enter to </span>
                     <button type="button" disabled="@(_savingEdit || string.IsNullOrWhiteSpace(_editContent))" @onclick="SaveEditAsync">save</button>
                 </div>
-            }
-            else if (Message.IsDeleted)
-            {
-                <em>Message deleted</em>
             }
             else
             {
@@ -152,7 +152,10 @@
         .FirstOrDefault(value => value.AccountId == Message.Author.AccountId) is { } member
         ? CommunityManagement.Roles.Where(value => member.RoleIds.Contains(value.Id)).OrderByDescending(value => value.Position).ToArray()
         : [];
-    private string? AuthorColor => AuthorRoles.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value.Color))?.Color;
+    private string? AuthorColor => CommunityManagement?.Members
+        .FirstOrDefault(value => value.AccountId == Message.Author.AccountId) is { } member
+        ? CommunityRolePresentation.MemberColor(member, CommunityManagement.Roles)
+        : null;
     private string? AuthorStyle => AuthorColor is null ? null : $"color:{AuthorColor}";
     private string? DeliveryClass => Message.DeliveryState switch
     {
@@ -161,7 +164,13 @@
         _ => null
     };
 
-    private static string Initial(string value) => string.IsNullOrWhiteSpace(value) ? "?" : char.ToUpperInvariant(value.Trim()[0]).ToString();
+    private string? ReplyAuthorStyle(Guid accountId)
+    {
+        if (CommunityManagement?.Members.FirstOrDefault(value => value.AccountId == accountId) is not { } member)
+            return null;
+        var color = CommunityRolePresentation.MemberColor(member, CommunityManagement.Roles);
+        return color is null ? null : $"color:{color}";
+    }
     private Task ReplyAsync() => OnReply.InvokeAsync(Message);
     private Task ReplyFromMenuAsync() { MessageMenus.Close(Message.Id); return ReplyAsync(); }
     private void ToggleMenu() { CancelMenuClose(); MessageMenus.Toggle(Message.Id); }

@@ -35,7 +35,7 @@ public static class ComposerMarkdownSegments
             var end = newline < 0 ? source.Length : newline;
             var lineEnd = newline < 0 ? end : end + 1;
             var line = source.AsSpan(cursor, end - cursor);
-            if (line.StartsWith("```"))
+            if (line.StartsWith("```") && (fenced || HasClosingFence(source, lineEnd)))
             {
                 Add(source[cursor..lineEnd], ComposerMarkdownStyle.None, true, result);
                 fenced = !fenced;
@@ -78,6 +78,12 @@ public static class ComposerMarkdownSegments
         var cursor = start;
         while (cursor < end)
         {
+            if (source[cursor] == '\\' && cursor + 1 < end &&
+                MessageMarkdownGrammar.TryEscapedMarker(source, cursor + 1, end, out var escaped))
+            {
+                cursor += escaped.Length + 1;
+                continue;
+            }
             if (source[cursor] == '[' && TryLink(source, cursor, end, out var labelEnd, out var linkEnd))
             {
                 Add(source[plainStart..cursor], inherited, false, target);
@@ -88,21 +94,21 @@ public static class ComposerMarkdownSegments
                 plainStart = cursor;
                 continue;
             }
-            if (!TryDelimiter(source, cursor, end, out var marker, out var style, out var closing))
+            if (!MessageMarkdownGrammar.TryDelimiter(source, cursor, end, out var delimiter, out var closing))
             {
                 cursor++;
                 continue;
             }
 
             Add(source[plainStart..cursor], inherited, false, target);
-            Add(marker, ComposerMarkdownStyle.None, true, target);
-            var innerStart = cursor + marker.Length;
-            if (style.HasFlag(ComposerMarkdownStyle.InlineCode))
-                Add(source[innerStart..closing], inherited | style, false, target);
+            Add(delimiter.Marker, ComposerMarkdownStyle.None, true, target);
+            var innerStart = cursor + delimiter.Marker.Length;
+            if (delimiter.ComposerStyle.HasFlag(ComposerMarkdownStyle.InlineCode))
+                Add(source[innerStart..closing], inherited | delimiter.ComposerStyle, false, target);
             else
-                ParseRange(source, innerStart, closing, inherited | style, target);
-            Add(marker, ComposerMarkdownStyle.None, true, target);
-            cursor = closing + marker.Length;
+                ParseRange(source, innerStart, closing, inherited | delimiter.ComposerStyle, target);
+            Add(delimiter.Marker, ComposerMarkdownStyle.None, true, target);
+            cursor = closing + delimiter.Marker.Length;
             plainStart = cursor;
         }
         Add(source[plainStart..end], inherited, false, target);
@@ -114,37 +120,22 @@ public static class ComposerMarkdownSegments
         if (labelEnd <= cursor + 1 || labelEnd + 1 >= end || source[labelEnd + 1] != '(') { next = cursor; return false; }
         var urlEnd = source.IndexOf(')', labelEnd + 2);
         if (urlEnd < 0 || urlEnd >= end) { next = cursor; return false; }
+        if (!MessageContentSegments.IsSafeLink(source[(labelEnd + 2)..urlEnd].Trim()))
+        { next = cursor; return false; }
         next = urlEnd + 1;
         return true;
     }
 
-    private static bool TryDelimiter(string source, int cursor, int end, out string marker,
-        out ComposerMarkdownStyle style, out int closing)
+    private static bool HasClosingFence(string source, int start)
     {
-        (string Marker, ComposerMarkdownStyle Style)[] candidates =
-        [
-            ("***", ComposerMarkdownStyle.Bold | ComposerMarkdownStyle.Italic),
-            ("||", ComposerMarkdownStyle.Spoiler),
-            ("**", ComposerMarkdownStyle.Bold),
-            ("__", ComposerMarkdownStyle.Underline),
-            ("~~", ComposerMarkdownStyle.Strikethrough),
-            ("`", ComposerMarkdownStyle.InlineCode),
-            ("*", ComposerMarkdownStyle.Italic),
-            ("_", ComposerMarkdownStyle.Italic)
-        ];
-        foreach (var candidate in candidates)
+        var cursor = start;
+        while (cursor < source.Length)
         {
-            if (!source.AsSpan(cursor, end - cursor).StartsWith(candidate.Marker)) continue;
-            var found = source.IndexOf(candidate.Marker, cursor + candidate.Marker.Length, StringComparison.Ordinal);
-            if (found < 0 || found >= end || found == cursor + candidate.Marker.Length) continue;
-            marker = candidate.Marker;
-            style = candidate.Style;
-            closing = found;
-            return true;
+            var end = source.IndexOf('\n', cursor);
+            if (end < 0) end = source.Length;
+            if (source.AsSpan(cursor, end - cursor).StartsWith("```")) return true;
+            cursor = end < source.Length ? end + 1 : end;
         }
-        marker = string.Empty;
-        style = ComposerMarkdownStyle.None;
-        closing = -1;
         return false;
     }
 

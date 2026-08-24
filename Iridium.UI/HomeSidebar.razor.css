@@ -1,6 +1,7 @@
 .home-navigation { padding: .7rem .55rem; }
-.home-link { width: 100%; display: flex; align-items: center; gap: .7rem; padding: .62rem .7rem; margin-bottom: .15rem; border: 0; border-radius: .38rem; color: var(--text-muted); background: transparent; text-align: left; cursor: pointer; transition: color .14s, background .14s; }
+.home-link { position:relative;width: 100%; display: flex; align-items: center; gap: .7rem; padding: .62rem .7rem; margin-bottom: .15rem; border: 0; border-radius: .38rem; color: var(--text-muted); background: transparent; text-align: left; cursor: pointer; transition: color .14s, background .14s; }
 .home-link:hover, .home-link.active { color: var(--text-strong); background: var(--surface-hover); }
+.home-link ::deep .friend-request-badge{top:.3rem;right:.35rem}
 .separator { height: 1px; margin: .65rem .45rem .8rem; background: var(--border-subtle); }
 .dm-heading { display: flex; align-items: center; justify-content: space-between; padding: 0 .5rem .45rem; color: var(--text-faint); font-size: .66rem; font-weight: 800; letter-spacing: .06em; }
 .dm-heading button { display: grid; place-items: center; border: 0; color: var(--text-faint); background: transparent; cursor: pointer; }.dm-heading button:hover{color:var(--text-strong)}

@@ -43,10 +43,7 @@ internal static class ChannelMessageMapper
         PreviewContentType: value.PreviewContentType, PreviewSizeBytes: value.PreviewSizeBytes);
 
     private static string Excerpt(string content)
-    {
-        var singleLine = string.Join(' ', content.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)).Trim();
-        return singleLine;
-    }
+        => content;
 
     internal static IReadOnlyList<CommunityMentionDto> DeserializeMentions(string? json)
     {

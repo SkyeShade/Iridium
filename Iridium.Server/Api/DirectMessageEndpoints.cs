@@ -114,7 +114,8 @@ public static class DirectMessageEndpoints
         if (!string.IsNullOrWhiteSpace(before) && !MessageHistoryCursor.TryDecode(before, out _))
             return Results.BadRequest(new { message = "The history cursor is invalid." });
         if (around is { } targetId) return await AroundAsync(conversationId, targetId, take, db);
-        var query = db.DirectMessages.AsNoTracking().Where(value => value.ConversationId == conversationId);
+        var query = db.DirectMessages.AsNoTracking()
+            .Where(value => value.ConversationId == conversationId && !value.IsDeleted);
         if (MessageHistoryCursor.TryDecode(before, out var cursor))
         {
             var cursorAt = new DateTimeOffset(cursor.UtcTicks, TimeSpan.Zero);
@@ -142,11 +143,12 @@ public static class DirectMessageEndpoints
         var target = await db.DirectMessages.AsNoTracking().Include(value => value.AuthorAccount)
             .Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
             .Include(value => value.Attachments)
-            .SingleOrDefaultAsync(value => value.Id == targetId && value.ConversationId == conversationId);
+            .SingleOrDefaultAsync(value => value.Id == targetId && value.ConversationId == conversationId && !value.IsDeleted);
         if (target is null) return Results.NotFound(new { message = "Message not found in this conversation." });
         var half = Math.Min(MessageHistoryDefaults.AroundHalfWindow, Math.Max(1, take / 2));
         var older = await db.DirectMessages.AsNoTracking()
             .Where(value => value.ConversationId == conversationId &&
+                            !value.IsDeleted &&
                             (value.CreatedAt < target.CreatedAt || value.CreatedAt == target.CreatedAt && value.Id.CompareTo(target.Id) < 0))
             .Include(value => value.AuthorAccount).Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
             .Include(value => value.Attachments)
@@ -155,6 +157,7 @@ public static class DirectMessageEndpoints
         if (hasOlder) older.RemoveAt(older.Count - 1);
         var newer = await db.DirectMessages.AsNoTracking()
             .Where(value => value.ConversationId == conversationId &&
+                            !value.IsDeleted &&
                             (value.CreatedAt > target.CreatedAt || value.CreatedAt == target.CreatedAt && value.Id.CompareTo(target.Id) > 0))
             .Include(value => value.AuthorAccount).Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
             .Include(value => value.Attachments)

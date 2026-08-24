@@ -2,7 +2,7 @@
 @using Iridium.Client.Core
 @using Iridium.Web.Models
 
-<div class="message-text @(EmojiMessageParser.IsLargeEmojiOnly(Content) ? "emoji-only-message" : null)">
+<div class="message-text @(Compact ? "compact-message-text" : EmojiMessageParser.IsLargeEmojiOnly(Content) ? "emoji-only-message" : null)">
     <CascadingValue Name="MessageCommunityId" Value="CommunityId">
         <MessageContentNodeView Nodes="Nodes" RevealedSpoilers="_revealedSpoilers"
                                 OnRevealSpoiler="RevealSpoiler" OnProfile="OnProfile" />
@@ -13,6 +13,7 @@
     [Parameter, EditorRequired] public required string Content { get; set; }
     [Parameter] public IReadOnlyList<CommunityMentionDto>? Mentions { get; set; }
     [Parameter] public Guid? CommunityId { get; set; }
+    [Parameter] public bool Compact { get; set; }
     [Parameter] public EventCallback<MentionProfileClick> OnProfile { get; set; }
 
     private IReadOnlyList<MessageContentNode> Nodes => MessageContentSegments.Parse(Content, Mentions);

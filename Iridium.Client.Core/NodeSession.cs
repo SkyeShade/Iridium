@@ -31,6 +31,7 @@ public sealed class NodeSession(
     public IReadOnlyList<SavedAccount> SavedAccounts => _savedAccounts;
     public IReadOnlyList<CommunityDto> Communities => _communities;
     public IReadOnlyList<FriendDto> Friends => _friends;
+    public int IncomingFriendRequestCount => FriendRequestNotifications.IncomingCount(_friends);
     public IReadOnlyList<DirectConversationDto> DirectConversations => _directConversations;
     public bool IsAuthenticated => Account is not null;
     public event Action? Changed;

@@ -54,6 +54,8 @@ else
     <ApplicationShell Communities="Session.Communities"
                       DirectConversations="Session.DirectConversations"
                       RingingCallerAccountId="VoiceSessions.IncomingCall?.CallerAccountId"
+                      IncomingFriendRequestCount="IncomingFriendRequestCount"
+                      ShowHomeFriendRequestNotification="@(FriendRequestNotificationTarget == FriendRequestNotificationLocation.Home)"
                       NodeAuthority="@(Session.SelectedNode!.PublicAuthority)"
                       SelectedCommunity="_selectedCommunity"
                       AccountId="Session.Account!.Id"
@@ -62,8 +64,8 @@ else
                       PublicIdentity="@PublicIdentity"
                       Presence="@CurrentPresence"
                       OnBackgroundInteraction="CloseMessageMenus"
-                      OnCommunitySelected="SelectCommunity"
-                      OnDirectConversationSelected="SelectDirectConversationAsync"
+                      OnCommunitySelected="SelectCommunityFromNavigationAsync"
+                      OnDirectConversationSelected="SelectDirectConversationFromNavigationAsync"
                       OnAddCommunity="() => _showCommunityCreate = true"
                       OnProfile="OpenProfilePopup"
                       OnSettings="OpenSettings"
@@ -105,14 +107,16 @@ else
             {
                 <HomeSidebar ActiveView="_homeView" Conversations="Session.DirectConversations"
                              SelectedConversationId="_selectedDirectConversation?.Id"
-                             OnViewSelected="SelectHomeView" OnConversationSelected="SelectDirectConversationAsync"
+                             IncomingFriendRequestCount="IncomingFriendRequestCount"
+                             ShowFriendsFriendRequestNotification="@(FriendRequestNotificationTarget == FriendRequestNotificationLocation.Friends)"
+                             OnViewSelected="SelectHomeView" OnConversationSelected="SelectDirectConversationFromNavigationAsync"
                              OnConversationClosed="CloseDirectConversationAsync" />
             }
             else
             {
                 <CommunitySidebar @ref="_communitySidebar" State="CommunityState" AccountId="Session.Account!.Id"
                                   CommunityId="_selectedCommunity.Id" SelectedChannel="_selectedChannel"
-                                  OnChannelSelected="SelectChannelAsync" />
+                                  OnChannelSelected="SelectChannelFromNavigationAsync" />
             }
         </SidebarContent>
         <VoiceConnection><VoiceConnectionPanel /></VoiceConnection>
@@ -126,6 +130,8 @@ else
                 @if (_homeView == "dm" && _selectedDirectConversation is not null)
                 {
                     <DirectMessageView @key="_selectedDirectConversation.Id" @ref="_directMessageView" Conversation="_selectedDirectConversation"
+                                       FocusRequest="@(_composerFocusConversationId == _selectedDirectConversation.Id ? _composerFocusRequest : 0)"
+                                       OnFocusConsumed="ComposerFocusConsumed"
                                        CurrentAccountId="Session.Account!.Id" NodeAuthority="@(Session.SelectedNode!.PublicAuthority)"
                                        OnEditProfile="OpenProfileEditor" OnMessage="OpenDirectMessageAsync" />
                 }
@@ -136,6 +142,8 @@ else
                 else
                 {
                     <FriendsView Friends="Session.Friends" NodeAuthority="@(Session.SelectedNode!.PublicAuthority)" CurrentAccountId="Session.Account!.Id" Error="@_error"
+                                 IncomingPendingCount="IncomingFriendRequestCount"
+                                 ShowPendingFriendRequestNotification="@(FriendRequestNotificationTarget == FriendRequestNotificationLocation.Pending)"
                                  OnEditProfile="OpenProfileEditor"
                                  OnAddFriend="ShowAddFriend" OnAccept="AcceptFriendRequestAsync"
                                  OnRemove="RemoveFriendshipAsync" OnMessage="OpenFriendDirectMessageAsync" />
@@ -151,6 +159,8 @@ else
                 else
                 {
                     <ChannelView @key="(_selectedChannel.Id, _selectedChannel.EffectivePermissions)" Community="_selectedCommunity" Channel="_selectedChannel"
+                                 FocusRequest="@(_composerFocusChannelId == _selectedChannel.Id ? _composerFocusRequest : 0)"
+                                 OnFocusConsumed="ComposerFocusConsumed"
                                  CurrentAccountId="Session.Account!.Id"
                                  NodeAuthority="@(Session.SelectedNode!.PublicAuthority)" CommunityManagement="CommunityState.Management"
                                  OnEditProfile="OpenProfileEditor" OnMessage="OpenDirectMessageAsync"
@@ -284,8 +294,16 @@ else
     private StreamViewerReturnLocation? _streamViewerReturnLocation;
     private StreamViewerMode _lastViewerMode;
     private bool _expandTransitionPending;
+    private long _composerFocusRequest;
+    private Guid? _composerFocusChannelId;
+    private Guid? _composerFocusConversationId;
     private string PublicIdentity => IridiumIdentity.Format(Session.Account!.Username, Session.SelectedNode!.PublicAuthority);
     private PublicPresence CurrentPresence => PresenceVisibility.ToPublic(Session.Account!.PreferredPresence, Messaging.IsConnected);
+    private int IncomingFriendRequestCount => Session.IncomingFriendRequestCount;
+    private FriendRequestNotificationLocation FriendRequestNotificationTarget => FriendRequestNotifications.Route(
+        IncomingFriendRequestCount,
+        outsideHome: _selectedCommunity is not null,
+        friendsActive: _selectedCommunity is null && _homeView == "friends");
     private void CloseMessageMenus() => MessageMenus.Close();
     private bool CanOpenCommunitySettings => CommunityState.IsOwner ||
         CommunityState.HasPermission(CommunityPermission.ManageCommunity) ||
@@ -615,6 +633,8 @@ else
 
     private async Task SelectCommunity(CommunityDto? community)
     {
+        _composerFocusChannelId = null;
+        _composerFocusConversationId = null;
         VoiceSessions.MinimizeWatchedStream();
         await Messaging.ClearAsync();
         CloseQuickInvite();
@@ -634,8 +654,15 @@ else
         }
         catch (Exception exception) { _error = UserMessage(exception); _selectedCommunity = null; CommunityState.Clear(); }
     }
+    private async Task SelectCommunityFromNavigationAsync(CommunityDto? community)
+    {
+        await SelectCommunity(community);
+        if (_selectedChannel?.Kind == CommunityChannelKind.Text) RequestChannelComposerFocus(_selectedChannel.Id);
+    }
     private async Task SelectChannelAsync(CommunityChannelDto? channel)
     {
+        _composerFocusChannelId = null;
+        _composerFocusConversationId = null;
         VoiceSessions.MinimizeWatchedStream();
         _searchTargetMessageId = null;
         if (channel is null) await Messaging.ClearAsync();
@@ -644,6 +671,11 @@ else
         await LastChannelStore.SaveAsync(Session.Account.Id, channel.CommunityId, channel.Id);
         CommunityState.MarkChannelRead(channel.Id);
         await Session.MarkCommunityChannelReadAsync(channel.CommunityId, channel.Id);
+    }
+    private async Task SelectChannelFromNavigationAsync(CommunityChannelDto? channel)
+    {
+        await SelectChannelAsync(channel);
+        if (channel?.Kind == CommunityChannelKind.Text) RequestChannelComposerFocus(channel.Id);
     }
 
     private async Task OpenCommunitySearchResultAsync(MessageSearchResultDto result)
@@ -658,6 +690,8 @@ else
         _directMessageView?.OpenSearchResultAsync(result) ?? Task.CompletedTask;
     private void SelectHomeView(string view)
     {
+        _composerFocusChannelId = null;
+        _composerFocusConversationId = null;
         VoiceSessions.MinimizeWatchedStream();
         _homeView = view;
         if (view != "dm") _selectedDirectConversation = null;
@@ -671,7 +705,16 @@ else
     private async Task AcceptFriendRequestAsync(Guid friendshipId)
     {
         _error = null;
-        try { await Session.AcceptFriendRequestAsync(friendshipId); }
+        var request = Session.Friends.FirstOrDefault(friend =>
+            friend.FriendshipId == friendshipId && friend.Status == FriendshipStatus.Pending && !friend.IsOutgoing);
+        try
+        {
+            await Session.AcceptFriendRequestAsync(friendshipId);
+            var accountId = request?.AccountId ?? Session.Friends
+                .FirstOrDefault(friend => friend.FriendshipId == friendshipId &&
+                                          friend.Status == FriendshipStatus.Accepted)?.AccountId;
+            if (accountId is { } acceptedAccountId) await OpenDirectMessageAsync(acceptedAccountId);
+        }
         catch (Exception exception) { _error = UserMessage(exception); }
     }
     private async Task RemoveFriendshipAsync(Guid friendshipId)
@@ -683,6 +726,8 @@ else
     private Task RemoveFriendAsync(FriendDto friend) => RemoveFriendshipAsync(friend.FriendshipId);
     private async Task OpenDirectMessageAsync(Guid accountId)
     {
+        _composerFocusChannelId = null;
+        _composerFocusConversationId = null;
         VoiceSessions.MinimizeWatchedStream();
         _error = null;
         try
@@ -693,6 +738,7 @@ else
             CommunityState.Clear();
             _homeView = "dm";
             _showAddFriend = false;
+            RequestDirectComposerFocus(_selectedDirectConversation.Id);
         }
         catch (Exception exception) { _error = UserMessage(exception); }
     }
@@ -701,6 +747,8 @@ else
     private void ShowAddFriend() { _showAddFriend = true; _error = null; }
     private async Task SelectDirectConversationAsync(DirectConversationDto conversation)
     {
+        _composerFocusChannelId = null;
+        _composerFocusConversationId = null;
         VoiceSessions.MinimizeWatchedStream();
         if (_selectedCommunity is not null) await Messaging.ClearAsync();
         _selectedCommunity = null;
@@ -711,6 +759,29 @@ else
         _selectedDirectConversation = conversation;
         _homeView = "dm";
     }
+    private async Task SelectDirectConversationFromNavigationAsync(DirectConversationDto conversation)
+    {
+        await SelectDirectConversationAsync(conversation);
+        RequestDirectComposerFocus(conversation.Id);
+    }
+    private void RequestChannelComposerFocus(Guid channelId)
+    {
+        _composerFocusChannelId = channelId;
+        _composerFocusConversationId = null;
+        _composerFocusRequest++;
+    }
+    private void RequestDirectComposerFocus(Guid conversationId)
+    {
+        _composerFocusChannelId = null;
+        _composerFocusConversationId = conversationId;
+        _composerFocusRequest++;
+    }
+    private void ComposerFocusConsumed(long request)
+    {
+        if (request != _composerFocusRequest) return;
+        _composerFocusChannelId = null;
+        _composerFocusConversationId = null;
+    }
     private async Task CloseDirectConversationAsync(Guid conversationId)
     {
         await Session.HideDirectConversationAsync(conversationId);
@@ -718,6 +789,9 @@ else
         await Messaging.ClearAsync();
         _selectedDirectConversation = null;
         _homeView = "friends";
+        _composerFocusRequest = 0;
+        _composerFocusChannelId = null;
+        _composerFocusConversationId = null;
     }
     private void CloseProfile() { _showProfile = false; _error = null; }
     private void CloseSettings() { _showSettings = false; _error = null; }
@@ -826,6 +900,9 @@ else
         _selectedChannel = null;
         _selectedDirectConversation = null;
         _homeView = "friends";
+        _composerFocusRequest = 0;
+        _composerFocusChannelId = null;
+        _composerFocusConversationId = null;
         _showSettings = false;
         _showProfile = false;
         _showAddFriend = false;

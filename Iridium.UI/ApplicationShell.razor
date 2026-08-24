@@ -4,6 +4,8 @@
     <CommunityRail Communities="Communities" SelectedCommunityId="SelectedCommunity?.Id"
                    DirectConversations="DirectConversations" NodeAuthority="@NodeAuthority"
                    RingingCallerAccountId="RingingCallerAccountId"
+                   IncomingFriendRequestCount="IncomingFriendRequestCount"
+                   ShowHomeFriendRequestNotification="ShowHomeFriendRequestNotification"
                    OnSelected="OnCommunitySelected" OnDirectConversationSelected="OnDirectConversationSelected" OnAdd="OnAddCommunity" />
     <aside class="secondary-sidebar @(SelectedCommunity is not null ? "selected-community-sidebar" : null)">
         <header class="community-header @(SelectedCommunity is not null ? "selected-community-header" : null)">
@@ -29,6 +31,8 @@
     [Parameter] public CommunityDto? SelectedCommunity { get; set; }
     [Parameter] public IReadOnlyList<DirectConversationDto> DirectConversations { get; set; } = [];
     [Parameter] public Guid? RingingCallerAccountId { get; set; }
+    [Parameter] public int IncomingFriendRequestCount { get; set; }
+    [Parameter] public bool ShowHomeFriendRequestNotification { get; set; }
     [Parameter] public string NodeAuthority { get; set; } = string.Empty;
     [Parameter, EditorRequired] public required string DisplayName { get; set; }
     [Parameter] public Guid? AccountId { get; set; }

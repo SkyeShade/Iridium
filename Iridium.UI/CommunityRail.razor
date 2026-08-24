@@ -6,6 +6,10 @@
             aria-label="Home" @onclick="() => OnSelected.InvokeAsync(null)">
         @if (SelectedCommunityId is null) { <span class="selected-indicator" aria-hidden="true"></span> }
         <Icon Name="home" Size="23" />
+        @if (ShowHomeFriendRequestNotification)
+        {
+            <FriendRequestBadge Count="IncomingFriendRequestCount" Surface="deep" />
+        }
     </button>
     @if (NotificationConversations.Count > 0)
     {
@@ -63,6 +67,8 @@
     [Parameter] public IReadOnlyList<DirectConversationDto> DirectConversations { get; set; } = [];
     [Parameter] public string NodeAuthority { get; set; } = string.Empty;
     [Parameter] public Guid? RingingCallerAccountId { get; set; }
+    [Parameter] public int IncomingFriendRequestCount { get; set; }
+    [Parameter] public bool ShowHomeFriendRequestNotification { get; set; }
     [Parameter] public EventCallback<CommunityDto?> OnSelected { get; set; }
     [Parameter] public EventCallback<DirectConversationDto> OnDirectConversationSelected { get; set; }
     [Parameter] public EventCallback OnAdd { get; set; }

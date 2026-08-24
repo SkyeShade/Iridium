@@ -58,6 +58,8 @@
     [Parameter] public EventCallback<Guid> OnMessage { get; set; }
     [Parameter] public EventCallback<CommunityMemberRolesChange> OnMemberRolesChanged { get; set; }
     [Parameter] public Guid? TargetMessageId { get; set; }
+    [Parameter] public long FocusRequest { get; set; }
+    [Parameter] public EventCallback<long> OnFocusConsumed { get; set; }
     private Guid? _loadedChannelId;
     private ChannelMessageDto? _replyTo;
     private MessageComposer? _composer;
@@ -68,12 +70,15 @@
     private bool _loading;
     private bool _sending;
     private bool _disposed;
+    private bool _focusAfterRender;
+    private long _consumedFocusRequest;
     private string? _error;
 
     protected override void OnInitialized() => Messaging.Changed += MessagesChanged;
 
     protected override async Task OnParametersSetAsync()
     {
+        if (FocusRequest > _consumedFocusRequest) _focusAfterRender = true;
         if (_loadedChannelId == Channel.Id && Messaging.CommunityId == Community.Id && Messaging.ChannelId == Channel.Id &&
             _loadedTargetMessageId == TargetMessageId) return;
         _replyTo = null;
@@ -94,6 +99,15 @@
             _error = FailureMessage(exception, "Channel loading failed", "This channel could not be opened.");
         }
         finally { _loading = false; }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_focusAfterRender || _loading) return;
+        _focusAfterRender = false;
+        _consumedFocusRequest = FocusRequest;
+        if (_composer is not null) await _composer.FocusAsync();
+        await OnFocusConsumed.InvokeAsync(FocusRequest);
     }
 
     private void MessagesChanged() => _ = RenderFromRealtimeAsync();

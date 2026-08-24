@@ -850,8 +850,8 @@ public sealed class RealtimeFlowTests
             Assert.Equal(CallState.Ended, (await callEnded.Task.WaitAsync(TimeSpan.FromSeconds(5))).State);
             await firstConnection.InvokeAsync(DirectMessageHubContract.DeleteMessage,
                 directConversation.Id, directMessage.Id);
-            Assert.True((await owner.GetDirectMessagesAsync(directConversation.Id))
-                .Single(value => value.Id == directMessage.Id).IsDeleted);
+            Assert.DoesNotContain(await owner.GetDirectMessagesAsync(directConversation.Id),
+                value => value.Id == directMessage.Id);
             // Wait until the server has processed the first disconnect before stopping the
             // final connection; otherwise either disconnect notification can win the TCS race.
             outsiderPresenceOnOwner = Completion<PresenceChangedEvent>();
@@ -944,8 +944,9 @@ public sealed class RealtimeFlowTests
             await firstConnection.InvokeAsync(ChatHubContract.DeleteMessage, communityA.Id, chatChannel.Id, sent.Id);
             Assert.Equal(sent.Id, (await deletedOnSecond.Task.WaitAsync(TimeSpan.FromSeconds(5))).MessageId);
             var history = await owner.GetChannelMessagesAsync(communityA.Id, chatChannel.Id);
-            Assert.True(history.Single(value => value.Id == sent.Id).IsDeleted);
+            Assert.DoesNotContain(history, value => value.Id == sent.Id);
             Assert.True(history.Single(value => value.Id == reply.Id).ReplyTo?.IsDeleted);
+            Assert.Null(history.Single(value => value.Id == reply.Id).ReplyTo?.Excerpt);
 
             var pagedMessages = new List<ChannelMessageDto>();
             for (var index = 0; index < 55; index++)

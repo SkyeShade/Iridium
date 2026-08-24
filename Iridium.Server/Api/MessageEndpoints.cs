@@ -84,7 +84,7 @@ public static class MessageEndpoints
             return await AroundAsync(communityId, channelId, targetId, take, db);
 
         var query = db.ChannelMessages.AsNoTracking()
-            .Where(value => value.CommunityId == communityId && value.ChannelId == channelId);
+            .Where(value => value.CommunityId == communityId && value.ChannelId == channelId && !value.IsDeleted);
         if (MessageHistoryCursor.TryDecode(before, out var cursor))
         {
             var cursorAt = new DateTimeOffset(cursor.UtcTicks, TimeSpan.Zero);
@@ -115,11 +115,13 @@ public static class MessageEndpoints
             .Include(value => value.AuthorAccount)
             .Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
             .Include(value => value.Attachments)
-            .SingleOrDefaultAsync(value => value.Id == targetId && value.CommunityId == communityId && value.ChannelId == channelId);
+            .SingleOrDefaultAsync(value => value.Id == targetId && value.CommunityId == communityId &&
+                                           value.ChannelId == channelId && !value.IsDeleted);
         if (target is null) return Results.NotFound(new { message = "Message not found in this channel." });
         var half = Math.Min(MessageHistoryDefaults.AroundHalfWindow, Math.Max(1, take / 2));
         var before = await db.ChannelMessages.AsNoTracking()
             .Where(value => value.CommunityId == communityId && value.ChannelId == channelId &&
+                            !value.IsDeleted &&
                             (value.CreatedAt < target.CreatedAt || value.CreatedAt == target.CreatedAt && value.Id.CompareTo(target.Id) < 0))
             .Include(value => value.AuthorAccount).Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
             .Include(value => value.Attachments)
@@ -128,6 +130,7 @@ public static class MessageEndpoints
         if (hasOlder) before.RemoveAt(before.Count - 1);
         var after = await db.ChannelMessages.AsNoTracking()
             .Where(value => value.CommunityId == communityId && value.ChannelId == channelId &&
+                            !value.IsDeleted &&
                             (value.CreatedAt > target.CreatedAt || value.CreatedAt == target.CreatedAt && value.Id.CompareTo(target.Id) > 0))
             .Include(value => value.AuthorAccount).Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
             .Include(value => value.Attachments)

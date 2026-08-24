@@ -141,6 +141,64 @@ public sealed class MessageContentSegmentsTests
     }
 
     [Theory]
+    [InlineData("*`test`*", ComposerMarkdownStyle.Italic | ComposerMarkdownStyle.InlineCode,
+        MessageContentKind.Italic, MessageContentKind.InlineCode)]
+    [InlineData("**`test`**", ComposerMarkdownStyle.Bold | ComposerMarkdownStyle.InlineCode,
+        MessageContentKind.Bold, MessageContentKind.InlineCode)]
+    public void ComposerAndSentParserAgreeOnNestedCodeAndEmphasis(string source,
+        ComposerMarkdownStyle expectedStyle, MessageContentKind outerKind, MessageContentKind innerKind)
+    {
+        var composer = ComposerMarkdownSegments.Parse(source);
+        var sent = MessageContentSegments.Parse(source, null);
+
+        Assert.Equal(source, string.Concat(composer.Select(segment => segment.Text)));
+        Assert.Contains(composer, segment => !segment.IsMarker && segment.Style.HasFlag(expectedStyle));
+        var outer = Assert.IsType<MessageContainerNode>(Assert.Single(sent));
+        Assert.Equal(outerKind, outer.Kind);
+        Assert.Contains(Descendants(outer), node => node is MessageContainerNode container &&
+                                                   container.Kind == innerKind);
+    }
+
+    [Fact]
+    public void ItalicCodeComposerRunRetainsBothStylesAndAllSourceWidths()
+    {
+        const string source = "*`test`*";
+        var segments = ComposerMarkdownSegments.Parse(source);
+        var content = Assert.Single(segments, segment => !segment.IsMarker);
+        Assert.True(content.Style.HasFlag(ComposerMarkdownStyle.Italic));
+        Assert.True(content.Style.HasFlag(ComposerMarkdownStyle.InlineCode));
+        Assert.Equal(source, string.Concat(segments.Select(segment => segment.Text)));
+        Assert.Equal(source.Length, segments.Sum(segment => segment.Text.Length));
+    }
+
+    [Theory]
+    [InlineData("\\*not italic*")]
+    [InlineData("*incomplete")]
+    [InlineData("```incomplete")]
+    [InlineData("[unsafe](javascript:alert(1))")]
+    public void MalformedOrUnsupportedComposerMarkdownRemainsSafeSource(string source)
+    {
+        var segments = ComposerMarkdownSegments.Parse(source);
+        Assert.Equal(source, string.Concat(segments.Select(segment => segment.Text)));
+        Assert.DoesNotContain(segments, segment => segment.Style != ComposerMarkdownStyle.None);
+    }
+
+    [Fact]
+    public void ComposerSegmentsRetainEveryRawSourceIndexIncludingGhostMarkers()
+    {
+        const string source = "before *`test`* after";
+        var segments = ComposerMarkdownSegments.Parse(source);
+        var offset = 0;
+        foreach (var segment in segments)
+        {
+            Assert.Equal(segment.Text, source.Substring(offset, segment.Text.Length));
+            offset += segment.Text.Length;
+        }
+        Assert.Equal(source.Length, offset);
+        Assert.Equal(4, segments.Where(segment => segment.IsMarker).Sum(segment => segment.Text.Length));
+    }
+
+    [Theory]
     [InlineData("__*underline italic*__", MessageContentKind.Underline, MessageContentKind.Italic)]
     [InlineData("__**underline bold**__", MessageContentKind.Underline, MessageContentKind.Bold)]
     [InlineData("__***all three***__", MessageContentKind.Underline, MessageContentKind.Bold)]

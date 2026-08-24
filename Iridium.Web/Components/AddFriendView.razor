@@ -21,7 +21,7 @@
             {
                 <article class="resolved-card @(profile.Relationship == ProfileRelationshipStatus.Self ? null : "clickable")"
                          role="button" tabindex="0" @onclick="() => OpenProfileAsync(profile)">
-                    <ProfileAvatar AccountId="profile.AccountId" DisplayName="@profile.DisplayName" Presence="profile.Presence" Size="large" Surface="sidebar" />
+                    <ProfileAvatar AccountId="profile.AccountId" DisplayName="@profile.DisplayName" Presence="profile.Presence" Size="medium" Surface="sidebar" />
                     <div class="resolved-copy"><strong class="display-name">@profile.DisplayName</strong><span>@identity</span>@if (!string.IsNullOrWhiteSpace(profile.Pronouns)) { <small>@profile.Pronouns</small> }</div>
                     <div class="resolved-actions">
                         @switch (profile.Relationship)
@@ -135,6 +135,5 @@
         finally { _busy = false; }
     }
 
-    private static string Initial(string value) => string.IsNullOrWhiteSpace(value) ? "?" : value[..1].ToUpperInvariant();
     public void Dispose() { _debounce?.Cancel(); _debounce?.Dispose(); }
 }

@@ -921,16 +921,7 @@ public sealed class ChannelMessagingSession(
     private void ReceiveDeleted(ChannelMessageDeletedEvent deleted)
     {
         if (deleted.CommunityId != CommunityId || deleted.ChannelId != ChannelId) return;
-        var index = _messages.FindIndex(value => value.Id == deleted.MessageId);
-        if (index >= 0) _messages[index] = _messages[index] with { Content = string.Empty, IsDeleted = true };
-        for (var position = 0; position < _messages.Count; position++)
-        {
-            if (_messages[position].ReplyTo?.MessageId != deleted.MessageId) continue;
-            _messages[position] = _messages[position] with
-            {
-                ReplyTo = _messages[position].ReplyTo! with { Excerpt = null, IsDeleted = true }
-            };
-        }
+        MessageTimeline.ApplyDeletion(_messages, deleted.MessageId);
         NotifyChanged();
     }
 
@@ -951,16 +942,7 @@ public sealed class ChannelMessagingSession(
     private void ReceiveDirectDeleted(DirectMessageDeletedEvent deleted)
     {
         if (deleted.ConversationId != DirectConversationId) return;
-        var index = _directMessages.FindIndex(value => value.Id == deleted.MessageId);
-        if (index >= 0) _directMessages[index] = _directMessages[index] with { Content = string.Empty, IsDeleted = true };
-        for (var position = 0; position < _directMessages.Count; position++)
-        {
-            if (_directMessages[position].ReplyTo?.MessageId != deleted.MessageId) continue;
-            _directMessages[position] = _directMessages[position] with
-            {
-                ReplyTo = _directMessages[position].ReplyTo! with { Excerpt = null, IsDeleted = true }
-            };
-        }
+        MessageTimeline.ApplyDeletion(_directMessages, deleted.MessageId);
         NotifyChanged();
     }
 
@@ -1031,7 +1013,10 @@ public sealed class ChannelMessagingSession(
             var authoritative = message.DeliveryState == MessageDeliveryState.Confirmed
                 ? message with { DeliveryError = null, CanRetry = false }
                 : message;
-            if (index < 0) _messages.Add(authoritative); else _messages[index] = authoritative;
+            if (authoritative.IsDeleted)
+                MessageTimeline.ApplyDeletion(_messages, authoritative.Id);
+            else if (index < 0) _messages.Add(authoritative);
+            else _messages[index] = authoritative;
             var excerpt = message.IsDeleted ? null : Excerpt(message.Content);
             for (var position = 0; position < _messages.Count; position++)
             {
@@ -1062,7 +1047,10 @@ public sealed class ChannelMessagingSession(
             var authoritative = message.DeliveryState == MessageDeliveryState.Confirmed
                 ? message with { DeliveryError = null, CanRetry = false }
                 : message;
-            if (index < 0) _directMessages.Add(authoritative); else _directMessages[index] = authoritative;
+            if (authoritative.IsDeleted)
+                MessageTimeline.ApplyDeletion(_directMessages, authoritative.Id);
+            else if (index < 0) _directMessages.Add(authoritative);
+            else _directMessages[index] = authoritative;
             var excerpt = message.IsDeleted ? null : Excerpt(message.Content);
             for (var position = 0; position < _directMessages.Count; position++)
             {
@@ -1112,10 +1100,7 @@ public sealed class ChannelMessagingSession(
     private sealed record OutgoingOperation(Guid ClientMessageId, Task Completion);
 
     private static string Excerpt(string content)
-    {
-        var oneLine = string.Join(' ', content.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)).Trim();
-        return oneLine;
-    }
+        => content;
 
     private (Guid CommunityId, Guid ChannelId) RequireChannel() =>
         _channelReady && (CommunityId, ChannelId) is ({ } communityId, { } channelId)
