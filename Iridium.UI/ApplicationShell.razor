@@ -1,6 +1,10 @@
 @using Iridium.Protocol
+@using Microsoft.JSInterop
+@implements IAsyncDisposable
+@inject IJSRuntime JS
 
-<div class="app-shell @(ShowRightSidebar ? "has-context-sidebar" : null)" @onclick="OnBackgroundInteraction">
+<div class="app-shell @(ShowRightSidebar ? "has-context-sidebar" : null) mobile-@ActiveMobilePanel.ToString().ToLowerInvariant()"
+     @onclick="OnBackgroundInteraction" @onkeydown="ShellKeyDown">
     <CommunityRail Communities="Communities" SelectedCommunityId="SelectedCommunity?.Id"
                    DirectConversations="DirectConversations" NodeAuthority="@NodeAuthority"
                    RingingCallerAccountId="RingingCallerAccountId"
@@ -15,14 +19,29 @@
         <div class="sidebar-body">
             @if (SidebarContent is not null) { @SidebarContent }
         </div>
-        @if (VoiceConnection is not null) { @VoiceConnection }
+        @if (VoiceConnection is not null) { <div class="voice-connection-slot">@VoiceConnection</div> }
         <ProfilePanel AccountId="AccountId" AvatarRevision="AvatarRevision" DisplayName="@DisplayName"
                       PublicIdentity="@PublicIdentity" Presence="Presence" OnProfile="OnProfile" OnSettings="OnSettings" />
     </aside>
-    <main class="main-content">@ChildContent</main>
+    <main class="main-content" @ref="_mainContent">
+        <header class="mobile-conversation-header">
+            <button type="button" class="mobile-back" aria-label="Back to navigation" @onclick="OnMobileBack"><Icon Name="chevron" Size="48" /></button>
+            <strong title="@MobileConversationTitle">@MobileConversationTitle</strong>
+            @if (ShowRightSidebar)
+            {
+                <button type="button" class="mobile-context" aria-label="Open conversation context" @onclick="OnMobileContext"><Icon Name="friends" /></button>
+            }
+            else { <span class="mobile-header-spacer"></span> }
+        </header>
+        <div class="main-content-slot">@ChildContent</div>
+    </main>
     @if (ShowRightSidebar && RightSidebar is not null)
     {
-        <aside class="context-sidebar">@RightSidebar</aside>
+        <button type="button" class="mobile-context-backdrop" aria-label="Close conversation context" @onclick="OnMobileContextClose"></button>
+        <aside class="context-sidebar" role="complementary" aria-label="Conversation context">
+            <header class="mobile-context-header"><strong>Conversation details</strong><button type="button" aria-label="Close conversation context" @onclick="OnMobileContextClose"><Icon Name="close" /></button></header>
+            @RightSidebar
+        </aside>
     }
 </div>
 
@@ -51,4 +70,42 @@
     [Parameter] public RenderFragment? RightSidebar { get; set; }
     [Parameter] public bool ShowRightSidebar { get; set; }
     [Parameter] public EventCallback OnBackgroundInteraction { get; set; }
+    [Parameter] public MobilePanel ActiveMobilePanel { get; set; } = MobilePanel.Navigation;
+    [Parameter] public string MobileConversationTitle { get; set; } = "Conversation";
+    [Parameter] public EventCallback OnMobileBack { get; set; }
+    [Parameter] public EventCallback OnMobileContext { get; set; }
+    [Parameter] public EventCallback OnMobileContextClose { get; set; }
+    private ElementReference _mainContent;
+    private IJSObjectReference? _swipeModule;
+    private DotNetObjectReference<ApplicationShell>? _selfReference;
+    private Task ShellKeyDown(KeyboardEventArgs args) => args.Key == "Escape" && ActiveMobilePanel == MobilePanel.Context
+        ? OnMobileContextClose.InvokeAsync()
+        : Task.CompletedTask;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        _swipeModule = await JS.InvokeAsync<IJSObjectReference>("import", "./_content/Iridium.UI/js/mobileConversationSwipe.js");
+        _selfReference = DotNetObjectReference.Create(this);
+        await _swipeModule.InvokeVoidAsync("wireMobileConversationSwipe", _mainContent, _selfReference);
+    }
+
+    [JSInvokable]
+    public Task MobileConversationSwipeBackAsync() => ActiveMobilePanel == MobilePanel.Conversation
+        ? OnMobileBack.InvokeAsync()
+        : Task.CompletedTask;
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_swipeModule is not null)
+        {
+            try
+            {
+                await _swipeModule.InvokeVoidAsync("unwireMobileConversationSwipe", _mainContent);
+                await _swipeModule.DisposeAsync();
+            }
+            catch (JSDisconnectedException) { }
+        }
+        _selfReference?.Dispose();
+    }
 }

@@ -1056,6 +1056,19 @@ public sealed class RealtimeFlowTests
             await Assert.ThrowsAsync<HubException>(() => firstConnection.InvokeAsync(
                 ChatHubContract.DeleteMessage, communityA.Id, outsiderChannel.Id, outsiderMessage.Id));
 
+            var selfTargeted = await firstConnection.InvokeAsync<ChannelMessageDto>(
+                ChatHubContract.SendMessage, communityA.Id, chatChannel.Id,
+                new SendChannelMessageRequest("@self @everyone", null,
+                [
+                    new(CommunityMentionKind.Account, ownerAuth.Account.Id, 0, 5),
+                    new(CommunityMentionKind.Everyone, null, 6, 9)
+                ]));
+            Assert.True(CommunityMentionPresentation.IsTargetedAt(selfTargeted, ownerAuth.Account.Id));
+            Assert.False(CommunityMentionPresentation.ShouldNotify(selfTargeted, ownerAuth.Account.Id));
+            Assert.Equal(0, (await owner.GetCommunitiesAsync()).Single(value => value.Id == communityA.Id).MentionCount);
+            Assert.Equal(0, (await owner.GetCommunityStructureAsync(communityA.Id)).Channels
+                .Single(value => value.Id == chatChannel.Id).MentionCount);
+
             await owner.DeleteChannelAsync(communityA.Id, chatChannel.Id);
             Assert.DoesNotContain((await owner.GetCommunityStructureAsync(communityA.Id)).Channels, value => value.Id == chatChannel.Id);
             await owner.RemoveFriendshipAsync(outgoingFriendRequest.FriendshipId);

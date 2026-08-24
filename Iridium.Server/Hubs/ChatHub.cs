@@ -885,7 +885,7 @@ public sealed class ChatHub(
                     if (!memberIds.Contains(accountId)) throw new HubException("Mentioned account is not a member of this Server.");
                     var account = await db.Accounts.AsNoTracking().SingleAsync(value => value.Id == accountId);
                     result.Add(new(input.Kind, accountId, input.Start, input.Length, $"@{account.DisplayName}"));
-                    if (accountId != senderAccountId && await authorization.HasChannelPermissionAsync(
+                    if (CommunityMentionPresentation.ShouldDeliverNotification(senderAccountId, accountId) && await authorization.HasChannelPermissionAsync(
                             communityId, channelId, accountId, CommunityPermission.ViewChannels, db)) recipients.Add(accountId);
                     break;
                 }
@@ -899,7 +899,8 @@ public sealed class ChatHub(
                     var roleMembers = await db.CommunityMemberRoles
                         .Where(value => value.CommunityId == communityId && value.RoleId == roleId)
                         .Select(value => value.AccountId).ToListAsync();
-                    foreach (var accountId in roleMembers.Where(value => value != senderAccountId))
+                    foreach (var accountId in roleMembers.Where(value =>
+                                 CommunityMentionPresentation.ShouldDeliverNotification(senderAccountId, value)))
                         if (await authorization.HasChannelPermissionAsync(communityId, channelId, accountId, CommunityPermission.ViewChannels, db))
                             recipients.Add(accountId);
                     break;
@@ -908,7 +909,8 @@ public sealed class ChatHub(
                     if (!access.Has(CommunityPermission.MentionEveryone))
                         throw new HubException("You do not have permission to mention everyone.");
                     result.Add(new(input.Kind, null, input.Start, input.Length, "@everyone"));
-                    foreach (var accountId in memberIds.Where(value => value != senderAccountId))
+                    foreach (var accountId in memberIds.Where(value =>
+                                 CommunityMentionPresentation.ShouldDeliverNotification(senderAccountId, value)))
                         if (await authorization.HasChannelPermissionAsync(communityId, channelId, accountId, CommunityPermission.ViewChannels, db))
                             recipients.Add(accountId);
                     break;

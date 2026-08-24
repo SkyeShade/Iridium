@@ -6,3 +6,4 @@
 .composer-region { grid-row: 4; }
 .composer-region.read-only { padding: .8rem 1rem; color: var(--text-faint); font-size: .75rem; text-align: center; }
 .channel-view.file-drag-over .message-region{box-shadow:inset 0 0 0 2px color-mix(in srgb,var(--accent) 32%,transparent);background:color-mix(in srgb,var(--accent) 4%,transparent)}
+@media (max-width:860px){.channel-view{height:100%}}

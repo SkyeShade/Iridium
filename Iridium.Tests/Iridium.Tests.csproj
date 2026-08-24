@@ -18,6 +18,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Iridium.Client.Core\Iridium.Client.Core.csproj" />
+    <ProjectReference Include="..\Iridium.UI\Iridium.UI.csproj" />
     <ProjectReference Include="..\Iridium.Server\Iridium.Server.csproj" />
   </ItemGroup>
 

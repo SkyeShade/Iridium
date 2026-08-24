@@ -1,5 +1,8 @@
 .message-row { position: relative; display: grid; grid-template-columns: var(--chat-content-column) minmax(0, 1fr); padding: .08rem 1rem .08rem 0; color: var(--text); transition: background 100ms ease; }
 .message-row:hover { background: color-mix(in srgb, var(--surface-hover) 45%, transparent); }
+.message-row.mentions-current-account { background: color-mix(in srgb, #d7a84a 12%, transparent); }
+.message-row.mentions-current-account::before { content:""; position:absolute; inset:.08rem auto .08rem 0; width:3px; border-radius:0 3px 3px 0; background:#d7a84a; }
+.message-row.mentions-current-account:hover { background: color-mix(in srgb, #d7a84a 17%, var(--surface-hover)); }
 .message-row.group-start { margin-top: .72rem; padding-top: .14rem; }
 .message-row.group-start:first-child { margin-top: 0; }
 .message-avatar { grid-column: 1; align-self: start; width: 2.5rem; height: 2.5rem; display: grid; place-items: center; justify-self: center; padding:0; border:0; border-radius:50%; color:inherit; background:transparent; cursor:pointer; }
@@ -21,5 +24,6 @@ header { display: flex; align-items: baseline; gap: .45rem; min-width: 0; line-h
 .edit-help button:disabled { opacity: .45; cursor: default; text-decoration: none; }
 .edit-help .separator { margin: 0 .16rem; color: var(--text-faint); }
 .message-row.message-focus { animation: message-focus 1.1s ease-out; } @keyframes message-focus { 0%, 35% { background: color-mix(in srgb, var(--accent) 28%, transparent); } 100% { background: transparent; } }
+@media (max-width:860px){.message-row{padding-right:.55rem}.message-actions{right:.45rem}.reply-reference{padding-right:.35rem}}
 @media (max-width: 720px) { .message-avatar { width: 2.2rem; height: 2.2rem; } }
 .author-trigger,.author-name{border:0;background:transparent;cursor:pointer}.author-trigger{padding:0}.author-name{padding:0;color:inherit;font:inherit;font-weight:400}.author-name:hover{text-decoration:underline}

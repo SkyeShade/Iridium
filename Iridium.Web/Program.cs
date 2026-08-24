@@ -21,6 +21,7 @@ builder.Services.AddScoped<AppearanceService>();
 builder.Services.AddScoped<MessageMenuCoordinator>();
 builder.Services.AddScoped<EmojiDetailPopupCoordinator>();
 builder.Services.AddScoped<UiSoundService>();
+builder.Services.AddScoped<FaviconNotificationService>();
 builder.Services.AddScoped<IAttachmentComposerService, AttachmentComposerService>();
 builder.Services.AddScoped<ISavedNodeStore>(sp => sp.GetRequiredService<BrowserClientStorage>());
 builder.Services.AddScoped<INodeTokenStore>(sp => sp.GetRequiredService<BrowserClientStorage>());

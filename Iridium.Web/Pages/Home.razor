@@ -19,6 +19,7 @@
 @inject Iridium.Web.Services.MessageMenuCoordinator MessageMenus
 @inject ActiveVoiceSessionCoordinator VoiceSessions
 @inject UiSoundService UiSounds
+@inject FaviconNotificationService FaviconNotifications
 @inject ILogger<Home> Logger
 @inject NavigationManager Navigation
 
@@ -70,7 +71,12 @@ else
                       OnAddCommunity="() => _showCommunityCreate = true"
                       OnProfile="OpenProfilePopup"
                       OnSettings="OpenSettings"
-                      ShowRightSidebar="@HasContextSidebar">
+                      ShowRightSidebar="@HasContextSidebar"
+                      ActiveMobilePanel="_mobilePanels.Current"
+                      MobileConversationTitle="@MobileConversationTitle"
+                      OnMobileBack="ShowMobileNavigation"
+                      OnMobileContext="ShowMobileContext"
+                      OnMobileContextClose="CloseMobileContext">
         <SidebarHeader>
             <div class="sidebar-heading @(_selectedCommunity?.BannerUrl is not null ? "has-community-banner" : null)">
                 @if (_selectedCommunity?.BannerIsProcessed == true && !string.IsNullOrWhiteSpace(_selectedCommunity.BannerUrl))
@@ -299,11 +305,19 @@ else
     private bool _expandTransitionPending;
     private long _composerFocusRequest;
     private long _shellNavigationGeneration;
+    private readonly MobilePanelNavigationState _mobilePanels = new();
+    private bool _faviconReady;
     private Guid? _composerFocusChannelId;
     private Guid? _composerFocusConversationId;
     private string PublicIdentity => IridiumIdentity.Format(Session.Account!.Username, Session.SelectedNode!.PublicAuthority);
     private PublicPresence CurrentPresence => PresenceVisibility.ToPublic(Session.Account!.PreferredPresence, Messaging.IsConnected);
     private int IncomingFriendRequestCount => Session.IncomingFriendRequestCount;
+    private int UnreadMentionCount => Session.IsAuthenticated ? Session.Communities.Sum(value => Math.Max(0, value.MentionCount)) : 0;
+    private string MobileConversationTitle => _selectedCommunity is not null
+        ? _selectedChannel is null ? _selectedCommunity.Name : $"# {_selectedChannel.Name}"
+        : _homeView == "dm" && _selectedDirectConversation is not null
+            ? _selectedDirectConversation.OtherParticipant.DisplayName
+            : _homeView == "requests" ? "Message Requests" : "Friends";
     private FriendRequestNotificationLocation FriendRequestNotificationTarget => FriendRequestNotifications.Route(
         IncomingFriendRequestCount,
         outsideHome: _selectedCommunity is not null,
@@ -351,6 +365,13 @@ else
             _authenticationVisible = true;
         }
         _initialized = true;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        _faviconReady = true;
+        await UpdateFaviconAsync();
     }
 
     private string? _recoveryToken;
@@ -708,7 +729,12 @@ else
             $"persist channel navigation {channel.Id}");
     }
     private Task SelectChannelFromNavigationAsync(CommunityChannelDto? channel) =>
-        SelectChannelAsync(channel, requestComposerFocus: true);
+        SelectChannelFromMobileNavigationAsync(channel);
+    private async Task SelectChannelFromMobileNavigationAsync(CommunityChannelDto? channel)
+    {
+        if (channel?.Kind == CommunityChannelKind.Text) _mobilePanels.ShowConversation();
+        await SelectChannelAsync(channel, requestComposerFocus: true);
+    }
 
     private async Task CompleteChannelSelectionAsync(Guid accountId, CommunityChannelDto channel)
     {
@@ -732,6 +758,7 @@ else
         VoiceSessions.MinimizeWatchedStream();
         _homeView = view;
         if (view != "dm") _selectedDirectConversation = null;
+        _mobilePanels.ShowConversation();
     }
     private async Task SendFriendRequestAsync(string username)
     {
@@ -772,6 +799,7 @@ else
             var conversation = await Session.OpenDirectConversationAsync(accountId);
             _showAddFriend = false;
             await SelectDirectConversationAsync(conversation, requestComposerFocus: true);
+            _mobilePanels.ShowConversation();
         }
         catch (Exception exception) { _error = UserMessage(exception); }
     }
@@ -797,7 +825,16 @@ else
         await InvokeAsync(StateHasChanged);
     }
     private Task SelectDirectConversationFromNavigationAsync(DirectConversationDto conversation) =>
-        SelectDirectConversationAsync(conversation, requestComposerFocus: true);
+        SelectDirectConversationFromMobileNavigationAsync(conversation);
+    private async Task SelectDirectConversationFromMobileNavigationAsync(DirectConversationDto conversation)
+    {
+        _mobilePanels.ShowConversation();
+        await SelectDirectConversationAsync(conversation, requestComposerFocus: true);
+    }
+
+    private void ShowMobileNavigation() => _mobilePanels.ShowNavigation();
+    private void ShowMobileContext() { if (HasContextSidebar) _mobilePanels.ShowContext(); }
+    private void CloseMobileContext() => _mobilePanels.CloseContext();
 
     private bool IsCurrentCommunityNavigation(Guid communityId, long generation) =>
         generation == _shellNavigationGeneration && _selectedCommunity?.Id == communityId;
@@ -833,6 +870,7 @@ else
         await Messaging.ClearAsync();
         _selectedDirectConversation = null;
         _homeView = "friends";
+        _mobilePanels.Reset();
         _composerFocusRequest = 0;
         _composerFocusChannelId = null;
         _composerFocusConversationId = null;
@@ -944,6 +982,7 @@ else
         _selectedChannel = null;
         _selectedDirectConversation = null;
         _homeView = "friends";
+        _mobilePanels.Reset();
         _composerFocusRequest = 0;
         _composerFocusChannelId = null;
         _composerFocusConversationId = null;
@@ -957,7 +996,7 @@ else
         _quickInviteUrl = null;
         _quickInviteError = null;
     }
-    private void OnSessionChanged() => _ = InvokeAsync(() =>
+    private void OnSessionChanged() => _ = InvokeAsync(async () =>
     {
         var viewerMode = VoiceSessions.ViewerMode;
         if (viewerMode == StreamViewerMode.Full && _lastViewerMode != StreamViewerMode.Full)
@@ -974,8 +1013,15 @@ else
         }
         if (_selectedDirectConversation is { } selected)
             _selectedDirectConversation = Session.DirectConversations.FirstOrDefault(value => value.Id == selected.Id) ?? selected;
+        if (_faviconReady) await UpdateFaviconAsync();
         StateHasChanged();
     });
+    private async Task UpdateFaviconAsync()
+    {
+        try { await FaviconNotifications.SetMentionCountAsync(UnreadMentionCount); }
+        catch (JSDisconnectedException) { }
+        catch (Exception exception) { Logger.LogDebug(exception, "Could not update the mention favicon."); }
+    }
     private void OnCommunityAccessRevoked(CommunityAccessRevokedEvent change) => _ = InvokeAsync(async () =>
     {
         if (_selectedCommunity?.Id != change.CommunityId) return;

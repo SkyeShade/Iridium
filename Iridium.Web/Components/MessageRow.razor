@@ -8,7 +8,7 @@
 @inject CommunityEmojiService Emojis
 @inject ExternalEmbedResolver ExternalEmbeds
 
-<article class="message-row @(StartsGroup ? "group-start" : "compact") @(Message.IsDeleted ? "deleted" : null) @DeliveryClass"
+<article class="message-row @(StartsGroup ? "group-start" : "compact") @(Message.IsDeleted ? "deleted" : null) @(MentionsCurrentAccount ? "mentions-current-account" : null) @DeliveryClass"
          data-message-id="@Message.Id" @onpointerenter="MessageEntered" @onpointerleave="MessageLeft">
     @if (Message.ReplyTo is { } reply)
     {
@@ -168,6 +168,7 @@
         MessageDeliveryState.Failed => "failed",
         _ => null
     };
+    private bool MentionsCurrentAccount => CommunityMentionPresentation.IsTargetedAt(Message, CurrentAccountId, CommunityManagement);
 
     private string? ReplyAuthorStyle(Guid accountId)
     {
