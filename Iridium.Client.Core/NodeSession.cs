@@ -111,7 +111,7 @@ public sealed class NodeSession(
     public Task<CommunityEmojiDto> UploadCommunityEmojiAsync(Guid communityId,Stream content,string fileName,string contentType,string name,CancellationToken ct=default)=>AuthorizedClient.UploadCommunityEmojiAsync(communityId,content,fileName,contentType,name,ct);
     public Task<CommunityEmojiDto> RenameCommunityEmojiAsync(Guid communityId,Guid emojiId,string name,CancellationToken ct=default)=>AuthorizedClient.RenameCommunityEmojiAsync(communityId,emojiId,name,ct);
     public Task DeleteCommunityEmojiAsync(Guid communityId,Guid emojiId,CancellationToken ct=default)=>AuthorizedClient.DeleteCommunityEmojiAsync(communityId,emojiId,ct);
-    public Task<byte[]> DownloadCommunityEmojiAsync(Guid communityId,Guid emojiId,CancellationToken ct=default)=>AuthorizedClient.DownloadCommunityEmojiAsync(communityId,emojiId,ct);
+    public Task<byte[]> DownloadCommunityEmojiAsync(Guid communityId,Guid emojiId,long? revision=null,CancellationToken ct=default)=>AuthorizedClient.DownloadCommunityEmojiAsync(communityId,emojiId,revision,ct);
 
     internal NodeClient AuthorizedClient
     {

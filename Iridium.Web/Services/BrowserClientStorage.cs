@@ -5,9 +5,12 @@ namespace Iridium.Web.Services;
 
 public sealed class BrowserClientStorage(IJSRuntime js) : ISavedNodeStore, INodeTokenStore, ISavedAccountStore,
     IActiveAccountSelectionStore, ICategoryCollapseStore, ILastCommunityChannelStore,
-    IVoiceParticipantPreferenceStore, IEmojiPickerPreferenceStore, IAsyncDisposable
+    IVoiceParticipantPreferenceStore, IEmojiPickerPreferenceStore, IMessageDraftStore, IAsyncDisposable
 {
+    private const string MessageDraftNamespace = "iridium.messageDrafts.v1";
+    private const int MaximumMessageDrafts = 500;
     private IJSObjectReference? _module;
+    private readonly SemaphoreSlim _messageDraftGate = new(1, 1);
 
     public async Task<IReadOnlyList<SavedNode>> LoadAsync(CancellationToken cancellationToken = default)
     {
@@ -130,6 +133,65 @@ public sealed class BrowserClientStorage(IJSRuntime js) : ISavedNodeStore, INode
         await module.InvokeVoidAsync("save", cancellationToken, $"iridium.emoji-picker:{accountId:N}", preferences);
     }
 
+    async Task<string?> IMessageDraftStore.LoadAsync(MessageDraftScope scope, CancellationToken cancellationToken)
+    {
+        await _messageDraftGate.WaitAsync(cancellationToken);
+        try
+        {
+            var drafts = await LoadMessageDraftsAsync(cancellationToken);
+            return drafts.TryGetValue(scope.StorageKey, out var draft) && !string.IsNullOrWhiteSpace(draft.Content)
+                ? draft.Content
+                : null;
+        }
+        finally { _messageDraftGate.Release(); }
+    }
+
+    async Task IMessageDraftStore.SaveAsync(MessageDraftScope scope, string content, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            await ((IMessageDraftStore)this).RemoveAsync(scope, cancellationToken);
+            return;
+        }
+
+        await _messageDraftGate.WaitAsync(cancellationToken);
+        try
+        {
+            var drafts = await LoadMessageDraftsAsync(cancellationToken);
+            drafts[scope.StorageKey] = new(content, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            foreach (var stale in drafts.OrderByDescending(value => value.Value.UpdatedAtUnixMilliseconds)
+                         .Skip(MaximumMessageDrafts).Select(value => value.Key).ToArray()) drafts.Remove(stale);
+            await SaveMessageDraftsAsync(drafts, cancellationToken);
+        }
+        finally { _messageDraftGate.Release(); }
+    }
+
+    async Task IMessageDraftStore.RemoveAsync(MessageDraftScope scope, CancellationToken cancellationToken)
+    {
+        await _messageDraftGate.WaitAsync(cancellationToken);
+        try
+        {
+            var drafts = await LoadMessageDraftsAsync(cancellationToken);
+            if (drafts.Remove(scope.StorageKey)) await SaveMessageDraftsAsync(drafts, cancellationToken);
+        }
+        finally { _messageDraftGate.Release(); }
+    }
+
+    private async Task<Dictionary<string, MessageDraftEntry>> LoadMessageDraftsAsync(CancellationToken cancellationToken)
+    {
+        var module = await ModuleAsync(cancellationToken);
+        return await module.InvokeAsync<Dictionary<string, MessageDraftEntry>?>(
+                   "loadValue", cancellationToken, MessageDraftNamespace)
+               ?? new(StringComparer.Ordinal);
+    }
+
+    private async Task SaveMessageDraftsAsync(Dictionary<string, MessageDraftEntry> drafts,
+        CancellationToken cancellationToken)
+    {
+        var module = await ModuleAsync(cancellationToken);
+        await module.InvokeVoidAsync("save", cancellationToken, MessageDraftNamespace, drafts);
+    }
+
     private async Task<IJSObjectReference> ModuleAsync(CancellationToken cancellationToken)
     {
         _module ??= await js.InvokeAsync<IJSObjectReference>("import", cancellationToken, "./js/savedServers.js");
@@ -139,5 +201,6 @@ public sealed class BrowserClientStorage(IJSRuntime js) : ISavedNodeStore, INode
     public async ValueTask DisposeAsync()
     {
         if (_module is not null) await _module.DisposeAsync();
+        _messageDraftGate.Dispose();
     }
 }

@@ -448,6 +448,13 @@ export function replaceComposerText(editor, start, end, text) {
     return replaceComposerRange(editor, start, end, document.createTextNode(text));
 }
 export function clearComposer(editor) { if (editor) editor.replaceChildren(); resizeComposer(editor); }
+export function setComposerText(editor, text) {
+    if (!editor) return { content: "", caret: 0, tokens: [] };
+    editor.replaceChildren(document.createTextNode(text || ""));
+    resizeComposer(editor);
+    setComposerCaret(editor, composerNodeLength(editor));
+    return composerSnapshot(editor);
+}
 
 export function wireSearchAutocomplete(input, dotNetReference) {
     if (!input || searchAutocompleteHandlers.has(input)) return;

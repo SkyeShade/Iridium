@@ -121,6 +121,8 @@ public static class AttachmentEndpoints
         var usePreview = preview && attachment.PreviewObjectKey is not null;
         var stream = await storage.OpenReadAsync(
             usePreview ? attachment.PreviewObjectKey! : attachment.OriginalObjectKey, cancellationToken);
+        if (stream is not null)
+            context.Response.Headers.CacheControl = "private,max-age=31536000,immutable";
         return stream is null
             ? Results.NotFound()
             : Results.File(stream, usePreview ? attachment.PreviewContentType! : attachment.OriginalContentType,

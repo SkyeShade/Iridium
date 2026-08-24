@@ -7,7 +7,7 @@
 @inject IWebAssemblyHostEnvironment HostEnvironment
 
 <section class="channel-view">
-    @if (_loading)
+    @if (_loading && VisibleMessages.Count == 0)
     {
         <div class="channel-status">Loading message history...</div>
     }
@@ -16,7 +16,7 @@
         <div class="channel-error">@_error</div>
     }
     <div class="message-region">
-        <MessageList @ref="_messageList" Messages="Messaging.Messages" CurrentAccountId="CurrentAccountId" CanManage="CanManageMessages"
+        <MessageList @key="Channel.Id" @ref="_messageList" Messages="VisibleMessages" CurrentAccountId="CurrentAccountId" CanManage="CanManageMessages"
                      NodeAuthority="@NodeAuthority" CommunityManagement="CommunityManagement"
                      OnEditProfile="OnEditProfile" OnMessage="OnMessage" OnMemberRolesChanged="OnMemberRolesChanged"
                      OnMention="MentionMemberAsync"
@@ -32,7 +32,7 @@
     @if (CanSend)
     {
         <div class="composer-region">
-            <MessageComposer @ref="_composer" ChannelName="@Channel.Name" ReplyToDisplayName="@(_replyTo?.Author.DisplayName)" Busy="@(_sending || _loading)"
+            <MessageComposer @ref="_composer" ChannelName="@Channel.Name" ReplyToDisplayName="@(_replyTo?.Author.DisplayName)" Busy="@_sending"
                              Community="Community" CommunityManagement="CommunityManagement" SendRich="SendMessageAsync" OnCancelReply="CancelReplyAsync"
                              CanAttachFiles="CanAttachFiles" CanMentionEveryone="CanMentionEveryone"
                              NodeAuthority="@NodeAuthority" AccountId="@CurrentAccountId" ConversationKind="channel" ConversationId="@Channel.Id" />
@@ -72,38 +72,56 @@
     private bool _disposed;
     private bool _focusAfterRender;
     private long _consumedFocusRequest;
+    private long _historyLoadGeneration;
     private string? _error;
+    private IReadOnlyList<ChannelMessageDto> VisibleMessages => Messaging.MessagesFor(Community.Id, Channel.Id);
 
     protected override void OnInitialized() => Messaging.Changed += MessagesChanged;
 
-    protected override async Task OnParametersSetAsync()
+    protected override void OnParametersSet()
     {
         if (FocusRequest > _consumedFocusRequest) _focusAfterRender = true;
-        if (_loadedChannelId == Channel.Id && Messaging.CommunityId == Community.Id && Messaging.ChannelId == Channel.Id &&
-            _loadedTargetMessageId == TargetMessageId) return;
+        if (_loadedChannelId == Channel.Id && _loadedTargetMessageId == TargetMessageId) return;
         _replyTo = null;
         _error = null;
         _loading = true;
+        _loadedChannelId = Channel.Id;
+        _loadedTargetMessageId = TargetMessageId;
+        _isPinnedToLatest = TargetMessageId is null;
+        _shouldShowJumpToLatest = TargetMessageId is not null;
+        var generation = ++_historyLoadGeneration;
+        _ = HydrateHistoryAsync(Community.Id, Channel.Id, TargetMessageId, generation);
+    }
+
+    private async Task HydrateHistoryAsync(Guid communityId, Guid channelId, Guid? targetMessageId, long generation)
+    {
         try
         {
-            await Messaging.OpenChannelAsync(Community.Id, Channel.Id);
-            if (TargetMessageId is { } target) await Messaging.OpenChannelAroundAsync(Community.Id, Channel.Id, target);
-            _loadedChannelId = Channel.Id;
-            _loadedTargetMessageId = TargetMessageId;
-            _isPinnedToLatest = TargetMessageId is null;
-            _shouldShowJumpToLatest = TargetMessageId is not null;
+            await Messaging.OpenChannelAsync(communityId, channelId);
+            if (targetMessageId is { } target) await Messaging.OpenChannelAroundAsync(communityId, channelId, target);
         }
         catch (Exception exception)
         {
-            Logger.LogError(exception, "Could not open Community {CommunityId} channel {ChannelId}.", Community.Id, Channel.Id);
-            _error = FailureMessage(exception, "Channel loading failed", "This channel could not be opened.");
+            Logger.LogError(exception, "Could not open Community {CommunityId} channel {ChannelId}.", communityId, channelId);
+            if (IsCurrentHistoryLoad(communityId, channelId, generation))
+                _error = FailureMessage(exception, "Channel loading failed", "This channel could not be opened.");
         }
-        finally { _loading = false; }
+        finally
+        {
+            if (IsCurrentHistoryLoad(communityId, channelId, generation))
+            {
+                _loading = false;
+                await RenderAsync();
+            }
+        }
     }
+
+    private bool IsCurrentHistoryLoad(Guid communityId, Guid channelId, long generation) => !_disposed &&
+        generation == _historyLoadGeneration && Community.Id == communityId && Channel.Id == channelId;
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (!_focusAfterRender || _loading) return;
+        if (!_focusAfterRender) return;
         _focusAfterRender = false;
         _consumedFocusRequest = FocusRequest;
         if (_composer is not null) await _composer.FocusAsync();
@@ -130,9 +148,9 @@
 
     private async Task<bool> SendMessageAsync(MessageSubmission submission)
     {
-        if (_sending || _loading)
+        if (_sending)
         {
-            Logger.LogDebug("Ignored a message submission while channel {ChannelId} was busy.", Channel.Id);
+            Logger.LogDebug("Ignored a duplicate message submission while channel {ChannelId} was sending.", Channel.Id);
             return false;
         }
 

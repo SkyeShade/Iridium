@@ -133,6 +133,10 @@ public static class CommunityEmojiEndpoints
         var emoji = await db.CommunityEmojis.AsNoTracking().SingleOrDefaultAsync(value => value.CommunityId == communityId && value.Id == emojiId, cancellationToken);
         if (emoji is null) return Results.NotFound();
         var stream = await storage.OpenReadAsync(emoji.ObjectKey, cancellationToken);
+        if (stream is not null)
+            context.Response.Headers.CacheControl = context.Request.Query.ContainsKey("rev")
+                ? "private,max-age=31536000,immutable"
+                : "private,no-cache";
         return stream is null ? Results.NotFound() : Results.File(stream, emoji.ContentType, enableRangeProcessing: true);
     }
 

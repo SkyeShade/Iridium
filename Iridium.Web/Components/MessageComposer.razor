@@ -6,6 +6,7 @@
 @inject IAttachmentComposerService Attachments
 @inject CommunityEmojiService Emojis
 @inject EmojiPickerPreferencesService EmojiPreferences
+@inject IMessageDraftStore Drafts
 
 <div class="composer-wrap">
     <div class="composer-shell" @ref="_composerShell">
@@ -143,10 +144,16 @@
     private IReadOnlyList<AvailableCommunityEmoji> _availableEmojis = [];
     private readonly List<CommunityEmojiDraftReference> _emojiReferences = [];
     private readonly List<StandardEmojiDraftReference> _standardEmojiReferences = [];
+    private readonly SemaphoreSlim _draftPersistenceGate = new(1, 1);
+    private CancellationTokenSource? _draftDebounce;
+    private Task? _draftLoadTask;
+    private long _draftVersion;
+    private bool _disposed;
     private string ComposerPlaceholder => PlaceholderText ?? $"Message #{ChannelName}";
     private string FileInputId => $"attachment-{ConversationKind}-{ConversationId:N}-{_inputRevision}";
     private IReadOnlyList<PendingAttachment> PendingAttachments => _attachmentKey is { } key ? Attachments.Get(key) : [];
     private int RemainingCharacters => _maxMessageCharacters - CommunityEmojiDraftCodec.CountCharacters(_content, _emojiReferences);
+    private MessageDraftScope DraftScope => new(NodeAuthority, AccountId, ConversationKind, ConversationId);
 
     protected override void OnInitialized() => Emojis.Changed += OnEmojiCollectionChanged;
 
@@ -184,6 +191,7 @@
             _module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/chat.js");
             _selfReference = DotNetObjectReference.Create(this);
             await _module.InvokeVoidAsync("wireComposer", _textarea, _selfReference, _composerShell);
+            await EnsureDraftLoadedAsync();
             _resizeAfterRender = false;
             return;
         }
@@ -234,11 +242,14 @@
                 : Send is not null && await Send(content);
             if (succeeded)
             {
+                CancelDraftDebounce();
+                _draftVersion++;
                 _content = string.Empty;
                 _mentions.Clear();
                 _emojiReferences.Clear();
                 _standardEmojiReferences.Clear();
                 if (_module is not null) await _module.InvokeVoidAsync("clearComposer", _textarea);
+                await RemoveStoredDraftAsync();
                 CloseSuggestions();
                 _resizeAfterRender = true;
                 if (_attachmentKey is { } sentKey) Attachments.Clear(sentKey);
@@ -524,7 +535,7 @@
         }
     }
 
-    private void ApplySnapshot(ComposerDocumentSnapshot snapshot)
+    private void ApplySnapshot(ComposerDocumentSnapshot snapshot, bool scheduleDraft = true)
     {
         _content = snapshot.Content ?? string.Empty;
         _emojiReferences.Clear();
@@ -535,6 +546,7 @@
         _standardEmojiReferences.AddRange(snapshot.Tokens.Where(value => value.StandardArtworkKey is not null && value.Glyph is not null)
             .Select(value => new StandardEmojiDraftReference(value.Start, 1, value.StandardArtworkKey!, value.Glyph!,
                 value.Name)));
+        if (scheduleDraft) ScheduleDraftPersistence();
     }
 
     private async Task AcceptSuggestionAsync(MentionSuggestion suggestion)
@@ -575,6 +587,7 @@
     public async Task FocusAsync()
     {
         _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/chat.js");
+        await EnsureDraftLoadedAsync();
         await _module.InvokeVoidAsync("focusComposer", _textarea);
     }
 
@@ -596,6 +609,21 @@
 
     public async ValueTask DisposeAsync()
     {
+        CancelDraftDebounce();
+        try
+        {
+            if (_draftLoadTask is not null)
+            {
+                await _draftLoadTask;
+                await PersistDraftAsync();
+            }
+        }
+        catch (Exception exception) when (exception is not JSDisconnectedException)
+        {
+            Logger.LogWarning(exception, "Could not flush the local draft for {ConversationKind} {ConversationId}.",
+                ConversationKind, ConversationId);
+        }
+        _disposed = true;
         Emojis.Changed -= OnEmojiCollectionChanged;
         if (_module is not null)
         {
@@ -607,6 +635,87 @@
             catch (JSDisconnectedException) { }
         }
         _selfReference?.Dispose();
+    }
+
+    private Task EnsureDraftLoadedAsync() => _draftLoadTask ??= RestoreDraftAsync();
+
+    private async Task RestoreDraftAsync()
+    {
+        try
+        {
+            var scope = DraftScope;
+            var content = await Drafts.LoadAsync(scope);
+            if (_disposed || scope != DraftScope || string.IsNullOrEmpty(content) || !string.IsNullOrEmpty(_content) ||
+                _module is null) return;
+            var snapshot = await _module.InvokeAsync<ComposerDocumentSnapshot>("setComposerText", _textarea, content);
+            ApplySnapshot(snapshot, scheduleDraft: false);
+            await ResolveCompletedEmojisAsync();
+            await ResolveStandardEmojisAsync();
+            _resizeAfterRender = true;
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception exception) when (exception is not JSDisconnectedException)
+        {
+            Logger.LogWarning(exception, "Could not restore the local draft for {ConversationKind} {ConversationId}.",
+                ConversationKind, ConversationId);
+        }
+    }
+
+    private void ScheduleDraftPersistence()
+    {
+        if (_disposed) return;
+        CancelDraftDebounce();
+        var version = ++_draftVersion;
+        _draftDebounce = new();
+        _ = PersistDraftAfterDelayAsync(version, _draftDebounce.Token);
+    }
+
+    private async Task PersistDraftAfterDelayAsync(long version, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(300), cancellationToken);
+            if (version == _draftVersion) await PersistDraftAsync(version, cancellationToken);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception exception)
+        {
+            Logger.LogWarning(exception, "Could not persist the local draft for {ConversationKind} {ConversationId}.",
+                ConversationKind, ConversationId);
+        }
+    }
+
+    private async Task PersistDraftAsync(long? expectedVersion = null, CancellationToken cancellationToken = default)
+    {
+        var scope = DraftScope;
+        var source = CommunityEmojiDraftCodec.SerializeDraftSource(_content, _emojiReferences, _standardEmojiReferences);
+        await _draftPersistenceGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (expectedVersion is not null && expectedVersion != _draftVersion) return;
+            if (string.IsNullOrWhiteSpace(source)) await Drafts.RemoveAsync(scope, cancellationToken);
+            else await Drafts.SaveAsync(scope, source, cancellationToken);
+        }
+        finally { _draftPersistenceGate.Release(); }
+    }
+
+    private async Task RemoveStoredDraftAsync()
+    {
+        await _draftPersistenceGate.WaitAsync();
+        try { await Drafts.RemoveAsync(DraftScope); }
+        catch (Exception exception)
+        {
+            Logger.LogWarning(exception, "Could not clear the sent local draft for {ConversationKind} {ConversationId}.",
+                ConversationKind, ConversationId);
+        }
+        finally { _draftPersistenceGate.Release(); }
+    }
+
+    private void CancelDraftDebounce()
+    {
+        _draftDebounce?.Cancel();
+        _draftDebounce?.Dispose();
+        _draftDebounce = null;
     }
 
     private void OnEmojiCollectionChanged(Guid unusedCommunityId) => _ = InvokeAsync(async () =>

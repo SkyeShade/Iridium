@@ -1,4 +1,5 @@
 using Iridium.Protocol;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.Logging;
 
@@ -7,8 +8,10 @@ namespace Iridium.Client.Core;
 public sealed class ChannelMessagingSession(
     NodeSession nodeSession,
     RealtimeConnectionService realtime,
-    ILogger<ChannelMessagingSession> logger) : IAsyncDisposable
+    ILogger<ChannelMessagingSession> logger,
+    IMessageHistoryCache? historyCache = null) : IAsyncDisposable
 {
+    private readonly IMessageHistoryCache _historyCache = historyCache ?? NullMessageHistoryCache.Instance;
     private readonly List<ChannelMessageDto> _messages = [];
     private readonly List<DirectMessageDto> _directMessages = [];
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
@@ -26,6 +29,13 @@ public sealed class ChannelMessagingSession(
     private bool _channelHasOlder;
     private bool _directHasOlder;
     private bool _loadingOlder;
+    private long _conversationLoadGeneration;
+    private long _hotAccessRevision;
+    private MessageHistoryCacheScope? _channelStateScope;
+    private MessageHistoryCacheScope? _directStateScope;
+    private readonly Dictionary<MessageHistoryCacheScope, ChannelHotState> _channelHotStates = [];
+    private readonly Dictionary<MessageHistoryCacheScope, DirectHotState> _directHotStates = [];
+    private const int HotConversationLimit = 8;
     private CancellationTokenSource _historyCancellation = new();
     private bool _disposed;
 
@@ -41,6 +51,16 @@ public sealed class ChannelMessagingSession(
     public bool IsConnected => _connection?.State == HubConnectionState.Connected;
     public event Action? Changed;
 
+    public IReadOnlyList<ChannelMessageDto> MessagesFor(Guid communityId, Guid channelId) =>
+        CommunityId == communityId && ChannelId == channelId &&
+        _channelStateScope is { Kind: MessageHistoryConversationKind.Channel, ConversationId: var stateChannelId } &&
+        stateChannelId == channelId ? _messages : [];
+
+    public IReadOnlyList<DirectMessageDto> DirectMessagesFor(Guid conversationId) =>
+        DirectConversationId == conversationId &&
+        _directStateScope is { Kind: MessageHistoryConversationKind.Direct, ConversationId: var stateConversationId } &&
+        stateConversationId == conversationId ? _directMessages : [];
+
     public async Task ConnectAsync(CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
@@ -52,27 +72,63 @@ public sealed class ChannelMessagingSession(
     public async Task OpenChannelAsync(Guid communityId, Guid channelId, CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
+        var generation = Interlocked.Increment(ref _conversationLoadGeneration);
         CancelHistoryRequests();
         await _lifecycleGate.WaitAsync(cancellationToken);
         try
         {
-            await EnsureConnectionAsync(cancellationToken);
+            if (!IsCurrentLoad(generation)) return;
             if (_channelReady && CommunityId == communityId && ChannelId == channelId) return;
 
-            await LeaveActiveChannelAsync(cancellationToken);
-            await LeaveActiveDirectConversationAsync(cancellationToken);
+            SaveActiveHotStates();
+            var previousCommunityId = CommunityId;
+            var previousChannelId = ChannelId;
+            var previousConversationId = DirectConversationId;
             ClearDirectState();
 
-            CommunityId = communityId;
-            ChannelId = channelId;
-            _channelReady = false;
-            _messages.Clear();
+            var scope = ChannelScope(channelId);
+            var hot = AttachChannelState(communityId, channelId, scope);
             NotifyChanged();
+            logger.LogDebug("Conversation switch to channel {ChannelId}; generation={Generation}, hot={Hot}.",
+                channelId, generation, hot);
 
+            await LeaveChannelAsync(previousCommunityId, previousChannelId, cancellationToken);
+            await LeaveDirectConversationAsync(previousConversationId, cancellationToken);
+            if (!IsCurrentChannelLoad(generation, scope)) return;
+
+            MessageHistoryPage<ChannelMessageDto>? cached = null;
+            if (!hot)
+            {
+                cached = await GetCachedChannelSafelyAsync(scope, cancellationToken);
+                if (!IsCurrentChannelLoad(generation, scope))
+                {
+                    logger.LogDebug("Discarded stale channel cache result for {ChannelId}; generation={Generation}.",
+                        channelId, generation);
+                    return;
+                }
+                if (cached is not null)
+                {
+                    ApplyChannelPage(cached, replace: true);
+                    SaveActiveHotStates();
+                    NotifyChanged();
+                }
+            }
+
+            await EnsureConnectionAsync(cancellationToken);
+            if (!IsCurrentChannelLoad(generation, scope)) return;
             await _connection!.InvokeAsync(ChatHubContract.JoinChannel, communityId, channelId, cancellationToken);
+            if (!IsCurrentChannelLoad(generation, scope)) return;
             var history = await nodeSession.AuthorizedClient.GetChannelMessagePageAsync(
                 communityId, channelId, cancellationToken: cancellationToken);
-            ApplyChannelPage(history, replace: true);
+            if (!IsCurrentChannelLoad(generation, scope))
+            {
+                logger.LogDebug("Discarded stale server channel history for {ChannelId}; generation={Generation}.",
+                    channelId, generation);
+                return;
+            }
+            ReconcileChannelRecent(history, incrementRevision: !hot && cached is null);
+            SaveActiveHotStates();
+            CacheSafely(_historyCache.ReconcileRecentChannelAsync(scope, history), "reconcile channel history");
             _channelReady = true;
             logger.LogDebug("Opened Community {CommunityId} channel {ChannelId} on {NodeAddress}.",
                 communityId, channelId, _connectedNode);
@@ -84,6 +140,14 @@ public sealed class ChannelMessagingSession(
         }
         catch (Exception exception)
         {
+            if (IsAccessFailure(exception))
+            {
+                var scope = ChannelScope(channelId);
+                _channelHotStates.Remove(scope);
+                ClearChannelState();
+                await ClearConversationCacheSafelyAsync(scope);
+                NotifyChanged();
+            }
             logger.LogError(exception, "Failed to open Community {CommunityId} channel {ChannelId} on {NodeAddress}.",
                 communityId, channelId, _connectedNode);
             throw;
@@ -97,25 +161,72 @@ public sealed class ChannelMessagingSession(
     public async Task OpenDirectConversationAsync(Guid conversationId, CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
+        var generation = Interlocked.Increment(ref _conversationLoadGeneration);
         CancelHistoryRequests();
         await _lifecycleGate.WaitAsync(cancellationToken);
         try
         {
-            await EnsureConnectionAsync(cancellationToken);
+            if (!IsCurrentLoad(generation)) return;
             if (_directReady && DirectConversationId == conversationId) return;
-            await LeaveActiveChannelAsync(cancellationToken);
-            await LeaveActiveDirectConversationAsync(cancellationToken);
+            SaveActiveHotStates();
+            var previousCommunityId = CommunityId;
+            var previousChannelId = ChannelId;
+            var previousConversationId = DirectConversationId;
             ClearChannelState();
-            DirectConversationId = conversationId;
-            _directReady = false;
-            _directMessages.Clear();
+            var scope = DirectScope(conversationId);
+            var hot = AttachDirectState(conversationId, scope);
             NotifyChanged();
+            logger.LogDebug("Conversation switch to Direct Message {ConversationId}; generation={Generation}, hot={Hot}.",
+                conversationId, generation, hot);
+            await LeaveChannelAsync(previousCommunityId, previousChannelId, cancellationToken);
+            await LeaveDirectConversationAsync(previousConversationId, cancellationToken);
+            if (!IsCurrentDirectLoad(generation, scope)) return;
+            MessageHistoryPage<DirectMessageDto>? cached = null;
+            if (!hot)
+            {
+                cached = await GetCachedDirectSafelyAsync(scope, cancellationToken);
+                if (!IsCurrentDirectLoad(generation, scope))
+                {
+                    logger.LogDebug("Discarded stale Direct Message cache result for {ConversationId}; generation={Generation}.",
+                        conversationId, generation);
+                    return;
+                }
+                if (cached is not null)
+                {
+                    ApplyDirectPage(cached, replace: true);
+                    SaveActiveHotStates();
+                    NotifyChanged();
+                }
+            }
+            await EnsureConnectionAsync(cancellationToken);
+            if (!IsCurrentDirectLoad(generation, scope)) return;
             await _connection!.InvokeAsync(DirectMessageHubContract.JoinConversation, conversationId, cancellationToken);
+            if (!IsCurrentDirectLoad(generation, scope)) return;
             var history = await nodeSession.AuthorizedClient.GetDirectMessagePageAsync(conversationId, cancellationToken: cancellationToken);
-            ApplyDirectPage(history, replace: true);
+            if (!IsCurrentDirectLoad(generation, scope))
+            {
+                logger.LogDebug("Discarded stale server Direct Message history for {ConversationId}; generation={Generation}.",
+                    conversationId, generation);
+                return;
+            }
+            ReconcileDirectRecent(history, incrementRevision: !hot && cached is null);
+            SaveActiveHotStates();
+            CacheSafely(_historyCache.ReconcileRecentDirectAsync(scope, history), "reconcile Direct Message history");
             await nodeSession.MarkDirectConversationReadAsync(conversationId, cancellationToken);
             _directReady = true;
             NotifyChanged();
+        }
+        catch (Exception exception)
+        {
+            if (IsAccessFailure(exception))
+            {
+                var scope = DirectScope(conversationId);
+                _directHotStates.Remove(scope);
+                ClearDirectState();
+                await ClearConversationCacheSafelyAsync(scope);
+                NotifyChanged();
+            }
+            throw;
         }
         finally { _lifecycleGate.Release(); }
     }
@@ -135,12 +246,16 @@ public sealed class ChannelMessagingSession(
                 var page = await nodeSession.AuthorizedClient.GetChannelMessagePageAsync(
                     communityId, channelId, cancellationToken: cancellationToken);
                 ApplyChannelPage(page, replace: true);
+                CacheSafely(_historyCache.ReconcileRecentChannelAsync(ChannelScope(channelId), page),
+                    "cache refreshed channel history");
             }
             else if (DirectConversationId is { } conversationId)
             {
                 var page = await nodeSession.AuthorizedClient.GetDirectMessagePageAsync(
                     conversationId, cancellationToken: cancellationToken);
                 ApplyDirectPage(page, replace: true);
+                CacheSafely(_historyCache.ReconcileRecentDirectAsync(DirectScope(conversationId), page),
+                    "cache refreshed Direct Message history");
             }
             WindowMode = MessageWindowMode.Latest;
             WindowRevision++;
@@ -160,6 +275,8 @@ public sealed class ChannelMessagingSession(
             var page = await nodeSession.AuthorizedClient.GetChannelMessagePageAsync(
                 communityId, channelId, around: messageId, cancellationToken: cancellationToken);
             ApplyChannelPage(page, replace: true);
+            CacheSafely(_historyCache.UpsertChannelAsync(ChannelScope(channelId), page.Messages),
+                "cache channel search window");
             WindowMode = MessageWindowMode.SearchTarget;
             WindowRevision++;
             NotifyChanged();
@@ -178,6 +295,8 @@ public sealed class ChannelMessagingSession(
             var page = await nodeSession.AuthorizedClient.GetDirectMessagePageAsync(
                 conversationId, around: messageId, cancellationToken: cancellationToken);
             ApplyDirectPage(page, replace: true);
+            CacheSafely(_historyCache.UpsertDirectAsync(DirectScope(conversationId), page.Messages),
+                "cache Direct Message search window");
             WindowMode = MessageWindowMode.SearchTarget;
             WindowRevision++;
             NotifyChanged();
@@ -230,6 +349,8 @@ public sealed class ChannelMessagingSession(
                 new SendDirectMessageRequest(pending.Content, pending.ReplyTo?.MessageId, pending.ClientMessageId,
                     pending.Attachments?.Select(value => value.Id).ToArray()), cancellationToken);
             if (DirectConversationId == pending.ConversationId) UpsertDirect(result);
+            CacheSafely(_historyCache.UpsertDirectAsync(DirectScope(pending.ConversationId), [result]),
+                "cache confirmed Direct Message");
             if (pending.ClientMessageId is { } completedId) _directAttachmentUploads.Remove(completedId);
             if (reloadLatest && DirectConversationId == pending.ConversationId)
             {
@@ -280,6 +401,8 @@ public sealed class ChannelMessagingSession(
                 DirectMessageHubContract.SendMessage, conversationId,
                 new SendDirectMessageRequest(content, null, Guid.NewGuid()), cancellationToken);
             if (DirectConversationId == conversationId) UpsertDirect(result);
+            CacheSafely(_historyCache.UpsertDirectAsync(DirectScope(conversationId), [result]),
+                "cache confirmed Direct Message");
             await nodeSession.RefreshDirectConversationsAsync(cancellationToken);
         }
         finally { _lifecycleGate.Release(); }
@@ -311,6 +434,8 @@ public sealed class ChannelMessagingSession(
                 DirectMessageHubContract.EditMessage, conversationId, messageId,
                 new EditDirectMessageRequest(content), cancellationToken);
             UpsertDirect(result);
+            CacheSafely(_historyCache.UpsertDirectAsync(DirectScope(conversationId), [result]),
+                "cache edited Direct Message");
         }
         finally { _lifecycleGate.Release(); }
     }
@@ -381,6 +506,8 @@ public sealed class ChannelMessagingSession(
                         pending.ClientMessageId, pending.Attachments?.Select(value => value.Id).ToArray()),
                     cancellationToken);
                 if (CommunityId == pending.CommunityId && ChannelId == pending.ChannelId) Upsert(result);
+                CacheSafely(_historyCache.UpsertChannelAsync(ChannelScope(pending.ChannelId), [result]),
+                    "cache confirmed channel message");
                 if (pending.ClientMessageId is { } completedId) _channelAttachmentUploads.Remove(completedId);
                 if (reloadLatest && CommunityId == pending.CommunityId && ChannelId == pending.ChannelId)
                 {
@@ -452,6 +579,8 @@ public sealed class ChannelMessagingSession(
                     new EditChannelMessageRequest(content),
                     cancellationToken);
                 Upsert(result);
+                CacheSafely(_historyCache.UpsertChannelAsync(ChannelScope(channelId), [result]),
+                    "cache edited channel message");
             }
             catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
@@ -498,10 +627,12 @@ public sealed class ChannelMessagingSession(
     public async Task ClearAsync(CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
+        Interlocked.Increment(ref _conversationLoadGeneration);
         CancelHistoryRequests();
         await _lifecycleGate.WaitAsync(cancellationToken);
         try
         {
+            SaveActiveHotStates();
             await LeaveActiveChannelAsync(cancellationToken);
             await LeaveActiveDirectConversationAsync(cancellationToken);
             ClearChannelState();
@@ -517,10 +648,12 @@ public sealed class ChannelMessagingSession(
     public async Task DisconnectAsync(CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
+        Interlocked.Increment(ref _conversationLoadGeneration);
         CancelHistoryRequests();
         await _lifecycleGate.WaitAsync(cancellationToken);
         try
         {
+            SaveActiveHotStates();
             await LeaveActiveChannelAsync(cancellationToken);
             await LeaveActiveDirectConversationAsync(cancellationToken);
             ClearChannelState();
@@ -550,8 +683,13 @@ public sealed class ChannelMessagingSession(
         var connection = await realtime.EnsureConnectedAsync("ChannelMessagingSession requested realtime", cancellationToken);
         if (ReferenceEquals(_connection, connection)) return;
         DisposeHandlerRegistrations();
-        ClearChannelState();
-        ClearDirectState();
+        var contextChanged = _connectedNode is not null &&
+            (!SameNode(_connectedNode, client.NodeAddress) || _connectedAccountId != accountId);
+        if (contextChanged)
+        {
+            ClearChannelState();
+            ClearDirectState();
+        }
         _connectedNode = client.NodeAddress;
         _connectedAccountId = accountId;
         _connection = connection;
@@ -584,6 +722,14 @@ public sealed class ChannelMessagingSession(
             change => ReceiveSafely(CommunityHubContract.AccessRevoked, () =>
             {
                 if (CommunityId == change.CommunityId) ClearChannelState();
+                foreach (var scope in _channelHotStates.Where(pair =>
+                             pair.Value.Messages.Any(message => message.CommunityId == change.CommunityId))
+                         .Select(pair => pair.Key).ToArray())
+                    _channelHotStates.Remove(scope);
+                if (_connectedNode is not null && _connectedAccountId is { } connectedAccountId)
+                    CacheSafely(_historyCache.ClearCommunityAsync(
+                        MessageHistoryCacheScope.NormalizeNode(_connectedNode), connectedAccountId, change.CommunityId),
+                        "clear revoked Community history");
                 nodeSession.ApplyCommunityAccessRevoked(change);
                 NotifyChanged();
             })));
@@ -637,11 +783,14 @@ public sealed class ChannelMessagingSession(
     }
 
     private async Task LeaveActiveChannelAsync(CancellationToken cancellationToken)
+        => await LeaveChannelAsync(CommunityId, ChannelId, cancellationToken);
+
+    private async Task LeaveChannelAsync(Guid? communityId, Guid? channelId, CancellationToken cancellationToken)
     {
-        if (!IsConnected || CommunityId is not { } communityId || ChannelId is not { } channelId) return;
+        if (!IsConnected || communityId is not { } activeCommunityId || channelId is not { } activeChannelId) return;
         try
         {
-            await _connection!.InvokeAsync(ChatHubContract.LeaveChannel, communityId, channelId, cancellationToken);
+            await _connection!.InvokeAsync(ChatHubContract.LeaveChannel, activeCommunityId, activeChannelId, cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -655,9 +804,12 @@ public sealed class ChannelMessagingSession(
     }
 
     private async Task LeaveActiveDirectConversationAsync(CancellationToken cancellationToken)
+        => await LeaveDirectConversationAsync(DirectConversationId, cancellationToken);
+
+    private async Task LeaveDirectConversationAsync(Guid? conversationId, CancellationToken cancellationToken)
     {
-        if (!IsConnected || DirectConversationId is not { } conversationId) return;
-        try { await _connection!.InvokeAsync(DirectMessageHubContract.LeaveConversation, conversationId, cancellationToken); }
+        if (!IsConnected || conversationId is not { } activeConversationId) return;
+        try { await _connection!.InvokeAsync(DirectMessageHubContract.LeaveConversation, activeConversationId, cancellationToken); }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception exception)
         {
@@ -679,6 +831,8 @@ public sealed class ChannelMessagingSession(
                 communityId, channelId, before: _channelOlderCursor, cancellationToken: linked.Token);
             if (CommunityId != communityId || ChannelId != channelId) return;
             ApplyChannelPage(page, replace: false);
+            CacheSafely(_historyCache.UpsertChannelAsync(ChannelScope(channelId), page.Messages),
+                "cache older channel history");
             WindowMode = MessageWindowMode.Historical;
             NotifyChanged();
         }
@@ -705,6 +859,8 @@ public sealed class ChannelMessagingSession(
                 conversationId, before: _directOlderCursor, cancellationToken: linked.Token);
             if (DirectConversationId != conversationId) return;
             ApplyDirectPage(page, replace: false);
+            CacheSafely(_historyCache.UpsertDirectAsync(DirectScope(conversationId), page.Messages),
+                "cache older Direct Message history");
             WindowMode = MessageWindowMode.Historical;
             NotifyChanged();
         }
@@ -848,7 +1004,7 @@ public sealed class ChannelMessagingSession(
             ? _messages.Where(value => value.DeliveryState != MessageDeliveryState.Confirmed).ToArray()
             : [];
         if (replace) _messages.Clear();
-        foreach (var message in page.Messages) Upsert(message, notify: false);
+        foreach (var message in page.Messages.Where(value => !value.IsDeleted)) Upsert(message, notify: false);
         foreach (var message in local)
             if (_messages.All(value => value.ClientMessageId != message.ClientMessageId)) Upsert(message, notify: false);
         _channelOlderCursor = page.OlderCursor;
@@ -860,13 +1016,109 @@ public sealed class ChannelMessagingSession(
         }
     }
 
+    private bool AttachChannelState(Guid communityId, Guid channelId, MessageHistoryCacheScope scope)
+    {
+        CommunityId = communityId;
+        ChannelId = channelId;
+        _channelStateScope = scope;
+        _channelReady = false;
+        _messages.Clear();
+        _channelOlderCursor = null;
+        _channelHasOlder = false;
+        WindowMode = MessageWindowMode.Latest;
+        WindowRevision++;
+        if (!_channelHotStates.TryGetValue(scope, out var hot)) return false;
+        _messages.AddRange(hot.Messages.Where(value => !value.IsDeleted));
+        _channelOlderCursor = hot.OlderCursor;
+        _channelHasOlder = hot.HasOlder;
+        hot.LastAccess = ++_hotAccessRevision;
+        return true;
+    }
+
+    private bool AttachDirectState(Guid conversationId, MessageHistoryCacheScope scope)
+    {
+        DirectConversationId = conversationId;
+        _directStateScope = scope;
+        _directReady = false;
+        _directMessages.Clear();
+        _directOlderCursor = null;
+        _directHasOlder = false;
+        WindowMode = MessageWindowMode.Latest;
+        WindowRevision++;
+        if (!_directHotStates.TryGetValue(scope, out var hot)) return false;
+        _directMessages.AddRange(hot.Messages.Where(value => !value.IsDeleted));
+        _directOlderCursor = hot.OlderCursor;
+        _directHasOlder = hot.HasOlder;
+        hot.LastAccess = ++_hotAccessRevision;
+        return true;
+    }
+
+    private void SaveActiveHotStates()
+    {
+        if (_channelStateScope is { } channelScope && ChannelId == channelScope.ConversationId)
+            _channelHotStates[channelScope] = new(_messages.Where(value => !value.IsDeleted).ToArray(),
+                _channelOlderCursor, _channelHasOlder, ++_hotAccessRevision);
+        if (_directStateScope is { } directScope && DirectConversationId == directScope.ConversationId)
+            _directHotStates[directScope] = new(_directMessages.Where(value => !value.IsDeleted).ToArray(),
+                _directOlderCursor, _directHasOlder, ++_hotAccessRevision);
+        PruneHotStates(_channelHotStates);
+        PruneHotStates(_directHotStates);
+    }
+
+    private static void PruneHotStates<T>(Dictionary<MessageHistoryCacheScope, T> states) where T : HotState
+    {
+        while (states.Count > HotConversationLimit)
+        {
+            var oldest = states.MinBy(pair => pair.Value.LastAccess).Key;
+            states.Remove(oldest);
+        }
+    }
+
+    private bool IsCurrentLoad(long generation) => Volatile.Read(ref _conversationLoadGeneration) == generation;
+    private bool IsCurrentChannelLoad(long generation, MessageHistoryCacheScope scope) =>
+        IsCurrentLoad(generation) && _channelStateScope == scope && ChannelId == scope.ConversationId;
+    private bool IsCurrentDirectLoad(long generation, MessageHistoryCacheScope scope) =>
+        IsCurrentLoad(generation) && _directStateScope == scope && DirectConversationId == scope.ConversationId;
+
+    private void UpdateHotChannel(MessageHistoryCacheScope scope, ChannelMessageDto message)
+    {
+        if (!_channelHotStates.TryGetValue(scope, out var hot) || _channelStateScope == scope) return;
+        hot.Messages = MessageHistoryReconciliation.Channel(hot.Messages, [message]);
+        hot.LastAccess = ++_hotAccessRevision;
+    }
+
+    private void UpdateHotDirect(MessageHistoryCacheScope scope, DirectMessageDto message)
+    {
+        if (!_directHotStates.TryGetValue(scope, out var hot) || _directStateScope == scope) return;
+        hot.Messages = MessageHistoryReconciliation.Direct(hot.Messages, [message]);
+        hot.LastAccess = ++_hotAccessRevision;
+    }
+
+    private void DeleteFromHotChannel(MessageHistoryCacheScope scope, Guid messageId)
+    {
+        if (!_channelHotStates.TryGetValue(scope, out var hot) || _channelStateScope == scope) return;
+        var messages = hot.Messages.ToList();
+        MessageTimeline.ApplyDeletion(messages, messageId);
+        hot.Messages = messages;
+        hot.LastAccess = ++_hotAccessRevision;
+    }
+
+    private void DeleteFromHotDirect(MessageHistoryCacheScope scope, Guid messageId)
+    {
+        if (!_directHotStates.TryGetValue(scope, out var hot) || _directStateScope == scope) return;
+        var messages = hot.Messages.ToList();
+        MessageTimeline.ApplyDeletion(messages, messageId);
+        hot.Messages = messages;
+        hot.LastAccess = ++_hotAccessRevision;
+    }
+
     private void ApplyDirectPage(MessageHistoryPage<DirectMessageDto> page, bool replace)
     {
         var local = replace
             ? _directMessages.Where(value => value.DeliveryState != MessageDeliveryState.Confirmed).ToArray()
             : [];
         if (replace) _directMessages.Clear();
-        foreach (var message in page.Messages) UpsertDirect(message, notify: false);
+        foreach (var message in page.Messages.Where(value => !value.IsDeleted)) UpsertDirect(message, notify: false);
         foreach (var message in local)
             if (_directMessages.All(value => value.ClientMessageId != message.ClientMessageId)) UpsertDirect(message, notify: false);
         _directOlderCursor = page.OlderCursor;
@@ -877,6 +1129,108 @@ public sealed class ChannelMessagingSession(
             WindowRevision++;
         }
     }
+
+    private void ReconcileChannelRecent(MessageHistoryPage<ChannelMessageDto> page, bool incrementRevision)
+    {
+        var serverMessages = page.Messages.Where(value => !value.IsDeleted).ToArray();
+        var oldest = serverMessages.Length == 0 ? (DateTimeOffset?)null : serverMessages.Min(value => value.CreatedAt);
+        lock (_messageSync)
+        {
+            _messages.RemoveAll(value => value.DeliveryState == MessageDeliveryState.Confirmed &&
+                (oldest is null || value.CreatedAt >= oldest) && serverMessages.All(server => server.Id != value.Id));
+        }
+        foreach (var message in serverMessages) Upsert(message, notify: false);
+        _channelOlderCursor = page.OlderCursor;
+        _channelHasOlder = page.HasOlder;
+        WindowMode = MessageWindowMode.Latest;
+        if (incrementRevision) WindowRevision++;
+    }
+
+    private void ReconcileDirectRecent(MessageHistoryPage<DirectMessageDto> page, bool incrementRevision)
+    {
+        var serverMessages = page.Messages.Where(value => !value.IsDeleted).ToArray();
+        var oldest = serverMessages.Length == 0 ? (DateTimeOffset?)null : serverMessages.Min(value => value.CreatedAt);
+        lock (_messageSync)
+        {
+            _directMessages.RemoveAll(value => value.DeliveryState == MessageDeliveryState.Confirmed &&
+                (oldest is null || value.CreatedAt >= oldest) && serverMessages.All(server => server.Id != value.Id));
+        }
+        foreach (var message in serverMessages) UpsertDirect(message, notify: false);
+        _directOlderCursor = page.OlderCursor;
+        _directHasOlder = page.HasOlder;
+        WindowMode = MessageWindowMode.Latest;
+        if (incrementRevision) WindowRevision++;
+    }
+
+    private MessageHistoryCacheScope ChannelScope(Guid channelId)
+    {
+        var node = nodeSession.AuthorizedClient.NodeAddress;
+        var accountId = nodeSession.Account?.Id
+            ?? throw new InvalidOperationException("An authenticated account is required for message cache scope.");
+        return MessageHistoryCacheScope.Channel(node, accountId, channelId);
+    }
+
+    private MessageHistoryCacheScope DirectScope(Guid conversationId)
+    {
+        var node = nodeSession.AuthorizedClient.NodeAddress;
+        var accountId = nodeSession.Account?.Id
+            ?? throw new InvalidOperationException("An authenticated account is required for message cache scope.");
+        return MessageHistoryCacheScope.Direct(node, accountId, conversationId);
+    }
+
+    private async Task<MessageHistoryPage<ChannelMessageDto>?> GetCachedChannelSafelyAsync(
+        MessageHistoryCacheScope scope, CancellationToken cancellationToken)
+    {
+        try { return await _historyCache.GetRecentChannelAsync(scope, cancellationToken); }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Could not read cached channel history for {ConversationKey}.", scope.ConversationKey);
+            return null;
+        }
+    }
+
+    private async Task<MessageHistoryPage<DirectMessageDto>?> GetCachedDirectSafelyAsync(
+        MessageHistoryCacheScope scope, CancellationToken cancellationToken)
+    {
+        try { return await _historyCache.GetRecentDirectAsync(scope, cancellationToken); }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Could not read cached Direct Message history for {ConversationKey}.", scope.ConversationKey);
+            return null;
+        }
+    }
+
+    private async Task ClearConversationCacheSafelyAsync(MessageHistoryCacheScope scope)
+    {
+        try { await _historyCache.ClearConversationAsync(scope); }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Could not invalidate inaccessible cached history for {ConversationKey}.",
+                scope.ConversationKey);
+        }
+    }
+
+    private void CacheSafely(Task operation, string action) => _ = CacheSafelyAsync(operation, action);
+
+    private async Task CacheSafelyAsync(Task operation, string action)
+    {
+        try { await operation; }
+        catch (Exception exception) { logger.LogWarning(exception, "Could not {CacheAction}.", action); }
+    }
+
+    private static bool IsAccessFailure(Exception exception) => exception is NodeApiException api &&
+        api.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden or
+            System.Net.HttpStatusCode.NotFound || exception is HubException &&
+        (exception.Message.Contains("permission", StringComparison.OrdinalIgnoreCase) ||
+         exception.Message.Contains("not a member", StringComparison.OrdinalIgnoreCase) ||
+         exception.Message.Contains("not found", StringComparison.OrdinalIgnoreCase) ||
+         exception.Message.Contains("unauthorized", StringComparison.OrdinalIgnoreCase));
+
+    private static bool SameNode(Uri left, Uri right) => string.Equals(
+        MessageHistoryCacheScope.NormalizeNode(left), MessageHistoryCacheScope.NormalizeNode(right),
+        StringComparison.Ordinal);
 
     private void CancelHistoryRequests()
     {
@@ -889,6 +1243,7 @@ public sealed class ChannelMessagingSession(
     {
         CommunityId = null;
         ChannelId = null;
+        _channelStateScope = null;
         _channelReady = false;
         _messages.Clear();
         _channelOlderCursor = null;
@@ -898,6 +1253,7 @@ public sealed class ChannelMessagingSession(
     private void ClearDirectState()
     {
         DirectConversationId = null;
+        _directStateScope = null;
         _directReady = false;
         _directMessages.Clear();
         _directOlderCursor = null;
@@ -906,6 +1262,9 @@ public sealed class ChannelMessagingSession(
 
     private void ReceiveCreated(ChannelMessageDto message)
     {
+        UpdateHotChannel(ChannelScope(message.ChannelId), message);
+        CacheSafely(_historyCache.UpsertChannelAsync(ChannelScope(message.ChannelId), [message]),
+            "cache realtime channel message");
         if (message.CommunityId != CommunityId || message.ChannelId != ChannelId) return;
         if (WindowMode == MessageWindowMode.SearchTarget) return;
         Upsert(message);
@@ -913,6 +1272,9 @@ public sealed class ChannelMessagingSession(
 
     private void ReceiveUpdated(ChannelMessageDto message)
     {
+        UpdateHotChannel(ChannelScope(message.ChannelId), message);
+        CacheSafely(_historyCache.UpsertChannelAsync(ChannelScope(message.ChannelId), [message]),
+            "cache realtime channel edit");
         if (message.CommunityId != CommunityId || message.ChannelId != ChannelId ||
             _messages.All(value => value.Id != message.Id)) return;
         Upsert(message);
@@ -920,6 +1282,9 @@ public sealed class ChannelMessagingSession(
 
     private void ReceiveDeleted(ChannelMessageDeletedEvent deleted)
     {
+        DeleteFromHotChannel(ChannelScope(deleted.ChannelId), deleted.MessageId);
+        CacheSafely(_historyCache.RemoveMessageAsync(ChannelScope(deleted.ChannelId), deleted.MessageId),
+            "remove realtime-deleted channel message from cache");
         if (deleted.CommunityId != CommunityId || deleted.ChannelId != ChannelId) return;
         MessageTimeline.ApplyDeletion(_messages, deleted.MessageId);
         NotifyChanged();
@@ -927,6 +1292,9 @@ public sealed class ChannelMessagingSession(
 
     private void ReceiveDirectCreated(DirectMessageDto message)
     {
+        UpdateHotDirect(DirectScope(message.ConversationId), message);
+        CacheSafely(_historyCache.UpsertDirectAsync(DirectScope(message.ConversationId), [message]),
+            "cache realtime Direct Message");
         if (message.ConversationId == DirectConversationId && WindowMode != MessageWindowMode.SearchTarget) UpsertDirect(message);
         if (message.ConversationId == DirectConversationId && message.Author.AccountId != nodeSession.Account?.Id)
             _ = MarkDirectReadSafelyAsync(message.ConversationId);
@@ -935,12 +1303,18 @@ public sealed class ChannelMessagingSession(
 
     private void ReceiveDirectUpdated(DirectMessageDto message)
     {
+        UpdateHotDirect(DirectScope(message.ConversationId), message);
+        CacheSafely(_historyCache.UpsertDirectAsync(DirectScope(message.ConversationId), [message]),
+            "cache realtime Direct Message edit");
         if (message.ConversationId != DirectConversationId || _directMessages.All(value => value.Id != message.Id)) return;
         UpsertDirect(message);
     }
 
     private void ReceiveDirectDeleted(DirectMessageDeletedEvent deleted)
     {
+        DeleteFromHotDirect(DirectScope(deleted.ConversationId), deleted.MessageId);
+        CacheSafely(_historyCache.RemoveMessageAsync(DirectScope(deleted.ConversationId), deleted.MessageId),
+            "remove realtime-deleted Direct Message from cache");
         if (deleted.ConversationId != DirectConversationId) return;
         MessageTimeline.ApplyDeletion(_directMessages, deleted.MessageId);
         NotifyChanged();
@@ -1098,6 +1472,24 @@ public sealed class ChannelMessagingSession(
 
     private sealed record DeliveryFailureInfo(string Message, bool CanRetry);
     private sealed record OutgoingOperation(Guid ClientMessageId, Task Completion);
+    private abstract class HotState(long lastAccess)
+    {
+        public long LastAccess { get; set; } = lastAccess;
+    }
+    private sealed class ChannelHotState(IReadOnlyList<ChannelMessageDto> messages, string? olderCursor,
+        bool hasOlder, long lastAccess) : HotState(lastAccess)
+    {
+        public IReadOnlyList<ChannelMessageDto> Messages { get; set; } = messages;
+        public string? OlderCursor { get; } = olderCursor;
+        public bool HasOlder { get; } = hasOlder;
+    }
+    private sealed class DirectHotState(IReadOnlyList<DirectMessageDto> messages, string? olderCursor,
+        bool hasOlder, long lastAccess) : HotState(lastAccess)
+    {
+        public IReadOnlyList<DirectMessageDto> Messages { get; set; } = messages;
+        public string? OlderCursor { get; } = olderCursor;
+        public bool HasOlder { get; } = hasOlder;
+    }
 
     private static string Excerpt(string content)
         => content;

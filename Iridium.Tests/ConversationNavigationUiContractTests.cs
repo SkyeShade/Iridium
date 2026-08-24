@@ -23,16 +23,13 @@ public sealed class ConversationNavigationUiContractTests
     public void ExplicitTextChannelAndDirectNavigationRequestTargetScopedFocus()
     {
         var home = Source("Iridium.Web", "Pages", "Home.razor");
-        var channel = Slice(home, "private async Task SelectChannelFromNavigationAsync", "private async Task OpenCommunitySearchResultAsync");
-        var direct = Slice(home, "private async Task SelectDirectConversationFromNavigationAsync", "private void RequestChannelComposerFocus");
+        var channel = Slice(home, "private Task SelectChannelFromNavigationAsync", "private async Task CompleteChannelSelectionAsync");
+        var direct = Slice(home, "private Task SelectDirectConversationFromNavigationAsync", "private bool IsCurrentCommunityNavigation");
 
-        Assert.Contains("channel?.Kind == CommunityChannelKind.Text", channel);
-        Assert.Contains("RequestChannelComposerFocus(channel.Id)", channel);
-        Assert.Contains("RequestDirectComposerFocus(conversation.Id)", direct);
-        Assert.DoesNotContain("RequestChannelComposerFocus", Slice(home,
-            "private async Task SelectChannelAsync", "private async Task SelectChannelFromNavigationAsync"));
-        Assert.DoesNotContain("RequestDirectComposerFocus", Slice(home,
-            "private async Task SelectDirectConversationAsync", "private async Task SelectDirectConversationFromNavigationAsync"));
+        Assert.Contains("requestComposerFocus: true", channel);
+        Assert.Contains("requestComposerFocus: true", direct);
+        Assert.Contains("if (channel?.Kind == CommunityChannelKind.Text && requestComposerFocus)", home);
+        Assert.Contains("if (requestComposerFocus) RequestDirectComposerFocus(conversation.Id)", home);
     }
 
     [Fact]
@@ -42,11 +39,11 @@ public sealed class ConversationNavigationUiContractTests
         var community = Slice(home, "private async Task SelectCommunityFromNavigationAsync", "private async Task SelectChannelAsync");
 
         Assert.Contains("OnCommunitySelected=\"SelectCommunityFromNavigationAsync\"", home);
-        Assert.Contains("await SelectCommunity(community)", community);
-        Assert.Contains("_selectedChannel?.Kind == CommunityChannelKind.Text", community);
-        Assert.Contains("RequestChannelComposerFocus(_selectedChannel.Id)", community);
+        Assert.Contains("await SelectCommunity(community, focusRestoredChannel: true)", community);
+        Assert.Contains("SelectChannelAsync(channel ?? CommunityState.FirstOrderedChannel(), focusRestoredChannel)", home);
         Assert.DoesNotContain("RequestChannelComposerFocus", Slice(home,
-            "private async Task SelectCommunity(CommunityDto? community)", "private async Task SelectCommunityFromNavigationAsync"));
+            "private async Task SelectCommunity(CommunityDto? community, bool focusRestoredChannel = false)",
+            "private async Task SelectCommunityFromNavigationAsync"));
     }
 
     [Theory]
@@ -56,10 +53,75 @@ public sealed class ConversationNavigationUiContractTests
     {
         var source = Source("Iridium.Web", "Components", file);
         Assert.Contains("OnAfterRenderAsync", source);
-        Assert.Contains("if (!_focusAfterRender || _loading) return", source);
+        Assert.Contains("if (!_focusAfterRender) return", source);
+        Assert.DoesNotContain("if (!_focusAfterRender || _loading) return", source);
         Assert.Contains("_focusAfterRender = false", source);
         Assert.Contains("await _composer.FocusAsync()", source);
         Assert.Contains("await OnFocusConsumed.InvokeAsync(FocusRequest)", source);
+    }
+
+    [Theory]
+    [InlineData("ChannelView.razor", "Messaging.OpenChannelAsync")]
+    [InlineData("DirectMessageView.razor", "Messaging.OpenDirectConversationAsync")]
+    public void HistoryHydrationIsTrackedButNotAwaitedByConversationRendering(string file, string openCall)
+    {
+        var source = Source("Iridium.Web", "Components", file);
+        Assert.Contains("protected override void OnParametersSet()", source);
+        Assert.Contains("_ = HydrateHistoryAsync", source);
+        Assert.Contains(openCall, source);
+        Assert.Contains("IsCurrentHistoryLoad", source);
+        Assert.DoesNotContain("Busy=\"@(_sending || _loading)\"", source);
+        Assert.DoesNotContain("if (_sending || _loading)", source);
+    }
+
+    [Fact]
+    public void ChannelAndDirectSelectionRenderBeforeBackgroundNavigationWork()
+    {
+        var home = Source("Iridium.Web", "Pages", "Home.razor");
+        var channel = Slice(home, "private async Task SelectChannelAsync", "private Task SelectChannelFromNavigationAsync");
+        var direct = Slice(home, "private async Task SelectDirectConversationAsync", "private Task SelectDirectConversationFromNavigationAsync");
+
+        Assert.True(channel.IndexOf("_selectedChannel = channel", StringComparison.Ordinal) <
+                    channel.IndexOf("await InvokeAsync(StateHasChanged)", StringComparison.Ordinal));
+        Assert.True(channel.IndexOf("await InvokeAsync(StateHasChanged)", StringComparison.Ordinal) <
+                    channel.IndexOf("TrackBackground(CompleteChannelSelectionAsync", StringComparison.Ordinal));
+        Assert.True(direct.IndexOf("_selectedDirectConversation = conversation", StringComparison.Ordinal) <
+                    direct.IndexOf("await InvokeAsync(StateHasChanged)", StringComparison.Ordinal));
+        Assert.Contains("TrackBackground(Messaging.ClearAsync()", home);
+        Assert.Contains("ObserveBackgroundAsync", home);
+    }
+
+    [Fact]
+    public void ConversationViewsNeverBindTheSharedListWithoutMatchingItsIdentity()
+    {
+        var channel = Source("Iridium.Web", "Components", "ChannelView.razor");
+        var direct = Source("Iridium.Web", "Components", "DirectMessageView.razor");
+
+        Assert.Contains("Messaging.MessagesFor(Community.Id, Channel.Id)", channel);
+        Assert.DoesNotContain("Messages=\"Messaging.Messages\"", channel);
+        Assert.Contains("Messaging.DirectMessagesFor(Conversation.Id)", direct);
+        Assert.DoesNotContain("Messaging.DirectMessages.Select", direct);
+        Assert.Contains("<MessageList @key=\"Channel.Id\"", channel);
+        Assert.Contains("<MessageList @key=\"Conversation.Id\"", direct);
+    }
+
+    [Fact]
+    public void ConversationSessionAttachesScopedHotStateBeforeAwaitingOldCleanupAndRejectsLateLoads()
+    {
+        var session = Source("Iridium.Client.Core", "ChannelMessagingSession.cs");
+        var channel = Slice(session, "public async Task OpenChannelAsync", "public async Task OpenDirectConversationAsync");
+        var direct = Slice(session, "public async Task OpenDirectConversationAsync", "public Task LoadOlderAsync");
+
+        Assert.True(channel.IndexOf("AttachChannelState", StringComparison.Ordinal) <
+                    channel.IndexOf("await LeaveChannelAsync", StringComparison.Ordinal));
+        Assert.True(direct.IndexOf("AttachDirectState", StringComparison.Ordinal) <
+                    direct.IndexOf("await LeaveChannelAsync", StringComparison.Ordinal));
+        Assert.Contains("Interlocked.Increment(ref _conversationLoadGeneration)", channel);
+        Assert.Contains("IsCurrentChannelLoad(generation, scope)", channel);
+        Assert.Contains("IsCurrentDirectLoad(generation, scope)", direct);
+        Assert.Contains("_channelHotStates", session);
+        Assert.Contains("_directHotStates", session);
+        Assert.Contains("HotConversationLimit = 8", session);
     }
 
     [Fact]

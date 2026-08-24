@@ -10,6 +10,7 @@
 @inject NodeSession Session
 @inject CommunitySession CommunityState
 @inject ChannelMessagingSession Messaging
+@inject IMessageHistoryCache MessageHistoryCache
 @inject AccountSwitchService AccountSwitching
 @inject IWebAssemblyHostEnvironment HostEnvironment
 @inject AppearanceService Appearance
@@ -295,6 +296,7 @@ else
     private StreamViewerMode _lastViewerMode;
     private bool _expandTransitionPending;
     private long _composerFocusRequest;
+    private long _shellNavigationGeneration;
     private Guid? _composerFocusChannelId;
     private Guid? _composerFocusConversationId;
     private string PublicIdentity => IridiumIdentity.Format(Session.Account!.Username, Session.SelectedNode!.PublicAuthority);
@@ -477,6 +479,12 @@ else
 
     private async Task RemoveNodeAsync(SavedNode node)
     {
+        try
+        {
+            if (Uri.TryCreate(node.Address, UriKind.Absolute, out var nodeUri))
+                await MessageHistoryCache.ClearNodeAsync(MessageHistoryCacheScope.NormalizeNode(nodeUri));
+        }
+        catch (Exception exception) { Logger.LogWarning(exception, "Could not clear local history for removed Node {NodeAddress}.", node.Address); }
         await SavedNodes.RemoveAsync(node);
         if (Session.AuthenticationNode == node) AccountSwitching.BeginAuthentication(SavedNodes.Nodes[0]);
         _nodeAvailability = await SavedNodes.ProbeAllAsync();
@@ -622,6 +630,12 @@ else
     private async Task RemoveAccountAsync(SavedAccountKey key)
     {
         var removingActive = Session.ActiveSavedAccount?.Key == key;
+        try
+        {
+            if (Uri.TryCreate(key.NodeAddress, UriKind.Absolute, out var nodeUri))
+                await MessageHistoryCache.ClearAccountAsync(MessageHistoryCacheScope.NormalizeNode(nodeUri), key.AccountId);
+        }
+        catch (Exception exception) { Logger.LogWarning(exception, "Could not clear local history for removed account {AccountId}.", key.AccountId); }
         await AccountSwitching.RemoveFromDeviceAsync(key);
         _showProfile = false;
         if (!removingActive) return;
@@ -631,51 +645,73 @@ else
         AccountSwitching.BeginAuthentication(SavedNodes.Nodes[0]);
     }
 
-    private async Task SelectCommunity(CommunityDto? community)
+    private async Task SelectCommunity(CommunityDto? community, bool focusRestoredChannel = false)
     {
+        var generation = ++_shellNavigationGeneration;
         _composerFocusChannelId = null;
         _composerFocusConversationId = null;
         VoiceSessions.MinimizeWatchedStream();
-        await Messaging.ClearAsync();
         CloseQuickInvite();
         _selectedCommunity = community;
         _selectedChannel = null;
         _searchTargetMessageId = null;
         _selectedDirectConversation = null;
         _error = null;
-        if (community is null) { CommunityState.Clear(); return; }
+        CommunityState.Clear();
+        TrackBackground(Messaging.ClearAsync(), "clear the previous conversation");
+        await InvokeAsync(StateHasChanged);
+        if (community is null) return;
         try
         {
             await CommunityState.LoadAsync(community.Id);
+            if (!IsCurrentCommunityNavigation(community.Id, generation)) return;
             await CommunityState.LoadManagementAsync();
+            if (!IsCurrentCommunityNavigation(community.Id, generation)) return;
             var remembered = await LastChannelStore.LoadAsync(Session.Account!.Id, community.Id);
+            if (!IsCurrentCommunityNavigation(community.Id, generation)) return;
             var channel = remembered is { } id ? CommunityState.Channels.FirstOrDefault(value => value.Id == id) : null;
-            await SelectChannelAsync(channel ?? CommunityState.FirstOrderedChannel());
+            await SelectChannelAsync(channel ?? CommunityState.FirstOrderedChannel(), focusRestoredChannel);
         }
-        catch (Exception exception) { _error = UserMessage(exception); _selectedCommunity = null; CommunityState.Clear(); }
+        catch (Exception exception)
+        {
+            if (!IsCurrentCommunityNavigation(community.Id, generation)) return;
+            _error = UserMessage(exception); _selectedCommunity = null; CommunityState.Clear();
+        }
     }
     private async Task SelectCommunityFromNavigationAsync(CommunityDto? community)
     {
-        await SelectCommunity(community);
-        if (_selectedChannel?.Kind == CommunityChannelKind.Text) RequestChannelComposerFocus(_selectedChannel.Id);
+        await SelectCommunity(community, focusRestoredChannel: true);
     }
-    private async Task SelectChannelAsync(CommunityChannelDto? channel)
+    private async Task SelectChannelAsync(CommunityChannelDto? channel, bool requestComposerFocus = false,
+        Guid? searchTargetMessageId = null)
     {
+        ++_shellNavigationGeneration;
         _composerFocusChannelId = null;
         _composerFocusConversationId = null;
         VoiceSessions.MinimizeWatchedStream();
-        _searchTargetMessageId = null;
-        if (channel is null) await Messaging.ClearAsync();
+        _searchTargetMessageId = searchTargetMessageId;
         _selectedChannel = channel;
-        if (channel is null || Session.Account is null) return;
-        await LastChannelStore.SaveAsync(Session.Account.Id, channel.CommunityId, channel.Id);
+        if (channel?.Kind == CommunityChannelKind.Text && requestComposerFocus)
+            RequestChannelComposerFocus(channel.Id);
+        if (channel is null)
+        {
+            TrackBackground(Messaging.ClearAsync(), "clear the previous channel");
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
+        if (Session.Account is null) { await InvokeAsync(StateHasChanged); return; }
         CommunityState.MarkChannelRead(channel.Id);
-        await Session.MarkCommunityChannelReadAsync(channel.CommunityId, channel.Id);
+        await InvokeAsync(StateHasChanged);
+        TrackBackground(CompleteChannelSelectionAsync(Session.Account.Id, channel),
+            $"persist channel navigation {channel.Id}");
     }
-    private async Task SelectChannelFromNavigationAsync(CommunityChannelDto? channel)
+    private Task SelectChannelFromNavigationAsync(CommunityChannelDto? channel) =>
+        SelectChannelAsync(channel, requestComposerFocus: true);
+
+    private async Task CompleteChannelSelectionAsync(Guid accountId, CommunityChannelDto channel)
     {
-        await SelectChannelAsync(channel);
-        if (channel?.Kind == CommunityChannelKind.Text) RequestChannelComposerFocus(channel.Id);
+        await LastChannelStore.SaveAsync(accountId, channel.CommunityId, channel.Id);
+        await Session.MarkCommunityChannelReadAsync(channel.CommunityId, channel.Id);
     }
 
     private async Task OpenCommunitySearchResultAsync(MessageSearchResultDto result)
@@ -683,8 +719,7 @@ else
         if (result.ChannelId is not { } channelId) return;
         var channel = CommunityState.Channels.FirstOrDefault(value => value.Id == channelId);
         if (channel is null) return;
-        await SelectChannelAsync(channel);
-        _searchTargetMessageId = result.MessageId;
+        await SelectChannelAsync(channel, searchTargetMessageId: result.MessageId);
     }
     private Task OpenDirectSearchResultAsync(MessageSearchResultDto result) =>
         _directMessageView?.OpenSearchResultAsync(result) ?? Task.CompletedTask;
@@ -732,25 +767,23 @@ else
         _error = null;
         try
         {
-            _selectedDirectConversation = await Session.OpenDirectConversationAsync(accountId);
-            _selectedCommunity = null;
-            _selectedChannel = null;
-            CommunityState.Clear();
-            _homeView = "dm";
+            var conversation = await Session.OpenDirectConversationAsync(accountId);
             _showAddFriend = false;
-            RequestDirectComposerFocus(_selectedDirectConversation.Id);
+            await SelectDirectConversationAsync(conversation, requestComposerFocus: true);
         }
         catch (Exception exception) { _error = UserMessage(exception); }
     }
     private Task OpenFriendDirectMessageAsync(FriendDto friend) => OpenDirectMessageAsync(friend.AccountId);
     private void ShowFriends() { _homeView = "friends"; _selectedDirectConversation = null; }
     private void ShowAddFriend() { _showAddFriend = true; _error = null; }
-    private async Task SelectDirectConversationAsync(DirectConversationDto conversation)
+    private async Task SelectDirectConversationAsync(DirectConversationDto conversation, bool requestComposerFocus = false)
     {
+        ++_shellNavigationGeneration;
         _composerFocusChannelId = null;
         _composerFocusConversationId = null;
         VoiceSessions.MinimizeWatchedStream();
-        if (_selectedCommunity is not null) await Messaging.ClearAsync();
+        if (_selectedCommunity is not null)
+            TrackBackground(Messaging.ClearAsync(), "clear the previous Server channel");
         _selectedCommunity = null;
         CloseQuickInvite();
         _selectedChannel = null;
@@ -758,11 +791,20 @@ else
         CommunityState.Clear();
         _selectedDirectConversation = conversation;
         _homeView = "dm";
+        if (requestComposerFocus) RequestDirectComposerFocus(conversation.Id);
+        await InvokeAsync(StateHasChanged);
     }
-    private async Task SelectDirectConversationFromNavigationAsync(DirectConversationDto conversation)
+    private Task SelectDirectConversationFromNavigationAsync(DirectConversationDto conversation) =>
+        SelectDirectConversationAsync(conversation, requestComposerFocus: true);
+
+    private bool IsCurrentCommunityNavigation(Guid communityId, long generation) =>
+        generation == _shellNavigationGeneration && _selectedCommunity?.Id == communityId;
+
+    private void TrackBackground(Task task, string operation) => _ = ObserveBackgroundAsync(task, operation);
+    private async Task ObserveBackgroundAsync(Task task, string operation)
     {
-        await SelectDirectConversationAsync(conversation);
-        RequestDirectComposerFocus(conversation.Id);
+        try { await task; }
+        catch (Exception exception) { Logger.LogWarning(exception, "Could not {BackgroundOperation}.", operation); }
     }
     private void RequestChannelComposerFocus(Guid channelId)
     {

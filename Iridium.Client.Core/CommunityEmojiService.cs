@@ -60,7 +60,8 @@ public sealed class CommunityEmojiService : IDisposable
     {
         try
         {
-            var bytes = await _session.DownloadCommunityEmojiAsync(emoji.CommunityId, emoji.Id, cancellationToken);
+            var bytes = await _session.DownloadCommunityEmojiAsync(
+                emoji.CommunityId, emoji.Id, emoji.Revision, cancellationToken);
             return $"data:{emoji.ContentType};base64,{Convert.ToBase64String(bytes)}";
         }
         catch { return null; }

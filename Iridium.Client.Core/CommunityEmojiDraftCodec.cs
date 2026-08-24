@@ -91,6 +91,25 @@ public static partial class CommunityEmojiDraftCodec
         return result.ToString();
     }
 
+    public static string SerializeDraftSource(string content,
+        IReadOnlyList<CommunityEmojiDraftReference> references,
+        IReadOnlyList<StandardEmojiDraftReference> standardReferences)
+    {
+        var byPosition = references.ToDictionary(value => value.Start);
+        var standardByPosition = standardReferences.ToDictionary(value => value.Start);
+        var result = new StringBuilder(content.Length);
+        for (var position = 0; position < content.Length; position++)
+        {
+            if (content[position] == ObjectReplacementCharacter && byPosition.TryGetValue(position, out var emoji))
+                result.Append(':').Append(emoji.Name).Append(':');
+            else if (content[position] == ObjectReplacementCharacter &&
+                     standardByPosition.TryGetValue(position, out var standard)) result.Append(standard.Glyph);
+            else
+                result.Append(content[position]);
+        }
+        return result.ToString();
+    }
+
     public static int MapDocumentPositionToSerialized(int position,
         IReadOnlyList<CommunityEmojiDraftReference> references) => position + references
         .Where(value => value.Start < position)

@@ -29,6 +29,8 @@ builder.Services.AddScoped<IActiveAccountSelectionStore>(sp => sp.GetRequiredSer
 builder.Services.AddScoped<IVoiceParticipantPreferenceStore>(sp => sp.GetRequiredService<BrowserClientStorage>());
 builder.Services.AddScoped<VoiceParticipantPreferencesService>();
 builder.Services.AddScoped<IEmojiPickerPreferenceStore>(sp => sp.GetRequiredService<BrowserClientStorage>());
+builder.Services.AddScoped<IMessageDraftStore>(sp => sp.GetRequiredService<BrowserClientStorage>());
+builder.Services.AddScoped<IMessageHistoryCache, IndexedDbMessageHistoryCache>();
 builder.Services.AddScoped<EmojiPickerPreferencesService>();
 builder.Services.AddScoped<ProfileMediaService>();
 builder.Services.AddScoped<CommunityEmojiService>();

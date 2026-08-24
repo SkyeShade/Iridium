@@ -14,12 +14,12 @@
         <button type="button" class="voice-call-button" title="Start Voice Call" aria-label="Start Voice Call"
                 disabled="@(Calls.CurrentCall is not null || Calls.IncomingCall is not null)" @onclick="StartVoiceCallAsync"><Icon Name="phone" /></button>
     </header>
-    @if (_loading) { <div class="dm-status">Loading message history…</div> }
+    @if (_loading && VisibleDirectMessages.Count == 0) { <div class="dm-status">Loading message history…</div> }
     @if (!string.IsNullOrWhiteSpace(_error)) { <div class="dm-error">@_error</div> }
     <div class="dm-message-region">
         <DirectVoiceCallStage ConversationId="Conversation.Id" CurrentAccountId="CurrentAccountId" Participant="Conversation.OtherParticipant" />
         <div class="dm-message-history">
-        <MessageList @ref="_messageList" Messages="ProjectedMessages" CurrentAccountId="CurrentAccountId" CanManage="false"
+        <MessageList @key="Conversation.Id" @ref="_messageList" Messages="ProjectedMessages" CurrentAccountId="CurrentAccountId" CanManage="false"
                      DirectParticipant="Conversation.OtherParticipant"
                      NodeAuthority="@NodeAuthority" OnEditProfile="OnEditProfile" OnMessage="OnMessage"
                      EmptyIcon="message" EmptyTitle="No messages yet" EmptyDescription="Send the first Direct Message."
@@ -33,7 +33,7 @@
     <div class="dm-composer-region">
         <MessageComposer @ref="_composer" ChannelName="@Conversation.OtherParticipant.DisplayName"
                          PlaceholderText="@($"Message {Conversation.OtherParticipant.DisplayName}")"
-                         ReplyToDisplayName="@(_replyTo?.Author.DisplayName)" Busy="@(_sending || _loading)"
+                         ReplyToDisplayName="@(_replyTo?.Author.DisplayName)" Busy="@_sending"
                          SendRich="SendMessageAsync" OnCancelReply="CancelReplyAsync"
                          NodeAuthority="@NodeAuthority" AccountId="@CurrentAccountId" ConversationKind="direct" ConversationId="@Conversation.Id" />
     </div>
@@ -60,42 +60,58 @@
     private bool _sending;
     private bool _focusAfterRender;
     private long _consumedFocusRequest;
+    private long _historyLoadGeneration;
+    private bool _disposed;
     private string? _error;
 
-    private IReadOnlyList<ChannelMessageDto> ProjectedMessages => Messaging.DirectMessages.Select(message =>
+    private IReadOnlyList<DirectMessageDto> VisibleDirectMessages => Messaging.DirectMessagesFor(Conversation.Id);
+    private IReadOnlyList<ChannelMessageDto> ProjectedMessages => VisibleDirectMessages.Select(message =>
         new ChannelMessageDto(message.Id, Guid.Empty, message.ConversationId, message.Author, message.Content,
             message.CreatedAt, message.EditedAt, message.IsDeleted, message.ReplyTo, null,
             message.ClientMessageId, message.DeliveryState, message.DeliveryError, message.CanRetry,
             message.Attachments, message.Kind)).ToArray();
 
     protected override void OnInitialized() { Messaging.Changed += MessagesChanged; Calls.Changed += CallsChanged; }
-    protected override async Task OnParametersSetAsync()
+    protected override void OnParametersSet()
     {
         if (FocusRequest > _consumedFocusRequest) _focusAfterRender = true;
-        if (_loadedConversationId == Conversation.Id && Messaging.DirectConversationId == Conversation.Id &&
-            _loadedTargetMessageId == TargetMessageId) return;
+        if (_loadedConversationId == Conversation.Id && _loadedTargetMessageId == TargetMessageId) return;
         _replyTo = null;
         _error = null;
         _loading = true;
+        _loadedConversationId = Conversation.Id;
+        _loadedTargetMessageId = TargetMessageId;
+        _isPinnedToLatest = TargetMessageId is null;
+        _shouldShowJumpToLatest = TargetMessageId is not null;
+        var generation = ++_historyLoadGeneration;
+        _ = HydrateHistoryAsync(Conversation.Id, TargetMessageId, generation);
+    }
+    private async Task HydrateHistoryAsync(Guid conversationId, Guid? targetMessageId, long generation)
+    {
         try
         {
-            await Messaging.OpenDirectConversationAsync(Conversation.Id);
-            if (TargetMessageId is { } target) await Messaging.OpenDirectAroundAsync(Conversation.Id, target);
-            _loadedConversationId = Conversation.Id;
-            _loadedTargetMessageId = TargetMessageId;
-            _isPinnedToLatest = TargetMessageId is null;
-            _shouldShowJumpToLatest = TargetMessageId is not null;
+            await Messaging.OpenDirectConversationAsync(conversationId);
+            if (targetMessageId is { } target) await Messaging.OpenDirectAroundAsync(conversationId, target);
         }
         catch (Exception exception)
         {
-            Logger.LogError(exception, "Could not open Direct Message {ConversationId}.", Conversation.Id);
-            _error = exception.Message;
+            Logger.LogError(exception, "Could not open Direct Message {ConversationId}.", conversationId);
+            if (IsCurrentHistoryLoad(conversationId, generation)) _error = exception.Message;
         }
-        finally { _loading = false; }
+        finally
+        {
+            if (IsCurrentHistoryLoad(conversationId, generation))
+            {
+                _loading = false;
+                await InvokeAsync(StateHasChanged);
+            }
+        }
     }
+    private bool IsCurrentHistoryLoad(Guid conversationId, long generation) => !_disposed &&
+        generation == _historyLoadGeneration && Conversation.Id == conversationId;
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (!_focusAfterRender || _loading) return;
+        if (!_focusAfterRender) return;
         _focusAfterRender = false;
         _consumedFocusRequest = FocusRequest;
         if (_composer is not null) await _composer.FocusAsync();
@@ -119,7 +135,7 @@
     }
     private async Task<bool> SendMessageAsync(MessageSubmission submission)
     {
-        if (_sending || _loading) return false;
+        if (_sending) return false;
         _sending = true;
         _error = null;
         try
@@ -185,5 +201,5 @@
         _shouldShowJumpToLatest = true;
         await InvokeAsync(StateHasChanged);
     }
-    public void Dispose() { Messaging.Changed -= MessagesChanged; Calls.Changed -= CallsChanged; }
+    public void Dispose() { _disposed = true; Messaging.Changed -= MessagesChanged; Calls.Changed -= CallsChanged; }
 }

@@ -188,9 +188,12 @@ public sealed class NodeClient(Uri nodeAddress)
         $"api/communities/{communityId}/emojis/{emojiId}", new RenameCommunityEmojiRequest(name), ct);
     public Task DeleteCommunityEmojiAsync(Guid communityId, Guid emojiId, CancellationToken ct = default) =>
         SendNoContentAsync(HttpMethod.Delete, $"api/communities/{communityId}/emojis/{emojiId}", null, ct);
-    public async Task<byte[]> DownloadCommunityEmojiAsync(Guid communityId, Guid emojiId, CancellationToken ct = default)
+    public async Task<byte[]> DownloadCommunityEmojiAsync(Guid communityId, Guid emojiId, long? revision = null,
+        CancellationToken ct = default)
     {
-        using var response = await SendAsync(HttpMethod.Get, $"api/communities/{communityId}/emojis/{emojiId}/media", null, ct);
+        var revisionQuery = revision is null ? string.Empty : $"?rev={revision.Value}";
+        using var response = await SendAsync(HttpMethod.Get,
+            $"api/communities/{communityId}/emojis/{emojiId}/media{revisionQuery}", null, ct);
         if (!response.IsSuccessStatusCode) throw new NodeApiException(response.StatusCode, await ReadErrorAsync(response, ct));
         return await response.Content.ReadAsByteArrayAsync(ct);
     }
