@@ -3,6 +3,9 @@ using System.Text;
 using Iridium.Server.Calls;
 using Iridium.Server.Configuration;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
+using System.Text.Json;
 
 namespace Iridium.Tests;
 
@@ -59,6 +62,8 @@ public sealed class WebRtcIceConfigurationTests
         var expected = Convert.ToBase64String(hmac.ComputeHash(Encoding.UTF8.GetBytes(turn.Username!)));
         Assert.Equal(expected, turn.Credential);
         Assert.DoesNotContain(result.IceServers, value => value.Username == secret || value.Credential == secret);
+        Assert.DoesNotContain(secret, JsonSerializer.Serialize(result), StringComparison.Ordinal);
+        Assert.True(result.ExpiresAt > Now);
     }
 
     [Theory]
@@ -93,11 +98,50 @@ public sealed class WebRtcIceConfigurationTests
         Assert.Null(result.ExpiresAt);
     }
 
+    [Fact]
+    public void MisconfiguredTurnProducesClearServerSideErrorWithoutSecrets()
+    {
+        const string secret = "must-not-appear-in-the-log";
+        var logger = new CapturingLogger<WebRtcIceConfigurationService>();
+        var service = new WebRtcIceConfigurationService(Options.Create(new WebRtcOptions
+        {
+            Turn = new WebRtcTurnOptions { Enabled = true, SharedSecret = secret }
+        }), new TestTimeProvider(Now), logger);
+
+        service.Create(Guid.NewGuid());
+
+        var error = Assert.Single(logger.Entries, entry => entry.Level == LogLevel.Error).Message;
+        Assert.Contains("TURN is enabled but unusable", error, StringComparison.Ordinal);
+        Assert.DoesNotContain(secret, error, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("all", "all")]
+    [InlineData("All", "all")]
+    [InlineData("relay", "relay")]
+    [InlineData("Relay", "relay")]
+    [InlineData("invalid", "all")]
+    public void IceTransportPolicyIsRestrictedToAllOrRelay(string configured, string expected)
+    {
+        var service = Create(new WebRtcOptions { IceTransportPolicy = configured });
+
+        Assert.Equal(expected, service.Create(Guid.NewGuid()).IceTransportPolicy);
+    }
+
     private static WebRtcIceConfigurationService Create(WebRtcOptions options) =>
-        new(Options.Create(options), new TestTimeProvider(Now));
+        new(Options.Create(options), new TestTimeProvider(Now), NullLogger<WebRtcIceConfigurationService>.Instance);
 
     private sealed class TestTimeProvider(DateTimeOffset now) : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => now;
+    }
+
+    private sealed class CapturingLogger<T> : ILogger<T>
+    {
+        public List<(LogLevel Level, string Message)> Entries { get; } = [];
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter) => Entries.Add((logLevel, formatter(state, exception)));
     }
 }

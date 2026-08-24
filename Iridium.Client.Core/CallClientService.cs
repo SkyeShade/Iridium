@@ -57,6 +57,7 @@ public sealed class CallClientService(
     private (bool Muted, bool Deafened, CallConnectionState State)? _lastPublishedParticipantState;
     private bool _disposed;
     private readonly List<PublishedVoiceStreamDto> _publishedStreams = [];
+    private MediaMode _activeMediaMode = MediaMode.NodeSfu;
 
     public CallSessionDto? CurrentCall { get; private set; }
     public IncomingCallEvent? IncomingCall { get; private set; }
@@ -96,19 +97,7 @@ public sealed class CallClientService(
             _pendingSignalingCallId = CurrentCall.Id;
             logger.LogDebug("Call {CallId}: created; original caller is the WebRTC offerer.", CurrentCall.Id);
             NotifyChanged();
-            try
-            {
-                await StartMediaAsync(cancellationToken);
-                logger.LogDebug("Call {CallId}: caller media prepared; offer creation will begin exactly once after CallAccepted.",
-                    CurrentCall.Id);
-            }
-            catch (Exception exception)
-            {
-                ErrorMessage = MediaErrorMessage(exception);
-                await TryInvokeAsync(VoiceCallHubContract.Cancel, CurrentCall.Id, cancellationToken);
-                await FinishAsync(clearMessage: false);
-                throw;
-            }
+            // SFU credentials and microphone publication are intentionally deferred until the call is accepted.
         }
         finally { _gate.Release(); }
     }
@@ -133,13 +122,13 @@ public sealed class CallClientService(
             {
                 StatusMessage = "Requesting microphone access…";
                 NotifyChanged();
-                await StartMediaAsync(cancellationToken);
                 await _connection!.InvokeAsync(VoiceCallHubContract.Accept, incoming.CallId, cancellationToken);
                 accepted = true;
                 VoiceDiagnostic("server accepted", incoming.CallId);
                 CurrentCall = await _connection!.InvokeAsync<CallSessionDto?>(VoiceCallHubContract.GetCurrent, cancellationToken)
                     ?? throw new InvalidOperationException("The call ended before it could be accepted.");
                 IncomingCall = null;
+                await StartMediaAsync(cancellationToken);
                 MediaConnectionState = CallConnectionState.Connecting;
                 StatusMessage = "Connecting media…";
                 if (_pendingOffer is not null) await AnswerPendingOfferAsync(cancellationToken);
@@ -227,6 +216,13 @@ public sealed class CallClientService(
             ErrorMessage = null;
             StatusMessage = "Retrying media…";
             NotifyChanged();
+            if (_activeMediaMode == MediaMode.NodeSfu)
+            {
+                await ResetMediaAsync("SFU retry replacement", cancellationToken);
+                await StartMediaAsync(cancellationToken);
+                NotifyChanged();
+                return;
+            }
             if (call.CallerAccountId == _accountId) await RestartOffererAsync(cancellationToken);
             else
             {
@@ -283,7 +279,8 @@ public sealed class CallClientService(
                     new PublishVoiceStreamRequest(publication.StreamId, publication.Kind, publication.HasAudio,
                         publication.MediaStreamId), cancellationToken);
                 ApplyPublishedStream(publishedStream);
-                await StartRenegotiationUnsafeAsync("ScreenTrackAdded", cancellationToken);
+                if (_activeMediaMode == MediaMode.DirectWebRtc)
+                    await StartRenegotiationUnsafeAsync("ScreenTrackAdded", cancellationToken);
             }
             finally { _gate.Release(); _signalingGate.Release(); }
         }
@@ -309,7 +306,8 @@ public sealed class CallClientService(
             await _connection!.InvokeAsync(VoiceStreamHubContract.StopPublishing,
                 VoiceMediaSessionKind.DirectCall, CurrentCall.Id, stream.StreamId, reason, cancellationToken);
             ApplyEndedStream(stream.StreamId);
-            await StartRenegotiationUnsafeAsync("ScreenTrackRemoved", cancellationToken);
+            if (_activeMediaMode == MediaMode.DirectWebRtc)
+                await StartRenegotiationUnsafeAsync("ScreenTrackRemoved", cancellationToken);
         }
         finally { _gate.Release(); _signalingGate.Release(); }
     }
@@ -326,6 +324,7 @@ public sealed class CallClientService(
             await _connection!.InvokeAsync(VoiceStreamHubContract.Watch, VoiceMediaSessionKind.DirectCall,
                 CurrentCall.Id, streamId, cancellationToken);
         WatchedStream = stream;
+        await media.SetStreamSubscriptionAsync(stream.MediaStreamId, true, cancellationToken);
         NotifyChanged();
     }
 
@@ -335,6 +334,8 @@ public sealed class CallClientService(
         WatchedStream = null;
         if (stream is not null && stream.OwnerAccountId != _accountId && IsSignalingConnected)
             await _connection!.InvokeAsync(VoiceStreamHubContract.StopWatching, stream.StreamId, cancellationToken);
+        if (stream is not null)
+            await media.SetStreamSubscriptionAsync(stream.MediaStreamId, false, cancellationToken);
         NotifyChanged();
     }
 
@@ -450,7 +451,10 @@ public sealed class CallClientService(
             StatusMessage = "Connecting media…";
         }
         if (CurrentCall.CallerAccountId == _accountId && !_negotiationStarted)
-            await StartOffererNegotiationAsync();
+        {
+            if (!_mediaReady) await StartMediaAsync(CancellationToken.None);
+            if (_activeMediaMode == MediaMode.DirectWebRtc) await StartOffererNegotiationAsync();
+        }
         else if (CurrentCall.CallerAccountId == _accountId)
             logger.LogDebug("Call {CallId} negotiation {NegotiationId}: duplicate CallAccepted ignored; negotiation already started.",
                 value.CallId, _negotiationId);
@@ -712,8 +716,9 @@ public sealed class CallClientService(
             ?? throw new InvalidOperationException("There is no call to initialize media for.");
         var configuration = await _connection!.InvokeAsync<CallMediaConfigurationDto>(
             VoiceCallHubContract.GetMediaConfiguration, callId, cancellationToken);
-        if (configuration.Mode != MediaMode.DirectWebRtc)
-            throw new InvalidOperationException("This client does not yet support the Node's configured media mode.");
+        if (configuration.Mode == MediaMode.NodeSfu && configuration.NodeSession is null)
+            throw new InvalidOperationException("The Node did not return an SFU media session.");
+        _activeMediaMode = configuration.Mode;
         media.IceCandidateGenerated -= SendIceAsync;
         media.ConnectionStateChanged -= MediaConnectionChangedAsync;
         media.IceConnectionStateChanged -= MediaIceConnectionChangedAsync;
@@ -742,7 +747,8 @@ public sealed class CallClientService(
             callId, accountId, _mediaRole, _peerGeneration);
         _mediaReady = true;
         _remoteDescriptionReady = false;
-        MediaConnectionState = CallConnectionState.New;
+        if (configuration.Mode == MediaMode.DirectWebRtc)
+            MediaConnectionState = CallConnectionState.New;
         _heartbeatCancellation?.Cancel();
         _heartbeatCancellation?.Dispose();
         _heartbeatCancellation = new CancellationTokenSource();
@@ -969,7 +975,8 @@ public sealed class CallClientService(
         _negotiationId = null;
         _negotiationStarted = false;
         await StartMediaAsync(cancellationToken);
-        await StartOffererNegotiationAsync(cancellationToken);
+        if (_activeMediaMode == MediaMode.DirectWebRtc)
+            await StartOffererNegotiationAsync(cancellationToken);
         NotifyChanged();
     }
 
@@ -1102,7 +1109,7 @@ public sealed class CallClientService(
 
     private async Task LogWebRtcSummaryAsync(string eventName)
     {
-        if (CurrentCall is not { } call) return;
+        if (!media.DiagnosticsEnabled || CurrentCall is not { } call) return;
         WebRtcDiagnosticSnapshot? snapshot = null;
         try { snapshot = await media.GetDiagnosticSnapshotAsync(); }
         catch (Exception exception) { logger.LogDebug(exception, "Call {CallId}: could not read the WebRTC diagnostic snapshot.", call.Id); }
@@ -1114,6 +1121,9 @@ public sealed class CallClientService(
             "AnswerReceivedCount={AnswerReceivedCount}, IceReceivedCount={IceReceivedCount}, NegotiationNeededCount={NegotiationNeededCount}, " +
             "LocalGenerated={LocalGenerated}, LocalSent={LocalSent}, LocalTypes={LocalTypes}, RemoteReceived={RemoteReceived}, " +
             "RemoteAdded={RemoteAdded}, RemoteAddFailures={RemoteAddFailures}, QueuedRemote={QueuedRemote}, " +
+            "Candidates=host:{Host}/srflx:{Srflx}/prflx:{Prflx}/relay:{Relay}, " +
+            "TurnConfigured={TurnConfigured}, TurnCredentialsPresent={TurnCredentialsPresent}, " +
+            "TurnConfiguredButNoRelayCandidate={TurnConfiguredButNoRelayCandidate}, " +
             "TimeoutGeneration={TimeoutGeneration}, CurrentGeneration={CurrentGeneration}, SelectedPair={SelectedLocalType}/{SelectedRemoteType}/{SelectedProtocol}, " +
             "StatsLocalCandidates={StatsLocalCandidates}, StatsRemoteCandidates={StatsRemoteCandidates}, CandidatePairs={CandidatePairs}, PairSummary={PairSummary}.",
             call.Id, _accountId, _mediaRole, _peerGeneration, eventName,
@@ -1125,6 +1135,10 @@ public sealed class CallClientService(
             _localCandidatesGenerated, _localCandidatesSent, CandidateTypeSummary(_localCandidateTypes),
             _remoteCandidatesReceived, _remoteCandidatesAdded, _remoteCandidateAddFailures,
             snapshot?.QueuedRemoteCandidateCount ?? _pendingIce.Count,
+            snapshot?.HostCandidateAvailable ?? false, snapshot?.ServerReflexiveCandidateAvailable ?? false,
+            snapshot?.PeerReflexiveCandidateAvailable ?? false, snapshot?.RelayCandidateAvailable ?? false,
+            snapshot?.TurnConfigured ?? false, snapshot?.TurnCredentialsPresent ?? false,
+            snapshot?.TurnConfigured == true && snapshot?.RelayCandidateAvailable == false,
             _negotiationTimeoutPeerGeneration, _peerGeneration,
             snapshot?.SelectedLocalCandidateType ?? "none", snapshot?.SelectedRemoteCandidateType ?? "none",
             snapshot?.SelectedCandidateProtocol ?? "none", snapshot?.StatsLocalCandidateCount ?? 0,
@@ -1148,7 +1162,14 @@ public sealed class CallClientService(
             LocalCandidateType: snapshot?.SelectedLocalCandidateType, RemoteCandidateType: snapshot?.SelectedRemoteCandidateType,
             Protocol: snapshot?.SelectedCandidateProtocol, PacketsSent: snapshot?.PacketsSent,
             PacketsReceived: snapshot?.PacketsReceived, PacketsLost: snapshot?.PacketsLost,
-            BytesSent: snapshot?.BytesSent, BytesReceived: snapshot?.BytesReceived));
+            BytesSent: snapshot?.BytesSent, BytesReceived: snapshot?.BytesReceived,
+            HostCandidateAvailable: snapshot?.HostCandidateAvailable,
+            ServerReflexiveCandidateAvailable: snapshot?.ServerReflexiveCandidateAvailable,
+            PeerReflexiveCandidateAvailable: snapshot?.PeerReflexiveCandidateAvailable,
+            RelayCandidateAvailable: snapshot?.RelayCandidateAvailable,
+            TurnConfigured: snapshot?.TurnConfigured, TurnCredentialsPresent: snapshot?.TurnCredentialsPresent,
+            TurnConfiguredButNoRelayCandidate: snapshot?.TurnConfigured == true &&
+                snapshot?.RelayCandidateAvailable == false));
     }
 
     private void ResetAttemptDiagnostics(bool preserveRemoteCandidates)

@@ -1,11 +1,13 @@
 using Iridium.Client.Core;
 using Iridium.Protocol;
 using Microsoft.JSInterop;
+using Microsoft.AspNetCore.Components.WebAssembly.Hosting;
 
 namespace Iridium.Web.Services;
 
 public sealed class BrowserCommunityVoiceMediaClient(IJSRuntime js, ILogger<BrowserCommunityVoiceMediaClient> logger,
-    VoiceParticipantPreferencesService preferences, IWebRtcConfigurationProvider webRtcConfiguration)
+    IWebAssemblyHostEnvironment environment, VoiceParticipantPreferencesService preferences,
+    IWebRtcConfigurationProvider webRtcConfiguration)
     : ICommunityVoiceMediaClient
 {
     private IJSObjectReference? _module;
@@ -32,6 +34,7 @@ public sealed class BrowserCommunityVoiceMediaClient(IJSRuntime js, ILogger<Brow
                      .GroupBy(value => value.AccountId).Select(value => value.First()))
             remotePreferences.Add(await preferences.GetAsync(participant.AccountId, cancellationToken));
         var iceConfiguration = await webRtcConfiguration.GetAsync(cancellationToken);
+        if (environment.IsDevelopment()) WebRtcConfigurationDiagnostics.LogLoaded(logger, iceConfiguration);
         try
         {
             _sessionId = await _module.InvokeAsync<string>("connect", cancellationToken, MediaBuildInfo.Id, _callback,
@@ -151,6 +154,8 @@ public sealed class BrowserCommunityVoiceMediaClient(IJSRuntime js, ILogger<Brow
             "TrackState={TrackState} TrackMuted={TrackMuted} ElementMuted={ElementMuted} ElementVolume={ElementVolume} " +
             "AudioContext={AudioContext} Gain={Gain} FramesEncoded={FramesEncoded} FramesDecoded={FramesDecoded} " +
             "FramesDropped={FramesDropped} Frame={FrameWidth}x{FrameHeight} Candidates=host:{Host}/srflx:{Srflx}/prflx:{Prflx}/relay:{Relay} " +
+            "TurnConfigured={TurnConfigured} TurnCredentialsPresent={TurnCredentialsPresent} " +
+            "TurnConfiguredButNoRelayCandidate={TurnConfiguredButNoRelayCandidate} " +
             "SelectedPair={SelectedLocal}/{SelectedRemote}/{Protocol} Error={ErrorName}:{ErrorMessage}",
             snapshot.Event, snapshot.RemoteParticipantId, snapshot.LocalStreamPresent, snapshot.LocalAudioTracks,
             snapshot.AttachedSenderCount, snapshot.SignalingState, snapshot.IceGatheringState,
@@ -162,7 +167,8 @@ public sealed class BrowserCommunityVoiceMediaClient(IJSRuntime js, ILogger<Brow
             snapshot.GainValue, snapshot.FramesEncoded, snapshot.FramesDecoded, snapshot.FramesDropped,
             snapshot.FrameWidth, snapshot.FrameHeight, snapshot.HostCandidateAvailable,
             snapshot.ServerReflexiveCandidateAvailable, snapshot.PeerReflexiveCandidateAvailable,
-            snapshot.RelayCandidateAvailable, snapshot.SelectedLocalCandidateType,
+            snapshot.RelayCandidateAvailable, snapshot.TurnConfigured, snapshot.TurnCredentialsPresent,
+            snapshot.TurnConfiguredButNoRelayCandidate, snapshot.SelectedLocalCandidateType,
             snapshot.SelectedRemoteCandidateType, snapshot.SelectedCandidateProtocol,
             snapshot.ErrorName, snapshot.ErrorMessage);
         return Task.CompletedTask;

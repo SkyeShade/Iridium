@@ -23,6 +23,7 @@ public sealed class ChatHub(
     ICommunityLimitsService limitService,
     ICallService calls,
     IMediaService media,
+    INodeMediaSessionService nodeMedia,
     DirectCallAuthorizationService callAuthorization,
     VoiceConnectionRegistry voiceConnections,
     VoiceTraceLogger voiceTrace,
@@ -172,8 +173,9 @@ public sealed class ChatHub(
         var accountId = await RequireAccountAsync();
         var room = communityVoice.RoomFor(Context.ConnectionId)
             ?? throw new HubException("Join a Community voice channel first.");
+        var access = await authorization.GetChannelAccessAsync(room.CommunityId, room.ChannelId, accountId, db);
         return await communityVoiceMedia.PrepareSessionAsync(room.CommunityId, room.ChannelId,
-            Context.ConnectionId, accountId, Context.ConnectionAborted);
+            Context.ConnectionId, accountId, access.Has(CommunityPermission.ShareScreen), Context.ConnectionAborted);
     }
 
     public async Task SendCommunityVoiceMediaOffer(string targetParticipantId, Guid negotiationId,
@@ -568,8 +570,17 @@ public sealed class ChatHub(
     public async Task<CallMediaConfigurationDto> GetCallMediaConfiguration(Guid callId)
     {
         var accountId = await RequireAccountAsync();
-        calls.RequireParticipant(callId, accountId, CallState.Ringing, CallState.Active);
-        return media.GetConfiguration();
+        var developmentConfiguration = media.GetConfiguration();
+        if (developmentConfiguration.Mode == MediaMode.DirectWebRtc)
+        {
+            calls.RequireParticipant(callId, accountId, CallState.Ringing, CallState.Active);
+            return developmentConfiguration;
+        }
+        calls.RequireParticipant(callId, accountId, CallState.Active);
+        calls.RequireSelectedConnection(callId, accountId, Context.ConnectionId, CallState.Active);
+        if (!nodeMedia.Enabled) throw new HubException("Voice media is not configured on this Node.");
+        return new CallMediaConfigurationDto(MediaMode.NodeSfu, [],
+            nodeMedia.CreateDirectCallSession(callId, accountId));
     }
 
     // TODO: Remove temporary voice-call diagnostics once WebRTC calls are stable.

@@ -69,6 +69,7 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
                 nodeSession.Account?.Id ?? throw new InvalidOperationException("The active account changed."),
                 cancellationToken);
             _mediaConnected = true;
+            MediaSession = MediaSession with { Status = CommunityVoiceMediaStatus.Connected };
         }
         catch
         {
@@ -183,6 +184,7 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
             await _connection.InvokeAsync(VoiceStreamHubContract.Watch, VoiceMediaSessionKind.CommunityVoice,
                 CurrentRoom.ChannelId, streamId, cancellationToken);
         WatchedStream = stream;
+        await media.SetStreamSubscriptionAsync(stream.MediaStreamId, true, cancellationToken);
         Changed?.Invoke();
     }
 
@@ -193,6 +195,8 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
         if (stream is not null && stream.OwnerAccountId != nodeSession.Account?.Id &&
             _connection?.State == HubConnectionState.Connected)
             await _connection.InvokeAsync(VoiceStreamHubContract.StopWatching, stream.StreamId, cancellationToken);
+        if (stream is not null)
+            await media.SetStreamSubscriptionAsync(stream.MediaStreamId, false, cancellationToken);
         Changed?.Invoke();
     }
 

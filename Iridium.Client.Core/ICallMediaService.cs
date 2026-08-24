@@ -61,7 +61,13 @@ public sealed record WebRtcDiagnosticSnapshot(
     long BytesReceived,
     bool RemoteTrackReceived,
     bool RemoteAudioPlaySucceeded,
-    bool MediaTrafficDetected);
+    bool MediaTrafficDetected,
+    bool HostCandidateAvailable = false,
+    bool ServerReflexiveCandidateAvailable = false,
+    bool PeerReflexiveCandidateAvailable = false,
+    bool RelayCandidateAvailable = false,
+    bool TurnConfigured = false,
+    bool TurnCredentialsPresent = false);
 
 public interface ICallMediaService : IAsyncDisposable
 {
@@ -92,6 +98,8 @@ public interface ICallMediaService : IAsyncDisposable
     Task AttachStreamViewerAsync(string mediaStreamId, string elementId, bool audioMuted,
         CancellationToken cancellationToken = default);
     Task DetachStreamViewerAsync(string elementId, CancellationToken cancellationToken = default);
+    Task SetStreamSubscriptionAsync(string mediaStreamId, bool subscribed,
+        CancellationToken cancellationToken = default) => Task.CompletedTask;
     Task SetStreamAudioMutedAsync(string elementId, bool muted, CancellationToken cancellationToken = default);
     Task RequestStreamFullscreenAsync(string elementId, CancellationToken cancellationToken = default);
     Task<string?> CaptureStreamThumbnailAsync(string mediaStreamId, CancellationToken cancellationToken = default);

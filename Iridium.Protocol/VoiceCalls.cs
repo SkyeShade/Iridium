@@ -35,6 +35,7 @@ public enum CallKind { DirectVoice, CommunityVoice }
 public enum CallState { Ringing, Active, Ended, Rejected, Cancelled }
 public enum CallConnectionState { New, Connecting, Connected, Disconnected, Failed, Closed }
 public enum MediaMode { DirectWebRtc, NodeSfu }
+public enum NodeMediaRoomKind { DirectCall, CommunityVoice }
 public enum WebRtcNegotiationKind { Initial, Renegotiation, IceRestart }
 
 public sealed record CallParticipantDto(
@@ -164,7 +165,27 @@ public sealed record VoiceDiagnosticReport(
     long? FramesDecoded = null,
     long? FramesDropped = null,
     int? FrameWidth = null,
-    int? FrameHeight = null);
+    int? FrameHeight = null,
+    bool? HostCandidateAvailable = null,
+    bool? ServerReflexiveCandidateAvailable = null,
+    bool? PeerReflexiveCandidateAvailable = null,
+    bool? RelayCandidateAvailable = null,
+    bool? TurnConfigured = null,
+    bool? TurnCredentialsPresent = null,
+    bool? TurnConfiguredButNoRelayCandidate = null);
 
 public sealed record IceServerDto(IReadOnlyList<string> Urls, string? Username = null, string? Credential = null);
-public sealed record CallMediaConfigurationDto(MediaMode Mode, IReadOnlyList<IceServerDto> IceServers);
+public sealed record NodeMediaSessionDto(
+    string Provider,
+    string PublicUrl,
+    string AccessToken,
+    string RoomName,
+    string ParticipantIdentity,
+    NodeMediaRoomKind RoomKind,
+    DateTimeOffset ExpiresAt,
+    bool DiagnosticsEnabled = false);
+
+public sealed record CallMediaConfigurationDto(
+    MediaMode Mode,
+    IReadOnlyList<IceServerDto> IceServers,
+    NodeMediaSessionDto? NodeSession = null);

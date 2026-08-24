@@ -29,6 +29,8 @@ public interface ICommunityVoiceMediaClient : IAsyncDisposable
     Task AttachStreamViewerAsync(string mediaStreamId, string elementId, bool audioMuted,
         CancellationToken cancellationToken = default);
     Task DetachStreamViewerAsync(string elementId, CancellationToken cancellationToken = default);
+    Task SetStreamSubscriptionAsync(string mediaStreamId, bool subscribed,
+        CancellationToken cancellationToken = default) => Task.CompletedTask;
     Task SetStreamAudioMutedAsync(string elementId, bool muted, CancellationToken cancellationToken = default);
     Task RequestStreamFullscreenAsync(string elementId, CancellationToken cancellationToken = default);
     Task<string?> CaptureStreamThumbnailAsync(string mediaStreamId, CancellationToken cancellationToken = default);

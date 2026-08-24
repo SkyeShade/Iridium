@@ -24,6 +24,48 @@ function candidateType(candidate) {
     return candidate?.candidate?.match(/\btyp\s+(host|srflx|prflx|relay)\b/i)?.[1]?.toLowerCase() ?? null;
 }
 
+function iceConfigurationMetadata(configuration) {
+    const entries = configuration?.iceServers ?? [];
+    const hasScheme = (server, schemes) => (Array.isArray(server?.urls) ? server.urls : [server?.urls])
+        .some(url => typeof url === "string" && schemes.some(scheme => url.toLowerCase().startsWith(scheme)));
+    const turnServers = entries.filter(server => hasScheme(server, ["turn:", "turns:"]));
+    return {
+        turnConfigured: turnServers.length > 0,
+        turnCredentialsPresent: turnServers.some(server => !!server.username && !!server.credential)
+    };
+}
+
+function markObservedCandidateType(state, type) {
+    const normalized = typeof type === "string" ? type.toLowerCase() : "";
+    if (["host", "srflx", "prflx", "relay"].includes(normalized))
+        state.observedCandidateTypes[normalized] = true;
+}
+
+function candidateAvailability(session, state) {
+    const observed = state?.observedCandidateTypes ?? { host:false, srflx:false, prflx:false, relay:false };
+    return {
+        hostCandidateAvailable: observed.host,
+        serverReflexiveCandidateAvailable: observed.srflx,
+        peerReflexiveCandidateAvailable: observed.prflx,
+        relayCandidateAvailable: observed.relay,
+        turnConfigured: session.turnConfigured,
+        turnCredentialsPresent: session.turnCredentialsPresent,
+        turnConfiguredButNoRelayCandidate: session.turnConfigured && !observed.relay
+    };
+}
+
+async function reportPeerFailure(session, state) {
+    if (state.failureReported) return;
+    state.failureReported = true;
+    try { await collectPeerStats(session, state, "WebRTC failure stats"); }
+    catch (error) {
+        await diagnostic(session, "WebRTC failure stats unavailable", state,
+            { name:error?.name ?? "StatsError", message:error?.message ?? String(error) });
+    }
+    await diagnostic(session, "WebRTC connection failed", state);
+    await session.callback.invokeMethodAsync("OnMediaError", "Unable to establish the media connection.").catch(() => {});
+}
+
 function publishSpeaking(session, speaking) {
     speaking = speaking && !session.muted;
     if (session.speaking === speaking) return;
@@ -61,10 +103,7 @@ async function diagnostic(session, event, peerState = null, values = {}) {
         framesEncoded: values.framesEncoded ?? null, framesDecoded: values.framesDecoded ?? null,
         framesDropped: values.framesDropped ?? null, frameWidth: values.frameWidth ?? null,
         frameHeight: values.frameHeight ?? null,
-        hostCandidateAvailable: (peerState?.localCandidateTypes.host ?? 0) > 0,
-        serverReflexiveCandidateAvailable: (peerState?.localCandidateTypes.srflx ?? 0) > 0,
-        peerReflexiveCandidateAvailable: (peerState?.localCandidateTypes.prflx ?? 0) > 0,
-        relayCandidateAvailable: (peerState?.localCandidateTypes.relay ?? 0) > 0,
+        ...candidateAvailability(session, peerState),
         selectedLocalCandidateType: values.selectedLocalCandidateType ?? null,
         selectedRemoteCandidateType: values.selectedRemoteCandidateType ?? null,
         selectedCandidateProtocol: values.selectedCandidateProtocol ?? null,
@@ -147,7 +186,9 @@ function createPeer(session, remoteParticipantId, negotiationId) {
         remoteParticipantId, negotiationId, peer, remoteStream: new MediaStream(),
         pendingIce: [], localIceGenerated: 0, remoteIceReceived: 0,
         remoteAudioPlaySucceeded: false, connectionTimer: null, playback: null, visualStreams:new Map(),
-        negotiationChain:Promise.resolve(), localCandidateTypes:{}, selectedPairReported:false,
+        negotiationChain:Promise.resolve(), localCandidateTypes:{}, observedCandidateTypes:{
+            host:false, srflx:false, prflx:false, relay:false
+        }, selectedPairReported:false, failureReported:false,
         remoteAccountId: session.participantAccounts.get(remoteParticipantId) ?? null
     };
     session.peers.set(remoteParticipantId, state);
@@ -159,13 +200,14 @@ function createPeer(session, remoteParticipantId, negotiationId) {
         }
         const type = candidateType(event.candidate);
         if (type) state.localCandidateTypes[type] = (state.localCandidateTypes[type] ?? 0) + 1;
+        markObservedCandidateType(state, type);
         if (!state.negotiationId) return;
         state.localIceGenerated++;
         void diagnostic(session, "IceGenerated", state);
         session.callback.invokeMethodAsync("OnIceCandidate", remoteParticipantId, state.negotiationId,
             candidateDto(event.candidate)).catch(error => reportError(session, "ICE signaling failed", error));
     };
-    peer.onconnectionstatechange = () => {
+    peer.onconnectionstatechange = async () => {
         if (peer.connectionState === "connected" && state.connectionTimer !== null) {
             clearTimeout(state.connectionTimer);
             state.connectionTimer = null;
@@ -173,11 +215,8 @@ function createPeer(session, remoteParticipantId, negotiationId) {
         void diagnostic(session, `ConnectionState:${peer.connectionState}`, state);
         if (peer.connectionState === "connected" && !state.selectedPairReported) {
             state.selectedPairReported = true;
-            void collectPeerStats(session, state, "SelectedCandidatePair");
-        } else if (peer.connectionState === "failed") {
-            void diagnostic(session, "MediaConnectionFailed", state);
-            session.callback.invokeMethodAsync("OnMediaError", "Unable to establish the media connection.").catch(() => {});
-        }
+            await collectPeerStats(session, state, "WebRTC connected");
+        } else if (peer.connectionState === "failed") await reportPeerFailure(session, state);
     };
     peer.oniceconnectionstatechange = () => void diagnostic(session, `IceConnectionState:${peer.iceConnectionState}`, state);
     peer.onicegatheringstatechange = () => void diagnostic(session, `IceGatheringState:${peer.iceGatheringState}`, state);
@@ -228,9 +267,8 @@ function createPeer(session, remoteParticipantId, negotiationId) {
     void diagnostic(session, "PeerCreated", state);
     state.connectionTimer = setTimeout(() => {
         if (peer.connectionState !== "connected") {
-            void diagnostic(session, "MediaConnectionTimedOut", state);
-            session.callback.invokeMethodAsync("OnMediaError", "Unable to establish the media connection.").catch(() => {});
-            closePeer(session, remoteParticipantId, "connection timeout");
+            void reportPeerFailure(session, state)
+                .finally(() => closePeer(session, remoteParticipantId, "connection timeout"));
         }
     }, 20000);
     return state;
@@ -273,6 +311,8 @@ async function collectPeerStats(session, state, event = "StatsSnapshot") {
         let selectedPair = null;
         reports.forEach(report => {
             byId.set(report.id, report);
+            if (report.type === "local-candidate" || report.type === "remote-candidate")
+                markObservedCandidateType(state, report.candidateType);
             if (report.type === "outbound-rtp") {
                 packetsSent += report.packetsSent ?? 0;
                 bytesSent += report.bytesSent ?? 0;
@@ -293,6 +333,8 @@ async function collectPeerStats(session, state, event = "StatsSnapshot") {
             value.type === "candidate-pair" && value.state === "succeeded" && value.nominated);
         const local = pair ? byId.get(pair.localCandidateId) : null;
         const remote = pair ? byId.get(pair.remoteCandidateId) : null;
+        markObservedCandidateType(state, local?.candidateType);
+        markObservedCandidateType(state, remote?.candidateType);
         await diagnostic(session, event, state,
             { packetsSent, packetsReceived, bytesSent, bytesReceived, framesEncoded, framesDecoded,
                 framesDropped, frameWidth, frameHeight, selectedLocalCandidateType:local?.candidateType ?? null,
@@ -330,6 +372,7 @@ export async function connect(mediaBuildId, callback, mediaSession, room, localA
     }
     const id = crypto.randomUUID();
     const localParticipant = (room.participants ?? []).find(value => value.participantId === mediaSession.participantId);
+    const configurationMetadata = iceConfigurationMetadata(iceConfiguration);
     const session = {
         id, callback, mediaSession, iceConfiguration: iceConfiguration ?? { iceServers:[], iceTransportPolicy:"all" },
         room, localAccountId, localParticipantId: mediaSession.participantId,
@@ -339,7 +382,7 @@ export async function connect(mediaBuildId, callback, mediaSession, room, localA
         diagnostics: mediaSession.diagnosticsEnabled === true,
         participantAccounts:new Map((room.participants ?? []).map(value => [value.participantId, value.accountId])),
         preferences:new Map((preferences ?? []).map(value => [value.remoteAccountId, value])),
-        visualStreams:new Map(), viewers:new Map(), screenShare:null
+        visualStreams:new Map(), viewers:new Map(), screenShare:null, ...configurationMetadata
     };
     sessions.set(id, session);
     try {
@@ -447,6 +490,7 @@ export async function handleIceCandidate(id, event) {
     const state = createPeer(session, event.sourceParticipantId, event.negotiationId);
     state.remoteIceReceived++;
     const candidate = new RTCIceCandidate(event.candidate);
+    markObservedCandidateType(state, candidateType(candidate));
     try {
         if (!state.peer.remoteDescription) state.pendingIce.push(candidate);
         else await state.peer.addIceCandidate(candidate);

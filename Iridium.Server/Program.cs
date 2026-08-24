@@ -60,11 +60,18 @@ builder.Services.AddSingleton<IImagePreviewGenerator, ImagePreviewGenerator>();
 builder.Services.AddSingleton<IAvatarImageValidator, AvatarImageValidator>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<ICallService, CallService>();
-builder.Services.AddSingleton<IMediaService, DirectWebRtcMediaService>();
+builder.Services.AddSingleton<INodeMediaSessionService, LiveKitMediaSessionService>();
+if (builder.Environment.IsDevelopment() &&
+    builder.Configuration.GetValue<MediaProvider>("Media:Provider") == MediaProvider.DevelopmentPeerToPeer)
+    builder.Services.AddSingleton<IMediaService, DirectWebRtcMediaService>();
+else
+    builder.Services.AddSingleton<IMediaService, UnavailablePeerMediaService>();
 builder.Services.AddSingleton<IWebRtcIceConfigurationService, WebRtcIceConfigurationService>();
 if (builder.Environment.IsDevelopment() &&
     builder.Configuration.GetValue<bool>("Media:EnableDevelopmentCommunityPeerMesh"))
     builder.Services.AddSingleton<ICommunityVoiceMediaGateway, DevelopmentPeerMeshCommunityVoiceMediaGateway>();
+else if (builder.Configuration.GetValue<MediaProvider>("Media:Provider") == MediaProvider.LiveKit)
+    builder.Services.AddSingleton<ICommunityVoiceMediaGateway, LiveKitCommunityVoiceMediaGateway>();
 else
     builder.Services.AddSingleton<ICommunityVoiceMediaGateway, UnavailableCommunityVoiceMediaGateway>();
 builder.Services.AddSingleton<CommunityVoiceRoomService>();
@@ -124,7 +131,8 @@ if (app.Environment.IsDevelopment())
 }
 app.UseRateLimiter();
 
-app.MapGet("/api/server-info", (ConnectionCounter connections, ICommunityLimitsService limitService) =>
+app.MapGet("/api/server-info", (ConnectionCounter connections, ICommunityLimitsService limitService,
+        INodeMediaSessionService nodeMedia) =>
     {
         var limits = limitService.GetEffectiveLimits();
         return
@@ -137,7 +145,9 @@ app.MapGet("/api/server-info", (ConnectionCounter connections, ICommunityLimitsS
             null,
             limits.MaxAttachmentBytes,
             limits.MaxAttachmentsPerMessage,
-            limits.MaxMessageCharacters);
+            limits.MaxMessageCharacters,
+            nodeMedia.Enabled,
+            nodeMedia.Enabled);
     })
     .WithName("GetServerInfo");
 

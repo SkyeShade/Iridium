@@ -1,0 +1,16 @@
+# Copy to /opt/iridium/config/livekit.yaml and replace every example value.
+port: 7880
+rtc:
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 60000
+  use_external_ip: true
+keys:
+  iridium-example-api-key: replace-with-a-long-random-api-secret
+turn:
+  enabled: true
+  domain: media.example.net
+  tls_port: 5349
+  udp_port: 3478
+  cert_file: /etc/livekit/certs/fullchain.pem
+  key_file: /etc/livekit/certs/privkey.pem

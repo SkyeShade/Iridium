@@ -13,7 +13,8 @@ public interface ICommunityVoiceMediaGateway
     CommunityVoiceMediaStatus Status { get; }
     int? MaximumParticipants { get; }
     ValueTask<CommunityVoiceMediaSessionDto> PrepareSessionAsync(Guid communityId, Guid channelId,
-        string participantId, Guid accountId, CancellationToken cancellationToken = default);
+        string participantId, Guid accountId, bool canPublishScreen,
+        CancellationToken cancellationToken = default);
     ValueTask ParticipantJoinedAsync(Guid communityId, Guid channelId, string participantId,
         Guid accountId, CancellationToken cancellationToken = default);
     ValueTask ParticipantStateChangedAsync(Guid communityId, Guid channelId, string participantId,
@@ -27,8 +28,36 @@ public sealed class UnavailableCommunityVoiceMediaGateway : ICommunityVoiceMedia
     public CommunityVoiceMediaStatus Status => CommunityVoiceMediaStatus.MediaUnavailable;
     public int? MaximumParticipants => null;
     public ValueTask<CommunityVoiceMediaSessionDto> PrepareSessionAsync(Guid communityId, Guid channelId,
-        string participantId, Guid accountId, CancellationToken cancellationToken = default) =>
+        string participantId, Guid accountId, bool canPublishScreen,
+        CancellationToken cancellationToken = default) =>
         ValueTask.FromResult(new CommunityVoiceMediaSessionDto(Status, "none"));
+    public ValueTask ParticipantJoinedAsync(Guid communityId, Guid channelId, string participantId,
+        Guid accountId, CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
+    public ValueTask ParticipantStateChangedAsync(Guid communityId, Guid channelId, string participantId,
+        bool muted, bool deafened, CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
+    public ValueTask ParticipantLeftAsync(Guid communityId, Guid channelId, string participantId,
+        CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
+}
+
+public sealed class LiveKitCommunityVoiceMediaGateway(INodeMediaSessionService media) : ICommunityVoiceMediaGateway
+{
+    public CommunityVoiceMediaStatus Status => media.Enabled
+        ? CommunityVoiceMediaStatus.Connecting : CommunityVoiceMediaStatus.MediaUnavailable;
+    public int? MaximumParticipants => null;
+
+    public ValueTask<CommunityVoiceMediaSessionDto> PrepareSessionAsync(Guid communityId, Guid channelId,
+        string participantId, Guid accountId, bool canPublishScreen,
+        CancellationToken cancellationToken = default)
+    {
+        if (!media.Enabled)
+            return ValueTask.FromResult(new CommunityVoiceMediaSessionDto(
+                CommunityVoiceMediaStatus.MediaUnavailable, "none"));
+        var session = media.CreateCommunityVoiceSession(communityId, channelId, accountId, canPublishScreen);
+        return ValueTask.FromResult(new CommunityVoiceMediaSessionDto(
+            CommunityVoiceMediaStatus.Connecting, media.Provider, ParticipantId: participantId,
+            DiagnosticsEnabled: session.DiagnosticsEnabled, NodeSession: session));
+    }
+
     public ValueTask ParticipantJoinedAsync(Guid communityId, Guid channelId, string participantId,
         Guid accountId, CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
     public ValueTask ParticipantStateChangedAsync(Guid communityId, Guid channelId, string participantId,
@@ -49,7 +78,8 @@ public sealed class DevelopmentPeerMeshCommunityVoiceMediaGateway(IOptions<Media
     public int? MaximumParticipants => Math.Clamp(options.Value.DevelopmentCommunityPeerLimit, 2, 12);
 
     public ValueTask<CommunityVoiceMediaSessionDto> PrepareSessionAsync(Guid communityId, Guid channelId,
-        string participantId, Guid accountId, CancellationToken cancellationToken = default)
+        string participantId, Guid accountId, bool canPublishScreen,
+        CancellationToken cancellationToken = default)
     {
         if (!environment.IsDevelopment() || !options.Value.EnableDevelopmentCommunityPeerMesh)
             return ValueTask.FromResult(new CommunityVoiceMediaSessionDto(

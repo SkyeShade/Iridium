@@ -108,7 +108,8 @@ public sealed class CommunityVoiceRoomServiceTests
         public int? MaximumParticipants => null;
         public List<string> Left { get; } = [];
         public ValueTask<CommunityVoiceMediaSessionDto> PrepareSessionAsync(Guid communityId, Guid channelId,
-            string participantId, Guid accountId, CancellationToken cancellationToken = default) =>
+            string participantId, Guid accountId, bool canPublishScreen,
+            CancellationToken cancellationToken = default) =>
             ValueTask.FromResult(new CommunityVoiceMediaSessionDto(Status, "test"));
         public ValueTask ParticipantJoinedAsync(Guid communityId, Guid channelId, string participantId,
             Guid accountId, CancellationToken cancellationToken = default) => ValueTask.CompletedTask;

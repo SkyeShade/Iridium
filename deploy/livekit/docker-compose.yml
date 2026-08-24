@@ -1,0 +1,9 @@
+services:
+  livekit:
+    image: livekit/livekit-server:v1.12.0
+    command: --config /etc/livekit/livekit.yaml
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - /opt/iridium/config/livekit.yaml:/etc/livekit/livekit.yaml:ro
+      - /opt/iridium/config/livekit-certs:/etc/livekit/certs:ro

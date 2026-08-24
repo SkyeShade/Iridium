@@ -50,6 +50,9 @@ public sealed partial class VoiceTraceLogger(IHostEnvironment environment, ILogg
                 "LocalCandidateStats={LocalCandidateStats} RemoteCandidateStats={RemoteCandidateStats} " +
                 "CandidatePairStats={CandidatePairStats} SucceededCandidatePairs={SucceededCandidatePairs} " +
                 "NominatedPairExists={NominatedPairExists} SelectedPairExists={SelectedPairExists} PairState={PairState} " +
+                "Candidates=host:{Host}/srflx:{Srflx}/prflx:{Prflx}/relay:{Relay} " +
+                "TurnConfigured={TurnConfigured} TurnCredentialsPresent={TurnCredentialsPresent} " +
+                "TurnConfiguredButNoRelayCandidate={TurnConfiguredButNoRelayCandidate} " +
                 "Pair={LocalCandidateType}->{RemoteCandidateType}/{Protocol} PacketsSent={PacketsSent} " +
                 "PacketsReceived={PacketsReceived} PacketsLost={PacketsLost} BytesSent={BytesSent} BytesReceived={BytesReceived}",
                 call.Id, accountId, role, report.PeerGeneration, report.NegotiationGeneration, eventName,
@@ -59,6 +62,9 @@ public sealed partial class VoiceTraceLogger(IHostEnvironment environment, ILogg
                 report.RemoteAudioPlaySucceeded, report.MediaTrafficDetected, report.LocalCandidateStats,
                 report.RemoteCandidateStats, report.CandidatePairStats, report.SucceededCandidatePairs,
                 report.NominatedPairExists, report.SelectedPairExists, SafeState(report.PairState),
+                report.HostCandidateAvailable, report.ServerReflexiveCandidateAvailable,
+                report.PeerReflexiveCandidateAvailable, report.RelayCandidateAvailable,
+                report.TurnConfigured, report.TurnCredentialsPresent, report.TurnConfiguredButNoRelayCandidate,
                 SafeState(report.LocalCandidateType), SafeState(report.RemoteCandidateType), SafeState(report.Protocol),
                 report.PacketsSent, report.PacketsReceived, report.PacketsLost, report.BytesSent, report.BytesReceived);
     }

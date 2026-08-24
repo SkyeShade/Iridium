@@ -28,6 +28,7 @@ public sealed class MediaBuildVersionTests
     {
         var direct = Source("Iridium.Web", "Services", "WebRtcCallMediaService.cs");
         var community = Source("Iridium.Web", "Services", "BrowserCommunityVoiceMediaClient.cs");
+        var liveKit = Source("Iridium.Web", "wwwroot", "js", "liveKitMedia.js");
         var directJs = Source("Iridium.Web", "wwwroot", "js", "voiceCall.js");
         var communityJs = Source("Iridium.Web", "wwwroot", "js", "communityVoiceMedia.js");
         var project = Source("Iridium.Web", "Iridium.Web.csproj");
@@ -39,6 +40,7 @@ public sealed class MediaBuildVersionTests
         Assert.Contains("IridiumMediaBuildId", project);
         Assert.Contains("requireMatchingMediaBuild(mediaBuildId)", directJs);
         Assert.Contains("requireMatchingMediaBuild(mediaBuildId)", communityJs);
+        Assert.Contains("LivekitClient", liveKit);
         Assert.DoesNotContain("screen-v1", direct);
         Assert.DoesNotContain("screen-v1", community);
         Assert.DoesNotContain("IceInteropProtocolVersion", direct);

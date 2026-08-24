@@ -24,7 +24,9 @@ public sealed record ServerInfoDto(
     string? ServerIconUrl,
     long MaxAttachmentBytes = NodeLimitDefaults.MaxAttachmentBytes,
     int MaxAttachmentsPerMessage = 10,
-    int MaxMessageCharacters = 10_000);
+    int MaxMessageCharacters = 10_000,
+    bool VoiceEnabled = false,
+    bool ScreenShareEnabled = false);
 
 public static class MessageText
 {

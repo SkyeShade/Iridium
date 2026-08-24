@@ -36,7 +36,8 @@ public sealed record CommunityVoiceMediaSessionDto(
     string? AccessToken = null,
     string? ParticipantId = null,
     IReadOnlyList<IceServerDto>? IceServers = null,
-    bool DiagnosticsEnabled = false);
+    bool DiagnosticsEnabled = false,
+    NodeMediaSessionDto? NodeSession = null);
 
 public sealed record CommunityVoiceMediaDescriptionEvent(string SourceParticipantId, Guid NegotiationId,
     WebRtcSessionDescription Description);
@@ -80,6 +81,9 @@ public sealed record CommunityVoiceMediaDiagnosticDto(
     string? SelectedLocalCandidateType = null,
     string? SelectedRemoteCandidateType = null,
     string? SelectedCandidateProtocol = null,
+    bool? TurnConfigured = null,
+    bool? TurnCredentialsPresent = null,
+    bool? TurnConfiguredButNoRelayCandidate = null,
     string? ErrorName = null,
     string? ErrorMessage = null);
 

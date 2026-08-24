@@ -24,7 +24,34 @@ public sealed class WebRtcClientArchitectureTests
         Assert.Equal(1, Count(communityJs, "new RTCPeerConnection("));
         Assert.Contains("iceTransportPolicy", directJs);
         Assert.Contains("iceTransportPolicy", communityJs);
+        Assert.Contains("WebRTC connected", directJs);
+        Assert.Contains("WebRTC connected", communityJs);
+        Assert.Contains("WebRTC connection failed", directJs);
+        Assert.Contains("WebRTC connection failed", communityJs);
+        Assert.Contains("hostCandidateAvailable", directJs);
+        Assert.Contains("hostCandidateAvailable", communityJs);
+        Assert.Contains("turnConfiguredButNoRelayCandidate", directJs);
+        Assert.Contains("turnConfiguredButNoRelayCandidate", communityJs);
         Assert.DoesNotContain("mediaSession.iceServers", communityJs);
+    }
+
+    [Fact]
+    public void ProductionMediaUsesOneSfuRoomAndNeverCreatesRemoteUserPeerConnections()
+    {
+        var registration = Source("Iridium.Web", "Program.cs");
+        var sfu = Source("Iridium.Web", "wwwroot", "js", "liveKitMedia.js");
+        var callAdapter = Source("Iridium.Web", "Services", "LiveKitCallMediaService.cs");
+        var communityAdapter = Source("Iridium.Web", "Services", "LiveKitCommunityVoiceMediaClient.cs");
+
+        Assert.Contains("AddScoped<ICallMediaService, LiveKitCallMediaService>", registration);
+        Assert.Contains("AddScoped<ICommunityVoiceMediaClient, LiveKitCommunityVoiceMediaClient>", registration);
+        Assert.DoesNotContain("new RTCPeerConnection(", sfu);
+        Assert.Contains("new Room(", sfu);
+        Assert.Contains("autoSubscribe: false", sfu);
+        Assert.Contains("setStreamSubscription", sfu);
+        Assert.Contains("NodeSfu", callAdapter);
+        Assert.Contains("livekit", communityAdapter, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("CreateOfferAsync", communityAdapter);
     }
 
     [Fact]

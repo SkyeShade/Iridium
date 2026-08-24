@@ -25,7 +25,9 @@ const diagnosticEventNames = {
     "local media track stop()": "LocalTracksStopping",
     "ICE candidate error (non-terminal)": "IceCandidateError",
     "negotiationneeded observed; accepted caller path remains sole offer authority": "NegotiationNeeded",
-    "transport connected; notifying .NET to cancel negotiation timeout": "PeerTransportConnected"
+    "transport connected; notifying .NET to cancel negotiation timeout": "PeerTransportConnected",
+    "WebRTC connected": "WebRtcConnected",
+    "WebRTC connection failed": "WebRtcConnectionFailed"
 };
 
 function canonicalEvent(value) {
@@ -100,7 +102,13 @@ function voiceDiagnosticReport(session, event, details) {
         bytesSent: "bytesSent", bytesReceived: "bytesReceived", framesEncoded:"framesEncoded",
         framesDecoded:"framesDecoded", framesDropped:"framesDropped", frameWidth:"frameWidth", frameHeight:"frameHeight",
         remoteTrackReceived: "remoteTrackReceived",
-        remoteAudioPlaySucceeded: "remoteAudioPlaySucceeded", mediaTrafficDetected: "mediaTrafficDetected"
+        remoteAudioPlaySucceeded: "remoteAudioPlaySucceeded", mediaTrafficDetected: "mediaTrafficDetected",
+        hostCandidateAvailable: "hostCandidateAvailable",
+        serverReflexiveCandidateAvailable: "serverReflexiveCandidateAvailable",
+        peerReflexiveCandidateAvailable: "peerReflexiveCandidateAvailable",
+        relayCandidateAvailable: "relayCandidateAvailable", turnConfigured: "turnConfigured",
+        turnCredentialsPresent: "turnCredentialsPresent",
+        turnConfiguredButNoRelayCandidate: "turnConfiguredButNoRelayCandidate"
     };
     for (const [source, target] of Object.entries(mappings))
         if (details[source] !== undefined) report[target] = target === "reason" ? canonicalReason(details[source]) : details[source];
@@ -131,6 +139,36 @@ function normalizeIceServers(servers) {
 
 function normalizeIceTransportPolicy(policy) {
     return policy === "relay" ? "relay" : "all";
+}
+
+function iceConfigurationMetadata(servers) {
+    const entries = servers ?? [];
+    const hasScheme = (server, schemes) => (Array.isArray(server?.urls) ? server.urls : [server?.urls])
+        .some(url => typeof url === "string" && schemes.some(scheme => url.toLowerCase().startsWith(scheme)));
+    const turnServers = entries.filter(server => hasScheme(server, ["turn:", "turns:"]));
+    return {
+        turnConfigured: turnServers.length > 0,
+        turnCredentialsPresent: turnServers.some(server => !!server.username && !!server.credential)
+    };
+}
+
+function markObservedCandidateType(session, type) {
+    const normalized = typeof type === "string" ? type.toLowerCase() : "";
+    if (["host", "srflx", "prflx", "relay"].includes(normalized))
+        session.observedCandidateTypes[normalized] = true;
+}
+
+function candidateAvailability(session) {
+    const observed = session.observedCandidateTypes;
+    return {
+        hostCandidateAvailable: observed.host,
+        serverReflexiveCandidateAvailable: observed.srflx,
+        peerReflexiveCandidateAvailable: observed.prflx,
+        relayCandidateAvailable: observed.relay,
+        turnConfigured: session.turnConfigured,
+        turnCredentialsPresent: session.turnCredentialsPresent,
+        turnConfiguredButNoRelayCandidate: session.turnConfigured && !observed.relay
+    };
 }
 
 function diagnostic(session, event, details = {}) {
@@ -243,7 +281,9 @@ function browserCandidate(session, candidate) {
     });
     if (typeof init.candidate !== "string" || init.candidate.length === 0)
         throw new TypeError("Invalid RTCIceCandidateInit shape: candidate is missing.");
-    return new RTCIceCandidate(init);
+    const rtcCandidate = new RTCIceCandidate(init);
+    markObservedCandidateType(session, safeCandidateMetadata(rtcCandidate).candidateType);
+    return rtcCandidate;
 }
 
 async function selectedPairSummary(session) {
@@ -259,13 +299,15 @@ async function selectedPairSummary(session) {
         if (!pair) return null;
         const local = stats.get(pair.localCandidateId);
         const remote = stats.get(pair.remoteCandidateId);
+        markObservedCandidateType(session, local?.candidateType);
+        markObservedCandidateType(session, remote?.candidateType);
         const summary = {
             selectedLocalCandidateType: local?.candidateType ?? null,
             selectedRemoteCandidateType: remote?.candidateType ?? null,
             selectedCandidateProtocol: local?.protocol ?? remote?.protocol ?? null
         };
         session.selectedPair = summary;
-        diagnostic(session, "selected ICE candidate pair", summary);
+        diagnostic(session, "WebRTC connected", { ...summary, ...candidateAvailability(session) });
         return summary;
     } catch (error) {
         diagnostic(session, "selected ICE candidate pair unavailable", { name: error?.name, message: error?.message });
@@ -283,8 +325,13 @@ async function iceStatsSummary(session, event) {
         let packetsSent = 0, packetsReceived = 0, packetsLost = 0, bytesSent = 0, bytesReceived = 0;
         let framesEncoded = 0, framesDecoded = 0, framesDropped = 0, frameWidth = null, frameHeight = null;
         for (const report of stats.values()) {
-            if (report.type === "local-candidate") localCandidates.set(report.id, report);
-            else if (report.type === "remote-candidate") remoteCandidates.set(report.id, report);
+            if (report.type === "local-candidate") {
+                localCandidates.set(report.id, report);
+                markObservedCandidateType(session, report.candidateType);
+            } else if (report.type === "remote-candidate") {
+                remoteCandidates.set(report.id, report);
+                markObservedCandidateType(session, report.candidateType);
+            }
             else if (report.type === "candidate-pair") pairs.push(report);
             else if (report.type === "transport" && report.selectedCandidatePairId)
                 selectedCandidatePairId = report.selectedCandidatePairId;
@@ -308,6 +355,8 @@ async function iceStatsSummary(session, event) {
         const pairSummaries = pairs.map(pair => {
             const local = localCandidates.get(pair.localCandidateId);
             const remote = remoteCandidates.get(pair.remoteCandidateId);
+            markObservedCandidateType(session, local?.candidateType);
+            markObservedCandidateType(session, remote?.candidateType);
             return {
                 state: pair.state ?? "unknown",
                 nominated: Boolean(pair.nominated),
@@ -367,7 +416,8 @@ function diagnosticSummary(session, event) {
         remoteCandidateTypes: summarizeTypes(session.remoteCandidateTypes),
         remoteCandidatesAdded: session.remoteCandidateAddedCount,
         remoteCandidateAddFailures: session.remoteCandidateAddFailureCount,
-        queuedRemoteCandidates: session.pendingRemoteCandidates.length
+        queuedRemoteCandidates: session.pendingRemoteCandidates.length,
+        ...candidateAvailability(session)
     });
 }
 
@@ -528,6 +578,7 @@ export async function initialize(mediaBuildId, callback, iceServers, iceTranspor
             iceServers: normalizeIceServers(iceServers),
             iceTransportPolicy: normalizeIceTransportPolicy(iceTransportPolicy)
         });
+        const configurationMetadata = iceConfigurationMetadata(iceServers);
         session = {
             id, callback, peer, localStream, remoteStream: new MediaStream(), diagnostics,
             callId, localAccountId, role, peerGeneration, negotiationId, negotiationGeneration,
@@ -537,7 +588,9 @@ export async function initialize(mediaBuildId, callback, iceServers, iceTranspor
             lastAnswerSignalingStateBefore: null, lastAnswerSignalingStateAfter: null,
             localCandidateCount: 0, localCandidateEventCount: 0, remoteCandidateCount: 0,
             remoteCandidateAddedCount: 0, remoteCandidateAddFailureCount: 0,
-            localCandidateTypes: {}, remoteCandidateTypes: {}, selectedPair: null,
+            localCandidateTypes: {}, remoteCandidateTypes: {}, observedCandidateTypes: {
+                host:false, srflx:false, prflx:false, relay:false
+            }, selectedPair: null, selectedPairReported:false, ...configurationMetadata,
             lastIceStats: { localCandidateCount: 0, remoteCandidateCount: 0, candidatePairCount: 0,
                 succeededCandidatePairCount: 0, nominatedPairExists: false, selectedPairExists: false,
                 pairSummaries: [], packetsSent: 0, packetsReceived: 0, packetsLost: 0, bytesSent: 0, bytesReceived: 0 },
@@ -590,6 +643,7 @@ export async function initialize(mediaBuildId, callback, iceServers, iceTranspor
                 const metadata = safeCandidateMetadata(event.candidate);
                 session.localCandidateCount++;
                 incrementType(session.localCandidateTypes, metadata.candidateType, metadata.protocol);
+                markObservedCandidateType(session, metadata.candidateType);
                 diagnostic(session, `JS GENERATED ICE #${sequence}`, {
                     signalId, candidateSequence: sequence, ...metadata,
                     sdpMid: value.sdpMid, sdpMLineIndex: value.sdpMLineIndex,
@@ -645,23 +699,20 @@ export async function initialize(mediaBuildId, callback, iceServers, iceTranspor
             stateTransition(session, "connectionState", peer.connectionState);
             if (peer.connectionState === "connected") {
                 diagnostic(session, "transport connected; notifying .NET to cancel negotiation timeout");
-                await selectedPairSummary(session);
-                await iceStatsSummary(session, "ICE getStats at connection");
+                if (!session.selectedPairReported) {
+                    session.selectedPairReported = true;
+                    await selectedPairSummary(session);
+                }
             } else if (peer.connectionState === "failed") {
                 await iceStatsSummary(session, "ICE getStats at failure");
-                diagnosticSummary(session, "WEBRTC FAILED");
+                diagnosticSummary(session, "WebRTC connection failed");
             }
             notify(session, "OnConnectionStateChanged", peer.connectionState);
         };
         peer.oniceconnectionstatechange = async () => {
             stateTransition(session, "iceConnectionState", peer.iceConnectionState);
             notify(session, "OnIceConnectionStateChanged", peer.iceConnectionState);
-            if (peer.iceConnectionState === "connected" || peer.iceConnectionState === "completed") {
-                await iceStatsSummary(session, "StatsSnapshot");
-                setTimeout(() => {
-                    if (sessions.has(session.id)) void iceStatsSummary(session, "StatsSnapshot");
-                }, 1000);
-            }
+            // Selected candidate-pair stats are captured once by connectionstatechange.
         };
         peer.onicegatheringstatechange = () => stateTransition(session, "iceGatheringState", peer.iceGatheringState);
         peer.onsignalingstatechange = () => stateTransition(session, "signalingState", peer.signalingState);
@@ -888,7 +939,8 @@ function snapshot(session) {
         packetsSent: session.lastIceStats.packetsSent, packetsReceived: session.lastIceStats.packetsReceived,
         packetsLost: session.lastIceStats.packetsLost, bytesSent: session.lastIceStats.bytesSent,
         bytesReceived: session.lastIceStats.bytesReceived, remoteTrackReceived: session.remoteTrackReceived,
-        remoteAudioPlaySucceeded: session.remoteAudioPlaySucceeded, mediaTrafficDetected: session.mediaTrafficDetected
+        remoteAudioPlaySucceeded: session.remoteAudioPlaySucceeded, mediaTrafficDetected: session.mediaTrafficDetected,
+        ...candidateAvailability(session)
     };
 }
 

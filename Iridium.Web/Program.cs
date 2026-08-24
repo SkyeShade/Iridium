@@ -42,8 +42,17 @@ builder.Services.AddScoped<IWebRtcConfigurationProvider, WebRtcConfigurationProv
 builder.Services.AddScoped<RealtimeConnectionService>();
 builder.Services.AddScoped<CommunitySession>();
 builder.Services.AddScoped<ChannelMessagingSession>();
-builder.Services.AddScoped<ICallMediaService, WebRtcCallMediaService>();
-builder.Services.AddScoped<ICommunityVoiceMediaClient, BrowserCommunityVoiceMediaClient>();
+if (builder.HostEnvironment.IsDevelopment())
+{
+    // Explicit local-development fallback only. Production never silently falls back to P2P/mesh.
+    builder.Services.AddScoped<ICallMediaService, WebRtcCallMediaService>();
+    builder.Services.AddScoped<ICommunityVoiceMediaClient, BrowserCommunityVoiceMediaClient>();
+}
+else
+{
+    builder.Services.AddScoped<ICallMediaService, LiveKitCallMediaService>();
+    builder.Services.AddScoped<ICommunityVoiceMediaClient, LiveKitCommunityVoiceMediaClient>();
+}
 builder.Services.AddScoped<CallClientService>();
 builder.Services.AddScoped<CommunityVoiceSession>();
 builder.Services.AddScoped<IDirectVoiceSession>(sp => sp.GetRequiredService<CallClientService>());

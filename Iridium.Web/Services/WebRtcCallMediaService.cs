@@ -37,6 +37,7 @@ public sealed class WebRtcCallMediaService(
         _callback = DotNetObjectReference.Create(this);
         _context = context;
         var iceConfiguration = await webRtcConfiguration.GetAsync(cancellationToken);
+        if (environment.IsDevelopment()) WebRtcConfigurationDiagnostics.LogLoaded(logger, iceConfiguration);
         var preference = context.RemoteAccountId is { } remote
             ? await preferences.GetAsync(remote, cancellationToken) : null;
         try
