@@ -24,9 +24,17 @@
                       PublicIdentity="@PublicIdentity" Presence="Presence" OnProfile="OnProfile" OnSettings="OnSettings" />
     </aside>
     <main class="main-content" @ref="_mainContent">
-        <header class="mobile-conversation-header">
+        <header class="mobile-conversation-header @(UseCompactMobileConversationHeader ? "compact-dm" : null)">
             <button type="button" class="mobile-back" aria-label="Back to navigation" @onclick="OnMobileBack"><Icon Name="chevron" Size="48" /></button>
-            <strong title="@MobileConversationTitle">@MobileConversationTitle</strong>
+            @if (UseCompactMobileConversationHeader && MobileConversationIdentity is not null)
+            {
+                <div class="mobile-conversation-identity-slot">@MobileConversationIdentity</div>
+                <div class="mobile-conversation-action-slot">@MobileConversationAction</div>
+            }
+            else
+            {
+                <strong title="@MobileConversationTitle">@MobileConversationTitle</strong>
+            }
             @if (ShowRightSidebar)
             {
                 <button type="button" class="mobile-context" aria-label="Open conversation context" @onclick="OnMobileContext"><Icon Name="friends" /></button>
@@ -72,6 +80,9 @@
     [Parameter] public EventCallback OnBackgroundInteraction { get; set; }
     [Parameter] public MobilePanel ActiveMobilePanel { get; set; } = MobilePanel.Navigation;
     [Parameter] public string MobileConversationTitle { get; set; } = "Conversation";
+    [Parameter] public bool UseCompactMobileConversationHeader { get; set; }
+    [Parameter] public RenderFragment? MobileConversationIdentity { get; set; }
+    [Parameter] public RenderFragment? MobileConversationAction { get; set; }
     [Parameter] public EventCallback OnMobileBack { get; set; }
     [Parameter] public EventCallback OnMobileContext { get; set; }
     [Parameter] public EventCallback OnMobileContextClose { get; set; }

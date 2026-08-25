@@ -3,3 +3,4 @@
 .voice-call-button{flex:0 0 auto;width:2rem;height:2rem;display:grid;place-items:center;margin-left:auto;padding:.42rem;border:0;border-radius:var(--radius-sm);color:var(--text-muted);background:transparent;cursor:pointer}.voice-call-button:hover{color:var(--text-strong);background:var(--surface-hover)}.voice-call-button ::deep svg{width:100%;height:100%}
 .voice-call-button:disabled{opacity:.45;cursor:not-allowed}.voice-call-button:disabled:hover{color:var(--text-muted);background:transparent}
 .direct-message-view.file-drag-over .dm-message-region{box-shadow:inset 0 0 0 2px color-mix(in srgb,var(--accent) 32%,transparent);background:color-mix(in srgb,var(--accent) 4%,transparent)}
+@media(max-width:860px){.direct-message-view{grid-template-rows:minmax(0,1fr) auto}.dm-header{display:none}}

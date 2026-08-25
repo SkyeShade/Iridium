@@ -74,6 +74,7 @@ else
                       ShowRightSidebar="@HasContextSidebar"
                       ActiveMobilePanel="_mobilePanels.Current"
                       MobileConversationTitle="@MobileConversationTitle"
+                      UseCompactMobileConversationHeader="@IsDirectConversationSelected"
                       OnMobileBack="ShowMobileNavigation"
                       OnMobileContext="ShowMobileContext"
                       OnMobileContextClose="CloseMobileContext">
@@ -127,6 +128,26 @@ else
             }
         </SidebarContent>
         <VoiceConnection><VoiceConnectionPanel /></VoiceConnection>
+        <MobileConversationIdentity>
+            @if (IsDirectConversationSelected && _selectedDirectConversation is { } mobileDirect)
+            {
+                <ProfileAvatar AccountId="mobileDirect.OtherParticipant.AccountId"
+                               DisplayName="@mobileDirect.OtherParticipant.DisplayName"
+                               Presence="@mobileDirect.OtherParticipant.Presence" Size="small" Surface="base" />
+                <span class="mobile-dm-copy">
+                    <strong class="display-name">@mobileDirect.OtherParticipant.DisplayName</strong>
+                    <small>@IridiumIdentity.Format(mobileDirect.OtherParticipant.Username, Session.SelectedNode!.PublicAuthority)</small>
+                </span>
+            }
+        </MobileConversationIdentity>
+        <MobileConversationAction>
+            @if (IsDirectConversationSelected)
+            {
+                <button type="button" class="mobile-dm-call" title="@DirectCallButtonLabel" aria-label="@DirectCallButtonLabel"
+                        disabled="@(VoiceSessions.DirectCalls.CurrentCall is not null || VoiceSessions.IncomingCall is not null)"
+                        @onclick="StartMobileDirectVoiceCallAsync"><Icon Name="phone" /></button>
+            }
+        </MobileConversationAction>
         <ChildContent>
             @if (VoiceSessions.WatchedStream is not null && VoiceSessions.ViewerMode == StreamViewerMode.Full)
             {
@@ -332,6 +353,13 @@ else
     private bool HasContextSidebar =>
         _selectedCommunity is not null && _selectedChannel is not null && CommunityState.Management is not null ||
         _selectedCommunity is null && _homeView == "dm" && _selectedDirectConversation is not null;
+    private bool IsDirectConversationSelected =>
+        _selectedCommunity is null && _homeView == "dm" && _selectedDirectConversation is not null;
+    private string DirectCallButtonLabel => VoiceSessions.DirectCalls.CurrentCall is not null
+        ? "Voice Call Active"
+        : VoiceSessions.IncomingCall is not null ? "Incoming Voice Call" : "Start Voice Call";
+    private Task StartMobileDirectVoiceCallAsync() =>
+        _directMessageView?.StartVoiceCallAsync() ?? Task.CompletedTask;
     private bool HasSelectedChannelPermission(CommunityPermission permission) =>
         _selectedChannel is not null && (_selectedChannel.EffectivePermissions & permission) == permission ||
         CommunityState.IsOwner || CommunityState.HasPermission(CommunityPermission.Administrator);

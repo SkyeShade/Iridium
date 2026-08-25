@@ -179,7 +179,7 @@
         _loadedTargetMessageId = TargetMessageId;
         await InvokeAsync(StateHasChanged);
     }
-    private async Task StartVoiceCallAsync()
+    public async Task StartVoiceCallAsync()
     {
         _error = null;
         try

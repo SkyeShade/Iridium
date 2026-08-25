@@ -101,6 +101,30 @@ public sealed class NotificationResponsiveUiTests
     }
 
     [Fact]
+    public void MobileDirectMessagesUseOneCompactHeaderWithoutChangingChannelHeaders()
+    {
+        var root = FindRepositoryRoot();
+        var home = File.ReadAllText(Path.Combine(root, "Iridium.Web", "Pages", "Home.razor"));
+        var shell = File.ReadAllText(Path.Combine(root, "Iridium.UI", "ApplicationShell.razor"));
+        var shellCss = File.ReadAllText(Path.Combine(root, "Iridium.UI", "ApplicationShell.razor.css"));
+        var direct = File.ReadAllText(Path.Combine(root, "Iridium.Web", "Components", "DirectMessageView.razor"));
+        var directCss = File.ReadAllText(Path.Combine(root, "Iridium.Web", "Components", "DirectMessageView.razor.css"));
+
+        Assert.Contains("UseCompactMobileConversationHeader=\"@IsDirectConversationSelected\"", home);
+        Assert.Contains("<MobileConversationIdentity>", home);
+        Assert.Contains("<ProfileAvatar", home);
+        Assert.Contains("@onclick=\"StartMobileDirectVoiceCallAsync\"", home);
+        Assert.Contains("MobileConversationIdentity is not null", shell);
+        Assert.Contains("grid-template-columns:3.1rem minmax(0,1fr) 2.75rem 2.75rem", shellCss);
+        Assert.Contains("min-width:0", shellCss);
+        Assert.Contains("text-overflow:ellipsis", shellCss);
+        Assert.Contains("@media(max-width:860px)", directCss);
+        Assert.Contains(".dm-header{display:none}", directCss);
+        Assert.Contains("public async Task StartVoiceCallAsync()", direct);
+        Assert.Contains("else\n            {\n                <strong title=\"@MobileConversationTitle\">", shell.Replace("\r\n", "\n"));
+    }
+
+    [Fact]
     public void MobileComposerUsesCanonicalSendabilityAndMatchingSourceGeometry()
     {
         var root = FindRepositoryRoot();
