@@ -525,7 +525,7 @@ public static partial class AccountEndpoints
         var errors = new Dictionary<string, string[]>();
         var normalizedUsername = username.Trim();
         if (!UsernamePattern().IsMatch(normalizedUsername))
-            errors[nameof(username)] = ["Usernames must be 3-32 characters using letters, numbers, dots, underscores, or hyphens."];
+            errors[nameof(username)] = ["Usernames must be 1-32 characters using letters, numbers, dots, underscores, or hyphens."];
         if (displayName.Trim().Length is < 1 or > 64)
             errors[nameof(displayName)] = ["Display names must be between 1 and 64 characters."];
         if (password.Length is < AccountSecurityLimits.MinimumPasswordLength or
@@ -540,6 +540,6 @@ public static partial class AccountEndpoints
             account.PreferredPresence, account.CreatedAt, account.ActiveAvatarPresetId, account.AvatarRevision,
             account.ActiveBannerPresetId, account.BannerRevision);
 
-    [GeneratedRegex("^[A-Za-z0-9_.-]{3,32}$", RegexOptions.CultureInvariant)]
+    [GeneratedRegex("^[A-Za-z0-9_.-]{1,32}$", RegexOptions.CultureInvariant)]
     private static partial Regex UsernamePattern();
 }
