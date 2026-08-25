@@ -49,8 +49,8 @@
                 <button type="button" class="attachment-button" title="Add files" aria-label="Add files" @onclick="OpenFilePickerAsync">+</button>
             }
             <div class="composer-editor">
-                <div class="composer-highlight" aria-hidden="true"><ComposerContentPreview Content="@_content" References="_emojiReferences" StandardReferences="_standardEmojiReferences" Available="_availableEmojis" /></div>
-                <div class="composer-rich-editor iridium-textarea-scrollbar" @ref="_textarea" contenteditable="true" spellcheck="true"
+                <div class="composer-highlight composer-text-geometry" aria-hidden="true"><ComposerContentPreview Content="@_content" References="_emojiReferences" StandardReferences="_standardEmojiReferences" Available="_availableEmojis" /></div>
+                <div class="composer-rich-editor composer-text-geometry iridium-textarea-scrollbar" @ref="_textarea" contenteditable="true" spellcheck="true"
                      data-placeholder="@ComposerPlaceholder" aria-label="@ComposerPlaceholder" role="textbox" aria-multiline="true"></div>
             </div>
             <button @ref="_emojiButton" type="button" class="emoji-button" title="Emoji" aria-label="Emoji" @onclick="ToggleEmojiPicker"><Icon Name="emoji" /></button>

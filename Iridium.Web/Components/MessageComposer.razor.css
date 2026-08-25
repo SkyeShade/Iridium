@@ -1,14 +1,14 @@
 .composer-wrap { padding: 0 var(--bottom-control-inset) var(--bottom-control-inset); background: var(--bg-base); }
-.composer-editor{position:relative;grid-column:2;min-width:0}
-.composer-editor .composer-highlight{position:absolute;z-index:1;inset:0 1rem 0 0;overflow:hidden;padding:calc((var(--composer-min-height) - 1.35em)/2) 4rem calc((var(--composer-min-height) - 1.35em)/2) 0;color:var(--text-strong);font:inherit;line-height:var(--chat-line-height);white-space:pre-wrap;overflow-wrap:break-word;word-break:break-word;pointer-events:none}
-.composer-rich-editor{position:relative;z-index:2;box-sizing:border-box;width:100%;height:var(--composer-min-height);min-height:var(--composer-min-height);max-height:50dvh;overflow-y:hidden;padding:calc((var(--composer-min-height) - 1.35em)/2) 4rem calc((var(--composer-min-height) - 1.35em)/2) 0;border:0;outline:0;color:transparent;-webkit-text-fill-color:transparent;caret-color:var(--text-strong);background:transparent;font:inherit;line-height:var(--chat-line-height);white-space:pre-wrap;overflow-wrap:anywhere;scrollbar-gutter:stable}
+.composer-editor{--composer-text-end-padding:4rem;position:relative;grid-column:2;min-width:0}
+.composer-text-geometry{box-sizing:border-box;min-width:0;width:100%;padding:calc((var(--composer-min-height) - 1.35em)/2) var(--composer-text-end-padding) calc((var(--composer-min-height) - 1.35em)/2) 0;border:0;font-family:var(--chat-text-font);font-size:var(--chat-text-size);font-weight:var(--chat-text-weight);font-style:normal;letter-spacing:normal;word-spacing:normal;line-height:var(--chat-line-height);white-space:pre-wrap;overflow-wrap:anywhere;word-break:normal;tab-size:4;scrollbar-gutter:stable}
+.composer-editor .composer-highlight{position:absolute;z-index:1;inset:0;overflow:hidden;color:var(--text-strong);pointer-events:none}
+.composer-rich-editor{position:relative;z-index:2;height:var(--composer-min-height);min-height:var(--composer-min-height);max-height:50dvh;overflow-y:hidden;outline:0;color:transparent;-webkit-text-fill-color:transparent;caret-color:var(--text-strong);background:transparent}
 .composer-rich-editor:empty::before{content:attr(data-placeholder);color:var(--text-faint);-webkit-text-fill-color:var(--text-faint);pointer-events:none}
 .composer-rich-editor::selection,.composer-rich-editor *::selection{background:color-mix(in srgb,var(--accent) 38%,transparent)}
 .composer-rich-editor ::deep .composer-inline-emoji{color:initial;-webkit-text-fill-color:initial;user-select:none}.composer-rich-editor ::deep .composer-inline-emoji img{display:block;width:100%;height:100%;object-fit:contain;background:transparent}
 .composer-shell .composer-input-row { position: relative; }
 .composer-input-row .character-counter { position:absolute;z-index:2;top:calc((var(--composer-min-height) - .58rem)/2);right:3.45rem;color:var(--text-faint);font-size:.58rem;font-variant-numeric:tabular-nums;line-height:1;pointer-events:none; }
 .composer-input-row .character-counter.over-limit { color:var(--danger-text);font-weight:600; }
-.composer-input-row textarea,.composer-input-row .composer-rich-editor { padding-right:4rem; }
 .emoji-button{grid-column:3;width:2.3rem;height:2.3rem;display:grid;place-items:center;margin:calc((var(--composer-min-height) - 2.3rem)/2) .45rem 0 .05rem;padding:.48rem;border:0;border-radius:.5rem;color:var(--text-muted);background:transparent;cursor:pointer}.emoji-button:hover,.emoji-button:focus-visible{color:var(--accent);background:var(--surface-hover)}.emoji-button ::deep svg{width:100%;height:100%}
 .mobile-send-button{display:none}
 .attachment-tray .attachment-card.image-card { box-sizing:border-box;padding:.25rem; }
@@ -27,10 +27,8 @@ textarea { grid-column:2;min-width:0;width:100%;height:var(--composer-min-height
     .composer-wrap{padding:0 .25rem var(--iridium-mobile-safe-bottom,env(safe-area-inset-bottom,0px))}
     .composer-input-row{grid-template-columns:3rem minmax(0,1fr) 2.7rem;align-items:end}
     .composer-input-row.has-mobile-send{grid-template-columns:3rem minmax(0,1fr) 2.7rem 2.7rem}
-    .composer-editor{grid-column:2}
-    .composer-highlight,.composer-rich-editor{box-sizing:border-box;width:100%;padding-right:0!important;font-family:var(--chat-text-font);font-size:var(--chat-text-size);font-weight:var(--chat-text-weight);font-style:normal;letter-spacing:normal;word-spacing:normal;line-height:var(--chat-line-height);white-space:pre-wrap;overflow-wrap:anywhere;word-break:normal;tab-size:4}
-    .composer-editor .composer-highlight{inset:0;padding-left:0}
-    .composer-rich-editor{scrollbar-gutter:auto}
+    .composer-editor{--composer-text-end-padding:0;grid-column:2}
+    .composer-text-geometry{scrollbar-gutter:auto}
     .composer-rich-editor::-webkit-scrollbar{width:0;height:0}
     .attachment-button{align-self:end;margin:0 0 calc((var(--composer-min-height) - 2.25rem)/2)}
     .emoji-button{grid-column:3;align-self:end;margin:0 .2rem calc((var(--composer-min-height) - 2.3rem)/2) 0}

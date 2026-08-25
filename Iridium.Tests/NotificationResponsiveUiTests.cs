@@ -125,7 +125,7 @@ public sealed class NotificationResponsiveUiTests
     }
 
     [Fact]
-    public void MobileComposerUsesCanonicalSendabilityAndMatchingSourceGeometry()
+    public void ComposerUsesCanonicalSendabilityAndMatchingSourceGeometryAtEveryWidth()
     {
         var root = FindRepositoryRoot();
         var composer = File.ReadAllText(Path.Combine(root, "Iridium.Web", "Components", "MessageComposer.razor"));
@@ -137,8 +137,16 @@ public sealed class NotificationResponsiveUiTests
         Assert.Contains("@onclick=\"SubmitFromKeyboardAsync\"", composer);
         Assert.Contains(".mobile-send-button{display:none}", css);
         Assert.Contains("@media (max-width:860px)", css);
-        Assert.Contains(".composer-highlight,.composer-rich-editor", css);
-        Assert.Contains("overflow-wrap:anywhere;word-break:normal", css);
+        Assert.Contains("composer-highlight composer-text-geometry", composer);
+        Assert.Contains("composer-rich-editor composer-text-geometry", composer);
+        Assert.Contains(".composer-text-geometry{box-sizing:border-box;min-width:0;width:100%", css);
+        Assert.Contains("overflow-wrap:anywhere;word-break:normal;tab-size:4;scrollbar-gutter:stable", css);
+        Assert.Contains(".composer-editor .composer-highlight{position:absolute;z-index:1;inset:0", css);
+        Assert.Contains("--composer-text-end-padding:4rem", css);
+        Assert.Contains("--composer-text-end-padding:0", css);
+        Assert.DoesNotContain("inset:0 1rem 0 0", css);
+        Assert.DoesNotContain("overflow-wrap:break-word", css);
+        Assert.DoesNotContain(".composer-input-row .composer-rich-editor { padding-right", css);
         Assert.Contains("--iridium-mobile-viewport-height", shell);
         Assert.Contains("window.visualViewport", swipe);
         Assert.Contains("keyboardInset > 80 ? '0px'", swipe);
