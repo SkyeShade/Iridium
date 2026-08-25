@@ -19,7 +19,7 @@
             <span class="source-separator"></span>
             <button title="Standard Emoji" @onclick="ScrollStandard"><Icon Name="emoji" /></button>
         </nav>
-        <main class="iridium-message-scrollbar" @ref="_viewport">
+        <main @ref="_viewport">
             @if (IsSearching)
             {
                 <section class="emoji-section search-section">

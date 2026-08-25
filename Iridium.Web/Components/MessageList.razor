@@ -6,7 +6,7 @@
 @inject Iridium.Web.Services.MessageMenuCoordinator MessageMenus
 
 @{ var visibleMessages = MessageTimeline.Visible(Messages); }
-<div class="message-list iridium-message-scrollbar @(_positioning ? "positioning" : null)" role="log" aria-live="polite" @ref="_container" @onclick="CloseMessageMenus">
+<div class="message-list @(_positioning ? "positioning" : null)" role="log" aria-live="polite" @ref="_container" @onclick="CloseMessageMenus">
     @if (visibleMessages.Count == 0)
     {
         <div class="message-empty"><div><Icon Name="@EmptyIcon" /></div><h2>@EmptyTitle</h2><p>@EmptyDescription</p></div>

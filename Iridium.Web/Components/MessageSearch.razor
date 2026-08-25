@@ -14,7 +14,7 @@
 
     @if (Focused && string.IsNullOrWhiteSpace(_query))
     {
-        <div class="filter-menu iridium-message-scrollbar">
+        <div class="filter-menu">
             <h3>Filters</h3>
             <button class="filter-choice" @onclick='() => StartFilterAsync("from")'><Icon Name="profile" Size="16" />
                 <span><strong>From a specific user</strong><small>from: user</small></span></button>
@@ -42,7 +42,7 @@
     }
     else if (Focused && Suggestions.Count > 0)
     {
-        <div class="search-suggestions iridium-message-scrollbar">
+        <div class="search-suggestions">
             @for (var index = 0; index < Suggestions.Count; index++)
             {
                 var suggestion = Suggestions[index];
@@ -69,7 +69,7 @@
 
     @if (Focused && (_loading || _results.Count > 0 || _searched || _errors.Count > 0))
     {
-        <div class="search-results iridium-message-scrollbar">
+        <div class="search-results">
             <header><strong>Search results</strong><div class="sort-controls">
                 <button class="@(_sort == MessageSearchSort.Newest ? "active" : null)" @onclick="() => SetSortAsync(MessageSearchSort.Newest)">Newest</button>
                 <button class="@(_sort == MessageSearchSort.Oldest ? "active" : null)" @onclick="() => SetSortAsync(MessageSearchSort.Oldest)">Oldest</button>

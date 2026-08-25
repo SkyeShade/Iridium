@@ -7,7 +7,7 @@
 @implements IAsyncDisposable
 
 <ModalShell Title="@(IsCommunity ? "Edit Server Banner" : "Edit Banner")" Size="extra-large" OnClose="TryCloseAsync">
-    <div class="banner-editor iridium-message-scrollbar @(IsCommunity ? "community" : "profile")">
+    <div class="banner-editor @(IsCommunity ? "community" : "profile")">
         <header class="editor-heading">
             <div><span>@(IsCommunity ? "SERVER BANNER" : "PROFILE BANNER")</span><h1>@(IsCommunity ? "Edit Server Banner" : "Edit Banner")</h1></div>
             <small>PNG, animated GIF, JPEG, or WebP · up to four presets · 25.00 MB maximum</small>
