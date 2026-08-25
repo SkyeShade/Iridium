@@ -75,37 +75,54 @@ else
                       ActiveMobilePanel="_mobilePanels.Current"
                       MobileConversationTitle="@MobileConversationTitle"
                       UseCompactMobileConversationHeader="@IsDirectConversationSelected"
+
                       OnMobileBack="ShowMobileNavigation"
                       OnMobileContext="ShowMobileContext"
-                      OnMobileContextClose="CloseMobileContext">
+                      OnMobileContextClose="CloseMobileContext"
+                      OnMobileLayoutChanged="OnMobileLayoutChanged">
         <SidebarHeader>
             <div class="sidebar-heading @(_selectedCommunity?.BannerUrl is not null ? "has-community-banner" : null)">
                 @if (_selectedCommunity?.BannerIsProcessed == true && !string.IsNullOrWhiteSpace(_selectedCommunity.BannerUrl))
-                { <img class="community-header-banner" src="@_selectedCommunity.BannerUrl" alt="" /> }
-                else if (CommunityHeaderBannerState is not null) { <AvatarCroppedPreview Class="community-header-banner" State="CommunityHeaderBannerState" Shape="banner" /> }
+                {
+                    <img class="community-header-banner" src="@_selectedCommunity.BannerUrl" alt=""/>
+                }
+                else if (CommunityHeaderBannerState is not null)
+                {
+                    <AvatarCroppedPreview Class="community-header-banner" State="CommunityHeaderBannerState" Shape="banner"/>
+                }
                 <span class="community-header-shade"></span>
                 @if (_selectedCommunity is not null)
                 {
                     <button class="community-menu-trigger" aria-haspopup="menu" aria-expanded="_showCommunityMenu"
-                            @onclick="ToggleCommunityMenu"><strong>@_selectedCommunity.Name</strong><Icon Name="chevron" /></button>
+                            @onclick="ToggleCommunityMenu"><strong>@_selectedCommunity.Name</strong><Icon Name="chevron"/></button>
                 }
-                else { <strong>Home</strong> }
+                else
+                {
+                    <strong>Home</strong>
+                }
             </div>
             @if (_showCommunityMenu && _selectedCommunity is not null)
             {
                 <div class="community-menu-layer" @onclick="CloseCommunityMenu" @onkeydown="CommunityMenuKey" tabindex="0">
                     <div class="community-actions-menu" role="menu" @onclick:stopPropagation="true">
                         @if (CommunityState.HasPermission(CommunityPermission.CreateInvites))
-                        { <button role="menuitem" @onclick="OpenInviteFromMenuAsync"><Icon Name="friends" />Invite People</button> }
+                        {
+                            <button role="menuitem" @onclick="OpenInviteFromMenuAsync"><Icon Name="friends"/>Invite People</button>
+                        }
                         @if (CanOpenCommunitySettings)
-                        { <button role="menuitem" @onclick="OpenSettingsFromMenu"><Icon Name="settings" />Server Settings</button> }
+                        {
+                            <button role="menuitem" @onclick="OpenSettingsFromMenu"><Icon Name="settings"/>Server Settings</button>
+                        }
                         @if (CommunityState.HasPermission(CommunityPermission.ManageChannels))
                         {
-                            <button role="menuitem" @onclick="CreateChannelFromMenu"><Icon Name="channel" />Create Channel</button>
-                            <button role="menuitem" @onclick="CreateCategoryFromMenu"><Icon Name="plus" />Create Category</button>
+                            <button role="menuitem" @onclick="CreateChannelFromMenu"><Icon Name="channel"/>Create Channel</button>
+                            <button role="menuitem" @onclick="CreateCategoryFromMenu"><Icon Name="plus"/>Create Category</button>
                         }
                         @if (!CommunityState.IsOwner)
-                        { <div class="menu-separator"></div><button class="destructive" role="menuitem" @onclick="PromptLeaveCommunity"><Icon Name="logout" />Leave Server</button> }
+                        {
+                            <div class="menu-separator"></div>
+                            <button class="destructive" role="menuitem" @onclick="PromptLeaveCommunity"><Icon Name="logout"/>Leave Server</button>
+                        }
                     </div>
                 </div>
             }
@@ -118,22 +135,22 @@ else
                              IncomingFriendRequestCount="IncomingFriendRequestCount"
                              ShowFriendsFriendRequestNotification="@(FriendRequestNotificationTarget == FriendRequestNotificationLocation.Friends)"
                              OnViewSelected="SelectHomeView" OnConversationSelected="SelectDirectConversationFromNavigationAsync"
-                             OnConversationClosed="CloseDirectConversationAsync" />
+                             OnConversationClosed="CloseDirectConversationAsync"/>
             }
             else
             {
                 <CommunitySidebar @ref="_communitySidebar" State="CommunityState" AccountId="Session.Account!.Id"
                                   CommunityId="_selectedCommunity.Id" SelectedChannel="_selectedChannel"
-                                  OnChannelSelected="SelectChannelFromNavigationAsync" />
+                                  OnChannelSelected="SelectChannelFromNavigationAsync"/>
             }
         </SidebarContent>
-        <VoiceConnection><VoiceConnectionPanel /></VoiceConnection>
+        <VoiceConnection><VoiceConnectionPanel/></VoiceConnection>
         <MobileConversationIdentity>
             @if (IsDirectConversationSelected && _selectedDirectConversation is { } mobileDirect)
             {
                 <ProfileAvatar AccountId="mobileDirect.OtherParticipant.AccountId"
                                DisplayName="@mobileDirect.OtherParticipant.DisplayName"
-                               Presence="@mobileDirect.OtherParticipant.Presence" Size="small" Surface="base" />
+                               Presence="@mobileDirect.OtherParticipant.Presence" Size="small" Surface="base"/>
                 <span class="mobile-dm-copy">
                     <strong class="display-name">@mobileDirect.OtherParticipant.DisplayName</strong>
                     <small>@IridiumIdentity.Format(mobileDirect.OtherParticipant.Username, Session.SelectedNode!.PublicAuthority)</small>
@@ -145,13 +162,13 @@ else
             {
                 <button type="button" class="mobile-dm-call" title="@DirectCallButtonLabel" aria-label="@DirectCallButtonLabel"
                         disabled="@(VoiceSessions.DirectCalls.CurrentCall is not null || VoiceSessions.IncomingCall is not null)"
-                        @onclick="StartMobileDirectVoiceCallAsync"><Icon Name="phone" /></button>
+                        @onclick="StartMobileDirectVoiceCallAsync"><Icon Name="phone"/></button>
             }
         </MobileConversationAction>
         <ChildContent>
             @if (VoiceSessions.WatchedStream is not null && VoiceSessions.ViewerMode == StreamViewerMode.Full)
             {
-                <VoiceStreamViewer @key="VoiceSessions.WatchedStream.StreamId" OnMinimize="MinimizeFullStreamAsync" />
+                <VoiceStreamViewer @key="VoiceSessions.WatchedStream.StreamId" OnMinimize="MinimizeFullStreamAsync"/>
             }
             else if (_selectedCommunity is null)
             {
@@ -161,11 +178,11 @@ else
                                        FocusRequest="@(_composerFocusConversationId == _selectedDirectConversation.Id ? _composerFocusRequest : 0)"
                                        OnFocusConsumed="ComposerFocusConsumed"
                                        CurrentAccountId="Session.Account!.Id" NodeAuthority="@(Session.SelectedNode!.PublicAuthority)"
-                                       OnEditProfile="OpenProfileEditor" OnMessage="OpenDirectMessageAsync" />
+                                       OnEditProfile="OpenProfileEditor" OnMessage="OpenDirectMessageAsync"/>
                 }
                 else if (_homeView == "requests")
                 {
-                    <MessageRequestsView />
+                    <MessageRequestsView/>
                 }
                 else
                 {
@@ -174,7 +191,7 @@ else
                                  ShowPendingFriendRequestNotification="@(FriendRequestNotificationTarget == FriendRequestNotificationLocation.Pending)"
                                  OnEditProfile="OpenProfileEditor"
                                  OnAddFriend="ShowAddFriend" OnAccept="AcceptFriendRequestAsync"
-                                 OnRemove="RemoveFriendshipAsync" OnMessage="OpenFriendDirectMessageAsync" />
+                                 OnRemove="RemoveFriendshipAsync" OnMessage="OpenFriendDirectMessageAsync"/>
                 }
             }
             else
@@ -182,7 +199,10 @@ else
                 <div class="content-header"><strong>@(_selectedChannel is null ? _selectedCommunity.Name : $"# {_selectedChannel.Name}")</strong></div>
                 @if (_selectedChannel is null)
                 {
-                    <div class="welcome-panel"><div class="welcome-icon">@CommunityInitials(_selectedCommunity.Name)</div><h1>@_selectedCommunity.Name</h1><p>@(_selectedCommunity.Description ?? "Choose a text channel or create one to get started.")</p></div>
+                    <div class="welcome-panel">
+                        <div class="welcome-icon">@CommunityInitials(_selectedCommunity.Name)</div>
+                        <h1>@_selectedCommunity.Name</h1>
+                        <p>@(_selectedCommunity.Description ?? "Choose a text channel or create one to get started.")</p></div>
                 }
                 else
                 {
@@ -197,7 +217,7 @@ else
                                  CanSend="@HasSelectedChannelPermission(CommunityPermission.SendMessages)"
                                  CanAttachFiles="@HasSelectedChannelPermission(CommunityPermission.AttachFiles)"
                                  CanMentionEveryone="@HasSelectedChannelPermission(CommunityPermission.MentionEveryone)"
-                                 TargetMessageId="_searchTargetMessageId" />
+                                 TargetMessageId="_searchTargetMessageId"/>
                 }
             }
         </ChildContent>
@@ -205,16 +225,16 @@ else
             @if (_selectedCommunity is not null && _selectedChannel is not null && CommunityState.Management is { } management)
             {
                 <CommunityMemberSidebar Management="management" CurrentAccountId="Session.Account!.Id"
-                    NodeAuthority="@(Session.SelectedNode!.PublicAuthority)" OnEditProfile="OpenProfileEditor"
-                    Channels="CommunityState.Channels" OnSearchResultSelected="OpenCommunitySearchResultAsync"
-                    OnMessage="OpenDirectMessageAsync" OnMemberRolesChanged="SetCommunityMemberRolesAsync" />
+                                        NodeAuthority="@(Session.SelectedNode!.PublicAuthority)" OnEditProfile="OpenProfileEditor"
+                                        Channels="CommunityState.Channels" OnSearchResultSelected="OpenCommunitySearchResultAsync"
+                                        OnMessage="OpenDirectMessageAsync" OnMemberRolesChanged="SetCommunityMemberRolesAsync"/>
             }
             else if (_selectedCommunity is null && _homeView == "dm" && _selectedDirectConversation is { } direct)
             {
                 <DirectParticipantSidebar Participant="direct.OtherParticipant" ConversationId="direct.Id"
-                    CurrentAccountId="Session.Account!.Id" NodeAuthority="@(Session.SelectedNode!.PublicAuthority)" OnSearchResultSelected="OpenDirectSearchResultAsync"
-                    Friend="@Session.Friends.FirstOrDefault(value => value.AccountId == direct.OtherParticipant.AccountId)"
-                    OnAddFriend="SendFriendRequestAsync" OnRemoveFriend="RemoveFriendAsync" />
+                                          CurrentAccountId="Session.Account!.Id" NodeAuthority="@(Session.SelectedNode!.PublicAuthority)" OnSearchResultSelected="OpenDirectSearchResultAsync"
+                                          Friend="@Session.Friends.FirstOrDefault(value => value.AccountId == direct.OtherParticipant.AccountId)"
+                                          OnAddFriend="SendFriendRequestAsync" OnRemoveFriend="RemoveFriendAsync"/>
             }
         </RightSidebar>
     </ApplicationShell>
@@ -326,6 +346,7 @@ else
     private bool _expandTransitionPending;
     private long _composerFocusRequest;
     private long _shellNavigationGeneration;
+    private bool _isMobileLayout;
     private readonly MobilePanelNavigationState _mobilePanels = new();
     private bool _faviconReady;
     private Guid? _composerFocusChannelId;
@@ -394,7 +415,10 @@ else
         }
         _initialized = true;
     }
-
+    private void OnMobileLayoutChanged(bool isMobile)
+    {
+        _isMobileLayout = isMobile;
+    }
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (!firstRender) return;
@@ -760,8 +784,12 @@ else
         SelectChannelFromMobileNavigationAsync(channel);
     private async Task SelectChannelFromMobileNavigationAsync(CommunityChannelDto? channel)
     {
-        if (channel?.Kind == CommunityChannelKind.Text) _mobilePanels.ShowConversation();
-        await SelectChannelAsync(channel, requestComposerFocus: true);
+        if (channel?.Kind == CommunityChannelKind.Text)
+            _mobilePanels.ShowConversation();
+
+        await SelectChannelAsync(
+            channel,
+            requestComposerFocus: !_isMobileLayout);
     }
 
     private async Task CompleteChannelSelectionAsync(Guid accountId, CommunityChannelDto channel)
@@ -857,7 +885,7 @@ else
     private async Task SelectDirectConversationFromMobileNavigationAsync(DirectConversationDto conversation)
     {
         _mobilePanels.ShowConversation();
-        await SelectDirectConversationAsync(conversation, requestComposerFocus: true);
+        await SelectDirectConversationAsync(conversation, requestComposerFocus: !_isMobileLayout);
     }
 
     private void ShowMobileNavigation() => _mobilePanels.ShowNavigation();

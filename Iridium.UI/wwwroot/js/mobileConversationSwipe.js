@@ -148,12 +148,19 @@ export function unwireMobileConversationSwipe(element) {
     swipeBindings.delete(element);
 }
 
-export function wireMobileViewport(shell) {
+export function wireMobileViewport(shell, dotnet) {
+    const query = mobileQuery();
     if (!shell || viewportBindings.has(shell)) return;
     let frame = 0;
+    const reportMobileLayout = () => {
+        void dotnet.invokeMethodAsync(
+            'MobileLayoutChangedAsync',
+            query.matches
+        );
+    };
     const update = () => {
         frame = 0;
-        if (!mobileQuery().matches) {
+        if (!query.matches) {
             shell.style.removeProperty('--iridium-mobile-viewport-height');
             shell.style.removeProperty('--iridium-mobile-viewport-offset');
             shell.style.removeProperty('--iridium-mobile-safe-bottom');
@@ -171,6 +178,10 @@ export function wireMobileViewport(shell) {
         if (frame) cancelAnimationFrame(frame);
         frame = requestAnimationFrame(update);
     };
+    const layoutChanged = () => {
+        reportMobileLayout();
+        schedule();
+    };
     const focusin = event => {
         if (event.target?.matches?.('.composer-rich-editor')) schedule();
     };
@@ -180,7 +191,9 @@ export function wireMobileViewport(shell) {
     window.addEventListener('orientationchange', schedule, { passive: true });
     window.addEventListener('iridium-composer-focus', schedule);
     document.addEventListener('focusin', focusin, { passive: true });
+    query.addEventListener('change', layoutChanged);
     viewportBindings.set(shell, { schedule, focusin, frame: () => frame });
+    reportMobileLayout();
     update();
 }
 
@@ -193,6 +206,7 @@ export function unwireMobileViewport(shell) {
     window.removeEventListener('orientationchange', binding.schedule);
     window.removeEventListener('iridium-composer-focus', binding.schedule);
     document.removeEventListener('focusin', binding.focusin);
+    binding.query.removeEventListener('change', binding.layoutChanged);
     const frame = binding.frame();
     if (frame) cancelAnimationFrame(frame);
     shell.style.removeProperty('--iridium-mobile-viewport-height');

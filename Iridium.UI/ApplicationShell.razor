@@ -86,6 +86,7 @@
     [Parameter] public EventCallback OnMobileBack { get; set; }
     [Parameter] public EventCallback OnMobileContext { get; set; }
     [Parameter] public EventCallback OnMobileContextClose { get; set; }
+    [Parameter] public EventCallback<bool> OnMobileLayoutChanged { get; set; }
     private ElementReference _mainContent;
     private ElementReference _shell;
     private IJSObjectReference? _swipeModule;
@@ -99,10 +100,15 @@
         if (!firstRender) return;
         _swipeModule = await JS.InvokeAsync<IJSObjectReference>("import", "./_content/Iridium.UI/js/mobileConversationSwipe.js");
         _selfReference = DotNetObjectReference.Create(this);
-        await _swipeModule.InvokeVoidAsync("wireMobileViewport", _shell);
+        await _swipeModule.InvokeVoidAsync(
+            "wireMobileViewport",
+            _shell,
+            _selfReference);
         await _swipeModule.InvokeVoidAsync("wireMobileConversationSwipe", _mainContent, _selfReference);
     }
-
+    [JSInvokable]
+    public Task MobileLayoutChangedAsync(bool isMobile) =>
+        OnMobileLayoutChanged.InvokeAsync(isMobile);
     [JSInvokable]
     public Task MobileConversationSwipeBackAsync() => ActiveMobilePanel == MobilePanel.Conversation
         ? OnMobileBack.InvokeAsync()

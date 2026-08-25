@@ -497,7 +497,7 @@
         }
     }
 
-    private async Task ResolveStandardEmojisAsync()
+    private async Task ResolveStandardEmojisAsync(bool restoreFocus = true)
     {
         if (_module is null) return;
         var desiredCaret = await _module.InvokeAsync<int>("composerCaret", _textarea);
@@ -525,8 +525,13 @@
             replaced = true;
             await RecordEmojiUsageAsync(new(match.Glyph, match.Name, StandardArtworkKey: match.ArtworkKey));
         }
-        if (replaced) await _module.InvokeVoidAsync("focusComposerAt", _textarea,
-            Math.Clamp(desiredCaret, 0, _content.Length));
+        if (replaced && restoreFocus)
+        {
+            await _module.InvokeVoidAsync(
+                "focusComposerAt",
+                _textarea,
+                Math.Clamp(desiredCaret, 0, _content.Length));
+        }
     }
 
     private static ComposerEmojiToken StandardToken(string glyph, string name, string artworkKey) =>
@@ -663,7 +668,7 @@
             var snapshot = await _module.InvokeAsync<ComposerDocumentSnapshot>("setComposerText", _textarea, content);
             ApplySnapshot(snapshot, scheduleDraft: false);
             await ResolveCompletedEmojisAsync();
-            await ResolveStandardEmojisAsync();
+            await ResolveStandardEmojisAsync(restoreFocus: false);
             _resizeAfterRender = true;
             await InvokeAsync(StateHasChanged);
         }
