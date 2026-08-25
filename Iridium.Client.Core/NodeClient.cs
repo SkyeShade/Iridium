@@ -315,6 +315,30 @@ public sealed class NodeClient(Uri nodeAddress)
     public Task DeleteChannelAsync(Guid communityId, Guid channelId, CancellationToken cancellationToken = default) =>
         SendNoContentAsync(HttpMethod.Delete, $"api/communities/{communityId}/channels/{channelId}", null, cancellationToken);
 
+    public Task<CommunityForumPostPageDto> GetForumPostsAsync(Guid communityId, Guid channelId, int offset = 0,
+        int limit = 30, CancellationToken cancellationToken = default) =>
+        SendAsync<CommunityForumPostPageDto>(HttpMethod.Get,
+            $"api/communities/{communityId}/forums/{channelId}/posts?offset={Math.Max(0, offset)}&limit={Math.Clamp(limit, 1, 50)}",
+            null, cancellationToken);
+
+    public Task<CommunityForumPostDto> GetForumPostAsync(Guid communityId, Guid channelId, Guid postId,
+        CancellationToken cancellationToken = default) => SendAsync<CommunityForumPostDto>(HttpMethod.Get,
+        $"api/communities/{communityId}/forums/{channelId}/posts/{postId}", null, cancellationToken);
+
+    public Task<CommunityForumPostDto> CreateForumPostAsync(Guid communityId, Guid channelId,
+        CreateCommunityForumPostRequest request, CancellationToken cancellationToken = default) =>
+        SendAsync<CommunityForumPostDto>(HttpMethod.Post,
+            $"api/communities/{communityId}/forums/{channelId}/posts", request, cancellationToken);
+
+    public Task<CommunityForumPostDto> UpdateForumPostAsync(Guid communityId, Guid channelId, Guid postId,
+        UpdateCommunityForumPostRequest request, CancellationToken cancellationToken = default) =>
+        SendAsync<CommunityForumPostDto>(HttpMethod.Patch,
+            $"api/communities/{communityId}/forums/{channelId}/posts/{postId}", request, cancellationToken);
+
+    public Task DeleteForumPostAsync(Guid communityId, Guid channelId, Guid postId,
+        CancellationToken cancellationToken = default) => SendNoContentAsync(HttpMethod.Delete,
+        $"api/communities/{communityId}/forums/{channelId}/posts/{postId}", null, cancellationToken);
+
     public Task<PermissionOverwriteScopeDto> GetPermissionScopeAsync(Guid communityId,
         PermissionOverwriteScopeType scopeType, Guid scopeId, CancellationToken cancellationToken = default) =>
         SendAsync<PermissionOverwriteScopeDto>(HttpMethod.Get,

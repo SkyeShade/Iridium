@@ -76,7 +76,7 @@ else
                       MobileConversationTitle="@MobileConversationTitle"
                       UseCompactMobileConversationHeader="@IsDirectConversationSelected"
 
-                      OnMobileBack="ShowMobileNavigation"
+                      OnMobileBack="HandleMobileBackAsync"
                       OnMobileContext="ShowMobileContext"
                       OnMobileContextClose="CloseMobileContext"
                       OnMobileLayoutChanged="OnMobileLayoutChanged">
@@ -196,13 +196,29 @@ else
             }
             else
             {
-                <div class="content-header"><strong>@(_selectedChannel is null ? _selectedCommunity.Name : $"# {_selectedChannel.Name}")</strong></div>
+                @if (_selectedChannel?.Kind != CommunityChannelKind.Forum)
+                {
+                    <div class="content-header"><strong>@(_selectedChannel is null ? _selectedCommunity.Name : $"# {_selectedChannel.Name}")</strong></div>
+                }
                 @if (_selectedChannel is null)
                 {
                     <div class="welcome-panel">
                         <div class="welcome-icon">@CommunityInitials(_selectedCommunity.Name)</div>
                         <h1>@_selectedCommunity.Name</h1>
                         <p>@(_selectedCommunity.Description ?? "Choose a text channel or create one to get started.")</p></div>
+                }
+                else if (_selectedChannel.Kind == CommunityChannelKind.Forum)
+                {
+                    <ForumChannelView @key="(_selectedChannel.Id, _selectedChannel.EffectivePermissions)" @ref="_forumView"
+                                      Community="_selectedCommunity" Channel="_selectedChannel"
+                                      CurrentAccountId="Session.Account!.Id" NodeAuthority="@(Session.SelectedNode!.PublicAuthority)"
+                                      CommunityManagement="CommunityState.Management" OnEditProfile="OpenProfileEditor"
+                                      OnMessage="OpenDirectMessageAsync" OnMemberRolesChanged="SetCommunityMemberRolesAsync"
+                                      OnPostOpenChanged="ForumPostOpenChanged" OnSubViewChanged="ForumSubViewChanged"
+                                      CanCreatePosts="@HasSelectedChannelPermission(CommunityPermission.CreateForumPosts)"
+                                      CanManageMessages="@HasSelectedChannelPermission(CommunityPermission.ManageMessages)"
+                                      CanAttachFiles="@HasSelectedChannelPermission(CommunityPermission.AttachFiles)"
+                                      CanMentionEveryone="@HasSelectedChannelPermission(CommunityPermission.MentionEveryone)" />
                 }
                 else
                 {
@@ -334,6 +350,10 @@ else
     private string? _error;
     private CommunityDto? _selectedCommunity;
     private CommunityChannelDto? _selectedChannel;
+    private ForumChannelView? _forumView;
+    private bool _forumPostOpen;
+    private bool _forumSubViewOpen;
+    private string? _forumPostTitle;
     private Guid? _searchTargetMessageId;
     private DirectConversationDto? _selectedDirectConversation;
     private DirectMessageView? _directMessageView;
@@ -356,7 +376,8 @@ else
     private int IncomingFriendRequestCount => Session.IncomingFriendRequestCount;
     private int UnreadMentionCount => Session.IsAuthenticated ? Session.Communities.Sum(value => Math.Max(0, value.MentionCount)) : 0;
     private string MobileConversationTitle => _selectedCommunity is not null
-        ? _selectedChannel is null ? _selectedCommunity.Name : $"# {_selectedChannel.Name}"
+        ? _forumPostOpen && !string.IsNullOrWhiteSpace(_forumPostTitle) ? _forumPostTitle
+            : _selectedChannel is null ? _selectedCommunity.Name : $"# {_selectedChannel.Name}"
         : _homeView == "dm" && _selectedDirectConversation is not null
             ? _selectedDirectConversation.OtherParticipant.DisplayName
             : _homeView == "requests" ? "Message Requests" : "Friends";
@@ -766,6 +787,9 @@ else
         VoiceSessions.MinimizeWatchedStream();
         _searchTargetMessageId = searchTargetMessageId;
         _selectedChannel = channel;
+        _forumPostOpen = false;
+        _forumSubViewOpen = false;
+        _forumPostTitle = null;
         if (channel?.Kind == CommunityChannelKind.Text && requestComposerFocus)
             RequestChannelComposerFocus(channel.Id);
         if (channel is null)
@@ -784,7 +808,7 @@ else
         SelectChannelFromMobileNavigationAsync(channel);
     private async Task SelectChannelFromMobileNavigationAsync(CommunityChannelDto? channel)
     {
-        if (channel?.Kind == CommunityChannelKind.Text)
+        if (channel?.Kind is CommunityChannelKind.Text or CommunityChannelKind.Forum)
             _mobilePanels.ShowConversation();
 
         await SelectChannelAsync(
@@ -888,7 +912,21 @@ else
         await SelectDirectConversationAsync(conversation, requestComposerFocus: !_isMobileLayout);
     }
 
-    private void ShowMobileNavigation() => _mobilePanels.ShowNavigation();
+    private async Task HandleMobileBackAsync()
+    {
+        if (_selectedChannel?.Kind == CommunityChannelKind.Forum && _forumSubViewOpen && _forumView is not null)
+        {
+            await _forumView.BackAsync();
+            return;
+        }
+        _mobilePanels.ShowNavigation();
+    }
+    private void ForumPostOpenChanged(CommunityForumPostDto? post)
+    {
+        _forumPostOpen = post is not null;
+        _forumPostTitle = post?.Title;
+    }
+    private void ForumSubViewChanged(bool isOpen) => _forumSubViewOpen = isOpen;
     private void ShowMobileContext() { if (HasContextSidebar) _mobilePanels.ShowContext(); }
     private void CloseMobileContext() => _mobilePanels.CloseContext();
 
@@ -1135,8 +1173,11 @@ else
         {
             if (_selectedChannel?.Id == activity.ChannelId)
             {
-                await Session.MarkCommunityChannelReadAsync(activity.CommunityId, activity.ChannelId);
+                if (_selectedChannel.Kind == CommunityChannelKind.Forum && _forumView is not null)
+                    await _forumView.MarkCurrentPostReadAsync();
+                else await Session.MarkCommunityChannelReadAsync(activity.CommunityId, activity.ChannelId);
                 await CommunityState.LoadAsync(activity.CommunityId);
+                CommunityState.MarkChannelRead(activity.ChannelId);
             }
             else await CommunityState.LoadAsync(activity.CommunityId);
         }

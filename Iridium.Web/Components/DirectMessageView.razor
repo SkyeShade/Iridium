@@ -35,6 +35,7 @@
                          PlaceholderText="@($"Message {Conversation.OtherParticipant.DisplayName}")"
                          ReplyToDisplayName="@(_replyTo?.Author.DisplayName)" Busy="@_sending"
                          SendRich="SendMessageAsync" OnCancelReply="CancelReplyAsync"
+                         OnEditLastMessage="EditLastOwnMessageAsync"
                          NodeAuthority="@NodeAuthority" AccountId="@CurrentAccountId" ConversationKind="direct" ConversationId="@Conversation.Id" />
     </div>
 </section>
@@ -164,6 +165,7 @@
     }
     private Task RetryMessageAsync(Guid clientMessageId) => Messaging.RetryDirectAsync(clientMessageId);
     private void RemoveLocalMessage(Guid clientMessageId) => Messaging.RemoveFailedMessage(clientMessageId);
+    private Task EditLastOwnMessageAsync() => _messageList?.BeginEditLatestOwnAsync() ?? Task.CompletedTask;
     private bool ShowJumpToLatest => _shouldShowJumpToLatest || Messaging.WindowMode == MessageWindowMode.SearchTarget;
     private Task LoadOlderAsync() => Messaging.LoadOlderAsync();
     private void ViewportStateChanged(MessageViewportState state)

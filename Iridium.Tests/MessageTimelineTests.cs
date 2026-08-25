@@ -6,6 +6,24 @@ namespace Iridium.Tests;
 public sealed class MessageTimelineTests
 {
     [Fact]
+    public void LatestEditableOwnSkipsOtherAuthorsDeletedSystemAndUnconfirmedMessages()
+    {
+        var own = Guid.NewGuid();
+        var other = Guid.NewGuid();
+        var eligible = Message(own, DateTimeOffset.UtcNow.AddMinutes(-5), "editable");
+        var messages = new List<ChannelMessageDto>
+        {
+            eligible,
+            Message(own, DateTimeOffset.UtcNow.AddMinutes(-4), "deleted") with { IsDeleted = true },
+            Message(own, DateTimeOffset.UtcNow.AddMinutes(-3), "system") with { Kind = MessageKind.CallStarted },
+            Message(own, DateTimeOffset.UtcNow.AddMinutes(-2), "pending") with { DeliveryState = MessageDeliveryState.Pending },
+            Message(other, DateTimeOffset.UtcNow.AddMinutes(-1), "other")
+        };
+
+        Assert.Equal(eligible.Id, MessageTimeline.LatestEditableOwn(messages, own)?.Id);
+    }
+
+    [Fact]
     public void DeletedMessagesAreOmittedAndRemainingMessagesRegroupNaturally()
     {
         var authorId = Guid.NewGuid();

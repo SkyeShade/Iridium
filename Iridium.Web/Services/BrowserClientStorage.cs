@@ -1,11 +1,13 @@
 using Iridium.Client.Core;
+using Iridium.Protocol;
 using Microsoft.JSInterop;
 
 namespace Iridium.Web.Services;
 
 public sealed class BrowserClientStorage(IJSRuntime js) : ISavedNodeStore, INodeTokenStore, ISavedAccountStore,
     IActiveAccountSelectionStore, ICategoryCollapseStore, ILastCommunityChannelStore,
-    IVoiceParticipantPreferenceStore, IEmojiPickerPreferenceStore, IMessageDraftStore, IAsyncDisposable
+    IVoiceParticipantPreferenceStore, IEmojiPickerPreferenceStore, IMessageDraftStore,
+    ICommunityForumPostCache, IAsyncDisposable
 {
     private const string MessageDraftNamespace = "iridium.messageDrafts.v1";
     private const int MaximumMessageDrafts = 500;
@@ -190,6 +192,21 @@ public sealed class BrowserClientStorage(IJSRuntime js) : ISavedNodeStore, INode
     {
         var module = await ModuleAsync(cancellationToken);
         await module.InvokeVoidAsync("save", cancellationToken, MessageDraftNamespace, drafts);
+    }
+
+    async Task<CommunityForumPostPageDto?> ICommunityForumPostCache.LoadAsync(
+        CommunityForumPostCacheScope scope, CancellationToken cancellationToken)
+    {
+        var module = await ModuleAsync(cancellationToken);
+        return await module.InvokeAsync<CommunityForumPostPageDto?>(
+            "loadValue", cancellationToken, scope.StorageKey);
+    }
+
+    async Task ICommunityForumPostCache.SaveAsync(CommunityForumPostCacheScope scope,
+        CommunityForumPostPageDto page, CancellationToken cancellationToken)
+    {
+        var module = await ModuleAsync(cancellationToken);
+        await module.InvokeVoidAsync("save", cancellationToken, scope.StorageKey, page);
     }
 
     private async Task<IJSObjectReference> ModuleAsync(CancellationToken cancellationToken)

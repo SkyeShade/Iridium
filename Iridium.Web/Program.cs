@@ -21,6 +21,7 @@ builder.Services.AddScoped(sp => new HttpClient { BaseAddress = new Uri(builder.
 builder.Services.AddScoped<BrowserClientStorage>();
 builder.Services.AddScoped<AppearanceService>();
 builder.Services.AddScoped<MessageMenuCoordinator>();
+builder.Services.AddScoped<ModifierKeyStateService>();
 builder.Services.AddScoped<EmojiDetailPopupCoordinator>();
 builder.Services.AddScoped<UiSoundService>();
 builder.Services.AddScoped<FaviconNotificationService>();
@@ -33,6 +34,7 @@ builder.Services.AddScoped<IVoiceParticipantPreferenceStore>(sp => sp.GetRequire
 builder.Services.AddScoped<VoiceParticipantPreferencesService>();
 builder.Services.AddScoped<IEmojiPickerPreferenceStore>(sp => sp.GetRequiredService<BrowserClientStorage>());
 builder.Services.AddScoped<IMessageDraftStore>(sp => sp.GetRequiredService<BrowserClientStorage>());
+builder.Services.AddScoped<ICommunityForumPostCache>(sp => sp.GetRequiredService<BrowserClientStorage>());
 builder.Services.AddScoped<IMessageHistoryCache, IndexedDbMessageHistoryCache>();
 builder.Services.AddScoped<EmojiPickerPreferencesService>();
 builder.Services.AddScoped<ProfileMediaService>();
@@ -44,6 +46,7 @@ builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<IWebRtcConfigurationProvider, WebRtcConfigurationProvider>();
 builder.Services.AddScoped<RealtimeConnectionService>();
 builder.Services.AddScoped<CommunitySession>();
+builder.Services.AddScoped<CommunityForumSession>();
 builder.Services.AddScoped<ChannelMessagingSession>();
 if (builder.HostEnvironment.IsDevelopment())
 {

@@ -19,7 +19,7 @@ public static partial class CommunityStructureEndpoints
         CommunityPermission.ReadMessageHistory | CommunityPermission.AttachFiles | CommunityPermission.EmbedLinks |
         CommunityPermission.AddReactions | CommunityPermission.MentionEveryone | CommunityPermission.ConnectVoice |
         CommunityPermission.SpeakVoice | CommunityPermission.ShareScreen | CommunityPermission.MuteMembers |
-        CommunityPermission.DeafenMembers | CommunityPermission.MoveMembers;
+        CommunityPermission.DeafenMembers | CommunityPermission.MoveMembers | CommunityPermission.CreateForumPosts;
 
     public static IEndpointRouteBuilder MapCommunityStructureEndpoints(this IEndpointRouteBuilder endpoints)
     {
@@ -53,7 +53,8 @@ public static partial class CommunityStructureEndpoints
         var categoryEntities = await db.CommunityCategories.AsNoTracking().Where(value => value.CommunityId == communityId)
             .OrderBy(value => value.ParentCategoryId).ThenBy(value => value.Position).ThenBy(value => value.Name)
             .ToListAsync();
-        var channelEntities = await db.CommunityChannels.AsNoTracking().Where(value => value.CommunityId == communityId)
+        var channelEntities = await db.CommunityChannels.AsNoTracking().Where(value =>
+                value.CommunityId == communityId && value.ParentForumChannelId == null)
             .OrderBy(value => value.CategoryId).ThenBy(value => value.Position).ThenBy(value => value.Name)
             .ToListAsync();
         var overwriteRows = await db.CommunityPermissionOverwrites.AsNoTracking()
@@ -111,10 +112,20 @@ public static partial class CommunityStructureEndpoints
         {
             var channel = channels[index];
             readStates.TryGetValue(channel.Id, out var lastReadAt);
-            var unread = await db.ChannelMessages.CountAsync(value => value.CommunityId == communityId &&
-                value.ChannelId == channel.Id && value.AuthorAccountId != session.AccountId && value.CreatedAt > lastReadAt);
+            var activityChannelIds = channel.Kind == CommunityChannelKind.Forum
+                ? await db.CommunityForumPosts.Where(value => value.CommunityId == communityId &&
+                        value.ForumChannelId == channel.Id).Select(value => value.DiscussionChannelId).ToListAsync()
+                : [channel.Id];
+            var unread = channel.Kind == CommunityChannelKind.Forum
+                ? await db.ChannelMessages.CountAsync(message => message.CommunityId == communityId &&
+                    activityChannelIds.Contains(message.ChannelId) && message.AuthorAccountId != session.AccountId &&
+                    !db.CommunityChannelReadStates.Any(state => state.CommunityId == communityId &&
+                        state.ChannelId == message.ChannelId && state.AccountId == session.AccountId &&
+                        state.LastReadAt >= message.CreatedAt))
+                : await db.ChannelMessages.CountAsync(value => value.CommunityId == communityId &&
+                    value.ChannelId == channel.Id && value.AuthorAccountId != session.AccountId && value.CreatedAt > lastReadAt);
             var mentions = await db.CommunityMentionNotifications.CountAsync(value => value.AccountId == session.AccountId &&
-                value.CommunityId == communityId && value.ChannelId == channel.Id && value.ReadAt == null);
+                value.CommunityId == communityId && activityChannelIds.Contains(value.ChannelId) && value.ReadAt == null);
             channels[index] = channel with { UnreadCount = unread, MentionCount = mentions };
         }
         return Results.Ok(new CommunityStructureDto(communityId, access.Has(CommunityPermission.ManageChannels),
@@ -157,7 +168,7 @@ public static partial class CommunityStructureEndpoints
             ParentCategoryId = request.ParentCategoryId,
             Position = categories.Count(value => value.ParentCategoryId == request.ParentCategoryId) +
                        await db.CommunityChannels.CountAsync(value => value.CommunityId == communityId &&
-                           value.CategoryId == request.ParentCategoryId), Community = null!
+                           value.CategoryId == request.ParentCategoryId && value.ParentForumChannelId == null), Community = null!
         };
         db.CommunityCategories.Add(category);
         await db.SaveChangesAsync();
@@ -275,7 +286,7 @@ public static partial class CommunityStructureEndpoints
         {
             Id = Guid.NewGuid(), CommunityId = communityId, CategoryId = request.CategoryId, Category = category,
             Name = name, Kind = request.Kind,
-            Position = await db.CommunityChannels.CountAsync(value => value.CommunityId == communityId && value.CategoryId == request.CategoryId) +
+            Position = await db.CommunityChannels.CountAsync(value => value.CommunityId == communityId && value.CategoryId == request.CategoryId && value.ParentForumChannelId == null) +
                        await db.CommunityCategories.CountAsync(value => value.CommunityId == communityId && value.ParentCategoryId == request.CategoryId),
             CreatedAt = DateTimeOffset.UtcNow, Community = null!
             , PermissionsSyncedToCategory = request.CategoryId.HasValue
@@ -359,6 +370,17 @@ public static partial class CommunityStructureEndpoints
         var permissionRows = await db.CommunityPermissionOverwrites.Where(value => value.CommunityId == communityId &&
             value.ScopeType == PermissionOverwriteScopeType.Channel && value.ScopeId == channelId).ToListAsync();
         db.CommunityPermissionOverwrites.RemoveRange(permissionRows);
+        if (channel.Kind == CommunityChannelKind.Forum)
+        {
+            var posts = await db.CommunityForumPosts.Where(value => value.CommunityId == communityId &&
+                value.ForumChannelId == channelId).ToListAsync();
+            var discussionIds = posts.Select(value => value.DiscussionChannelId).ToArray();
+            db.CommunityForumPosts.RemoveRange(posts);
+            await db.SaveChangesAsync();
+            var discussions = await db.CommunityChannels.Where(value => value.CommunityId == communityId &&
+                discussionIds.Contains(value.Id)).ToListAsync();
+            db.CommunityChannels.RemoveRange(discussions);
+        }
         db.CommunityChannels.Remove(channel);
         await db.SaveChangesAsync();
         await NormalizeSidebarPositionsAsync(communityId, categoryId, db);
@@ -681,7 +703,7 @@ public static partial class CommunityStructureEndpoints
         db.CommunityCategories.Where(value => value.CommunityId == communityId).ToListAsync();
 
     private static Task<List<CommunityChannel>> LoadChannelsAsync(Guid communityId, IridiumDbContext db) =>
-        db.CommunityChannels.Where(value => value.CommunityId == communityId).ToListAsync();
+        db.CommunityChannels.Where(value => value.CommunityId == communityId && value.ParentForumChannelId == null).ToListAsync();
 
     private static List<SidebarItem> SidebarItems(IEnumerable<CommunityCategory> categories,
         IEnumerable<CommunityChannel> channels) => categories.Select(value => new SidebarItem(value))

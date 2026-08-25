@@ -7,6 +7,7 @@
 @inject Iridium.Web.Services.MessageMenuCoordinator MessageMenus
 @inject CommunityEmojiService Emojis
 @inject ExternalEmbedResolver ExternalEmbeds
+@inject ModifierKeyStateService ModifierKeys
 
 <article class="message-row @(StartsGroup ? "group-start" : "compact") @(Message.IsDeleted ? "deleted" : null) @(MentionsCurrentAccount ? "mentions-current-account" : null) @DeliveryClass"
          data-message-id="@Message.Id" @onpointerenter="MessageEntered" @onpointerleave="MessageLeft">
@@ -83,9 +84,10 @@
 
     @if (Message.DeliveryState == MessageDeliveryState.Confirmed && !Message.IsDeleted && !_editing)
     {
-        <div class="message-actions">
+        <div class="message-actions @(ModifierKeys.ShiftPressed && _messageHovered ? "expanded" : null)">
             <button title="Reply" @onclick="ReplyAsync" @onclick:stopPropagation="true"><Icon Name="reply" /></button>
             @if (CanEdit) { <button title="Edit" @onclick="BeginEdit" @onclick:stopPropagation="true"><Icon Name="edit" /></button> }
+            @if (CanDelete) { <button class="shift-action destructive" title="Delete Message" @onclick="DeleteAsync" @onclick:stopPropagation="true"><Icon Name="trash" /></button> }
             <button title="More actions" @onclick="ToggleMenu" @onclick:stopPropagation="true"><Icon Name="more" /></button>
         </div>
         @if (_menuOpen)
@@ -134,6 +136,8 @@
     [Parameter] public EventCallback<Guid> OnRetryLocal { get; set; }
     [Parameter] public EventCallback<Guid> OnRemoveLocal { get; set; }
     [Parameter] public EventCallback<Guid> OnFocusReply { get; set; }
+    [Parameter] public long EditRequest { get; set; }
+    [Parameter] public EventCallback<bool> OnEditingChanged { get; set; }
     private bool _menuOpen => MessageMenus.OpenMessageId == Message.Id;
     private bool _messageHovered;
     private bool _menuHovered;
@@ -195,9 +199,15 @@
         var draft = CommunityEmojiDraftCodec.Deserialize(Message.Content, _editAvailableEmojis);
         _editContent = draft.Text; _editEmojiReferences.Clear(); _editEmojiReferences.AddRange(draft.References);
         _editing = true; _focusEditorAfterRender = true;
+        await OnEditingChanged.InvokeAsync(true);
     }
     private Task EditFromMenu() => BeginEdit();
-    private void CancelEdit() { _editing = false; _editContent = string.Empty; _editEmojiReferences.Clear(); }
+    private async Task CancelEditAsync()
+    {
+        _editing = false; _editContent = string.Empty; _editEmojiReferences.Clear();
+        await OnEditingChanged.InvokeAsync(false);
+    }
+    private void CancelEdit() => _ = CancelEditAsync();
     private void EditContentChanged(ChangeEventArgs args)
     {
         var next = CommunityEmojiDraftCodec.ToUserFacing(args.Value?.ToString() ?? string.Empty);
@@ -224,7 +234,7 @@
     [JSInvokable]
     public async Task CancelEditFromKeyboardAsync()
     {
-        CancelEdit();
+        await CancelEditAsync();
         await InvokeAsync(StateHasChanged);
     }
 
@@ -238,7 +248,7 @@
             _editAvailableEmojis, Message.CommunityId == Guid.Empty ? null : Message.CommunityId);
         if (string.Equals(content, Message.Content, StringComparison.Ordinal))
         {
-            CancelEdit();
+            await CancelEditAsync();
             await InvokeAsync(StateHasChanged);
             return;
         }
@@ -250,6 +260,7 @@
             {
                 _editing = false;
                 _editContent = string.Empty;
+                await OnEditingChanged.InvokeAsync(false);
             }
         }
         finally
@@ -260,8 +271,20 @@
     }
     private Task DeleteAsync() { MessageMenus.Close(Message.Id); return OnDelete.InvokeAsync(Message.Id); }
 
-    protected override void OnInitialized() => MessageMenus.Changed += MenuChanged;
+    private long _consumedEditRequest;
+    protected override void OnInitialized()
+    {
+        MessageMenus.Changed += MenuChanged;
+        ModifierKeys.Changed += ModifierChanged;
+    }
+    protected override async Task OnParametersSetAsync()
+    {
+        if (EditRequest <= _consumedEditRequest || !CanEdit || _editing) return;
+        _consumedEditRequest = EditRequest;
+        await BeginEdit();
+    }
     private void MenuChanged() => _ = InvokeAsync(StateHasChanged);
+    private void ModifierChanged() => _ = InvokeAsync(StateHasChanged);
     private void MessageEntered() { _messageHovered = true; CancelMenuClose(); }
     private void MessageLeft() { _messageHovered = false; ScheduleMenuClose(); }
     private void MenuEntered() { _menuHovered = true; CancelMenuClose(); }
@@ -337,6 +360,7 @@
     public async ValueTask DisposeAsync()
     {
         MessageMenus.Changed -= MenuChanged;
+        ModifierKeys.Changed -= ModifierChanged;
         MessageMenus.Close(Message.Id);
         CancelMenuClose();
         if (_module is not null)

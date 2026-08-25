@@ -60,6 +60,9 @@ public sealed class MessageRenderingUiContractTests
     {
         var previewCss = Source("Iridium.Web", "Components", "ComposerMarkdownPreview.razor.css");
         var composer = Source("Iridium.Web", "Components", "MessageComposer.razor");
+        var composerCss = Source("Iridium.Web", "Components", "MessageComposer.razor.css");
+        var messageCss = Source("Iridium.Web", "Components", "MessageContentNodeView.razor.css");
+        var appCss = Source("Iridium.Web", "wwwroot", "css", "app.css");
 
         Assert.Contains("contenteditable=\"true\"", composer);
         Assert.Contains("markdown-marker", previewCss);
@@ -68,6 +71,13 @@ public sealed class MessageRenderingUiContractTests
         Assert.Contains(".markdown-italic{font-style:oblique 10deg}", previewCss);
         Assert.DoesNotContain("text-decoration-style:dotted", previewCss);
         Assert.DoesNotContain("font-weight:700", previewCss);
+        Assert.Contains("font-weight:inherit", previewCss);
+        Assert.Contains("-webkit-text-stroke:.025em currentColor", previewCss);
+        Assert.Contains("paint-order:stroke fill", previewCss);
+        Assert.Contains("--chat-strong-weight: 700", appCss);
+        Assert.Contains("strong{font-weight:var(--chat-strong-weight)}", messageCss);
+        Assert.Contains("composer-highlight composer-text-geometry", composer);
+        Assert.Contains("font-weight:var(--chat-text-weight)", composerCss);
         Assert.DoesNotContain("display:none", previewCss);
     }
 
@@ -192,7 +202,7 @@ public sealed class MessageRenderingUiContractTests
         var home = Source("Iridium.Web", "Pages", "Home.razor");
         var session = Source("Iridium.Client.Core", "CommunitySession.cs");
 
-        Assert.Contains("Channel.Kind == CommunityChannelKind.Text && Channel.UnreadCount > 0 && !Selected", row);
+        Assert.Contains("CommunityChannelKind.Text or CommunityChannelKind.Forum", row);
         Assert.Contains("channel-unread-marker", row);
         Assert.Contains("Channel.MentionCount > 0", row);
         Assert.Contains("channel-mention-badge", row);

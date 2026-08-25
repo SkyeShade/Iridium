@@ -19,6 +19,7 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
     public DbSet<AccountBlock> AccountBlocks => Set<AccountBlock>();
     public DbSet<CommunityCategory> CommunityCategories => Set<CommunityCategory>();
     public DbSet<CommunityChannel> CommunityChannels => Set<CommunityChannel>();
+    public DbSet<CommunityForumPost> CommunityForumPosts => Set<CommunityForumPost>();
     public DbSet<CommunityPermissionOverwrite> CommunityPermissionOverwrites => Set<CommunityPermissionOverwrite>();
     public DbSet<ChannelMessage> ChannelMessages => Set<ChannelMessage>();
     public DbSet<CommunityChannelReadState> CommunityChannelReadStates => Set<CommunityChannelReadState>();
@@ -197,11 +198,36 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
         channel.Property(value => value.Name).HasMaxLength(100);
         channel.Property(value => value.Kind).HasDefaultValue(Iridium.Protocol.CommunityChannelKind.Text);
         channel.Property(value => value.PermissionsSyncedToCategory).HasDefaultValue(false);
+        channel.HasIndex(value => new { value.CommunityId, value.ParentForumChannelId });
         channel.HasIndex(value => new { value.CommunityId, value.CategoryId, value.Position });
         channel.HasOne(value => value.Community).WithMany(value => value.Channels).HasForeignKey(value => value.CommunityId);
         channel.HasOne(value => value.Category).WithMany(value => value.Channels)
             .HasForeignKey(value => new { value.CommunityId, value.CategoryId })
             .HasPrincipalKey(value => new { value.CommunityId, value.Id })
+            .OnDelete(DeleteBehavior.Restrict);
+
+        var forumPost = modelBuilder.Entity<CommunityForumPost>();
+        forumPost.HasKey(value => value.Id);
+        forumPost.Property(value => value.Title).HasMaxLength(120);
+        forumPost.Property(value => value.CreatedAt)
+            .HasConversion(value => value.UtcTicks, value => new DateTimeOffset(value, TimeSpan.Zero));
+        forumPost.Property(value => value.UpdatedAt)
+            .HasConversion(value => value.UtcTicks, value => new DateTimeOffset(value, TimeSpan.Zero));
+        forumPost.Property(value => value.LastActivityAt)
+            .HasConversion(value => value.UtcTicks, value => new DateTimeOffset(value, TimeSpan.Zero));
+        forumPost.HasIndex(value => new { value.CommunityId, value.ForumChannelId, value.IsPinned, value.LastActivityAt });
+        forumPost.HasIndex(value => value.DiscussionChannelId).IsUnique();
+        forumPost.HasOne(value => value.Community).WithMany().HasForeignKey(value => value.CommunityId)
+            .OnDelete(DeleteBehavior.Cascade);
+        forumPost.HasOne(value => value.ForumChannel).WithMany()
+            .HasForeignKey(value => new { value.CommunityId, value.ForumChannelId })
+            .HasPrincipalKey(value => new { value.CommunityId, value.Id }).OnDelete(DeleteBehavior.Cascade);
+        forumPost.HasOne(value => value.DiscussionChannel).WithMany()
+            .HasForeignKey(value => new { value.CommunityId, value.DiscussionChannelId })
+            .HasPrincipalKey(value => new { value.CommunityId, value.Id }).OnDelete(DeleteBehavior.Cascade);
+        forumPost.HasOne(value => value.RootMessage).WithMany().HasForeignKey(value => value.RootMessageId)
+            .OnDelete(DeleteBehavior.Cascade);
+        forumPost.HasOne(value => value.AuthorAccount).WithMany().HasForeignKey(value => value.AuthorAccountId)
             .OnDelete(DeleteBehavior.Restrict);
 
         var overwrite = modelBuilder.Entity<CommunityPermissionOverwrite>();

@@ -1,0 +1,63 @@
+@using Iridium.Protocol
+
+<section class="forum-browser @(Compact ? "compact" : null)" aria-label="Forum post browser">
+    <header class="forum-browser-header">
+        <div class="forum-heading"><h1># @ChannelName</h1><p>Start a topic and keep each discussion together.</p></div>
+        <div class="forum-index-tools">
+            <label class="forum-search"><Icon Name="search" /><input value="@Search" @oninput="SearchChanged" placeholder="Search or create a post..." aria-label="Search Forum posts" /></label>
+            @if (CanCreatePosts) { <button class="new-post-button" @onclick="OnNewPost"><Icon Name="plus" />New Post</button> }
+        </div>
+    </header>
+    <div class="forum-post-list" aria-label="Forum posts">
+        @if (IsLoading && Posts.Count == 0)
+        {
+            <p class="forum-empty">Loading posts...</p>
+        }
+        else if (Posts.Count == 0)
+        {
+            <div class="forum-empty"><strong>@(string.IsNullOrWhiteSpace(Search) ? "No posts yet" : "No matching posts")</strong><span>@(string.IsNullOrWhiteSpace(Search) ? "Start the first discussion." : "Try a different search.")</span></div>
+        }
+        else
+        {
+            @if (PinnedPosts.Count > 0)
+            {
+                <h2>Pinned</h2>
+                @foreach (var post in PinnedPosts)
+                {
+                    <ForumPostCard @key="post.Id" Post="post" Compact="Compact" Selected="@(post.Id == SelectedPostId)" OnOpen="OnOpen" />
+                }
+            }
+            @if (RecentPosts.Count > 0)
+            {
+                @if (PinnedPosts.Count > 0) { <h2>Recent</h2> }
+                @foreach (var post in RecentPosts)
+                {
+                    <ForumPostCard @key="post.Id" Post="post" Compact="Compact" Selected="@(post.Id == SelectedPostId)" OnOpen="OnOpen" />
+                }
+            }
+            @if (string.IsNullOrWhiteSpace(Search) && HasMore)
+            {
+                <button class="load-more" disabled="@IsLoading" @onclick="OnLoadMore">Load more posts</button>
+            }
+        }
+    </div>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public required string ChannelName { get; set; }
+    [Parameter] public IReadOnlyList<CommunityForumPostDto> Posts { get; set; } = [];
+    [Parameter] public string Search { get; set; } = string.Empty;
+    [Parameter] public bool Compact { get; set; }
+    [Parameter] public bool CanCreatePosts { get; set; }
+    [Parameter] public bool IsLoading { get; set; }
+    [Parameter] public bool HasMore { get; set; }
+    [Parameter] public Guid? SelectedPostId { get; set; }
+    [Parameter] public EventCallback<string> SearchChangedCallback { get; set; }
+    [Parameter] public EventCallback OnNewPost { get; set; }
+    [Parameter] public EventCallback OnLoadMore { get; set; }
+    [Parameter] public EventCallback<CommunityForumPostDto> OnOpen { get; set; }
+
+    private IReadOnlyList<CommunityForumPostDto> PinnedPosts => Posts.Where(post => post.IsPinned).ToArray();
+    private IReadOnlyList<CommunityForumPostDto> RecentPosts => Posts.Where(post => !post.IsPinned).ToArray();
+    private Task SearchChanged(ChangeEventArgs args) => SearchChangedCallback.InvokeAsync(args.Value?.ToString() ?? string.Empty);
+}

@@ -26,11 +26,12 @@ public enum CommunityPermission : long
     DeafenMembers = 1L << 19,
     MoveMembers = 1L << 20,
     ManageExpressions = 1L << 21,
+    CreateForumPosts = 1L << 22,
     Administrator = 1L << 62,
     All = ViewChannels | SendMessages | ManageMessages | ManageChannels | ManageCommunity |
           ManageRoles | CreateInvites | KickMembers | BanMembers | MentionEveryone | ConnectVoice | SpeakVoice |
           ShareScreen | ManagePermissions | ReadMessageHistory | AttachFiles | EmbedLinks | AddReactions |
-          MuteMembers | DeafenMembers | MoveMembers | ManageExpressions
+          MuteMembers | DeafenMembers | MoveMembers | ManageExpressions | CreateForumPosts
 }
 
 public enum PermissionOverwriteScopeType { Category, Channel }

@@ -16,7 +16,7 @@
         @for (var index = 0; index < visibleMessages.Count; index++)
         {
             var message = visibleMessages[index];
-            var previous = index == 0 ? null : visibleMessages[index - 1];
+            var previous = index == 0 || visibleMessages[index - 1].Id == RootMessageId ? null : visibleMessages[index - 1];
             @if (message.Kind == MessageKind.CallStarted)
             {
                 <div @key="message.Id" class="message-system-event" data-message-id="@message.Id">
@@ -30,14 +30,20 @@
                 <MessageRow @key="(message.ClientMessageId ?? message.Id)" Message="message"
                         StartsGroup="MessageGrouping.StartsNewGroup(previous, message)"
                         CanEdit="@(message.Kind == MessageKind.User && message.DeliveryState == MessageDeliveryState.Confirmed && !message.IsDeleted && message.Author.AccountId == CurrentAccountId)"
-                        CanDelete="@(message.Kind == MessageKind.User && message.DeliveryState == MessageDeliveryState.Confirmed && !message.IsDeleted && (message.Author.AccountId == CurrentAccountId || CanManage))"
+                        CanDelete="@(message.Id != RootMessageId && message.Kind == MessageKind.User && message.DeliveryState == MessageDeliveryState.Confirmed && !message.IsDeleted && (message.Author.AccountId == CurrentAccountId || CanManage))"
                         CurrentAccountId="CurrentAccountId" NodeAuthority="@NodeAuthority" CommunityManagement="CommunityManagement"
                         AuthorPresence="@PresenceFor(message.Author.AccountId)"
                         OnEditProfile="OnEditProfile" OnMessage="OnMessage"
                         OnMemberRolesChanged="OnMemberRolesChanged"
                         OnMention="OnMention"
                         OnReply="OnReply" Edit="Edit" OnDelete="OnDelete" OnFocusReply="FocusMessageAsync"
+                        EditRequest="@(_editRequestedMessageId == message.Id ? _editRequest : 0)"
+                        OnEditingChanged="@(editing => EditingChanged(message.Id, editing))"
                         OnRetryLocal="OnRetryLocal" OnRemoveLocal="OnRemoveLocal" />
+                @if (message.Id == RootMessageId)
+                {
+                    <div class="root-message-separator" role="separator" aria-label="Replies"></div>
+                }
             }
         }
     }
@@ -66,6 +72,7 @@
     [Parameter] public EventCallback<MessageViewportState> OnViewportStateChanged { get; set; }
     [Parameter] public int WindowRevision { get; set; }
     [Parameter] public Guid? TargetMessageId { get; set; }
+    [Parameter] public Guid? RootMessageId { get; set; }
     private ElementReference _container;
     private IJSObjectReference? _module;
     private DotNetObjectReference<MessageList>? _selfReference;
@@ -76,6 +83,9 @@
     private bool _suppressInitialPositionOnce;
     private LatestScrollBehavior _latestScrollAfterRender;
     private int _viewportGeneration;
+    private Guid? _editRequestedMessageId;
+    private Guid? _editingMessageId;
+    private long _editRequest;
     private PublicPresence? PresenceFor(Guid accountId) => CommunityManagement?.Members
         .FirstOrDefault(value => value.AccountId == accountId)?.Presence
         ?? (DirectParticipant?.AccountId == accountId ? DirectParticipant.Presence : null);
@@ -164,6 +174,23 @@
         _restorePrepend = false;
         _suppressInitialPositionOnce = true;
         _latestScrollAfterRender = smooth ? LatestScrollBehavior.Smooth : LatestScrollBehavior.Instant;
+    }
+
+    public async Task<bool> BeginEditLatestOwnAsync()
+    {
+        if (_editingMessageId is not null) return false;
+        var candidate = MessageTimeline.LatestEditableOwn(Messages, CurrentAccountId);
+        if (candidate is null) return false;
+        _editRequestedMessageId = candidate.Id;
+        _editRequest++;
+        await InvokeAsync(StateHasChanged);
+        return true;
+    }
+
+    private void EditingChanged(Guid messageId, bool editing)
+    {
+        if (editing) _editingMessageId = messageId;
+        else if (_editingMessageId == messageId) _editingMessageId = null;
     }
 
     private async Task FocusMessageAsync(Guid messageId)

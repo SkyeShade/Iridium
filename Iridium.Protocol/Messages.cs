@@ -167,7 +167,8 @@ public sealed record CommunityCategoryDto(Guid Id, Guid CommunityId, string Name
 public enum CommunityChannelKind
 {
     Text = 0,
-    Voice = 1
+    Voice = 1,
+    Forum = 2
 }
 
 public sealed record CommunityChannelDto(Guid Id, Guid CommunityId, Guid? CategoryId, string Name, int Position,
@@ -197,3 +198,32 @@ public sealed record CreateChannelRequest(string Name, Guid? CategoryId,
     CommunityChannelKind Kind = CommunityChannelKind.Text);
 public sealed record UpdateChannelRequest(string Name, Guid? CategoryId,
     CommunityChannelKind Kind = CommunityChannelKind.Text);
+
+public sealed record CommunityForumPostDto(
+    Guid Id,
+    Guid CommunityId,
+    Guid ForumChannelId,
+    Guid DiscussionChannelId,
+    Guid RootMessageId,
+    MessageAuthorDto Author,
+    string Title,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt,
+    DateTimeOffset LastActivityAt,
+    int ReplyCount,
+    bool IsLocked,
+    bool IsPinned,
+    int UnreadCount = 0,
+    string? RootPreview = null,
+    IReadOnlyList<CommunityMentionDto>? RootMentions = null);
+
+public sealed record CommunityForumPostPageDto(IReadOnlyList<CommunityForumPostDto> Posts, int? NextOffset);
+public sealed record CreateCommunityForumPostRequest(string Title, SendChannelMessageRequest InitialMessage);
+public sealed record UpdateCommunityForumPostRequest(string? Title = null, bool? IsLocked = null, bool? IsPinned = null);
+public sealed record CommunityForumPostChangedEvent(Guid CommunityId, Guid ForumChannelId,
+    CommunityForumPostDto? Post, Guid PostId, string Change, Guid? ActorAccountId = null);
+
+public static class CommunityForumHubContract
+{
+    public const string PostChanged = "CommunityForumPostChanged";
+}

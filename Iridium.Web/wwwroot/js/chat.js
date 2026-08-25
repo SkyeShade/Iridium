@@ -313,7 +313,8 @@ function resizeTextarea(textarea, viewportRatio, maximumPixels = Number.POSITIVE
 }
 
 export function resizeComposer(textarea) {
-    resizeTextarea(textarea, 0.5);
+    const configuredRatio = Number.parseFloat(getComputedStyle(textarea).getPropertyValue('--composer-viewport-ratio'));
+    resizeTextarea(textarea, Number.isFinite(configuredRatio) ? configuredRatio : 0.5);
     syncComposerPreview(textarea);
 }
 
@@ -646,6 +647,14 @@ export function wireComposer(textarea, dotNetReference, composerRoot) {
             event.preventDefault();
             await dotNetReference.invokeMethodAsync("HandleMentionKeyAsync", event.key);
             return;
+        }
+        if (event.key === "ArrowUp" && !event.isComposing) {
+            const snapshot = composerSnapshot(textarea);
+            if (snapshot.content.length === 0 && (!selection || selection.isCollapsed)) {
+                event.preventDefault();
+                await dotNetReference.invokeMethodAsync("EditLastMessageFromKeyboardAsync");
+                return;
+            }
         }
         if (event.key === "Enter" && event.shiftKey && !event.isComposing) {
             event.preventDefault();

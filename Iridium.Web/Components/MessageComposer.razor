@@ -8,7 +8,7 @@
 @inject EmojiPickerPreferencesService EmojiPreferences
 @inject IMessageDraftStore Drafts
 
-<div class="composer-wrap">
+<div class="composer-wrap @Class">
     <div class="composer-shell" @ref="_composerShell">
         @if (!string.IsNullOrWhiteSpace(ReplyToDisplayName))
         {
@@ -110,12 +110,16 @@
     [Parameter, EditorRequired] public required string ChannelName { get; set; }
     [Parameter] public string? ReplyToDisplayName { get; set; }
     [Parameter] public string? PlaceholderText { get; set; }
+    [Parameter] public string? Class { get; set; }
     [Parameter] public bool Busy { get; set; }
     [Parameter] public Func<string, Task<bool>>? Send { get; set; }
     [Parameter] public Func<MessageSubmission, Task<bool>>? SendRich { get; set; }
+    [Parameter] public EventCallback OnSubmitted { get; set; }
+    [Parameter] public EventCallback<bool> SendableContentChanged { get; set; }
     [Parameter] public CommunityManagementDto? CommunityManagement { get; set; }
     [Parameter] public CommunityDto? Community { get; set; }
     [Parameter] public EventCallback OnCancelReply { get; set; }
+    [Parameter] public EventCallback OnEditLastMessage { get; set; }
     [Parameter] public bool CanAttachFiles { get; set; } = true;
     [Parameter] public bool CanMentionEveryone { get; set; }
     [Parameter, EditorRequired] public required string NodeAuthority { get; set; }
@@ -198,6 +202,7 @@
             _selfReference = DotNetObjectReference.Create(this);
             await _module.InvokeVoidAsync("wireComposer", _textarea, _selfReference, _composerShell);
             await EnsureDraftLoadedAsync();
+            await SendableContentChanged.InvokeAsync(HasSendableContent);
             _resizeAfterRender = false;
             return;
         }
@@ -260,6 +265,8 @@
                 _resizeAfterRender = true;
                 if (_attachmentKey is { } sentKey) Attachments.Clear(sentKey);
                 _attachmentError = null;
+                await SendableContentChanged.InvokeAsync(false);
+                await OnSubmitted.InvokeAsync();
             }
         }
         catch (Exception exception)
@@ -272,6 +279,13 @@
             _submitting = false;
             await InvokeAsync(StateHasChanged);
         }
+    }
+
+    [JSInvokable]
+    public async Task EditLastMessageFromKeyboardAsync()
+    {
+        if (!string.IsNullOrEmpty(_content) || Suggestions.Count > 0 || EmojiSuggestions.Count > 0) return;
+        await OnEditLastMessage.InvokeAsync();
     }
 
     private async Task FilesSelectedAsync(InputFileChangeEventArgs args)
@@ -292,12 +306,14 @@
         _inputRevision++;
         _focusCaretAfterRender = _pickerCaret ?? _content.Length;
         _pickerCaret = null;
+        await SendableContentChanged.InvokeAsync(HasSendableContent);
     }
 
-    private void RemoveAttachment(Guid localId)
+    private async Task RemoveAttachment(Guid localId)
     {
         if (_attachmentKey is { } key) Attachments.Remove(key, localId);
         _attachmentError = null;
+        await SendableContentChanged.InvokeAsync(HasSendableContent);
     }
 
     private void ToggleSpoiler(Guid localId)
@@ -348,6 +364,7 @@
         _suggestionIndex = Math.Clamp(_suggestionIndex, 0, Math.Max(0, Suggestions.Count - 1));
         await ResolveCompletedEmojisAsync();
         await ResolveStandardEmojisAsync();
+        await SendableContentChanged.InvokeAsync(HasSendableContent);
         await InvokeAsync(StateHasChanged);
     }
 
@@ -608,6 +625,10 @@
         await EnsureDraftLoadedAsync();
         await _module.InvokeVoidAsync("focusComposer", _textarea);
     }
+
+    public Task SubmitAsync() => SubmitFromKeyboardAsync();
+
+    public bool HasSendableContent => HasSendableText || PendingAttachments.Count > 0;
 
     public async Task InsertMentionAsync(CommunityMemberDto member)
     {

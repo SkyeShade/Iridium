@@ -1,0 +1,41 @@
+@using Iridium.Protocol
+
+<article class="forum-post-card @(Compact ? "compact" : null) @(Selected ? "selected" : null) @(Post.UnreadCount > 0 ? "unread" : null)"
+         role="button" tabindex="0" @onclick="OpenAsync" @onkeydown="CardKeyDownAsync">
+    <ProfileAvatar AccountId="Post.Author.AccountId" DisplayName="@Post.Author.DisplayName" Size="small" Surface="panel" />
+    <span class="forum-post-copy">
+        <span class="forum-post-title">
+            @if (Post.IsPinned) { <span title="Pinned"><Icon Name="pin" /></span> }
+            <strong>@Post.Title</strong>
+            @if (Post.IsLocked) { <span title="Locked"><Icon Name="lock" /></span> }
+        </span>
+        @if (!string.IsNullOrWhiteSpace(Post.RootPreview))
+        {
+            <div class="forum-post-preview">
+                <MentionedMessageContent Content="@Post.RootPreview" Mentions="Post.RootMentions"
+                                         CommunityId="Post.CommunityId" Compact="true" />
+            </div>
+        }
+        <small><span class="display-name">@Post.Author.DisplayName</span> · @RelativeTime(Post.LastActivityAt) · @Post.ReplyCount @(Post.ReplyCount == 1 ? "reply" : "replies")</small>
+    </span>
+    @if (Post.UnreadCount > 0) { <span class="unread-count">@Post.UnreadCount</span> }
+</article>
+
+@code {
+    [Parameter, EditorRequired] public required CommunityForumPostDto Post { get; set; }
+    [Parameter] public bool Compact { get; set; }
+    [Parameter] public bool Selected { get; set; }
+    [Parameter] public EventCallback<CommunityForumPostDto> OnOpen { get; set; }
+
+    private Task OpenAsync() => OnOpen.InvokeAsync(Post);
+    private Task CardKeyDownAsync(KeyboardEventArgs args) => args.Key is "Enter" or " " ? OpenAsync() : Task.CompletedTask;
+
+    private static string RelativeTime(DateTimeOffset at)
+    {
+        var age = DateTimeOffset.UtcNow - at;
+        if (age < TimeSpan.FromMinutes(1)) return "just now";
+        if (age < TimeSpan.FromHours(1)) return $"{(int)age.TotalMinutes}m ago";
+        if (age < TimeSpan.FromDays(1)) return $"{(int)age.TotalHours}h ago";
+        return at.ToLocalTime().ToString("MMM d");
+    }
+}

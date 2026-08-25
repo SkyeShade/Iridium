@@ -291,6 +291,12 @@ public sealed class ChatHub(
     {
         var session = await RequireSessionAsync();
         await RequireChannelAsync(communityId, channelId, session.AccountId, CommunityPermission.SendMessages);
+        var forumPost = await db.CommunityForumPosts.Include(value => value.AuthorAccount)
+            .Include(value => value.RootMessage)
+            .SingleOrDefaultAsync(value => value.CommunityId == communityId && value.DiscussionChannelId == channelId);
+        if (forumPost?.IsLocked == true && !await authorization.HasChannelPermissionAsync(
+                communityId, channelId, session.AccountId, CommunityPermission.ManageMessages, db))
+            throw new HubException("This Forum post is locked.");
         if (request.ClientMessageId == Guid.Empty) throw new HubException("The client message identifier is invalid.");
         if (request.ClientMessageId is { } existingClientId)
         {
@@ -354,6 +360,12 @@ public sealed class ChatHub(
                 Account = null!
             });
         }
+        if (forumPost is not null)
+        {
+            forumPost.ReplyCount++;
+            forumPost.LastActivityAt = message.CreatedAt;
+            forumPost.UpdatedAt = message.CreatedAt;
+        }
         await db.SaveChangesAsync();
         var result = ChannelMessageMapper.ToDto(message);
         await Clients.Group(GroupName(communityId, channelId)).SendAsync(ChatHubContract.MessageCreated, result);
@@ -366,13 +378,14 @@ public sealed class ChatHub(
         if (communityRecipients.Count > 0)
             await Clients.Groups(communityRecipients.Select(AccountGroup).ToArray()).SendAsync(
                 CommunityHubContract.ChannelActivity,
-                new CommunityChannelActivityEvent(communityId, channelId, session.AccountId));
+                new CommunityChannelActivityEvent(communityId, forumPost?.ForumChannelId ?? channelId, session.AccountId));
         if (recipients.Count > 0)
         {
             var mentionEvent = new CommunityMentionReceivedEvent(communityId, channelId, message.Id, session.AccountId);
             await Clients.Groups(recipients.Select(AccountGroup).ToArray())
                 .SendAsync(CommunityMentionHubContract.Received, mentionEvent);
         }
+        if (forumPost is not null) await PublishForumPostAsync(forumPost, "activity", session.AccountId);
         return result;
     }
 
@@ -385,15 +398,20 @@ public sealed class ChatHub(
         var accountId = await RequireAccountAsync();
         await RequireChannelAsync(communityId, channelId, accountId, CommunityPermission.ViewChannels);
         var message = await MessageInContextAsync(communityId, channelId, messageId);
+        var rootForumPost = await db.CommunityForumPosts.Include(value => value.AuthorAccount)
+            .Include(value => value.RootMessage)
+            .SingleOrDefaultAsync(value => value.RootMessageId == messageId);
         if (message.AuthorAccountId != accountId) throw new HubException("You can only edit your own messages.");
         if (message.IsDeleted) throw new HubException("Deleted messages cannot be edited.");
 
         message.Content = ValidContent(request.Content, communityId: communityId);
         message.MentionsJson = null;
         message.EditedAt = DateTimeOffset.UtcNow;
+        if (rootForumPost is not null) rootForumPost.UpdatedAt = message.EditedAt.Value;
         await db.SaveChangesAsync();
         var result = ChannelMessageMapper.ToDto(message);
         await Clients.Group(GroupName(communityId, channelId)).SendAsync(ChatHubContract.MessageUpdated, result);
+        if (rootForumPost is not null) await PublishForumPostAsync(rootForumPost, "updated", accountId);
         return result;
     }
 
@@ -402,6 +420,8 @@ public sealed class ChatHub(
         var accountId = await RequireAccountAsync();
         await RequireChannelAsync(communityId, channelId, accountId, CommunityPermission.ViewChannels);
         var message = await MessageInContextAsync(communityId, channelId, messageId);
+        if (await db.CommunityForumPosts.AnyAsync(value => value.RootMessageId == messageId))
+            throw new HubException("Delete the Forum post rather than deleting its root message.");
         var mayModerate = await authorization.HasChannelPermissionAsync(
             communityId, channelId, accountId, CommunityPermission.ManageMessages, db);
         if (message.AuthorAccountId != accountId && !mayModerate)
@@ -415,6 +435,19 @@ public sealed class ChatHub(
         await Clients.Group(GroupName(communityId, channelId)).SendAsync(
             ChatHubContract.MessageDeleted,
             new ChannelMessageDeletedEvent(communityId, channelId, messageId, message.DeletedAt.Value));
+        var forumPost = await db.CommunityForumPosts.Include(value => value.AuthorAccount)
+            .Include(value => value.RootMessage)
+            .SingleOrDefaultAsync(value => value.CommunityId == communityId && value.DiscussionChannelId == channelId);
+        if (forumPost is not null)
+        {
+            forumPost.ReplyCount = await db.ChannelMessages.CountAsync(value => value.ChannelId == channelId &&
+                value.Id != forumPost.RootMessageId && !value.IsDeleted);
+            forumPost.LastActivityAt = await db.ChannelMessages.Where(value => value.ChannelId == channelId && !value.IsDeleted)
+                .MaxAsync(value => (DateTimeOffset?)value.CreatedAt) ?? forumPost.CreatedAt;
+            forumPost.UpdatedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync();
+            await PublishForumPostAsync(forumPost, "updated", accountId);
+        }
     }
 
     public async Task JoinDirectConversation(Guid conversationId)
@@ -813,6 +846,21 @@ public sealed class ChatHub(
         relatedAccounts.Add(accountId);
         await Clients.Groups(relatedAccounts.Distinct().Select(AccountGroup).ToArray()).SendAsync(
             PresenceHubContract.PresenceChanged, new PresenceChangedEvent(accountId, publicPresence));
+    }
+
+    private async Task PublishForumPostAsync(CommunityForumPost post, string change, Guid? actorAccountId = null)
+    {
+        var accounts = await db.CommunityMembers.AsNoTracking().Where(value => value.CommunityId == post.CommunityId)
+            .Select(value => value.AccountId).ToListAsync();
+        var owner = await db.Communities.AsNoTracking().Where(value => value.Id == post.CommunityId)
+            .Select(value => (Guid?)value.OwnerAccountId).SingleOrDefaultAsync();
+        if (owner.HasValue) accounts.Add(owner.Value);
+        foreach (var accountId in accounts.Distinct())
+            if (await authorization.HasChannelPermissionAsync(post.CommunityId, post.ForumChannelId, accountId,
+                    CommunityPermission.ViewChannels, db))
+                await Clients.Group(AccountGroup(accountId)).SendAsync(CommunityForumHubContract.PostChanged,
+                    new CommunityForumPostChangedEvent(post.CommunityId, post.ForumChannelId,
+                        CommunityForumEndpoints.ToDto(post), post.Id, change, actorAccountId));
     }
 
     private async Task RequireChannelAsync(

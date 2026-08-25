@@ -28,7 +28,7 @@
                 @if (IsChannel)
                 {
                     <label class="settings-field"><span>Channel Type</span>
-                        <div class="scope-type-readonly"><Icon Name="@(Channel!.Kind == CommunityChannelKind.Voice ? "speaker" : "channel")" /> @Channel.Kind</div>
+                        <div class="scope-type-readonly"><Icon Name="@(Channel!.Kind == CommunityChannelKind.Voice ? "speaker" : Channel.Kind == CommunityChannelKind.Forum ? "message" : "channel")" /> @Channel.Kind</div>
                     </label>
                     <label class="settings-field"><span>Category</span>
                         <select value="@_categoryValue" @onchange="CategoryChanged">
@@ -208,9 +208,9 @@
     private bool _private => _drafts.TryGetValue(EveryoneKey, out var everyone) && (everyone.Deny & CommunityPermission.ViewChannels) != 0;
     private string ParentCategoryName => State.Categories.FirstOrDefault(value => value.Id == Channel?.CategoryId)?.Name ?? "parent category";
 
-    private static readonly CommunityPermission[] TextPermissions = [CommunityPermission.SendMessages, CommunityPermission.ReadMessageHistory, CommunityPermission.ManageMessages, CommunityPermission.AttachFiles, CommunityPermission.EmbedLinks, CommunityPermission.AddReactions, CommunityPermission.MentionEveryone];
+    private static readonly CommunityPermission[] TextPermissions = [CommunityPermission.SendMessages, CommunityPermission.CreateForumPosts, CommunityPermission.ReadMessageHistory, CommunityPermission.ManageMessages, CommunityPermission.AttachFiles, CommunityPermission.EmbedLinks, CommunityPermission.AddReactions, CommunityPermission.MentionEveryone];
     private static readonly CommunityPermission[] VoicePermissions = [CommunityPermission.ConnectVoice, CommunityPermission.SpeakVoice, CommunityPermission.ShareScreen, CommunityPermission.MuteMembers, CommunityPermission.DeafenMembers, CommunityPermission.MoveMembers];
-    private IEnumerable<(string Name, IReadOnlyList<CommunityPermission> Permissions)> PermissionGroups { get { yield return ("General", CommunityPermissionCatalog.GeneralOverwritePermissions); if (Channel?.Kind != CommunityChannelKind.Voice) yield return ("Text", TextPermissions); if (Channel?.Kind != CommunityChannelKind.Text) yield return ("Voice", VoicePermissions); if (Category is not null) { yield return ("Text", TextPermissions); yield return ("Voice", VoicePermissions); } } }
+    private IEnumerable<(string Name, IReadOnlyList<CommunityPermission> Permissions)> PermissionGroups { get { yield return ("General", CommunityPermissionCatalog.GeneralOverwritePermissions); if (Channel?.Kind is CommunityChannelKind.Text or CommunityChannelKind.Forum) yield return ("Text", TextPermissions); if (Channel?.Kind == CommunityChannelKind.Voice) yield return ("Voice", VoicePermissions); if (Category is not null) { yield return ("Text", TextPermissions); yield return ("Voice", VoicePermissions); } } }
     private IEnumerable<(string Key,string Label,string Kind)> Subjects => _drafts.Keys.Where(value => value != EveryoneKey).Select(Describe).OrderBy(value => value.Kind).ThenBy(value => value.Label);
     private IEnumerable<(string Key,string Label,string Kind,string? Color,Guid Id)> PrivateAccessEntries => Subjects.Select(value => { var (_, id) = ParseKey(value.Key); return (value.Key, value.Label, value.Kind, TargetColor(value.Key), id!.Value); }).Where(value => (_drafts[value.Key].Allow & CommunityPermission.ViewChannels) != 0);
     private IEnumerable<(string Key,string Label,string? Color)> RoleSubjects => Subjects.Where(value => value.Kind == "Role")

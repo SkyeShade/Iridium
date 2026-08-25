@@ -7,10 +7,11 @@
         <header class="dialog-heading"><h2 id="channel-dialog-title">@(Channel is null ? "Create Channel" : "Channel Settings")</h2><p>@(Channel is null ? $"in {DestinationName}" : $"Configure this {_kind.ToString().ToLowerInvariant()} Channel.")</p></header>
         <div class="dialog-field"><span class="field-label">Channel Type</span><div class="channel-types" aria-label="Channel type">
             <button type="button" class="channel-type @(_kind == CommunityChannelKind.Text ? "selected" : null)" disabled="@(Channel is not null)" @onclick="() => _kind = CommunityChannelKind.Text"><Icon Name="channel" /><span><strong>Text</strong><small>Send messages, images, and files</small></span></button>
+            <button type="button" class="channel-type @(_kind == CommunityChannelKind.Forum ? "selected" : null)" disabled="@(Channel is not null)" @onclick="() => _kind = CommunityChannelKind.Forum"><Icon Name="message" /><span><strong>Forum</strong><small>Organized, titled discussions</small></span></button>
             <button type="button" class="channel-type @(_kind == CommunityChannelKind.Voice ? "selected" : null)" disabled="@(Channel is not null)" @onclick="() => _kind = CommunityChannelKind.Voice"><Icon Name="speaker" /><span><strong>Voice</strong><small>Persistent joinable voice room</small></span></button>
         </div></div>
         <label class="dialog-field"><span class="field-label">Channel Name</span>
-            <span class="channel-name-input"><Icon Name="@(_kind == CommunityChannelKind.Voice ? "speaker" : "channel")" /><input value="@_name" @oninput="NameChanged" maxlength="100" autofocus placeholder="new-channel" /></span>
+            <span class="channel-name-input"><Icon Name="@(_kind == CommunityChannelKind.Voice ? "speaker" : _kind == CommunityChannelKind.Forum ? "message" : "channel")" /><input value="@_name" @oninput="NameChanged" maxlength="100" autofocus placeholder="new-channel" /></span>
         </label>
         @if (Channel is not null)
         {

@@ -197,7 +197,7 @@ public static class DatabaseCompatibility
                               CommunityPermission.ConnectVoice | CommunityPermission.SpeakVoice |
                               CommunityPermission.ShareScreen | CommunityPermission.ReadMessageHistory |
                               CommunityPermission.AttachFiles | CommunityPermission.EmbedLinks |
-                              CommunityPermission.AddReactions
+                              CommunityPermission.AddReactions | CommunityPermission.CreateForumPosts
             });
         if (missing.Count > 0) await db.SaveChangesAsync();
     }
@@ -211,6 +211,28 @@ public static class DatabaseCompatibility
                    CommunityPermission.ShareScreen | CommunityPermission.ReadMessageHistory |
                    CommunityPermission.AttachFiles | CommunityPermission.EmbedLinks |
                    CommunityPermission.AddReactions));
+    }
+
+    public static async Task EnsureCommunityForumPermissionDefaultsAsync(IridiumDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS IridiumCompatibilityMigrations (
+                Id TEXT NOT NULL CONSTRAINT PK_IridiumCompatibilityMigrations PRIMARY KEY,
+                AppliedAt INTEGER NOT NULL
+            );
+            """);
+        const string migration = "community-forum-post-permission-v1";
+        if (await db.Database.SqlQueryRaw<int>(
+                "SELECT COUNT(*) AS Value FROM IridiumCompatibilityMigrations WHERE Id = {0}", migration)
+            .SingleAsync() > 0) return;
+        await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
+        await db.Database.ExecuteSqlRawAsync(
+            "UPDATE CommunityRoles SET Permissions = Permissions | {0} WHERE IsDefault = 1",
+            (long)CommunityPermission.CreateForumPosts);
+        await db.Database.ExecuteSqlRawAsync(
+            "INSERT INTO IridiumCompatibilityMigrations (Id, AppliedAt) VALUES ({0}, {1})",
+            migration, DateTimeOffset.UtcNow.UtcTicks);
+        await transaction.CommitAsync();
     }
 
     public static async Task EnsureCommunityPermissionOverwriteSchemaAsync(IridiumDbContext db)
@@ -507,6 +529,7 @@ public static class DatabaseCompatibility
         await EnsureColumnAsync(db, "CommunityCategories", "ParentCategoryId", "TEXT NULL");
         await EnsureColumnAsync(db, "CommunityChannels", "Kind", "INTEGER NOT NULL DEFAULT 0");
         await EnsureColumnAsync(db, "CommunityChannels", "PermissionsSyncedToCategory", "INTEGER NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(db, "CommunityChannels", "ParentForumChannelId", "TEXT NULL");
         await EnsureCommunityChannelCategoryNullableAsync(db);
         await db.Database.ExecuteSqlRawAsync("""
             CREATE INDEX IF NOT EXISTS IX_CommunityCategories_CommunityId_ParentCategoryId_Position
@@ -514,10 +537,49 @@ public static class DatabaseCompatibility
             """);
     }
 
+    public static async Task EnsureCommunityForumSchemaAsync(IridiumDbContext db)
+    {
+        await EnsureColumnAsync(db, "CommunityChannels", "ParentForumChannelId", "TEXT NULL");
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE INDEX IF NOT EXISTS IX_CommunityChannels_CommunityId_ParentForumChannelId
+                ON CommunityChannels (CommunityId, ParentForumChannelId);
+            CREATE TABLE IF NOT EXISTS CommunityForumPosts (
+                Id TEXT NOT NULL CONSTRAINT PK_CommunityForumPosts PRIMARY KEY,
+                CommunityId TEXT NOT NULL,
+                ForumChannelId TEXT NOT NULL,
+                DiscussionChannelId TEXT NOT NULL,
+                RootMessageId TEXT NOT NULL,
+                AuthorAccountId TEXT NOT NULL,
+                Title TEXT NOT NULL,
+                CreatedAt INTEGER NOT NULL,
+                UpdatedAt INTEGER NOT NULL,
+                LastActivityAt INTEGER NOT NULL,
+                ReplyCount INTEGER NOT NULL DEFAULT 0,
+                IsLocked INTEGER NOT NULL DEFAULT 0,
+                IsPinned INTEGER NOT NULL DEFAULT 0,
+                CONSTRAINT FK_CommunityForumPosts_Communities_CommunityId
+                    FOREIGN KEY (CommunityId) REFERENCES Communities (Id) ON DELETE CASCADE,
+                CONSTRAINT FK_CommunityForumPosts_ForumChannel
+                    FOREIGN KEY (CommunityId, ForumChannelId) REFERENCES CommunityChannels (CommunityId, Id) ON DELETE CASCADE,
+                CONSTRAINT FK_CommunityForumPosts_DiscussionChannel
+                    FOREIGN KEY (CommunityId, DiscussionChannelId) REFERENCES CommunityChannels (CommunityId, Id) ON DELETE CASCADE,
+                CONSTRAINT FK_CommunityForumPosts_RootMessage
+                    FOREIGN KEY (RootMessageId) REFERENCES ChannelMessages (Id) ON DELETE CASCADE,
+                CONSTRAINT FK_CommunityForumPosts_Author
+                    FOREIGN KEY (AuthorAccountId) REFERENCES Accounts (Id) ON DELETE RESTRICT
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS IX_CommunityForumPosts_DiscussionChannelId
+                ON CommunityForumPosts (DiscussionChannelId);
+            CREATE INDEX IF NOT EXISTS IX_CommunityForumPosts_ForumActivity
+                ON CommunityForumPosts (CommunityId, ForumChannelId, IsPinned, LastActivityAt);
+            """);
+    }
+
     public static async Task EnsureUnifiedCommunitySidebarOrderingAsync(IridiumDbContext db)
     {
         await EnsureColumnAsync(db, "CommunityChannels", "Kind", "INTEGER NOT NULL DEFAULT 0");
         await EnsureColumnAsync(db, "CommunityChannels", "PermissionsSyncedToCategory", "INTEGER NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(db, "CommunityChannels", "ParentForumChannelId", "TEXT NULL");
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
         // SQLite compares TEXT primary keys case-sensitively. Microsoft.Data.Sqlite writes
         // Guid values in upper-case, so normalize IDs created by the original raw-SQL
@@ -590,6 +652,7 @@ public static class DatabaseCompatibility
                     CommunityId TEXT NOT NULL,
                     Id TEXT NOT NULL,
                     CategoryId TEXT NULL,
+                    ParentForumChannelId TEXT NULL,
                     Name TEXT NOT NULL,
                     Kind INTEGER NOT NULL DEFAULT 0,
                     PermissionsSyncedToCategory INTEGER NOT NULL DEFAULT 0,
@@ -599,12 +662,14 @@ public static class DatabaseCompatibility
                     CONSTRAINT FK_CommunityChannels_Communities_CommunityId FOREIGN KEY (CommunityId) REFERENCES Communities (Id) ON DELETE CASCADE,
                     CONSTRAINT FK_CommunityChannels_CommunityCategories_CommunityId_CategoryId FOREIGN KEY (CommunityId, CategoryId) REFERENCES CommunityCategories (CommunityId, Id) ON DELETE RESTRICT
                 );
-                INSERT INTO CommunityChannels_NullableUpgrade (CommunityId, Id, CategoryId, Name, Kind, PermissionsSyncedToCategory, Position, CreatedAt)
-                    SELECT CommunityId, Id, CategoryId, Name, Kind, PermissionsSyncedToCategory, Position, CreatedAt FROM CommunityChannels;
+                INSERT INTO CommunityChannels_NullableUpgrade (CommunityId, Id, CategoryId, ParentForumChannelId, Name, Kind, PermissionsSyncedToCategory, Position, CreatedAt)
+                    SELECT CommunityId, Id, CategoryId, ParentForumChannelId, Name, Kind, PermissionsSyncedToCategory, Position, CreatedAt FROM CommunityChannels;
                 DROP TABLE CommunityChannels;
                 ALTER TABLE CommunityChannels_NullableUpgrade RENAME TO CommunityChannels;
                 CREATE INDEX IX_CommunityChannels_CommunityId_CategoryId_Position
                     ON CommunityChannels (CommunityId, CategoryId, Position);
+                CREATE INDEX IX_CommunityChannels_CommunityId_ParentForumChannelId
+                    ON CommunityChannels (CommunityId, ParentForumChannelId);
                 """);
             await transaction.CommitAsync();
         }

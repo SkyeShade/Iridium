@@ -7,6 +7,7 @@ public sealed class CommunityChannel
     public Guid Id { get; set; }
     public Guid CommunityId { get; set; }
     public Guid? CategoryId { get; set; }
+    public Guid? ParentForumChannelId { get; set; }
     public required string Name { get; set; }
     public CommunityChannelKind Kind { get; set; } = CommunityChannelKind.Text;
     public int Position { get; set; }

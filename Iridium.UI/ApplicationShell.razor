@@ -6,6 +6,7 @@
 @inject IJSRuntime JS
 @inject RealtimeConnectionService Realtime
 @inject ILogger<ApplicationShell> Logger
+@inject ModifierKeyStateService ModifierKeys
 
 <div class="app-shell @(ShowRightSidebar ? "has-context-sidebar" : null) mobile-@ActiveMobilePanel.ToString().ToLowerInvariant()" @ref="_shell"
      @onclick="OnBackgroundInteraction" @onkeydown="ShellKeyDown">
@@ -109,6 +110,7 @@
             _shell,
             _selfReference);
         await _swipeModule.InvokeVoidAsync("wireRealtimeResume", _shell, _selfReference);
+        await _swipeModule.InvokeVoidAsync("wireModifierKeys", _shell, _selfReference);
         await _swipeModule.InvokeVoidAsync("wireMobileConversationSwipe", _mainContent, _selfReference);
     }
     [JSInvokable]
@@ -127,6 +129,12 @@
             Logger.LogWarning(exception, "Realtime verification failed after browser resume event {Reason}.", reason);
         }
     }
+    [JSInvokable]
+    public Task ModifierShiftChangedAsync(bool pressed)
+    {
+        ModifierKeys.SetShift(pressed);
+        return Task.CompletedTask;
+    }
 
     public async ValueTask DisposeAsync()
     {
@@ -137,6 +145,7 @@
                 await _swipeModule.InvokeVoidAsync("unwireMobileConversationSwipe", _mainContent);
                 await _swipeModule.InvokeVoidAsync("unwireMobileViewport", _shell);
                 await _swipeModule.InvokeVoidAsync("unwireRealtimeResume", _shell);
+                await _swipeModule.InvokeVoidAsync("unwireModifierKeys", _shell);
                 await _swipeModule.DisposeAsync();
             }
             catch (JSDisconnectedException) { }

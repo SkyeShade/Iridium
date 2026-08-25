@@ -193,7 +193,7 @@
         CommunityChannelDto? created = null;
         if (submission.ChannelId is { } id) await State.UpdateChannelAsync(id, submission.Name, submission.CategoryId, submission.Kind);
         else created = await State.CreateChannelAsync(submission.Name, submission.CategoryId, submission.Kind);
-        CloseChannelDialog(); if (created is { Kind: CommunityChannelKind.Text }) await OnChannelSelected.InvokeAsync(created);
+        CloseChannelDialog(); if (created is { Kind: CommunityChannelKind.Text or CommunityChannelKind.Forum }) await OnChannelSelected.InvokeAsync(created);
     });
     private async Task DeleteChannelAsync(Guid channelId) => await RunDialogAsync(async () =>
     {
@@ -225,7 +225,7 @@
         await State.DeleteChannelAsync(channelId); ClosePermissionEditor();
         if (SelectedChannel?.Id == channelId)
             await OnChannelSelected.InvokeAsync(State.Channels
-                .Where(value => value.Kind == CommunityChannelKind.Text)
+                .Where(value => value.Kind is CommunityChannelKind.Text or CommunityChannelKind.Forum)
                 .OrderBy(value => value.Position)
                 .FirstOrDefault());
     }
@@ -235,7 +235,7 @@
         await State.DeleteCategoryAsync(categoryId); _collapsed.Remove(categoryId); ClosePermissionEditor();
         if (selectedChannelId is not null && State.Channels.All(value => value.Id != selectedChannelId))
             await OnChannelSelected.InvokeAsync(State.Channels
-                .Where(value => value.Kind == CommunityChannelKind.Text)
+                .Where(value => value.Kind is CommunityChannelKind.Text or CommunityChannelKind.Forum)
                 .OrderBy(value => value.Position)
                 .FirstOrDefault());
     }

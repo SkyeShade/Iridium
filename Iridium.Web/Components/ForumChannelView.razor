@@ -1,0 +1,316 @@
+@using Iridium.Client.Core
+@using Iridium.Protocol
+@using Iridium.Web.Models
+@implements IAsyncDisposable
+@inject CommunityForumSession Forum
+@inject NodeSession Session
+@inject IMessageDraftStore Drafts
+@inject ILogger<ForumChannelView> Logger
+
+<section class="forum-view @Mode.ToString().ToLowerInvariant()">
+    @switch (Mode)
+    {
+        case ForumViewMode.Index:
+            <ForumPostBrowser ChannelName="@Channel.Name" Posts="FilteredPosts" Search="@_search"
+                              SearchChangedCallback="SearchChanged" CanCreatePosts="CanCreatePosts"
+                              IsLoading="Forum.IsLoading" HasMore="Forum.NextOffset.HasValue"
+                              OnNewPost="BeginCreateAsync" OnLoadMore="() => Forum.LoadMoreAsync()" OnOpen="OpenPostAsync" />
+            break;
+
+        case ForumViewMode.CreatingPost:
+            <section class="forum-create-view" aria-label="Create Forum post">
+                <header class="forum-create-header">
+                    <button class="icon-button" title="Cancel new post" aria-label="Cancel new post" @onclick="BackToIndexAsync"><Icon Name="close" /></button>
+                    <div><strong>New post</strong><small># @Channel.Name</small></div>
+                </header>
+                <div class="forum-create-content">
+                    <label class="forum-title-field"><span>Title</span><input maxlength="120" value="@_newTitle" @oninput="TitleChangedAsync" placeholder="What is this discussion about?" autofocus /></label>
+                    <MessageComposer @ref="_newPostComposer" Class="forum-create-composer" ChannelName="@Channel.Name"
+                                     PlaceholderText="Enter a message..." Busy="_creating" Community="Community"
+                                     CommunityManagement="CommunityManagement" SendRich="CreatePostAsync"
+                                     OnSubmitted="FinishCreatedPostAsync" SendableContentChanged="BodySendableChanged"
+                                     CanAttachFiles="CanAttachFiles"
+                                     CanMentionEveryone="CanMentionEveryone" NodeAuthority="@NodeAuthority"
+                                     AccountId="@CurrentAccountId" ConversationKind="@CreateBodyDraftScope.ConversationKind"
+                                     ConversationId="@CreateBodyDraftScope.ConversationId" />
+                    @if (!string.IsNullOrWhiteSpace(_error)) { <p class="forum-error" role="alert">@_error</p> }
+                </div>
+                <footer class="forum-create-actions">
+                    <button class="cancel-post-button" @onclick="BackToIndexAsync">Cancel</button>
+                    <button class="publish-post-button" disabled="@(!CanPublish)" @onclick="PublishAsync">Post</button>
+                </footer>
+            </section>
+            break;
+
+        case ForumViewMode.ViewingPost:
+            @if (_selectedPost is { } selectedPost)
+            {
+                <div class="forum-split-shell">
+                    <aside class="forum-browser-pane">
+                        <ForumPostBrowser ChannelName="@Channel.Name" Posts="FilteredPosts" Search="@_search" Compact="true"
+                                          SearchChangedCallback="SearchChanged" CanCreatePosts="CanCreatePosts"
+                                          IsLoading="Forum.IsLoading" HasMore="Forum.NextOffset.HasValue"
+                                          SelectedPostId="SelectedForumPostId" OnNewPost="BeginCreateAsync"
+                                          OnLoadMore="() => Forum.LoadMoreAsync()" OnOpen="OpenPostAsync" />
+                    </aside>
+                    <section class="forum-discussion-pane">
+                        <header class="forum-discussion-header">
+                            <button class="post-back" title="Close post" aria-label="Close post" @onclick="BackToIndexAsync"><Icon Name="back" /></button>
+                            @if (_editingTitle)
+                            {
+                                <div class="post-title-edit"><input maxlength="120" @bind="_titleDraft" aria-label="Forum post title" /><small># @Channel.Name</small></div>
+                            }
+                            else
+                            {
+                                <div><strong>@selectedPost.Title</strong><small># @Channel.Name</small></div>
+                            }
+                            @if (selectedPost.IsPinned && !CanManageMessages) { <span title="Pinned"><Icon Name="pin" /></span> }
+                            @if (CanManageMessages)
+                            {
+                                <button class="post-pin-action @(selectedPost.IsPinned ? "active" : null)" title="@PinActionTitle"
+                                        aria-label="@PinActionTitle" aria-pressed="@selectedPost.IsPinned"
+                                        @onclick="TogglePinnedAsync"><Icon Name="pin" /></button>
+                                <button title="@(selectedPost.IsLocked ? "Unlock post" : "Lock post")" aria-label="@(selectedPost.IsLocked ? "Unlock post" : "Lock post")" @onclick="ToggleLockedAsync"><Icon Name="lock" /></button>
+                            }
+                            @if (selectedPost.Author.AccountId == CurrentAccountId || CanManageMessages)
+                            {
+                                <button title="@(_editingTitle ? "Save title" : "Edit title")" aria-label="@(_editingTitle ? "Save Forum post title" : "Edit Forum post title")" @onclick="EditTitleAsync"><Icon Name="@(_editingTitle ? "check" : "edit")" /></button>
+                                <button class="delete-post" title="@(_confirmDelete ? "Confirm delete post" : "Delete post")" aria-label="@(_confirmDelete ? "Confirm delete Forum post" : "Delete Forum post")" @onclick="DeletePostAsync"><Icon Name="trash" /></button>
+                            }
+                        </header>
+                        @if (selectedPost.IsLocked)
+                        {
+                            <div class="forum-lock-banner"><Icon Name="lock" /><span>This post has been locked. Only moderators can send messages.</span>@if (CanManageMessages) { <button @onclick="ToggleLockedAsync">Unlock</button> }</div>
+                        }
+                        <div class="forum-discussion">
+                            <ChannelView @key="(selectedPost.DiscussionChannelId, selectedPost.IsLocked)" Community="Community"
+                                         Channel="DiscussionChannel" CurrentAccountId="CurrentAccountId" NodeAuthority="NodeAuthority"
+                                         CommunityManagement="CommunityManagement" OnEditProfile="OnEditProfile" OnMessage="OnMessage"
+                                         OnMemberRolesChanged="OnMemberRolesChanged" CanManageMessages="CanManageMessages"
+                                         CanSend="@(!selectedPost.IsLocked || CanManageMessages)" CanAttachFiles="CanAttachFiles"
+                                         CanMentionEveryone="CanMentionEveryone" DraftConversationKind="forum"
+                                         DraftConversationId="selectedPost.Id" RootMessageId="selectedPost.RootMessageId"
+                                         ShowReadOnlyNotice="false" />
+                        </div>
+                    </section>
+                </div>
+            }
+            break;
+    }
+</section>
+
+@code {
+    public enum ForumViewMode { Index, CreatingPost, ViewingPost }
+
+    [Parameter, EditorRequired] public required CommunityDto Community { get; set; }
+    [Parameter, EditorRequired] public required CommunityChannelDto Channel { get; set; }
+    [Parameter, EditorRequired] public required Guid CurrentAccountId { get; set; }
+    [Parameter, EditorRequired] public required string NodeAuthority { get; set; }
+    [Parameter] public CommunityManagementDto? CommunityManagement { get; set; }
+    [Parameter] public bool CanCreatePosts { get; set; }
+    [Parameter] public bool CanManageMessages { get; set; }
+    [Parameter] public bool CanAttachFiles { get; set; }
+    [Parameter] public bool CanMentionEveryone { get; set; }
+    [Parameter] public EventCallback<CommunityForumPostDto?> OnPostOpenChanged { get; set; }
+    [Parameter] public EventCallback<bool> OnSubViewChanged { get; set; }
+    [Parameter] public EventCallback OnEditProfile { get; set; }
+    [Parameter] public EventCallback<Guid> OnMessage { get; set; }
+    [Parameter] public EventCallback<CommunityMemberRolesChange> OnMemberRolesChanged { get; set; }
+
+    private Guid? _loadedChannelId;
+    private ForumViewMode Mode { get; set; }
+    private CommunityForumPostDto? _selectedPost;
+    private CommunityForumPostDto? _createdPost;
+    private MessageComposer? _newPostComposer;
+    private bool _creating, _confirmDelete, _editingTitle;
+    private bool _newBodySendable;
+    private string _titleDraft = string.Empty, _newTitle = string.Empty, _search = string.Empty;
+    private string? _error;
+    private CancellationTokenSource? _titleDraftDebounce;
+
+    private MessageDraftScope CreateBodyDraftScope => CommunityForumPostDrafts.BodyScope(NodeAuthority, CurrentAccountId, Community.Id, Channel.Id);
+    private MessageDraftScope CreateTitleDraftScope => CommunityForumPostDrafts.TitleScope(NodeAuthority, CurrentAccountId, Community.Id, Channel.Id);
+    private IReadOnlyList<CommunityForumPostDto> FilteredPosts => CommunityForumPostSearch.Filter(Forum.Posts, _search);
+    private Guid? SelectedForumPostId { get; set; }
+    private bool CanPublish => !_creating && !string.IsNullOrWhiteSpace(_newTitle) && _newBodySendable;
+    private string PinActionTitle => _selectedPost?.IsPinned == true ? "Unpin post" : "Pin post";
+    private CommunityChannelDto DiscussionChannel => new(_selectedPost!.DiscussionChannelId, Community.Id, null, _selectedPost.Title, 0, _selectedPost.CreatedAt, Kind: CommunityChannelKind.Text, EffectivePermissions: Channel.EffectivePermissions);
+
+    protected override void OnInitialized() => Forum.Changed += ForumChanged;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_loadedChannelId == Channel.Id) return;
+        _loadedChannelId = Channel.Id;
+        _selectedPost = null;
+        SelectedForumPostId = null;
+        _createdPost = null;
+        Mode = ForumViewMode.Index;
+        _search = string.Empty;
+        _error = null;
+        _newTitle = await Drafts.LoadAsync(CreateTitleDraftScope) ?? string.Empty;
+        await OnSubViewChanged.InvokeAsync(false);
+        await Forum.LoadAsync(Community.Id, Channel.Id);
+    }
+
+    private void ForumChanged()
+    {
+        if (_selectedPost is { } selected)
+        {
+            var refreshed = Forum.Posts.FirstOrDefault(value => value.Id == selected.Id);
+            if (refreshed is null && Forum.LastDeletedPostId == selected.Id)
+            {
+                _selectedPost = null;
+                SelectedForumPostId = null;
+                Mode = ForumViewMode.Index;
+                _ = OnPostOpenChanged.InvokeAsync(null);
+                _ = OnSubViewChanged.InvokeAsync(false);
+                _ = InvokeAsync(StateHasChanged);
+                return;
+            }
+            _selectedPost = refreshed ?? selected;
+            _ = OnPostOpenChanged.InvokeAsync(_selectedPost);
+            if (_selectedPost.UnreadCount > 0) _ = InvokeAsync(MarkCurrentPostReadAsync);
+        }
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private void SearchChanged(string value) => _search = value;
+    private void BodySendableChanged(bool sendable) => _newBodySendable = sendable;
+
+    private async Task BeginCreateAsync()
+    {
+        if (!CanCreatePosts) return;
+        _selectedPost = null;
+        SelectedForumPostId = null;
+        Mode = ForumViewMode.CreatingPost;
+        _error = null;
+        await OnPostOpenChanged.InvokeAsync(null);
+        await OnSubViewChanged.InvokeAsync(true);
+    }
+
+    private async Task TitleChangedAsync(ChangeEventArgs args)
+    {
+        _newTitle = args.Value?.ToString() ?? string.Empty;
+        _titleDraftDebounce?.Cancel();
+        _titleDraftDebounce?.Dispose();
+        _titleDraftDebounce = new();
+        var token = _titleDraftDebounce.Token;
+        try { await Task.Delay(250, token); await PersistTitleDraftAsync(token); }
+        catch (OperationCanceledException) { }
+    }
+
+    private Task PublishAsync() => _newPostComposer?.SubmitAsync() ?? Task.CompletedTask;
+
+    private async Task<bool> CreatePostAsync(MessageSubmission submission)
+    {
+        if (_creating) return false;
+        if (string.IsNullOrWhiteSpace(_newTitle)) { _error = "Enter a post title."; return false; }
+        _creating = true;
+        _error = null;
+        try
+        {
+            _createdPost = await Forum.CreateAsync(_newTitle.Trim(), submission.Content, submission.Mentions, submission.Attachments, submission.UploadAttachments);
+            return true;
+        }
+        catch (Exception exception)
+        {
+            Logger.LogWarning(exception, "Could not create Forum post in {ChannelId}.", Channel.Id);
+            _error = exception.GetBaseException().Message;
+            return false;
+        }
+        finally { _creating = false; }
+    }
+
+    private async Task FinishCreatedPostAsync()
+    {
+        if (_createdPost is not { } post) return;
+        _titleDraftDebounce?.Cancel();
+        await Drafts.RemoveAsync(CreateTitleDraftScope);
+        _newTitle = string.Empty;
+        _createdPost = null;
+        await OpenPostAsync(post);
+    }
+
+    private async Task OpenPostAsync(CommunityForumPostDto post)
+    {
+        _selectedPost = post;
+        SelectedForumPostId = post.Id;
+        Mode = ForumViewMode.ViewingPost;
+        _confirmDelete = false;
+        _editingTitle = false;
+        _titleDraft = post.Title;
+        Forum.MarkRead(post.Id);
+        try { await Session.MarkCommunityChannelReadAsync(Community.Id, post.DiscussionChannelId); }
+        catch (Exception exception) { Logger.LogDebug(exception, "Could not mark Forum post {PostId} read.", post.Id); }
+        await OnPostOpenChanged.InvokeAsync(post);
+        await OnSubViewChanged.InvokeAsync(true);
+    }
+
+    public Task BackAsync() => BackToIndexAsync();
+
+    public async Task BackToIndexAsync()
+    {
+        if (Mode == ForumViewMode.CreatingPost) await PersistTitleDraftAsync();
+        _selectedPost = null;
+        SelectedForumPostId = null;
+        _createdPost = null;
+        Mode = ForumViewMode.Index;
+        _confirmDelete = false;
+        _editingTitle = false;
+        _error = null;
+        await OnPostOpenChanged.InvokeAsync(null);
+        await OnSubViewChanged.InvokeAsync(false);
+    }
+
+    public async Task MarkCurrentPostReadAsync()
+    {
+        if (_selectedPost is not { } post) return;
+        await Session.MarkCommunityChannelReadAsync(Community.Id, post.DiscussionChannelId);
+        Forum.MarkRead(post.Id);
+    }
+
+    private async Task TogglePinnedAsync() { if (_selectedPost is not null) _selectedPost = await Forum.UpdateAsync(_selectedPost.Id, new(IsPinned: !_selectedPost.IsPinned)); }
+    private async Task ToggleLockedAsync() { if (_selectedPost is not null) _selectedPost = await Forum.UpdateAsync(_selectedPost.Id, new(IsLocked: !_selectedPost.IsLocked)); }
+
+    private async Task DeletePostAsync()
+    {
+        if (_selectedPost is null) return;
+        if (!_confirmDelete) { _confirmDelete = true; return; }
+        await Forum.DeleteAsync(_selectedPost.Id);
+        _confirmDelete = false;
+        await BackToIndexAsync();
+    }
+
+    private async Task EditTitleAsync()
+    {
+        if (_selectedPost is null) return;
+        if (!_editingTitle) { _titleDraft = _selectedPost.Title; _editingTitle = true; return; }
+        if (string.IsNullOrWhiteSpace(_titleDraft)) return;
+        _selectedPost = await Forum.UpdateAsync(_selectedPost.Id, new(Title: _titleDraft));
+        _titleDraft = _selectedPost.Title;
+        _editingTitle = false;
+        await OnPostOpenChanged.InvokeAsync(_selectedPost);
+    }
+
+    private async Task PersistTitleDraftAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(_newTitle)) await Drafts.RemoveAsync(CreateTitleDraftScope, cancellationToken);
+            else await Drafts.SaveAsync(CreateTitleDraftScope, _newTitle, cancellationToken);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception exception) { Logger.LogDebug(exception, "Could not persist the new Forum post title draft."); }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        Forum.Changed -= ForumChanged;
+        _titleDraftDebounce?.Cancel();
+        _titleDraftDebounce?.Dispose();
+        if (Mode == ForumViewMode.CreatingPost) await PersistTitleDraftAsync();
+        if (_selectedPost is not null) await OnPostOpenChanged.InvokeAsync(null);
+        if (Mode != ForumViewMode.Index) await OnSubViewChanged.InvokeAsync(false);
+    }
+}

@@ -9,11 +9,11 @@
      @oncontextmenu:preventDefault="true"
      @oncontextmenu:stopPropagation="true"
      >
-    @if (Channel.Kind == CommunityChannelKind.Text && Channel.UnreadCount > 0 && !Selected)
+    @if (Channel.Kind is CommunityChannelKind.Text or CommunityChannelKind.Forum && Channel.UnreadCount > 0 && !Selected)
     {
         <span class="channel-unread-marker" aria-label="Unread messages"></span>
     }
-    <span class="channel-symbol"><Icon Name="@(Channel.Kind == CommunityChannelKind.Voice ? "speaker" : "channel")" /></span>
+    <span class="channel-symbol"><Icon Name="@(Channel.Kind == CommunityChannelKind.Voice ? "speaker" : Channel.Kind == CommunityChannelKind.Forum ? "message" : "channel")" /></span>
     @if (Channel.IsPrivate) { <span class="private-lock" title="Private channel"><Icon Name="lock" Size="12" /></span> }
     <span class="channel-name">@Channel.Name</span>
     @if (Room is not null) { <VoiceElapsedTimer StartedAt="Room.StartedAt" /> }

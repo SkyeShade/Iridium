@@ -42,13 +42,28 @@ public sealed class CommunityAuthorizationService
         if (baseAccess.IsOwner || baseAccess.Has(CommunityPermission.Administrator)) return baseAccess;
         var channel = await db.CommunityChannels.AsNoTracking()
             .Where(value => value.CommunityId == communityId && value.Id == channelId)
-            .Select(value => new { value.CategoryId, value.PermissionsSyncedToCategory })
+            .Select(value => new { value.CategoryId, value.PermissionsSyncedToCategory, value.ParentForumChannelId })
             .SingleOrDefaultAsync();
         if (channel is null) return new(false, CommunityPermission.None);
 
-        var scopeType = channel.PermissionsSyncedToCategory && channel.CategoryId.HasValue
+        var permissionChannelId = channelId;
+        var categoryId = channel.CategoryId;
+        var permissionsSyncedToCategory = channel.PermissionsSyncedToCategory;
+        if (channel.ParentForumChannelId is { } forumChannelId)
+        {
+            var forum = await db.CommunityChannels.AsNoTracking().Where(value =>
+                    value.CommunityId == communityId && value.Id == forumChannelId &&
+                    value.Kind == CommunityChannelKind.Forum)
+                .Select(value => new { value.CategoryId, value.PermissionsSyncedToCategory }).SingleOrDefaultAsync();
+            if (forum is null) return new(false, CommunityPermission.None);
+            permissionChannelId = forumChannelId;
+            categoryId = forum.CategoryId;
+            permissionsSyncedToCategory = forum.PermissionsSyncedToCategory;
+        }
+
+        var scopeType = permissionsSyncedToCategory && categoryId.HasValue
             ? PermissionOverwriteScopeType.Category : PermissionOverwriteScopeType.Channel;
-        var scopeId = scopeType == PermissionOverwriteScopeType.Category ? channel.CategoryId!.Value : channelId;
+        var scopeId = scopeType == PermissionOverwriteScopeType.Category ? categoryId!.Value : permissionChannelId;
         var overwrites = await db.CommunityPermissionOverwrites.AsNoTracking()
             .Where(value => value.CommunityId == communityId && value.ScopeType == scopeType && value.ScopeId == scopeId)
             .ToListAsync();

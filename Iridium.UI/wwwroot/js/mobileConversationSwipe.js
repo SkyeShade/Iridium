@@ -1,6 +1,7 @@
 const swipeBindings = new WeakMap();
 const viewportBindings = new WeakMap();
 const realtimeResumeBindings = new WeakMap();
+const modifierBindings = new WeakMap();
 const directionDeadZone = 14;
 const dominance = 1.2;
 const completionRatio = 0.5;
@@ -295,4 +296,34 @@ export function unwireRealtimeResume(element) {
     const timer = binding.timer();
     if (timer) window.clearTimeout(timer);
     realtimeResumeBindings.delete(element);
+}
+
+export function wireModifierKeys(element, dotnet) {
+    if (!element || modifierBindings.has(element)) return;
+    let shiftPressed = false;
+    const setShift = pressed => {
+        if (shiftPressed === pressed) return;
+        shiftPressed = pressed;
+        void dotnet.invokeMethodAsync('ModifierShiftChangedAsync', pressed);
+    };
+    const keydown = event => { if (event.key === 'Shift') setShift(true); };
+    const keyup = event => { if (event.key === 'Shift') setShift(false); };
+    const blur = () => setShift(false);
+    const visibility = () => { if (document.visibilityState !== 'visible') setShift(false); };
+    window.addEventListener('keydown', keydown);
+    window.addEventListener('keyup', keyup);
+    window.addEventListener('blur', blur);
+    document.addEventListener('visibilitychange', visibility);
+    modifierBindings.set(element, { keydown, keyup, blur, visibility, reset: () => setShift(false) });
+}
+
+export function unwireModifierKeys(element) {
+    const binding = modifierBindings.get(element);
+    if (!binding) return;
+    window.removeEventListener('keydown', binding.keydown);
+    window.removeEventListener('keyup', binding.keyup);
+    window.removeEventListener('blur', binding.blur);
+    document.removeEventListener('visibilitychange', binding.visibility);
+    binding.reset();
+    modifierBindings.delete(element);
 }

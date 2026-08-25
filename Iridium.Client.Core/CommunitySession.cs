@@ -305,7 +305,7 @@ public sealed class CommunitySession : IDisposable
                 .OrderBy(value => value.Position).ThenBy(value => value.Kind).ThenBy(value => value.Id);
             foreach (var item in items)
             {
-                if (item.Channel is { Kind: CommunityChannelKind.Text } direct) return direct;
+                if (item.Channel is { Kind: CommunityChannelKind.Text or CommunityChannelKind.Forum } direct) return direct;
                 if (item.Category is { } child && FirstIn(child.Id) is { } nested) return nested;
             }
             return null;
