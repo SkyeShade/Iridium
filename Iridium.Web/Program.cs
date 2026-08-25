@@ -12,6 +12,8 @@ builder.RootComponents.Add<HeadOutlet>("head::after");
 if (builder.HostEnvironment.IsDevelopment())
 {
     builder.Logging.AddFilter("Iridium.Client.Core.CallClientService", LogLevel.Debug);
+    builder.Logging.AddFilter("Iridium.Client.Core.RealtimeConnectionService", LogLevel.Debug);
+    builder.Logging.AddFilter("Iridium.Client.Core.ChannelMessagingSession", LogLevel.Debug);
     builder.Logging.AddFilter("Iridium.Web.Services.WebRtcCallMediaService", LogLevel.Debug);
 }
 

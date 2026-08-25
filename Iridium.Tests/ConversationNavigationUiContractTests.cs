@@ -26,8 +26,8 @@ public sealed class ConversationNavigationUiContractTests
         var channel = Slice(home, "private Task SelectChannelFromNavigationAsync", "private async Task CompleteChannelSelectionAsync");
         var direct = Slice(home, "private Task SelectDirectConversationFromNavigationAsync", "private bool IsCurrentCommunityNavigation");
 
-        Assert.Contains("requestComposerFocus: true", channel);
-        Assert.Contains("requestComposerFocus: true", direct);
+        Assert.Contains("requestComposerFocus: !_isMobileLayout", channel);
+        Assert.Contains("requestComposerFocus: !_isMobileLayout", direct);
         Assert.Contains("if (channel?.Kind == CommunityChannelKind.Text && requestComposerFocus)", home);
         Assert.Contains("if (requestComposerFocus) RequestDirectComposerFocus(conversation.Id)", home);
     }

@@ -17,6 +17,8 @@ public sealed class CallClientService(
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly SemaphoreSlim _signalingGate = new(1, 1);
     private readonly List<IDisposable> _handlerRegistrations = [];
+    private IDisposable? _recoveryRegistration;
+    private bool _lifecycleRegistered;
     private HubConnection? _connection;
     private Uri? _node;
     private Guid? _accountId;
@@ -361,6 +363,7 @@ public sealed class CallClientService(
     private async Task EnsureConnectionAsync(CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        EnsureRecoveryRegistration();
         var client = session.AuthorizedClient;
         var accountId = session.Account?.Id ?? throw new InvalidOperationException("Log in before using voice calls.");
         var connection = await realtime.EnsureConnectedAsync("CallClientService requested realtime", cancellationToken);
@@ -400,16 +403,62 @@ public sealed class CallClientService(
                 ApplyEndedStream(value.StreamId); return Task.CompletedTask; })));
         VoiceDiagnostic("subscribed to signaling", registrationCount: _handlerRegistrationCount,
             details: $"activeHandlers={_handlerRegistrations.Count}");
-        connection.Reconnecting += exception => { StatusMessage = "Signaling reconnecting; audio may continue…"; NotifyChanged(); return Task.CompletedTask; };
-        connection.Reconnected += _ => RunHandlerAsync(RestoreCurrentCallAsync);
-        connection.Closed += exception => RunHandlerAsync(async () =>
+    }
+
+    private void EnsureRecoveryRegistration()
+    {
+        _recoveryRegistration ??= realtime.RegisterRecoveryHandler("direct-call", RecoverSignalingAsync);
+        if (_lifecycleRegistered) return;
+        realtime.LifecycleChanged += RealtimeLifecycleChanged;
+        _lifecycleRegistered = true;
+    }
+
+    private void RealtimeLifecycleChanged(RealtimeLifecycleSnapshot snapshot)
+    {
+        if (_disposed || snapshot.Connection is null || !ReferenceEquals(_connection, snapshot.Connection)) return;
+        if (snapshot.State == RealtimeLifecycleState.Reconnecting)
         {
-            if (CurrentCall is not null || IncomingCall is not null)
+            StatusMessage = "Signaling reconnecting; audio may continue…";
+            NotifyChanged();
+        }
+        else if (snapshot.State == RealtimeLifecycleState.Disconnected)
+        {
+            var disconnectedConnection = snapshot.Connection;
+            _ = RunHandlerAsync(async () =>
             {
-                ErrorMessage = "The call ended because signaling could not reconnect.";
-                await FinishAsync(clearMessage: false);
+                if (_disposed || !ReferenceEquals(_connection, disconnectedConnection)) return;
+                if (CurrentCall is not null || IncomingCall is not null)
+                {
+                    ErrorMessage = "The call ended because signaling could not reconnect.";
+                    await FinishAsync(clearMessage: false);
+                }
+                else
+                {
+                    StatusMessage = null;
+                    NotifyChanged();
+                }
+            });
+        }
+    }
+
+    private async Task RecoverSignalingAsync(RealtimeRecoveryContext context, CancellationToken cancellationToken)
+    {
+        if (_disposed || !ReferenceEquals(_connection, context.Connection)) return;
+        await _signalingGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (_disposed || !ReferenceEquals(_connection, context.Connection)) return;
+            try { await RestoreCurrentCallAsync(); }
+            catch
+            {
+                StatusMessage = null;
+                if (CurrentCall is not null || IncomingCall is not null)
+                    ErrorMessage = "Signaling reconnected, but call state could not be restored.";
+                NotifyChanged();
+                throw;
             }
-        });
+        }
+        finally { _signalingGate.Release(); }
     }
 
     private void DisposeHandlerRegistrations()
@@ -1303,12 +1352,26 @@ public sealed class CallClientService(
         if (!IsSignalingConnected) return;
         var restored = await _connection!.InvokeAsync<CallSessionDto?>(VoiceCallHubContract.GetCurrent);
         if (restored is null && (CurrentCall is not null || IncomingCall is not null)) await FinishAsync();
-        else if (restored is not null && CurrentCall?.Id == restored.Id) { CurrentCall = restored; NotifyChanged(); }
+        else if (restored is null)
+        {
+            StatusMessage = null;
+            ErrorMessage = null;
+            NotifyChanged();
+        }
+        else if (CurrentCall?.Id == restored.Id)
+        {
+            CurrentCall = restored;
+            StatusMessage = null;
+            ErrorMessage = null;
+            NotifyChanged();
+        }
         else if (restored is not null && restored.State == CallState.Ringing && restored.CallerAccountId != _accountId)
         {
             var caller = restored.Participants.Single(value => value.AccountId == restored.CallerAccountId);
             IncomingCall = new(restored.Id, restored.DirectConversationId!.Value, caller.AccountId,
                 caller.DisplayName, restored.CreatedAt, restored.ExpiresAt);
+            StatusMessage = null;
+            ErrorMessage = null;
             NotifyChanged();
         }
         else if (restored is not null)
@@ -1398,6 +1461,13 @@ public sealed class CallClientService(
     {
         if (_disposed) return;
         _disposed = true;
+        _recoveryRegistration?.Dispose();
+        _recoveryRegistration = null;
+        if (_lifecycleRegistered)
+        {
+            realtime.LifecycleChanged -= RealtimeLifecycleChanged;
+            _lifecycleRegistered = false;
+        }
         VoiceDiagnostic("CallClientService disposed");
         await FinishAsync();
         if (_connection is not null)

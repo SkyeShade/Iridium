@@ -20,6 +20,8 @@ public sealed class ChannelMessagingSession(
     private readonly Dictionary<Guid, Func<CancellationToken, Task<IReadOnlyList<AttachmentDto>>>> _directAttachmentUploads = [];
     private HubConnection? _connection;
     private readonly List<IDisposable> _handlerRegistrations = [];
+    private IDisposable? _recoveryRegistration;
+    private bool _lifecycleRegistered;
     private Uri? _connectedNode;
     private Guid? _connectedAccountId;
     private bool _channelReady;
@@ -677,6 +679,7 @@ public sealed class ChannelMessagingSession(
 
     private async Task EnsureConnectionAsync(CancellationToken cancellationToken)
     {
+        EnsureRecoveryRegistration();
         var client = nodeSession.AuthorizedClient;
         var accountId = nodeSession.Account?.Id
             ?? throw new InvalidOperationException("Log in before connecting realtime services.");
@@ -739,41 +742,103 @@ public sealed class ChannelMessagingSession(
             activity => _ = ApplyCommunityActivitySafelyAsync(activity)));
         _handlerRegistrations.Add(connection.On<ProfileUpdatedEvent>(ProfileHubContract.Updated,
             change => ReceiveSafely(ProfileHubContract.Updated, () => nodeSession.ApplyProfileUpdated(change))));
-        connection.Reconnecting += exception =>
-        {
-            logger.LogWarning(exception, "Realtime connection to {NodeAddress} is reconnecting.", _connectedNode);
-            NotifyChanged();
-            return Task.CompletedTask;
-        };
-        connection.Reconnected += async _ =>
-        {
-            try
-            {
-                if (CommunityId is { } communityId && ChannelId is { } channelId)
-                    await connection.InvokeAsync(ChatHubContract.JoinChannel, communityId, channelId);
-                if (DirectConversationId is { } conversationId)
-                    await connection.InvokeAsync(DirectMessageHubContract.JoinConversation, conversationId);
-                nodeSession.ApplyRealtimeReconnected();
-                logger.LogInformation("Realtime connection to {NodeAddress} reconnected.", _connectedNode);
-            }
-            catch (Exception exception)
-            {
-                logger.LogError(exception, "Could not restore the active channel subscription after reconnecting to {NodeAddress}.",
-                    _connectedNode);
-            }
-            NotifyChanged();
-        };
-        connection.Closed += exception =>
-        {
-            if (exception is null)
-                logger.LogInformation("Realtime connection to {NodeAddress} closed.", _connectedNode);
-            else
-                logger.LogError(exception, "Realtime connection to {NodeAddress} closed unexpectedly.", _connectedNode);
-            NotifyChanged();
-            return Task.CompletedTask;
-        };
-
         logger.LogInformation("Shared realtime connection to {NodeAddress} is active for messaging.", client.NodeAddress);
+    }
+
+    private void EnsureRecoveryRegistration()
+    {
+        _recoveryRegistration ??= realtime.RegisterRecoveryHandler("messaging", RecoverRealtimeAsync);
+        if (_lifecycleRegistered) return;
+        realtime.LifecycleChanged += RealtimeLifecycleChanged;
+        _lifecycleRegistered = true;
+    }
+
+    private void RealtimeLifecycleChanged(RealtimeLifecycleSnapshot snapshot)
+    {
+        if (_connection is not null && snapshot.Connection is not null &&
+            !ReferenceEquals(_connection, snapshot.Connection)) return;
+        logger.LogDebug("Messaging observed realtime lifecycle {State}; generation={Generation}; reason={Reason}.",
+            snapshot.State, snapshot.Generation, snapshot.Reason);
+        NotifyChanged();
+    }
+
+    private async Task RecoverRealtimeAsync(RealtimeRecoveryContext context, CancellationToken cancellationToken)
+    {
+        if (_disposed || !ReferenceEquals(_connection, context.Connection)) return;
+        await _lifecycleGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (_disposed || !ReferenceEquals(_connection, context.Connection) ||
+                context.Connection.State != HubConnectionState.Connected) return;
+
+            if (CommunityId is { } communityId && ChannelId is { } channelId)
+                await TryRecoveryStepAsync("channel rejoin", async () =>
+                {
+                    await context.Connection.InvokeAsync(ChatHubContract.JoinChannel, communityId, channelId,
+                        cancellationToken);
+                    logger.LogInformation("Realtime recovery rejoined Community {CommunityId} channel {ChannelId}.",
+                        communityId, channelId);
+                });
+
+            if (DirectConversationId is { } conversationId)
+                await TryRecoveryStepAsync("Direct Message rejoin", async () =>
+                {
+                    await context.Connection.InvokeAsync(DirectMessageHubContract.JoinConversation, conversationId,
+                        cancellationToken);
+                    logger.LogInformation("Realtime recovery rejoined Direct Message {ConversationId}.", conversationId);
+                });
+
+            if (CommunityId is { } currentCommunityId && ChannelId is { } currentChannelId)
+                await TryRecoveryStepAsync("active channel history catch-up", async () =>
+                {
+                    var page = await nodeSession.AuthorizedClient.GetChannelMessagePageAsync(
+                        currentCommunityId, currentChannelId, cancellationToken: cancellationToken);
+                    if (CommunityId != currentCommunityId || ChannelId != currentChannelId) return;
+                    ReconcileChannelRecent(page, incrementRevision: false);
+                    SaveActiveHotStates();
+                    CacheSafely(_historyCache.ReconcileRecentChannelAsync(ChannelScope(currentChannelId), page),
+                        "cache recovered channel history");
+                    NotifyChanged();
+                });
+
+            if (DirectConversationId is { } currentConversationId)
+                await TryRecoveryStepAsync("active Direct Message history catch-up", async () =>
+                {
+                    var page = await nodeSession.AuthorizedClient.GetDirectMessagePageAsync(
+                        currentConversationId, cancellationToken: cancellationToken);
+                    if (DirectConversationId != currentConversationId) return;
+                    ReconcileDirectRecent(page, incrementRevision: false);
+                    SaveActiveHotStates();
+                    CacheSafely(_historyCache.ReconcileRecentDirectAsync(DirectScope(currentConversationId), page),
+                        "cache recovered Direct Message history");
+                    NotifyChanged();
+                });
+
+            await TryRecoveryStepAsync("Community summary catch-up",
+                () => nodeSession.RefreshCommunitiesAsync(cancellationToken));
+            await TryRecoveryStepAsync("Direct Message summary catch-up",
+                () => nodeSession.RefreshDirectConversationsAsync(cancellationToken));
+            await TryRecoveryStepAsync("friend state catch-up",
+                () => nodeSession.RefreshFriendsAsync(cancellationToken));
+            nodeSession.ApplyRealtimeReconnected();
+            logger.LogInformation("Messaging recovery completed for generation {Generation} ({Reason}).",
+                context.Generation, context.Reason);
+        }
+        finally
+        {
+            NotifyChanged();
+            _lifecycleGate.Release();
+        }
+    }
+
+    private async Task TryRecoveryStepAsync(string step, Func<Task> action)
+    {
+        try { await action(); }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Realtime recovery step {Step} failed; a later resume can retry it.", step);
+        }
     }
 
     private void DisposeHandlerRegistrations()
@@ -1514,6 +1579,13 @@ public sealed class ChannelMessagingSession(
     {
         if (_disposed) return;
         _disposed = true;
+        _recoveryRegistration?.Dispose();
+        _recoveryRegistration = null;
+        if (_lifecycleRegistered)
+        {
+            realtime.LifecycleChanged -= RealtimeLifecycleChanged;
+            _lifecycleRegistered = false;
+        }
         _historyCancellation.Cancel();
         _historyCancellation.Dispose();
         await _lifecycleGate.WaitAsync();

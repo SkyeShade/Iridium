@@ -1,5 +1,6 @@
 const swipeBindings = new WeakMap();
 const viewportBindings = new WeakMap();
+const realtimeResumeBindings = new WeakMap();
 const directionDeadZone = 14;
 const dominance = 1.2;
 const completionRatio = 0.5;
@@ -7,6 +8,10 @@ const ignoredSelector = 'input,textarea,select,button,a,img,video,audio,canvas,i
 
 const mobileQuery = () => matchMedia('(max-width: 860px)');
 const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+export function shouldSuppressMobileSafeBottom(isMobile, composerFocused, hasVisualViewport, viewportConstrained) {
+    return isMobile && composerFocused && hasVisualViewport && viewportConstrained;
+}
 
 export function qualifiesMobileBackSwipe(dx, dy, width, horizontal = true, abandoned = false) {
     return !abandoned && horizontal && width > 0 && dx > width * completionRatio;
@@ -152,6 +157,9 @@ export function wireMobileViewport(shell, dotnet) {
     const query = mobileQuery();
     if (!shell || viewportBindings.has(shell)) return;
     let frame = 0;
+    let composerFocused = document.activeElement?.matches?.('.composer-rich-editor') === true;
+    let unfocusedViewportHeight = window.visualViewport?.height ?? window.innerHeight;
+    let unfocusedViewportWidth = window.visualViewport?.width ?? window.innerWidth;
     const reportMobileLayout = () => {
         void dotnet.invokeMethodAsync(
             'MobileLayoutChangedAsync',
@@ -169,10 +177,20 @@ export function wireMobileViewport(shell, dotnet) {
         const viewport = window.visualViewport;
         const height = viewport?.height ?? window.innerHeight;
         const offset = viewport?.offsetTop ?? 0;
-        const keyboardInset = Math.max(0, window.innerHeight - height - offset);
         shell.style.setProperty('--iridium-mobile-viewport-height', `${height}px`);
         shell.style.setProperty('--iridium-mobile-viewport-offset', `${offset}px`);
-        shell.style.setProperty('--iridium-mobile-safe-bottom', keyboardInset > 80 ? '0px' : 'env(safe-area-inset-bottom, 0px)');
+        const activeComposer = document.activeElement?.matches?.('.composer-rich-editor') === true;
+        composerFocused = activeComposer;
+        const width = viewport?.width ?? window.innerWidth;
+        if (!composerFocused || width !== unfocusedViewportWidth) {
+            unfocusedViewportHeight = height;
+            unfocusedViewportWidth = width;
+        }
+        const viewportConstrained = height < unfocusedViewportHeight;
+        shell.style.setProperty('--iridium-mobile-safe-bottom',
+            shouldSuppressMobileSafeBottom(query.matches, composerFocused, Boolean(viewport), viewportConstrained)
+                ? '0px'
+                : 'env(safe-area-inset-bottom, 0px)');
     };
     const schedule = () => {
         if (frame) cancelAnimationFrame(frame);
@@ -183,16 +201,40 @@ export function wireMobileViewport(shell, dotnet) {
         schedule();
     };
     const focusin = event => {
-        if (event.target?.matches?.('.composer-rich-editor')) schedule();
+        if (!event.target?.matches?.('.composer-rich-editor')) return;
+        if (!composerFocused) {
+            unfocusedViewportHeight = window.visualViewport?.height ?? window.innerHeight;
+            unfocusedViewportWidth = window.visualViewport?.width ?? window.innerWidth;
+        }
+        composerFocused = true;
+        schedule();
+    };
+    const focusout = event => {
+        if (!event.target?.matches?.('.composer-rich-editor')) return;
+        composerFocused = false;
+        schedule();
+    };
+    const composerFocus = () => {
+        composerFocused = document.activeElement?.matches?.('.composer-rich-editor') === true;
+        schedule();
     };
     window.visualViewport?.addEventListener('resize', schedule, { passive: true });
     window.visualViewport?.addEventListener('scroll', schedule, { passive: true });
     window.addEventListener('resize', schedule, { passive: true });
     window.addEventListener('orientationchange', schedule, { passive: true });
-    window.addEventListener('iridium-composer-focus', schedule);
+    window.addEventListener('iridium-composer-focus', composerFocus);
     document.addEventListener('focusin', focusin, { passive: true });
+    document.addEventListener('focusout', focusout, { passive: true });
     query.addEventListener('change', layoutChanged);
-    viewportBindings.set(shell, { schedule, focusin, frame: () => frame });
+    viewportBindings.set(shell, {
+        query,
+        schedule,
+        layoutChanged,
+        focusin,
+        focusout,
+        composerFocus,
+        frame: () => frame
+    });
     reportMobileLayout();
     update();
 }
@@ -204,8 +246,9 @@ export function unwireMobileViewport(shell) {
     window.visualViewport?.removeEventListener('scroll', binding.schedule);
     window.removeEventListener('resize', binding.schedule);
     window.removeEventListener('orientationchange', binding.schedule);
-    window.removeEventListener('iridium-composer-focus', binding.schedule);
+    window.removeEventListener('iridium-composer-focus', binding.composerFocus);
     document.removeEventListener('focusin', binding.focusin);
+    document.removeEventListener('focusout', binding.focusout);
     binding.query.removeEventListener('change', binding.layoutChanged);
     const frame = binding.frame();
     if (frame) cancelAnimationFrame(frame);
@@ -213,4 +256,43 @@ export function unwireMobileViewport(shell) {
     shell.style.removeProperty('--iridium-mobile-viewport-offset');
     shell.style.removeProperty('--iridium-mobile-safe-bottom');
     viewportBindings.delete(shell);
+}
+
+export function wireRealtimeResume(element, dotnet) {
+    if (!element || realtimeResumeBindings.has(element)) return;
+    let timer = 0;
+    let pendingReason = '';
+    const report = reason => {
+        pendingReason = pendingReason ? `${pendingReason}+${reason}` : reason;
+        if (timer) return;
+        timer = window.setTimeout(() => {
+            timer = 0;
+            const currentReason = pendingReason;
+            pendingReason = '';
+            void dotnet.invokeMethodAsync('RealtimeResumeAsync', currentReason);
+        }, 150);
+    };
+    const visibility = () => {
+        if (document.visibilityState === 'visible') report('visibility');
+    };
+    const pageshow = () => report('pageshow');
+    const online = () => report('online');
+    const focus = () => report('focus');
+    document.addEventListener('visibilitychange', visibility);
+    window.addEventListener('pageshow', pageshow);
+    window.addEventListener('online', online);
+    window.addEventListener('focus', focus);
+    realtimeResumeBindings.set(element, { visibility, pageshow, online, focus, timer: () => timer });
+}
+
+export function unwireRealtimeResume(element) {
+    const binding = realtimeResumeBindings.get(element);
+    if (!binding) return;
+    document.removeEventListener('visibilitychange', binding.visibility);
+    window.removeEventListener('pageshow', binding.pageshow);
+    window.removeEventListener('online', binding.online);
+    window.removeEventListener('focus', binding.focus);
+    const timer = binding.timer();
+    if (timer) window.clearTimeout(timer);
+    realtimeResumeBindings.delete(element);
 }

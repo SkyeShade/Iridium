@@ -1,7 +1,11 @@
 @using Iridium.Protocol
+@using Iridium.Client.Core
+@using Microsoft.Extensions.Logging
 @using Microsoft.JSInterop
 @implements IAsyncDisposable
 @inject IJSRuntime JS
+@inject RealtimeConnectionService Realtime
+@inject ILogger<ApplicationShell> Logger
 
 <div class="app-shell @(ShowRightSidebar ? "has-context-sidebar" : null) mobile-@ActiveMobilePanel.ToString().ToLowerInvariant()" @ref="_shell"
      @onclick="OnBackgroundInteraction" @onkeydown="ShellKeyDown">
@@ -104,6 +108,7 @@
             "wireMobileViewport",
             _shell,
             _selfReference);
+        await _swipeModule.InvokeVoidAsync("wireRealtimeResume", _shell, _selfReference);
         await _swipeModule.InvokeVoidAsync("wireMobileConversationSwipe", _mainContent, _selfReference);
     }
     [JSInvokable]
@@ -113,6 +118,15 @@
     public Task MobileConversationSwipeBackAsync() => ActiveMobilePanel == MobilePanel.Conversation
         ? OnMobileBack.InvokeAsync()
         : Task.CompletedTask;
+    [JSInvokable]
+    public async Task RealtimeResumeAsync(string reason)
+    {
+        try { await Realtime.VerifyAndRecoverAsync($"browser-resume:{reason}"); }
+        catch (Exception exception)
+        {
+            Logger.LogWarning(exception, "Realtime verification failed after browser resume event {Reason}.", reason);
+        }
+    }
 
     public async ValueTask DisposeAsync()
     {
@@ -122,6 +136,7 @@
             {
                 await _swipeModule.InvokeVoidAsync("unwireMobileConversationSwipe", _mainContent);
                 await _swipeModule.InvokeVoidAsync("unwireMobileViewport", _shell);
+                await _swipeModule.InvokeVoidAsync("unwireRealtimeResume", _shell);
                 await _swipeModule.DisposeAsync();
             }
             catch (JSDisconnectedException) { }

@@ -149,7 +149,8 @@ public sealed class NotificationResponsiveUiTests
         Assert.DoesNotContain(".composer-input-row .composer-rich-editor { padding-right", css);
         Assert.Contains("--iridium-mobile-viewport-height", shell);
         Assert.Contains("window.visualViewport", swipe);
-        Assert.Contains("keyboardInset > 80 ? '0px'", swipe);
+        Assert.Contains("shouldSuppressMobileSafeBottom(query.matches, composerFocused, Boolean(viewport), viewportConstrained)", swipe);
+        Assert.Contains("document.addEventListener('focusout', focusout", swipe);
         Assert.Contains(".attachment-button{align-self:end;margin:0 0 calc((var(--composer-min-height) - 2.25rem)/2)}", css);
         Assert.Contains(".emoji-button{grid-column:3;align-self:end;margin:0 .2rem calc((var(--composer-min-height) - 2.3rem)/2) 0}", css);
         Assert.Contains("top:auto;bottom:calc((var(--composer-min-height) - 2.35rem)/2 + 2.45rem)", css);

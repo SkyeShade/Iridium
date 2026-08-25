@@ -1,13 +1,16 @@
 using Iridium.Protocol;
 using Microsoft.AspNetCore.SignalR.Client;
+using Microsoft.Extensions.Logging;
 
 namespace Iridium.Client.Core;
 
 public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, NodeSession nodeSession,
-    ICommunityVoiceMediaClient media) : ICommunityVoiceControlSession, IAsyncDisposable
+    ICommunityVoiceMediaClient media, ILogger<CommunityVoiceSession> logger) : ICommunityVoiceControlSession, IAsyncDisposable
 {
     private readonly Dictionary<Guid, ActiveVoiceRoomDto> _rooms = [];
     private readonly List<IDisposable> _handlers = [];
+    private IDisposable? _recoveryRegistration;
+    private bool _lifecycleRegistered;
     private HubConnection? _connection;
     private Guid? _observedCommunityId;
     private bool _disposed;
@@ -221,6 +224,7 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
 
     private void Wire(HubConnection connection)
     {
+        EnsureRecoveryRegistration();
         if (ReferenceEquals(_connection, connection)) return;
         foreach (var handler in _handlers) handler.Dispose();
         _handlers.Clear();
@@ -261,30 +265,84 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
             value => { ApplyPublishedStream(value.Stream); }));
         _handlers.Add(connection.On<VoiceStreamEndedEvent>(VoiceStreamHubContract.Ended,
             value => { if (value.SessionKind == VoiceMediaSessionKind.CommunityVoice) ApplyEndedStream(value.StreamId); }));
-        connection.Reconnected += async _ =>
-        {
-            var previous = CurrentRoom;
-            CurrentRoom = null;
-            if (previous is not null)
-            {
-                try { await JoinAsync(previous.CommunityId, previous.ChannelId); }
-                catch { Changed?.Invoke(); }
-            }
-            else if (_observedCommunityId is { } communityId)
-            {
-                try { await ObserveCommunityAsync(communityId); } catch { }
-            }
-        };
-        connection.Closed += async _ =>
+    }
+
+    private void EnsureRecoveryRegistration()
+    {
+        _recoveryRegistration ??= realtime.RegisterRecoveryHandler("community-voice", RecoverSignalingAsync);
+        if (_lifecycleRegistered) return;
+        realtime.LifecycleChanged += RealtimeLifecycleChanged;
+        _lifecycleRegistered = true;
+    }
+
+    private void RealtimeLifecycleChanged(RealtimeLifecycleSnapshot snapshot)
+    {
+        if (_disposed || snapshot.Connection is null || !ReferenceEquals(_connection, snapshot.Connection)) return;
+        if (snapshot.State == RealtimeLifecycleState.Disconnected)
+            _ = HandleSignalingClosedAsync(snapshot.Connection);
+    }
+
+    private async Task HandleSignalingClosedAsync(HubConnection disconnectedConnection)
+    {
+        if (_disposed || !ReferenceEquals(_connection, disconnectedConnection)) return;
+        try
         {
             if (_mediaConnected) await media.DisconnectAsync("Community voice signaling disconnected");
-            _mediaConnected = false;
-            CurrentRoom = null;
-            MediaSession = null;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Could not disconnect Community voice media after signaling closed.");
+        }
+        if (_disposed || !ReferenceEquals(_connection, disconnectedConnection)) return;
+        _mediaConnected = false;
+        CurrentRoom = null;
+        MediaSession = null;
+        _publishedStreams.Clear();
+        WatchedStream = null;
+        Changed?.Invoke();
+    }
+
+    private async Task RecoverSignalingAsync(RealtimeRecoveryContext context, CancellationToken cancellationToken)
+    {
+        if (_disposed || !ReferenceEquals(_connection, context.Connection)) return;
+        var previous = CurrentRoom;
+        if (previous is not null)
+        {
+            var room = await context.Connection.InvokeAsync<ActiveVoiceRoomDto>(CommunityVoiceHubContract.Join,
+                previous.CommunityId, previous.ChannelId, cancellationToken);
+            var mediaSession = await context.Connection.InvokeAsync<CommunityVoiceMediaSessionDto>(
+                CommunityVoiceHubContract.GetMediaSession, cancellationToken);
+            var streams = await context.Connection.InvokeAsync<IReadOnlyList<PublishedVoiceStreamDto>>(
+                VoiceStreamHubContract.GetPublished, VoiceMediaSessionKind.CommunityVoice, previous.ChannelId,
+                cancellationToken);
+            if (_disposed || !ReferenceEquals(_connection, context.Connection)) return;
+            CurrentRoom = room;
+            MediaSession = mediaSession;
+            _rooms[room.ChannelId] = room;
             _publishedStreams.Clear();
-            WatchedStream = null;
-            Changed?.Invoke();
-        };
+            _publishedStreams.AddRange(streams);
+            Muted = room.Participants.FirstOrDefault(value => value.ParticipantId == context.Connection.ConnectionId)?.Muted ?? false;
+            Deafened = room.Participants.FirstOrDefault(value => value.ParticipantId == context.Connection.ConnectionId)?.Deafened ?? false;
+            if (!_mediaConnected)
+            {
+                await media.ConnectAsync(mediaSession, room,
+                    nodeSession.Account?.Id ?? throw new InvalidOperationException("The active account changed."),
+                    cancellationToken);
+                _mediaConnected = true;
+            }
+            logger.LogInformation("Restored Community voice signaling for {CommunityId}/{ChannelId} without replacing healthy media.",
+                previous.CommunityId, previous.ChannelId);
+        }
+        else if (_observedCommunityId is { } communityId)
+        {
+            var rooms = await context.Connection.InvokeAsync<IReadOnlyList<ActiveVoiceRoomDto>>(
+                CommunityVoiceHubContract.GetRooms, communityId, cancellationToken);
+            if (_disposed || !ReferenceEquals(_connection, context.Connection)) return;
+            _rooms.Clear();
+            foreach (var room in rooms) _rooms[room.ChannelId] = room;
+            logger.LogInformation("Restored Community voice observation for {CommunityId}.", communityId);
+        }
+        Changed?.Invoke();
     }
 
     private void EnsureMediaEvents()
@@ -355,6 +413,13 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
     {
         if (_disposed) return;
         _disposed = true;
+        _recoveryRegistration?.Dispose();
+        _recoveryRegistration = null;
+        if (_lifecycleRegistered)
+        {
+            realtime.LifecycleChanged -= RealtimeLifecycleChanged;
+            _lifecycleRegistered = false;
+        }
         try { await LeaveAsync(); } catch { }
         foreach (var handler in _handlers) handler.Dispose();
         _handlers.Clear();
