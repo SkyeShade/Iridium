@@ -20,14 +20,18 @@ public sealed class ConversationNavigationUiContractTests
     }
 
     [Fact]
-    public void ExplicitTextChannelAndDirectNavigationRequestTargetScopedFocus()
+    public void ExplicitTextChannelAndDirectNavigationSeparatePanelTransitionFromDesktopFocus()
     {
         var home = Source("Iridium.Web", "Pages", "Home.razor");
         var channel = Slice(home, "private Task SelectChannelFromNavigationAsync", "private async Task CompleteChannelSelectionAsync");
         var direct = Slice(home, "private Task SelectDirectConversationFromNavigationAsync", "private bool IsCurrentCommunityNavigation");
 
-        Assert.Contains("requestComposerFocus: !_isMobileLayout", channel);
-        Assert.Contains("requestComposerFocus: !_isMobileLayout", direct);
+        Assert.Contains("mobilePanelSource: channel?.Kind is CommunityChannelKind.Text or CommunityChannelKind.Forum", channel);
+        Assert.Contains("\"TextChannelClick\"", channel);
+        Assert.Contains("requestComposerFocus: ShouldAutoFocusNavigation", channel);
+        Assert.Contains("mobilePanelSource: \"DirectMessageClick\"", direct);
+        Assert.Contains("requestComposerFocus: ShouldAutoFocusNavigation", direct);
+        Assert.Contains("_mobileLayoutKnown && !_isMobileLayout", home);
         Assert.Contains("if (channel?.Kind == CommunityChannelKind.Text && requestComposerFocus)", home);
         Assert.Contains("if (requestComposerFocus) RequestDirectComposerFocus(conversation.Id)", home);
     }
@@ -39,10 +43,11 @@ public sealed class ConversationNavigationUiContractTests
         var community = Slice(home, "private async Task SelectCommunityFromNavigationAsync", "private async Task SelectChannelAsync");
 
         Assert.Contains("OnCommunitySelected=\"SelectCommunityFromNavigationAsync\"", home);
-        Assert.Contains("await SelectCommunity(community, focusRestoredChannel: true)", community);
+        Assert.Contains("mobilePanelSource: community is not null ? \"CommunityClick\" : null", community);
+        Assert.Contains("await SelectCommunity(community, focusRestoredChannel: ShouldAutoFocusNavigation", community);
         Assert.Contains("SelectChannelAsync(channel ?? CommunityState.FirstOrderedChannel(), focusRestoredChannel)", home);
         Assert.DoesNotContain("RequestChannelComposerFocus", Slice(home,
-            "private async Task SelectCommunity(CommunityDto? community, bool focusRestoredChannel = false)",
+            "private async Task SelectCommunity(CommunityDto? community, bool focusRestoredChannel = false,",
             "private async Task SelectCommunityFromNavigationAsync"));
     }
 
@@ -53,11 +58,188 @@ public sealed class ConversationNavigationUiContractTests
     {
         var source = Source("Iridium.Web", "Components", file);
         Assert.Contains("OnAfterRenderAsync", source);
-        Assert.Contains("if (!_focusAfterRender) return", source);
+        Assert.Contains("if (!_focusAfterRender || IsMobileLayout) return", source);
         Assert.DoesNotContain("if (!_focusAfterRender || _loading) return", source);
         Assert.Contains("_focusAfterRender = false", source);
         Assert.Contains("await _composer.FocusAsync()", source);
         Assert.Contains("await OnFocusConsumed.InvokeAsync(FocusRequest)", source);
+    }
+
+    [Theory]
+    [InlineData("ChannelView.razor")]
+    [InlineData("DirectMessageView.razor")]
+    public void MobileConversationViewsDiscardNavigationFocusRequests(string file)
+    {
+        var source = Source("Iridium.Web", "Components", file);
+        var parameters = Slice(source, "protected override void OnParametersSet()", "private async Task HydrateHistoryAsync");
+
+        Assert.Contains("if (IsMobileLayout)", parameters);
+        Assert.Contains("_focusAfterRender = false", parameters);
+        Assert.Contains("_consumedFocusRequest = Math.Max(_consumedFocusRequest, FocusRequest)", parameters);
+    }
+
+    [Fact]
+    public void FriendAndProfileMessageNavigationOpenThePanelBeforeAwaitingTheConversation()
+    {
+        var home = Source("Iridium.Web", "Pages", "Home.razor");
+        var open = Slice(home, "private async Task OpenDirectMessageAsync", "private Task OpenFriendDirectMessageAsync");
+
+        Assert.True(open.IndexOf("ShowMobileConversation(\"OpenDirectMessage\")", StringComparison.Ordinal) <
+                    open.IndexOf("await Session.OpenDirectConversationAsync(accountId)", StringComparison.Ordinal));
+        Assert.Contains("requestComposerFocus: ShouldAutoFocusNavigation", open);
+    }
+
+    [Fact]
+    public void MobilePanelBackAndContextClosePreserveTheConversationHierarchy()
+    {
+        var state = new Iridium.UI.MobilePanelNavigationState();
+        state.ShowConversation();
+        state.ShowContext();
+        state.CloseContext();
+        Assert.Equal(Iridium.UI.MobilePanel.Conversation, state.Current);
+        state.ShowNavigation();
+        Assert.Equal(Iridium.UI.MobilePanel.Navigation, state.Current);
+    }
+
+    [Fact]
+    public void MobileConversationStateOwnsFullWidthVisibilityAndResetsTransientSwipePresentation()
+    {
+        var shell = Source("Iridium.UI", "ApplicationShell.razor");
+        var styles = Source("Iridium.UI", "ApplicationShell.razor.css");
+        var swipe = Source("Iridium.UI", "wwwroot", "js", "mobileConversationSwipe.js");
+        var home = Source("Iridium.Web", "Pages", "Home.razor");
+
+        Assert.Contains("mobile-{MobilePanels.Current.ToString().ToLowerInvariant()}", shell);
+        Assert.Contains("<header class=\"mobile-conversation-header", shell);
+        Assert.Contains("class=\"mobile-back\" aria-label=\"Back to navigation\"", shell);
+        Assert.Contains("MobilePanels.Changed += MobilePanelChanged", shell);
+        Assert.Contains("MobilePanels.Changed -= MobilePanelChanged", shell);
+        Assert.Contains("_ = InvokeAsync(StateHasChanged)", shell);
+        Assert.Contains("resetMobileConversationSwipe", shell);
+        Assert.Contains("class=\"mobile-navigation-panel\"", shell);
+        Assert.Contains("<main class=\"main-content\"", shell);
+        Assert.Contains(".mobile-conversation .mobile-navigation-panel,.mobile-context .mobile-navigation-panel{transform:translateX(-100%);visibility:hidden;pointer-events:none", styles);
+        Assert.Contains(".mobile-conversation .main-content,.mobile-context .main-content { transform:translateX(0); visibility:visible; pointer-events:auto", styles);
+        Assert.Contains(".main-content { grid-column:1 / -1;grid-row:1 / -1;position:absolute", styles);
+        Assert.Contains("width:100%;min-width:100%;max-width:none", styles);
+        Assert.Contains("export function resetMobileConversationSwipe", swipe);
+        Assert.Contains("state.presentationRevision++", swipe);
+        Assert.Contains("state.cancelAnimation?.()", swipe);
+        Assert.Contains("if (presentationRevision !== state.presentationRevision) return", swipe);
+        Assert.Contains("clearSwipeStyles(element)", swipe);
+        Assert.Contains("@inject MobilePanelNavigationState MobilePanels", home);
+        Assert.Contains("private void ShowMobileConversation(string source)", home);
+        Assert.Contains("MobilePanels.ShowConversation(source)", home);
+    }
+
+    [Fact]
+    public void MobileShellUsesTwoFullWidthSiblingPanelsAndReportsTheirRenderedGeometry()
+    {
+        var shell = Source("Iridium.UI", "ApplicationShell.razor");
+        var styles = Source("Iridium.UI", "ApplicationShell.razor.css");
+        var diagnostics = Source("Iridium.UI", "wwwroot", "js", "mobileConversationSwipe.js");
+
+        var navigationStart = shell.IndexOf("<div class=\"mobile-navigation-panel\"", StringComparison.Ordinal);
+        var rail = shell.IndexOf("<CommunityRail", navigationStart, StringComparison.Ordinal);
+        var sidebar = shell.IndexOf("<aside class=\"secondary-sidebar", rail, StringComparison.Ordinal);
+        var mobileProfile = shell.IndexOf("<div class=\"mobile-profile-panel-slot\"", sidebar, StringComparison.Ordinal);
+        var conversation = shell.IndexOf("<main class=\"main-content\"", mobileProfile, StringComparison.Ordinal);
+
+        Assert.True(navigationStart >= 0 && rail > navigationStart && sidebar > rail &&
+                    mobileProfile > sidebar && conversation > mobileProfile);
+        Assert.Contains("position:absolute;z-index:20;inset:0;display:grid", styles);
+        Assert.Contains("grid-template-columns:4.25rem minmax(0,1fr)", styles);
+        Assert.Contains("grid-column:1 / -1;grid-row:2", styles);
+        Assert.Contains("export function inspectMobilePanels(shell, navigation, conversation)", diagnostics);
+        Assert.Contains("getBoundingClientRect()", diagnostics);
+        Assert.Contains("header: Boolean(conversation.querySelector('.mobile-conversation-header'))", diagnostics);
+        Assert.Contains("directMessageView: Boolean(conversation.querySelector('.direct-message-view'))", diagnostics);
+        Assert.Contains("channelView: Boolean(conversation.querySelector('.channel-view'))", diagnostics);
+        Assert.Contains("dmMessageRegion: Boolean(conversation.querySelector('.dm-message-region'))", diagnostics);
+        Assert.Contains("dmMessageHistory: Boolean(conversation.querySelector('.dm-message-history'))", diagnostics);
+        Assert.Contains("composer: Boolean(conversation.querySelector('.composer-wrap'))", diagnostics);
+        Assert.Contains("messageList: Boolean(conversation.querySelector('.message-list'))", diagnostics);
+        Assert.Contains("missingNodes: required.filter", diagnostics);
+        Assert.Contains("Conversation DOM incomplete for Home branch", shell);
+    }
+
+    [Fact]
+    public void MobileConversationPanelRetainsTheHistoricalHeaderAndHomeContentComposition()
+    {
+        var shell = Source("Iridium.UI", "ApplicationShell.razor");
+        var home = Source("Iridium.Web", "Pages", "Home.razor");
+
+        var main = shell.IndexOf("<main class=\"main-content\"", StringComparison.Ordinal);
+        var header = shell.IndexOf("<header class=\"mobile-conversation-header", main, StringComparison.Ordinal);
+        var childSlot = shell.IndexOf("<div class=\"main-content-slot\">@ChildContent</div>", header, StringComparison.Ordinal);
+        var mainEnd = shell.IndexOf("</main>", childSlot, StringComparison.Ordinal);
+        Assert.True(main >= 0 && header > main && childSlot > header && mainEnd > childSlot);
+
+        var namedContent = Slice(home, "<ChildContent>", "</ChildContent>");
+        Assert.Contains("_homeView == \"dm\" && _selectedDirectConversation is not null", namedContent);
+        Assert.Contains("<DirectMessageView", namedContent);
+        Assert.Contains("_selectedChannel is null", namedContent);
+        Assert.Contains("<ChannelView", namedContent);
+        Assert.Contains("MobileConversationContentKind=\"@MobileConversationContentKind\"", home);
+
+        var direct = Source("Iridium.Web", "Components", "DirectMessageView.razor");
+        var channel = Source("Iridium.Web", "Components", "ChannelView.razor");
+        Assert.Contains("<MessageList", direct);
+        Assert.Contains("<MessageComposer", direct);
+        Assert.Contains("<MessageList", channel);
+        Assert.Contains("<MessageComposer", channel);
+    }
+
+    [Fact]
+    public void MobileConversationPresentationDoesNotWaitForHistoryOrComposerFocus()
+    {
+        var home = Source("Iridium.Web", "Pages", "Home.razor");
+        var channelNavigation = Slice(home, "private async Task SelectChannelAsync", "private Task SelectChannelFromNavigationAsync");
+        var directNavigation = Slice(home, "private async Task SelectDirectConversationAsync", "private Task SelectDirectConversationFromNavigationAsync");
+
+        Assert.True(channelNavigation.IndexOf("_selectedChannel = channel", StringComparison.Ordinal) <
+                    channelNavigation.IndexOf("ShowMobileConversation(mobilePanelSource)", StringComparison.Ordinal));
+        Assert.True(channelNavigation.IndexOf("ShowMobileConversation(mobilePanelSource)", StringComparison.Ordinal) <
+                    channelNavigation.IndexOf("await InvokeAsync(StateHasChanged)", StringComparison.Ordinal));
+        Assert.True(directNavigation.IndexOf("_selectedDirectConversation = conversation", StringComparison.Ordinal) <
+                    directNavigation.IndexOf("ShowMobileConversation(mobilePanelSource)", StringComparison.Ordinal));
+        Assert.True(directNavigation.IndexOf("ShowMobileConversation(mobilePanelSource)", StringComparison.Ordinal) <
+                    directNavigation.IndexOf("await InvokeAsync(StateHasChanged)", StringComparison.Ordinal));
+        Assert.DoesNotContain("FocusAsync", channelNavigation);
+        Assert.DoesNotContain("FocusAsync", directNavigation);
+        Assert.DoesNotContain("HydrateHistoryAsync", channelNavigation);
+        Assert.DoesNotContain("HydrateHistoryAsync", directNavigation);
+    }
+
+    [Fact]
+    public void MobilePanelStateIsOneScopedClientServiceSharedByHomeAndShell()
+    {
+        var program = Source("Iridium.Web", "Program.cs");
+        var home = Source("Iridium.Web", "Pages", "Home.razor");
+        var shell = Source("Iridium.UI", "ApplicationShell.razor");
+
+        Assert.Contains("AddScoped<MobilePanelNavigationState>()", program);
+        Assert.Contains("@inject MobilePanelNavigationState MobilePanels", home);
+        Assert.Contains("@inject MobilePanelNavigationState MobilePanels", shell);
+        Assert.DoesNotContain("new MobilePanelNavigationState", home);
+        Assert.Contains("InstanceId", shell);
+    }
+
+    [Fact]
+    public void DirectMessageTransitionNotifiesTheShellOnceWithoutAnImplicitNavigationReset()
+    {
+        var state = new Iridium.UI.MobilePanelNavigationState();
+        var transitions = new List<Iridium.UI.MobilePanelTransition>();
+        state.Changed += transitions.Add;
+
+        state.ShowConversation("DirectMessageClick");
+
+        var transition = Assert.Single(transitions);
+        Assert.Equal(Iridium.UI.MobilePanel.Navigation, transition.Previous);
+        Assert.Equal(Iridium.UI.MobilePanel.Conversation, transition.Current);
+        Assert.Equal("DirectMessageClick", transition.Source);
+        Assert.Equal(state.InstanceId, transition.InstanceId);
+        Assert.Equal(Iridium.UI.MobilePanel.Conversation, state.Current);
     }
 
     [Theory]
@@ -171,7 +353,8 @@ public sealed class ConversationNavigationUiContractTests
                     rail.IndexOf("</div>", rail.IndexOf("class=\"rail-item add\"", StringComparison.Ordinal),
                         StringComparison.Ordinal));
         Assert.Contains("grid-template-rows:minmax(0,1fr)", shellStyles);
-        Assert.Contains(".secondary-sidebar { grid-column:2; min-width:0; min-height:0; overflow:hidden; }", shellStyles);
+        Assert.Contains(".secondary-sidebar { grid-column:2;grid-row:1; min-width:0; min-height:0; overflow:hidden; }", shellStyles);
+        Assert.Contains(".mobile-profile-panel-slot{display:block;grid-column:1 / -1;grid-row:2", shellStyles);
         Assert.Contains(".sidebar-body { overflow:hidden; }", shellStyles);
         Assert.Contains(".home-navigation{height:100%;min-height:0;display:flex;flex-direction:column;overflow:hidden}", homeStyles);
         Assert.Contains(".dm-list{flex:1;min-height:0;padding-bottom:var(--bottom-control-inset)}", homeStyles);

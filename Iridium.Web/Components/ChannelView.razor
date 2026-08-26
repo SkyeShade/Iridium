@@ -88,7 +88,12 @@
 
     protected override void OnParametersSet()
     {
-        if (FocusRequest > _consumedFocusRequest) _focusAfterRender = true;
+        if (IsMobileLayout)
+        {
+            _focusAfterRender = false;
+            _consumedFocusRequest = Math.Max(_consumedFocusRequest, FocusRequest);
+        }
+        else if (FocusRequest > _consumedFocusRequest) _focusAfterRender = true;
         if (_loadedChannelId == Channel.Id && _loadedTargetMessageId == TargetMessageId) return;
         _replyTo = null;
         _error = null;
@@ -129,7 +134,7 @@
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (!_focusAfterRender) return;
+        if (!_focusAfterRender || IsMobileLayout) return;
         _focusAfterRender = false;
         _consumedFocusRequest = FocusRequest;
         if (_composer is not null) await _composer.FocusAsync();

@@ -20,6 +20,7 @@
 @inject ActiveVoiceSessionCoordinator VoiceSessions
 @inject UiSoundService UiSounds
 @inject FaviconNotificationService FaviconNotifications
+@inject MobilePanelNavigationState MobilePanels
 @inject ILogger<Home> Logger
 @inject NavigationManager Navigation
 
@@ -72,7 +73,8 @@ else
                       OnProfile="OpenProfilePopup"
                       OnSettings="OpenSettings"
                       ShowRightSidebar="@HasContextSidebar"
-                      ActiveMobilePanel="_mobilePanels.Current"
+                      EnableMobilePanelDiagnostics="HostEnvironment.IsDevelopment()"
+                      MobileConversationContentKind="@MobileConversationContentKind"
                       MobileConversationTitle="@MobileConversationTitle"
                       UseCompactMobileConversationHeader="@IsDirectConversationSelected"
                       SuppressMobileVoiceConnection="@HasCurrentDirectCall"
@@ -379,7 +381,7 @@ else
     private long _composerFocusRequest;
     private long _shellNavigationGeneration;
     private bool _isMobileLayout;
-    private readonly MobilePanelNavigationState _mobilePanels = new();
+    private bool _mobileLayoutKnown;
     private bool _faviconReady;
     private Guid? _composerFocusChannelId;
     private Guid? _composerFocusConversationId;
@@ -409,6 +411,11 @@ else
         _selectedCommunity is null && _homeView == "dm" && _selectedDirectConversation is not null;
     private bool IsDirectConversationSelected =>
         _selectedCommunity is null && _homeView == "dm" && _selectedDirectConversation is not null;
+    private string MobileConversationContentKind =>
+        VoiceSessions.WatchedStream is not null && VoiceSessions.ViewerMode == StreamViewerMode.Full ? "stream" :
+        IsDirectConversationSelected ? "direct" :
+        _selectedCommunity is not null && _selectedChannel is not null ? "channel" :
+        _selectedCommunity is not null ? "community" : _homeView;
     private bool HasCurrentDirectCall => VoiceSessions.DirectCalls.CurrentCall is
         { State: CallState.Ringing or CallState.Active };
     private bool ShowMobileDirectCallBar => MobileDirectCallBarState.ShouldShow(
@@ -456,6 +463,7 @@ else
     private void OnMobileLayoutChanged(bool isMobile)
     {
         _isMobileLayout = isMobile;
+        _mobileLayoutKnown = true;
     }
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -758,7 +766,8 @@ else
         AccountSwitching.BeginAuthentication(SavedNodes.Nodes[0]);
     }
 
-    private async Task SelectCommunity(CommunityDto? community, bool focusRestoredChannel = false)
+    private async Task SelectCommunity(CommunityDto? community, bool focusRestoredChannel = false,
+        string? mobilePanelSource = null)
     {
         var generation = ++_shellNavigationGeneration;
         _composerFocusChannelId = null;
@@ -766,6 +775,7 @@ else
         VoiceSessions.MinimizeWatchedStream();
         CloseQuickInvite();
         _selectedCommunity = community;
+        if (community is not null && mobilePanelSource is not null) ShowMobileConversation(mobilePanelSource);
         _selectedChannel = null;
         _searchTargetMessageId = null;
         _selectedDirectConversation = null;
@@ -793,10 +803,11 @@ else
     }
     private async Task SelectCommunityFromNavigationAsync(CommunityDto? community)
     {
-        await SelectCommunity(community, focusRestoredChannel: true);
+        await SelectCommunity(community, focusRestoredChannel: ShouldAutoFocusNavigation,
+            mobilePanelSource: community is not null ? "CommunityClick" : null);
     }
     private async Task SelectChannelAsync(CommunityChannelDto? channel, bool requestComposerFocus = false,
-        Guid? searchTargetMessageId = null)
+        Guid? searchTargetMessageId = null, string? mobilePanelSource = null)
     {
         ++_shellNavigationGeneration;
         _composerFocusChannelId = null;
@@ -804,6 +815,7 @@ else
         VoiceSessions.MinimizeWatchedStream();
         _searchTargetMessageId = searchTargetMessageId;
         _selectedChannel = channel;
+        if (mobilePanelSource is not null) ShowMobileConversation(mobilePanelSource);
         _forumPostOpen = false;
         _forumSubViewOpen = false;
         _forumPostTitle = null;
@@ -825,12 +837,11 @@ else
         SelectChannelFromMobileNavigationAsync(channel);
     private async Task SelectChannelFromMobileNavigationAsync(CommunityChannelDto? channel)
     {
-        if (channel?.Kind is CommunityChannelKind.Text or CommunityChannelKind.Forum)
-            _mobilePanels.ShowConversation();
-
         await SelectChannelAsync(
             channel,
-            requestComposerFocus: !_isMobileLayout);
+            requestComposerFocus: ShouldAutoFocusNavigation,
+            mobilePanelSource: channel?.Kind is CommunityChannelKind.Text or CommunityChannelKind.Forum
+                ? "TextChannelClick" : null);
     }
 
     private async Task CompleteChannelSelectionAsync(Guid accountId, CommunityChannelDto channel)
@@ -855,7 +866,7 @@ else
         VoiceSessions.MinimizeWatchedStream();
         _homeView = view;
         if (view != "dm") _selectedDirectConversation = null;
-        _mobilePanels.ShowConversation();
+        ShowMobileConversation($"HomeView:{view}");
     }
     private async Task SendFriendRequestAsync(string username)
     {
@@ -891,19 +902,22 @@ else
         _composerFocusConversationId = null;
         VoiceSessions.MinimizeWatchedStream();
         _error = null;
+        ShowMobileConversation("OpenDirectMessage");
+        await InvokeAsync(StateHasChanged);
         try
         {
             var conversation = await Session.OpenDirectConversationAsync(accountId);
             _showAddFriend = false;
-            await SelectDirectConversationAsync(conversation, requestComposerFocus: true);
-            _mobilePanels.ShowConversation();
+            await SelectDirectConversationAsync(conversation, requestComposerFocus: ShouldAutoFocusNavigation,
+                mobilePanelSource: "OpenDirectMessageSelected");
         }
         catch (Exception exception) { _error = UserMessage(exception); }
     }
     private Task OpenFriendDirectMessageAsync(FriendDto friend) => OpenDirectMessageAsync(friend.AccountId);
     private void ShowFriends() { _homeView = "friends"; _selectedDirectConversation = null; }
     private void ShowAddFriend() { _showAddFriend = true; _error = null; }
-    private async Task SelectDirectConversationAsync(DirectConversationDto conversation, bool requestComposerFocus = false)
+    private async Task SelectDirectConversationAsync(DirectConversationDto conversation,
+        bool requestComposerFocus = false, string? mobilePanelSource = null)
     {
         ++_shellNavigationGeneration;
         _composerFocusChannelId = null;
@@ -918,6 +932,7 @@ else
         CommunityState.Clear();
         _selectedDirectConversation = conversation;
         _homeView = "dm";
+        if (mobilePanelSource is not null) ShowMobileConversation(mobilePanelSource);
         if (requestComposerFocus) RequestDirectComposerFocus(conversation.Id);
         await InvokeAsync(StateHasChanged);
     }
@@ -925,8 +940,8 @@ else
         SelectDirectConversationFromMobileNavigationAsync(conversation);
     private async Task SelectDirectConversationFromMobileNavigationAsync(DirectConversationDto conversation)
     {
-        _mobilePanels.ShowConversation();
-        await SelectDirectConversationAsync(conversation, requestComposerFocus: !_isMobileLayout);
+        await SelectDirectConversationAsync(conversation, requestComposerFocus: ShouldAutoFocusNavigation,
+            mobilePanelSource: "DirectMessageClick");
     }
 
     private async Task HandleMobileBackAsync()
@@ -936,7 +951,7 @@ else
             await _forumView.BackAsync();
             return;
         }
-        _mobilePanels.ShowNavigation();
+        SetMobilePanel(MobilePanels.ShowNavigation("Back"));
     }
     private void ForumPostOpenChanged(CommunityForumPostDto? post)
     {
@@ -944,11 +959,24 @@ else
         _forumPostTitle = post?.Title;
     }
     private void ForumSubViewChanged(bool isOpen) => _forumSubViewOpen = isOpen;
-    private void ShowMobileContext() { if (HasContextSidebar) _mobilePanels.ShowContext(); }
-    private void CloseMobileContext() => _mobilePanels.CloseContext();
+    private void ShowMobileContext() { if (HasContextSidebar) SetMobilePanel(MobilePanels.ShowContext("OpenContext")); }
+    private void CloseMobileContext() => SetMobilePanel(MobilePanels.CloseContext("CloseContext"));
 
     private bool IsCurrentCommunityNavigation(Guid communityId, long generation) =>
         generation == _shellNavigationGeneration && _selectedCommunity?.Id == communityId;
+    private bool ShouldAutoFocusNavigation => _mobileLayoutKnown && !_isMobileLayout;
+    private void ShowMobileConversation(string source)
+    {
+        SetMobilePanel(MobilePanels.ShowConversation(source));
+    }
+    private void SetMobilePanel(MobilePanelTransition transition)
+    {
+        if (!HostEnvironment.IsDevelopment()) return;
+        Logger.LogInformation("[MobilePanel] Home mutation instance={InstanceId} source={Source} previous={Previous} new={Current} revision={Revision} activeDm={DirectConversationId} activeCommunity={CommunityId} activeChannel={ChannelId} breakpointKnown={BreakpointKnown} mobile={IsMobile}",
+            transition.InstanceId, transition.Source, transition.Previous, transition.Current, transition.Revision,
+            _selectedDirectConversation?.Id, _selectedCommunity?.Id, _selectedChannel?.Id,
+            _mobileLayoutKnown, _isMobileLayout);
+    }
 
     private void TrackBackground(Task task, string operation) => _ = ObserveBackgroundAsync(task, operation);
     private async Task ObserveBackgroundAsync(Task task, string operation)
@@ -981,7 +1009,7 @@ else
         await Messaging.ClearAsync();
         _selectedDirectConversation = null;
         _homeView = "friends";
-        _mobilePanels.Reset();
+        SetMobilePanel(MobilePanels.Reset("CloseDirectConversation"));
         _composerFocusRequest = 0;
         _composerFocusChannelId = null;
         _composerFocusConversationId = null;
@@ -1015,7 +1043,7 @@ else
         if (VoiceSessions.Current is not { Kind: ActiveVoiceSessionKind.DirectCall, DirectConversationId: { } conversationId }) return;
         var conversation = Session.DirectConversations.FirstOrDefault(value => value.Id == conversationId);
         if (conversation is null) return;
-        _mobilePanels.ShowConversation();
+        ShowMobileConversation("ReturnToActiveCall");
         await SelectDirectConversationAsync(conversation);
     }
     private async Task ReturnToActiveDirectStreamAsync(Guid streamId)
@@ -1107,7 +1135,7 @@ else
         _selectedChannel = null;
         _selectedDirectConversation = null;
         _homeView = "friends";
-        _mobilePanels.Reset();
+        SetMobilePanel(MobilePanels.Reset("ResetAccount"));
         _composerFocusRequest = 0;
         _composerFocusChannelId = null;
         _composerFocusConversationId = null;

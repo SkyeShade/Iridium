@@ -7,36 +7,39 @@
 @inject RealtimeConnectionService Realtime
 @inject ILogger<ApplicationShell> Logger
 @inject ModifierKeyStateService ModifierKeys
+@inject MobilePanelNavigationState MobilePanels
 
-<div class="app-shell @(ShowRightSidebar ? "has-context-sidebar" : null) @(ShowMobileCallBar ? "has-mobile-call-bar" : null) @(SuppressMobileVoiceConnection ? "suppress-mobile-voice-connection" : null) mobile-@ActiveMobilePanel.ToString().ToLowerInvariant()" @ref="_shell"
+<div class="@ShellClass" @ref="_shell"
      @onclick="OnBackgroundInteraction" @onkeydown="ShellKeyDown">
     @if (ShowMobileCallBar && MobileCallBar is not null) { <div class="mobile-call-bar-slot">@MobileCallBar</div> }
-    <CommunityRail Communities="Communities" SelectedCommunityId="SelectedCommunity?.Id"
-                   DirectConversations="DirectConversations" NodeAuthority="@NodeAuthority"
-                   RingingCallerAccountId="RingingCallerAccountId"
-                   IncomingFriendRequestCount="IncomingFriendRequestCount"
-                   ShowHomeFriendRequestNotification="ShowHomeFriendRequestNotification"
-                   OnSelected="OnCommunitySelected" OnDirectConversationSelected="OnDirectConversationSelected" OnAdd="OnAddCommunity" />
-    <aside class="secondary-sidebar @(SelectedCommunity is not null ? "selected-community-sidebar" : null)">
-        <header class="community-header @(SelectedCommunity is not null ? "selected-community-header" : null)">
-            @if (SidebarHeader is not null) { @SidebarHeader }
-            else { <strong>@(SelectedCommunity?.Name ?? "Iridium")</strong> }
-        </header>
-        <div class="sidebar-body">
-            @if (SidebarContent is not null) { @SidebarContent }
-        </div>
-        @if (VoiceConnection is not null) { <div class="voice-connection-slot">@VoiceConnection</div> }
+    <div class="mobile-navigation-panel" @ref="_navigationPanel">
+        <CommunityRail Communities="Communities" SelectedCommunityId="SelectedCommunity?.Id"
+                       DirectConversations="DirectConversations" NodeAuthority="@NodeAuthority"
+                       RingingCallerAccountId="RingingCallerAccountId"
+                       IncomingFriendRequestCount="IncomingFriendRequestCount"
+                       ShowHomeFriendRequestNotification="ShowHomeFriendRequestNotification"
+                       OnSelected="OnCommunitySelected" OnDirectConversationSelected="OnDirectConversationSelected" OnAdd="OnAddCommunity" />
+        <aside class="secondary-sidebar @(SelectedCommunity is not null ? "selected-community-sidebar" : null)">
+            <header class="community-header @(SelectedCommunity is not null ? "selected-community-header" : null)">
+                @if (SidebarHeader is not null) { @SidebarHeader }
+                else { <strong>@(SelectedCommunity?.Name ?? "Iridium")</strong> }
+            </header>
+            <div class="sidebar-body">
+                @if (SidebarContent is not null) { @SidebarContent }
+            </div>
+            @if (VoiceConnection is not null) { <div class="voice-connection-slot">@VoiceConnection</div> }
+        </aside>
         <div class="mobile-profile-panel-slot">
             <ProfilePanel AccountId="AccountId" AvatarRevision="AvatarRevision" DisplayName="@DisplayName"
                           PublicIdentity="@PublicIdentity" Presence="Presence" OnProfile="OnProfile" OnSettings="OnSettings" />
         </div>
-    </aside>
+    </div>
     <div class="desktop-player-panel-slot">
         <ProfilePanel AccountId="AccountId" AvatarRevision="AvatarRevision" DisplayName="@DisplayName"
                       PublicIdentity="@PublicIdentity" Presence="Presence" OnProfile="OnProfile" OnSettings="OnSettings"
                       ShowVoiceControls="true" />
     </div>
-    <main class="main-content" @ref="_mainContent">
+    <main class="main-content" data-mobile-content-kind="@MobileConversationContentKind" @ref="_mainContent">
         <header class="mobile-conversation-header @(UseCompactMobileConversationHeader ? "compact-dm" : null)">
             <button type="button" class="mobile-back" aria-label="Back to navigation" @onclick="OnMobileBack"><Icon Name="chevron" Size="48" /></button>
             @if (UseCompactMobileConversationHeader && MobileConversationIdentity is not null)
@@ -91,7 +94,8 @@
     [Parameter] public RenderFragment? RightSidebar { get; set; }
     [Parameter] public bool ShowRightSidebar { get; set; }
     [Parameter] public EventCallback OnBackgroundInteraction { get; set; }
-    [Parameter] public MobilePanel ActiveMobilePanel { get; set; } = MobilePanel.Navigation;
+    [Parameter] public bool EnableMobilePanelDiagnostics { get; set; }
+    [Parameter] public string MobileConversationContentKind { get; set; } = "none";
     [Parameter] public string MobileConversationTitle { get; set; } = "Conversation";
     [Parameter] public bool UseCompactMobileConversationHeader { get; set; }
     [Parameter] public RenderFragment? MobileConversationIdentity { get; set; }
@@ -104,33 +108,81 @@
     [Parameter] public EventCallback OnMobileContextClose { get; set; }
     [Parameter] public EventCallback<bool> OnMobileLayoutChanged { get; set; }
     private ElementReference _mainContent;
+    private ElementReference _navigationPanel;
     private ElementReference _shell;
     private IJSObjectReference? _swipeModule;
     private DotNetObjectReference<ApplicationShell>? _selfReference;
-    private Task ShellKeyDown(KeyboardEventArgs args) => args.Key == "Escape" && ActiveMobilePanel == MobilePanel.Context
+    private MobilePanel? _presentedMobilePanel;
+    private long _presentedMobilePanelRevision = -1;
+    private string? _presentedMobileContentKind;
+    private string ShellClass => $"app-shell {(ShowRightSidebar ? "has-context-sidebar" : null)} " +
+        $"{(ShowMobileCallBar ? "has-mobile-call-bar" : null)} " +
+        $"{(SuppressMobileVoiceConnection ? "suppress-mobile-voice-connection" : null)} " +
+        $"mobile-{MobilePanels.Current.ToString().ToLowerInvariant()}";
+    private Task ShellKeyDown(KeyboardEventArgs args) => args.Key == "Escape" && MobilePanels.Current == MobilePanel.Context
         ? OnMobileContextClose.InvokeAsync()
         : Task.CompletedTask;
 
+    protected override void OnInitialized() => MobilePanels.Changed += MobilePanelChanged;
+
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (!firstRender) return;
-        _swipeModule = await JS.InvokeAsync<IJSObjectReference>("import", "./_content/Iridium.UI/js/mobileConversationSwipe.js");
-        _selfReference = DotNetObjectReference.Create(this);
-        await _swipeModule.InvokeVoidAsync(
-            "wireMobileViewport",
-            _shell,
-            _selfReference);
-        await _swipeModule.InvokeVoidAsync("wireRealtimeResume", _shell, _selfReference);
-        await _swipeModule.InvokeVoidAsync("wireModifierKeys", _shell, _selfReference);
-        await _swipeModule.InvokeVoidAsync("wireMobileConversationSwipe", _mainContent, _selfReference);
+        if (firstRender)
+        {
+            _swipeModule = await JS.InvokeAsync<IJSObjectReference>("import", "./_content/Iridium.UI/js/mobileConversationSwipe.js");
+            _selfReference = DotNetObjectReference.Create(this);
+            await _swipeModule.InvokeVoidAsync(
+                "wireMobileViewport",
+                _shell,
+                _selfReference);
+            await _swipeModule.InvokeVoidAsync("wireRealtimeResume", _shell, _selfReference);
+            await _swipeModule.InvokeVoidAsync("wireModifierKeys", _shell, _selfReference);
+            await _swipeModule.InvokeVoidAsync("wireMobileConversationSwipe", _mainContent, _selfReference);
+        }
+        if (_swipeModule is not null && (_presentedMobilePanel != MobilePanels.Current ||
+            _presentedMobilePanelRevision != MobilePanels.Revision ||
+            _presentedMobileContentKind != MobileConversationContentKind))
+        {
+            _presentedMobilePanel = MobilePanels.Current;
+            _presentedMobilePanelRevision = MobilePanels.Revision;
+            _presentedMobileContentKind = MobileConversationContentKind;
+            await _swipeModule.InvokeVoidAsync("resetMobileConversationSwipe", _mainContent);
+            if (EnableMobilePanelDiagnostics)
+            {
+                var snapshot = await _swipeModule.InvokeAsync<MobilePanelDiagnosticSnapshot>(
+                    "inspectMobilePanels", _shell, _navigationPanel, _mainContent);
+                Logger.LogInformation("[MobilePanel] Shell render instance={InstanceId} state={State} revision={Revision} classes={Classes} contentKind={ContentKind} navigation=({NavigationX},{NavigationY} {NavigationWidth}x{NavigationHeight} display={NavigationDisplay} visibility={NavigationVisibility} transform={NavigationTransform} z={NavigationZIndex}) conversation=({ConversationX},{ConversationY} {ConversationWidth}x{ConversationHeight} display={ConversationDisplay} visibility={ConversationVisibility} transform={ConversationTransform} z={ConversationZIndex}) children=(header={HasHeader} slot={HasMainContentSlot} direct={HasDirectMessageView} dmRegion={HasDmMessageRegion} dmHistory={HasDmMessageHistory} channel={HasChannelView} channelRegion={HasChannelMessageRegion} messages={HasMessageList} composer={HasComposer})",
+                    MobilePanels.InstanceId, MobilePanels.Current, MobilePanels.Revision, snapshot.Classes,
+                    snapshot.ContentKind,
+                    snapshot.NavigationX, snapshot.NavigationY, snapshot.NavigationWidth, snapshot.NavigationHeight,
+                    snapshot.NavigationDisplay, snapshot.NavigationVisibility, snapshot.NavigationTransform, snapshot.NavigationZIndex,
+                    snapshot.ConversationX, snapshot.ConversationY, snapshot.ConversationWidth, snapshot.ConversationHeight,
+                    snapshot.ConversationDisplay, snapshot.ConversationVisibility, snapshot.ConversationTransform, snapshot.ConversationZIndex,
+                    snapshot.HasHeader, snapshot.HasMainContentSlot, snapshot.HasDirectMessageView,
+                    snapshot.HasDmMessageRegion, snapshot.HasDmMessageHistory, snapshot.HasChannelView,
+                    snapshot.HasChannelMessageRegion, snapshot.HasMessageList, snapshot.HasComposer);
+                if (MobilePanels.Current == MobilePanel.Conversation && snapshot.MissingNodes.Length > 0)
+                {
+                    Logger.LogWarning("[MobilePanel] Conversation DOM incomplete for Home branch {ContentKind}; missing={MissingNodes}. A missing direct-message-view/channel-view means Home's ChildContent branch did not emit that component; nested missing nodes identify the component subtree that stopped rendering.",
+                        snapshot.ContentKind, string.Join(",", snapshot.MissingNodes));
+                }
+            }
+        }
     }
     [JSInvokable]
     public Task MobileLayoutChangedAsync(bool isMobile) =>
         OnMobileLayoutChanged.InvokeAsync(isMobile);
     [JSInvokable]
-    public Task MobileConversationSwipeBackAsync() => ActiveMobilePanel == MobilePanel.Conversation
+    public Task MobileConversationSwipeBackAsync() => MobilePanels.Current == MobilePanel.Conversation
         ? OnMobileBack.InvokeAsync()
         : Task.CompletedTask;
+    private void MobilePanelChanged(MobilePanelTransition transition)
+    {
+        if (EnableMobilePanelDiagnostics)
+            Logger.LogInformation("[MobilePanel] Shell received instance={InstanceId} source={Source} previous={Previous} new={Current} revision={Revision}",
+                transition.InstanceId, transition.Source, transition.Previous, transition.Current, transition.Revision);
+        _ = InvokeAsync(StateHasChanged);
+    }
     [JSInvokable]
     public async Task RealtimeResumeAsync(string reason)
     {
@@ -149,6 +201,7 @@
 
     public async ValueTask DisposeAsync()
     {
+        MobilePanels.Changed -= MobilePanelChanged;
         if (_swipeModule is not null)
         {
             try
@@ -163,4 +216,13 @@
         }
         _selfReference?.Dispose();
     }
+
+    private sealed record MobilePanelDiagnosticSnapshot(string Classes,
+        double NavigationX, double NavigationY, double NavigationWidth, double NavigationHeight,
+        string NavigationDisplay, string NavigationVisibility, string NavigationTransform, string NavigationZIndex,
+        double ConversationX, double ConversationY, double ConversationWidth, double ConversationHeight,
+        string ConversationDisplay, string ConversationVisibility, string ConversationTransform, string ConversationZIndex,
+        string ContentKind, bool HasHeader, bool HasMainContentSlot, bool HasDirectMessageView,
+        bool HasDmMessageRegion, bool HasDmMessageHistory, bool HasChannelView,
+        bool HasChannelMessageRegion, bool HasMessageList, bool HasComposer, string[] MissingNodes);
 }

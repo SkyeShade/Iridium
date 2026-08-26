@@ -33,45 +33,69 @@ function clearSwipeStyles(element) {
     element.style.removeProperty('transform');
 }
 
-function animateSwipe(element, destination) {
+function animateSwipe(element, destination, state) {
+    state.cancelAnimation?.();
+    const revision = state.presentationRevision;
     return new Promise(resolve => {
+        let frame = 0;
+        let settled = false;
+        const finish = () => {
+            if (settled) return;
+            settled = true;
+            if (frame) cancelAnimationFrame(frame);
+            element.removeEventListener('transitionend', transitioned);
+            if (state.cancelAnimation === finish) state.cancelAnimation = null;
+            resolve();
+        };
+        const transitioned = event => {
+            if (event.target === element && event.propertyName === 'transform') finish();
+        };
+        state.cancelAnimation = finish;
+        if (revision !== state.presentationRevision) { finish(); return; }
         const transform = getComputedStyle(element).transform;
         const current = transform === 'none' ? 0 : new DOMMatrixReadOnly(transform).m41;
         if (Math.abs(current - destination) < 0.5) {
             element.style.transform = `translate3d(${destination}px,0,0)`;
-            resolve();
+            finish();
             return;
         }
         if (reducedMotion()) {
             element.style.transform = `translate3d(${destination}px,0,0)`;
-            resolve();
+            finish();
             return;
         }
-        const finished = event => {
-            if (event.target !== element || event.propertyName !== 'transform') return;
-            element.removeEventListener('transitionend', finished);
-            resolve();
-        };
-        element.addEventListener('transitionend', finished);
+        element.addEventListener('transitionend', transitioned);
         element.style.transition = 'transform 170ms cubic-bezier(.2,.75,.25,1)';
-        requestAnimationFrame(() => { element.style.transform = `translate3d(${destination}px,0,0)`; });
+        frame = requestAnimationFrame(() => {
+            frame = 0;
+            if (revision !== state.presentationRevision) { finish(); return; }
+            element.style.transform = `translate3d(${destination}px,0,0)`;
+        });
     });
 }
 
 export function wireMobileConversationSwipe(element, dotnet) {
     if (!element || swipeBindings.has(element)) return;
-    const state = { pointerId: null, startX: 0, startY: 0, direction: 'undecided', dragging: false };
+    const state = { pointerId: null, startX: 0, startY: 0, direction: 'undecided', dragging: false,
+        presentationRevision: 0, cancelAnimation: null };
 
     const reset = () => {
         state.pointerId = null;
         state.direction = 'undecided';
         state.dragging = false;
     };
+    const resetPresentation = () => {
+        state.presentationRevision++;
+        state.cancelAnimation?.();
+        reset();
+        clearSwipeStyles(element);
+    };
     const snapBack = async () => {
         const hadOffset = state.dragging || Boolean(element.style.transform);
         reset();
         if (!hadOffset) return;
-        await animateSwipe(element, 0);
+        await animateSwipe(element, 0, state);
+        if (state.pointerId !== null) return;
         clearSwipeStyles(element);
     };
     const down = event => {
@@ -116,19 +140,22 @@ export function wireMobileConversationSwipe(element, dotnet) {
             try { element.releasePointerCapture(event.pointerId); } catch { }
         }
         if (!complete) {
-            await animateSwipe(element, 0);
+            const presentationRevision = state.presentationRevision;
+            await animateSwipe(element, 0, state);
+            if (presentationRevision !== state.presentationRevision) return;
             clearSwipeStyles(element);
             return;
         }
-        await animateSwipe(element, width);
+        const presentationRevision = state.presentationRevision;
+        await animateSwipe(element, width, state);
+        if (presentationRevision !== state.presentationRevision) return;
         await dotnet.invokeMethodAsync('MobileConversationSwipeBackAsync');
         clearSwipeStyles(element);
     };
     const cancel = event => { if (state.pointerId === event.pointerId) void snapBack(); };
     const resize = () => {
         if (state.pointerId === null && !element.style.transform) return;
-        reset();
-        clearSwipeStyles(element);
+        resetPresentation();
     };
     element.addEventListener('pointerdown', down);
     element.addEventListener('pointermove', move, { passive: false });
@@ -137,7 +164,86 @@ export function wireMobileConversationSwipe(element, dotnet) {
     element.addEventListener('lostpointercapture', cancel);
     window.addEventListener('resize', resize, { passive: true });
     window.addEventListener('orientationchange', resize, { passive: true });
-    swipeBindings.set(element, { down, move, up, cancel, resize });
+    swipeBindings.set(element, { down, move, up, cancel, resize, resetPresentation });
+}
+
+export function resetMobileConversationSwipe(element) {
+    swipeBindings.get(element)?.resetPresentation();
+}
+
+function panelGeometry(element) {
+    const style = getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+        transform: style.transform,
+        visibility: style.visibility,
+        display: style.display,
+        zIndex: style.zIndex
+    };
+}
+
+export function inspectMobilePanels(shell, navigation, conversation) {
+    const nav = panelGeometry(navigation);
+    const convo = panelGeometry(conversation);
+    const contentKind = conversation.dataset.mobileContentKind ?? 'none';
+    const nodes = {
+        header: Boolean(conversation.querySelector('.mobile-conversation-header')),
+        mainContentSlot: Boolean(conversation.querySelector('.main-content-slot')),
+        directMessageView: Boolean(conversation.querySelector('.direct-message-view')),
+        dmMessageRegion: Boolean(conversation.querySelector('.dm-message-region')),
+        dmMessageHistory: Boolean(conversation.querySelector('.dm-message-history')),
+        channelView: Boolean(conversation.querySelector('.channel-view')),
+        channelMessageRegion: Boolean(conversation.querySelector('.channel-view .message-region')),
+        messageList: Boolean(conversation.querySelector('.message-list')),
+        composer: Boolean(conversation.querySelector('.composer-wrap'))
+    };
+    const required = [['main-content', true], ['mobile-conversation-header', nodes.header],
+        ['main-content-slot', nodes.mainContentSlot]];
+    if (contentKind === 'direct') required.push(
+        ['direct-message-view', nodes.directMessageView],
+        ['dm-message-region', nodes.dmMessageRegion],
+        ['dm-message-history', nodes.dmMessageHistory],
+        ['message-list', nodes.messageList],
+        ['composer-wrap', nodes.composer]);
+    if (contentKind === 'channel') required.push(
+        ['channel-view', nodes.channelView],
+        ['channel-view/message-region', nodes.channelMessageRegion],
+        ['message-list', nodes.messageList],
+        ['composer-wrap', nodes.composer]);
+    return {
+        classes: shell?.className ?? "",
+        navigationX: nav.x,
+        navigationY: nav.y,
+        navigationWidth: nav.width,
+        navigationHeight: nav.height,
+        navigationDisplay: nav.display,
+        navigationVisibility: nav.visibility,
+        navigationTransform: nav.transform,
+        navigationZIndex: nav.zIndex,
+        conversationX: convo.x,
+        conversationY: convo.y,
+        conversationWidth: convo.width,
+        conversationHeight: convo.height,
+        conversationDisplay: convo.display,
+        conversationVisibility: convo.visibility,
+        conversationTransform: convo.transform,
+        conversationZIndex: convo.zIndex,
+        contentKind,
+        hasHeader: nodes.header,
+        hasMainContentSlot: nodes.mainContentSlot,
+        hasDirectMessageView: nodes.directMessageView,
+        hasDmMessageRegion: nodes.dmMessageRegion,
+        hasDmMessageHistory: nodes.dmMessageHistory,
+        hasChannelView: nodes.channelView,
+        hasChannelMessageRegion: nodes.channelMessageRegion,
+        hasMessageList: nodes.messageList,
+        hasComposer: nodes.composer,
+        missingNodes: required.filter(([, present]) => !present).map(([name]) => name)
+    };
 }
 
 export function unwireMobileConversationSwipe(element) {
@@ -150,7 +256,7 @@ export function unwireMobileConversationSwipe(element) {
     element.removeEventListener('lostpointercapture', binding.cancel);
     window.removeEventListener('resize', binding.resize);
     window.removeEventListener('orientationchange', binding.resize);
-    clearSwipeStyles(element);
+    binding.resetPresentation();
     swipeBindings.delete(element);
 }
 

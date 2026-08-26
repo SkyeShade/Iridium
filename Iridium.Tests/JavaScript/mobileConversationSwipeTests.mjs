@@ -58,6 +58,46 @@ const flushFrames = () => {
 const source = await readFile(new URL('../../Iridium.UI/wwwroot/js/mobileConversationSwipe.js', import.meta.url), 'utf8');
 const module = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
 
+globalThis.getComputedStyle = element => element.computedStyle;
+const diagnosticElement = (rect, computedStyle, selectors = []) => ({
+    getBoundingClientRect: () => rect,
+    computedStyle,
+    dataset: { mobileContentKind: 'direct' },
+    querySelector: selector => selectors.includes(selector) ? {} : null
+});
+const navigationPanel = diagnosticElement(
+    { x: -390, y: 0, width: 390, height: 780 },
+    { display: 'grid', visibility: 'hidden', transform: 'matrix(1, 0, 0, 1, -390, 0)', zIndex: '20' });
+const conversationPanel = diagnosticElement(
+    { x: 0, y: 0, width: 390, height: 780 },
+    { display: 'flex', visibility: 'visible', transform: 'matrix(1, 0, 0, 1, 0, 0)', zIndex: '30' },
+    ['.mobile-conversation-header', '.main-content-slot', '.direct-message-view', '.dm-message-region',
+        '.dm-message-history', '.message-list', '.composer-wrap']);
+const panelSnapshot = module.inspectMobilePanels(
+    { className: 'app-shell mobile-conversation' }, navigationPanel, conversationPanel);
+assert.equal(panelSnapshot.navigationX, -390);
+assert.equal(panelSnapshot.navigationWidth, 390);
+assert.equal(panelSnapshot.conversationX, 0);
+assert.equal(panelSnapshot.conversationWidth, 390);
+assert.equal(panelSnapshot.contentKind, 'direct');
+assert.equal(panelSnapshot.hasHeader, true);
+assert.equal(panelSnapshot.hasDirectMessageView, true);
+assert.equal(panelSnapshot.hasChannelView, false);
+assert.equal(panelSnapshot.hasDmMessageRegion, true);
+assert.equal(panelSnapshot.hasDmMessageHistory, true);
+assert.equal(panelSnapshot.hasMessageList, true);
+assert.equal(panelSnapshot.hasComposer, true);
+assert.deepEqual(panelSnapshot.missingNodes, []);
+
+const blankConversation = diagnosticElement(
+    { x: 0, y: 0, width: 390, height: 780 },
+    { display: 'flex', visibility: 'visible', transform: 'matrix(1, 0, 0, 1, 0, 0)', zIndex: '30' });
+const blankSnapshot = module.inspectMobilePanels(
+    { className: 'app-shell mobile-conversation' }, navigationPanel, blankConversation);
+assert.deepEqual(blankSnapshot.missingNodes,
+    ['mobile-conversation-header', 'main-content-slot', 'direct-message-view', 'dm-message-region',
+        'dm-message-history', 'message-list', 'composer-wrap']);
+
 assert.equal(module.shouldSuppressMobileSafeBottom(true, false, true, true), false);
 assert.equal(module.shouldSuppressMobileSafeBottom(true, true, true, true), true);
 assert.equal(module.shouldSuppressMobileSafeBottom(false, true, true, true), false);

@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Components.Web;
 using Microsoft.AspNetCore.Components.WebAssembly.Hosting;
 using Iridium.Web;
 using Iridium.Client.Core;
+using Iridium.UI;
 using Iridium.Web.Services;
 
 var builder = WebAssemblyHostBuilder.CreateDefault(args);
@@ -22,6 +23,7 @@ builder.Services.AddScoped<BrowserClientStorage>();
 builder.Services.AddScoped<AppearanceService>();
 builder.Services.AddScoped<MessageMenuCoordinator>();
 builder.Services.AddScoped<ModifierKeyStateService>();
+builder.Services.AddScoped<MobilePanelNavigationState>();
 builder.Services.AddScoped<EmojiDetailPopupCoordinator>();
 builder.Services.AddScoped<UiSoundService>();
 builder.Services.AddScoped<FaviconNotificationService>();
