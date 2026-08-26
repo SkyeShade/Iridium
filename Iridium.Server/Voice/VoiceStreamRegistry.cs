@@ -43,6 +43,20 @@ public sealed class VoiceStreamRegistry(TimeProvider timeProvider)
         }
     }
 
+    public PublishedVoiceStreamDto? Update(VoiceMediaSessionKind kind, Guid sessionId, Guid streamId,
+        string ownerConnectionId, bool hasAudio)
+    {
+        lock (_gate)
+        {
+            var key = (kind, sessionId, streamId);
+            if (!_streams.TryGetValue(key, out var entry) || entry.OwnerConnectionId != ownerConnectionId)
+                return null;
+            var stream = entry.Stream with { HasAudio = hasAudio };
+            _streams[key] = entry with { Stream = stream };
+            return stream;
+        }
+    }
+
     public VoiceStreamEndedEvent? Stop(VoiceMediaSessionKind kind, Guid sessionId, Guid streamId,
         string ownerConnectionId, string reason)
     {

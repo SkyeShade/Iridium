@@ -294,6 +294,18 @@ public sealed class CallClientService(
         await WatchStreamAsync(publishedStream.StreamId, cancellationToken);
     }
 
+    public async Task SwitchScreenShareAsync(CancellationToken cancellationToken = default)
+    {
+        var stream = _publishedStreams.FirstOrDefault(value => value.OwnerAccountId == _accountId &&
+            value.Kind == VoicePublishedStreamKind.ScreenShare);
+        if (stream is null || CurrentCall is null || !IsSignalingConnected) return;
+        var publication = await media.SwitchScreenShareAsync(cancellationToken);
+        var updated = await _connection!.InvokeAsync<PublishedVoiceStreamDto>(VoiceStreamHubContract.Update,
+            VoiceMediaSessionKind.DirectCall, CurrentCall.Id, stream.StreamId, publication.HasAudio,
+            cancellationToken);
+        ApplyPublishedStream(updated);
+    }
+
     public async Task StopScreenShareAsync(string reason = "UserStoppedInIridium",
         CancellationToken cancellationToken = default)
     {
@@ -341,9 +353,11 @@ public sealed class CallClientService(
         NotifyChanged();
     }
 
-    public Task AttachWatchedStreamAsync(string elementId, CancellationToken cancellationToken = default) =>
+    public Task AttachWatchedStreamAsync(string elementId, int volumePercent = 100,
+        CancellationToken cancellationToken = default) =>
         WatchedStream is { } stream
-            ? media.AttachStreamViewerAsync(stream.MediaStreamId, elementId, audioMuted: !stream.HasAudio, cancellationToken)
+            ? media.AttachStreamViewerAsync(stream.MediaStreamId, elementId, audioMuted: !stream.HasAudio,
+                volumePercent, cancellationToken)
             : Task.CompletedTask;
 
     public Task DetachWatchedStreamAsync(string elementId, CancellationToken cancellationToken = default) =>
@@ -352,6 +366,10 @@ public sealed class CallClientService(
     public Task SetStreamAudioMutedAsync(string elementId, bool muted,
         CancellationToken cancellationToken = default) =>
         media.SetStreamAudioMutedAsync(elementId, muted, cancellationToken);
+
+    public Task SetStreamAudioVolumeAsync(string elementId, int volumePercent,
+        CancellationToken cancellationToken = default) =>
+        media.SetStreamAudioVolumeAsync(elementId, volumePercent, cancellationToken);
 
     public Task RequestStreamFullscreenAsync(string elementId, CancellationToken cancellationToken = default) =>
         media.RequestStreamFullscreenAsync(elementId, cancellationToken);
@@ -1337,6 +1355,7 @@ public sealed class CallClientService(
         _publishedStreams.RemoveAll(value => value.StreamId == stream.StreamId ||
             value.OwnerAccountId == stream.OwnerAccountId && value.Kind == stream.Kind);
         _publishedStreams.Add(stream);
+        if (WatchedStream?.StreamId == stream.StreamId) WatchedStream = stream;
         NotifyChanged();
     }
 

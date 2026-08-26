@@ -127,6 +127,13 @@ public sealed class ActiveVoiceSessionCoordinator : IAsyncDisposable
         _ => Task.CompletedTask
     };
 
+    public Task SwitchScreenShareAsync(CancellationToken cancellationToken = default) => Current?.Kind switch
+    {
+        ActiveVoiceSessionKind.DirectCall => _direct.SwitchScreenShareAsync(cancellationToken),
+        ActiveVoiceSessionKind.CommunityVoiceChannel => _community.SwitchScreenShareAsync(cancellationToken),
+        _ => Task.CompletedTask
+    };
+
     public async Task WatchStreamAsync(Guid streamId, CancellationToken cancellationToken = default)
     {
         switch (Current?.Kind)
@@ -186,14 +193,15 @@ public sealed class ActiveVoiceSessionCoordinator : IAsyncDisposable
         if (changed) Changed?.Invoke();
     }
 
-    public async Task AttachWatchedStreamAsync(string elementId, CancellationToken cancellationToken = default)
+    public async Task AttachWatchedStreamAsync(string elementId, int volumePercent = 100,
+        CancellationToken cancellationToken = default)
     {
         switch (Current?.Kind)
         {
             case ActiveVoiceSessionKind.DirectCall:
-                await _direct.AttachWatchedStreamAsync(elementId, cancellationToken); break;
+                await _direct.AttachWatchedStreamAsync(elementId, volumePercent, cancellationToken); break;
             case ActiveVoiceSessionKind.CommunityVoiceChannel:
-                await _community.AttachWatchedStreamAsync(elementId, cancellationToken); break;
+                await _community.AttachWatchedStreamAsync(elementId, volumePercent, cancellationToken); break;
             default: return;
         }
         if (WatchedStream is { } stream && IsStreamAudioMuted(stream.StreamId))
@@ -223,6 +231,14 @@ public sealed class ActiveVoiceSessionCoordinator : IAsyncDisposable
             _ => Task.CompletedTask
         };
     }
+
+    public Task SetStreamAudioVolumeAsync(string elementId, int volumePercent,
+        CancellationToken cancellationToken = default) => Current?.Kind switch
+    {
+        ActiveVoiceSessionKind.DirectCall => _direct.SetStreamAudioVolumeAsync(elementId, volumePercent, cancellationToken),
+        ActiveVoiceSessionKind.CommunityVoiceChannel => _community.SetStreamAudioVolumeAsync(elementId, volumePercent, cancellationToken),
+        _ => Task.CompletedTask
+    };
 
     public Task RequestStreamFullscreenAsync(string elementId, CancellationToken cancellationToken = default) =>
         Current?.Kind switch

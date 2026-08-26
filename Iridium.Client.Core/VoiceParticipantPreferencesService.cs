@@ -1,13 +1,16 @@
 namespace Iridium.Client.Core;
 
 public sealed record VoiceParticipantPreference(Guid RemoteAccountId, int VolumePercent = 100,
-    bool LocallyMuted = false)
+    bool LocallyMuted = false, int ScreenShareVolumePercent = 100)
 {
     public const int MinimumVolumePercent = 10;
+    public const int MinimumScreenShareVolumePercent = 0;
     public const int MaximumVolumePercent = 300;
     public VoiceParticipantPreference Normalize() => this with
     {
-        VolumePercent = Math.Clamp(VolumePercent, MinimumVolumePercent, MaximumVolumePercent)
+        VolumePercent = Math.Clamp(VolumePercent, MinimumVolumePercent, MaximumVolumePercent),
+        ScreenShareVolumePercent = Math.Clamp(ScreenShareVolumePercent,
+            MinimumScreenShareVolumePercent, MaximumVolumePercent)
     };
     public double EffectiveGain(bool globallyDeafened) =>
         globallyDeafened || LocallyMuted ? 0 : VolumePercent / 100d;
@@ -41,6 +44,10 @@ public sealed class VoiceParticipantPreferencesService(IVoiceParticipantPreferen
     public Task SetLocallyMutedAsync(Guid remoteAccountId, bool muted,
         CancellationToken cancellationToken = default) =>
         UpdateAsync(remoteAccountId, value => value with { LocallyMuted = muted }, cancellationToken);
+
+    public Task SetScreenShareVolumeAsync(Guid remoteAccountId, int volumePercent,
+        CancellationToken cancellationToken = default) =>
+        UpdateAsync(remoteAccountId, value => value with { ScreenShareVolumePercent = volumePercent }, cancellationToken);
 
     private async Task UpdateAsync(Guid remoteAccountId,
         Func<VoiceParticipantPreference, VoiceParticipantPreference> update, CancellationToken cancellationToken)

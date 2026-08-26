@@ -512,7 +512,7 @@ function detachViewer(session, elementId) {
 }
 
 async function waitForVisualStream(session, mediaStreamId) {
-    if (session.screenShare?.stream?.id === mediaStreamId) return session.screenShare.stream;
+    if (session.screenShare?.mediaStreamId === mediaStreamId) return session.screenShare.stream;
     for (let attempt = 0; attempt < 100; attempt++) {
         const stream = session.visualStreams.get(mediaStreamId);
         if (stream) return stream;
@@ -587,6 +587,42 @@ export async function startScreenShare(id) {
     return { streamId, kind:0, hasAudio:stream.getAudioTracks().length > 0, mediaStreamId:stream.id };
 }
 
+export async function switchScreenShare(id) {
+    const session = requireSession(id), share = session.screenShare;
+    if (!share) throw new DOMException("There is no active screen share.", "InvalidStateError");
+    const replacement = await navigator.mediaDevices.getDisplayMedia({
+        video:{ frameRate:{ ideal:30, max:30 } }, audio:true
+    });
+    const videoTrack = replacement.getVideoTracks()[0];
+    if (!videoTrack) {
+        replacement.getTracks().forEach(track => track.stop());
+        throw new DOMException("Screen capture did not provide a video track.", "NotFoundError");
+    }
+    for (const [participantId, senders] of share.senders) {
+        const state = session.peers.get(participantId); if (!state) continue;
+        const replacementByKind = new Map(replacement.getTracks().map(track => [track.kind, track]));
+        for (const sender of senders) {
+            const kind = sender.track?.kind, next = replacementByKind.get(kind);
+            await sender.replaceTrack(next ?? null); replacementByKind.delete(kind);
+        }
+        const addedTracks = replacementByKind.size > 0;
+        for (const track of replacementByKind.values()) senders.push(state.peer.addTrack(track, replacement));
+        if (addedTracks) await startOffer(session, participantId);
+    }
+    const old = share.stream; share.stream = replacement; share.stopping = false;
+    for (const [elementId, viewer] of session.viewers)
+        if (viewer.mediaStreamId === share.mediaStreamId) {
+            const element = document.getElementById(elementId); if (element) element.srcObject = replacement;
+        }
+    videoTrack.addEventListener("ended", () => {
+        if (session.screenShare?.stream !== replacement || session.screenShare.stopping) return;
+        session.callback.invokeMethodAsync("OnScreenShareEnded", "BrowserStopSharing").catch(() => {});
+    }, { once:true });
+    old.getTracks().forEach(track => track.stop());
+    return { streamId:share.streamId, kind:0, hasAudio:replacement.getAudioTracks().length > 0,
+        mediaStreamId:share.mediaStreamId };
+}
+
 export async function stopScreenShare(id, reason = "UserStoppedInIridium") {
     const session = requireSession(id);
     const share = session.screenShare;
@@ -613,6 +649,7 @@ export async function attachStreamViewer(id, options) {
     detachViewer(session, options.elementId);
     element.srcObject = stream;
     element.muted = !!options.audioMuted || stream.getAudioTracks().length === 0;
+    element.volume = Math.min(1, Math.max(0, Number(options.volumePercent) || 0) / 100);
     element.playsInline = true;
     session.viewers.set(options.elementId, { mediaStreamId:options.mediaStreamId });
     await diagnostic(session, "VideoPlaybackStarted");
@@ -626,6 +663,12 @@ export function setStreamAudioMuted(id, options) {
     requireSession(id);
     const element = document.getElementById(options.elementId);
     if (element) element.muted = !!options.muted;
+}
+
+export function setStreamAudioVolume(id, options) {
+    requireSession(id);
+    const element = document.getElementById(options.elementId);
+    if (element) element.volume = Math.min(1, Math.max(0, Number(options.volumePercent) || 0) / 100);
 }
 
 export async function requestStreamFullscreen(id, elementId) {

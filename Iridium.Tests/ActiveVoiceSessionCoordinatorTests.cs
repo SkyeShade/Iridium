@@ -177,15 +177,18 @@ public sealed class ActiveVoiceSessionCoordinatorTests
         { IsDeafened = !IsDeafened; Changed?.Invoke(); return Task.CompletedTask; }
         public Task StartScreenShareAsync(CancellationToken cancellationToken = default)
         { order.Add("direct-share"); return Task.CompletedTask; }
+        public Task SwitchScreenShareAsync(CancellationToken cancellationToken = default)
+        { order.Add("direct-switch-share"); return Task.CompletedTask; }
         public Task StopScreenShareAsync(string reason = "UserStoppedInIridium", CancellationToken cancellationToken = default)
         { order.Add($"direct-stop-share:{reason}"); return Task.CompletedTask; }
         public Task WatchStreamAsync(Guid streamId, CancellationToken cancellationToken = default)
         { order.Add($"direct-watch:{streamId}"); WatchedStream = TestStream(streamId, AccountId!.Value); Changed?.Invoke(); return Task.CompletedTask; }
         public Task StopWatchingAsync(CancellationToken cancellationToken = default)
         { order.Add("direct-stop-watch"); WatchedStream = null; Changed?.Invoke(); return Task.CompletedTask; }
-        public Task AttachWatchedStreamAsync(string elementId, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task AttachWatchedStreamAsync(string elementId, int volumePercent = 100, CancellationToken cancellationToken = default) => Task.CompletedTask;
         public Task DetachWatchedStreamAsync(string elementId, CancellationToken cancellationToken = default) => Task.CompletedTask;
         public Task SetStreamAudioMutedAsync(string elementId, bool muted, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task SetStreamAudioVolumeAsync(string elementId, int volumePercent, CancellationToken cancellationToken = default) => Task.CompletedTask;
         public Task RequestStreamFullscreenAsync(string elementId, CancellationToken cancellationToken = default) => Task.CompletedTask;
         public Task<string?> CaptureStreamThumbnailAsync(string mediaStreamId, CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
     }
@@ -209,15 +212,18 @@ public sealed class ActiveVoiceSessionCoordinatorTests
         { Deafened = deafened; Changed?.Invoke(); return Task.CompletedTask; }
         public Task StartScreenShareAsync(CancellationToken cancellationToken = default)
         { order.Add("community-share"); return Task.CompletedTask; }
+        public Task SwitchScreenShareAsync(CancellationToken cancellationToken = default)
+        { order.Add("community-switch-share"); return Task.CompletedTask; }
         public Task StopScreenShareAsync(string reason = "UserStoppedInIridium", CancellationToken cancellationToken = default)
         { order.Add($"community-stop-share:{reason}"); return Task.CompletedTask; }
         public Task WatchStreamAsync(Guid streamId, CancellationToken cancellationToken = default)
         { order.Add($"community-watch:{streamId}"); WatchedStream = TestStream(streamId, Guid.NewGuid()); Changed?.Invoke(); return Task.CompletedTask; }
         public Task StopWatchingAsync(CancellationToken cancellationToken = default)
         { order.Add("community-stop-watch"); WatchedStream = null; Changed?.Invoke(); return Task.CompletedTask; }
-        public Task AttachWatchedStreamAsync(string elementId, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task AttachWatchedStreamAsync(string elementId, int volumePercent = 100, CancellationToken cancellationToken = default) => Task.CompletedTask;
         public Task DetachWatchedStreamAsync(string elementId, CancellationToken cancellationToken = default) => Task.CompletedTask;
         public Task SetStreamAudioMutedAsync(string elementId, bool muted, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task SetStreamAudioVolumeAsync(string elementId, int volumePercent, CancellationToken cancellationToken = default) => Task.CompletedTask;
         public Task RequestStreamFullscreenAsync(string elementId, CancellationToken cancellationToken = default) => Task.CompletedTask;
         public Task<string?> CaptureStreamThumbnailAsync(string mediaStreamId, CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
     }

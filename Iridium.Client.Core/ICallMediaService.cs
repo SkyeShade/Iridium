@@ -94,13 +94,16 @@ public interface ICallMediaService : IAsyncDisposable
     Task SetMutedAsync(bool muted, CancellationToken cancellationToken = default);
     Task SetDeafenedAsync(bool deafened, CancellationToken cancellationToken = default);
     Task<LocalVoiceStreamPublication> StartScreenShareAsync(CancellationToken cancellationToken = default);
+    Task<LocalVoiceStreamPublication> SwitchScreenShareAsync(CancellationToken cancellationToken = default);
     Task StopScreenShareAsync(string reason, CancellationToken cancellationToken = default);
-    Task AttachStreamViewerAsync(string mediaStreamId, string elementId, bool audioMuted,
+    Task AttachStreamViewerAsync(string mediaStreamId, string elementId, bool audioMuted, int volumePercent,
         CancellationToken cancellationToken = default);
     Task DetachStreamViewerAsync(string elementId, CancellationToken cancellationToken = default);
     Task SetStreamSubscriptionAsync(string mediaStreamId, bool subscribed,
         CancellationToken cancellationToken = default) => Task.CompletedTask;
     Task SetStreamAudioMutedAsync(string elementId, bool muted, CancellationToken cancellationToken = default);
+    Task SetStreamAudioVolumeAsync(string elementId, int volumePercent,
+        CancellationToken cancellationToken = default);
     Task RequestStreamFullscreenAsync(string elementId, CancellationToken cancellationToken = default);
     Task<string?> CaptureStreamThumbnailAsync(string mediaStreamId, CancellationToken cancellationToken = default);
     Task<WebRtcDiagnosticSnapshot?> GetDiagnosticSnapshotAsync(CancellationToken cancellationToken = default);

@@ -46,6 +46,25 @@ public sealed class VoiceStreamRegistryTests
         Assert.Equal(4, ProfileBannerLimits.MaximumPresets);
     }
 
+    [Fact]
+    public void UpdatingShareAudioPreservesStreamIdentityAndWatcher()
+    {
+        var registry = new VoiceStreamRegistry(TimeProvider.System);
+        var sessionId = Guid.NewGuid();
+        var stream = registry.Publish(VoiceMediaSessionKind.DirectCall, sessionId, Guid.NewGuid(),
+            "Alice", "publisher", Request() with { HasAudio = false }).Stream;
+        Assert.True(registry.Watch("viewer", VoiceMediaSessionKind.DirectCall, sessionId, stream.StreamId));
+
+        var updated = registry.Update(VoiceMediaSessionKind.DirectCall, sessionId, stream.StreamId,
+            "publisher", hasAudio: true);
+
+        Assert.NotNull(updated);
+        Assert.Equal(stream.StreamId, updated.StreamId);
+        Assert.Equal(stream.MediaStreamId, updated.MediaStreamId);
+        Assert.True(updated.HasAudio);
+        Assert.False(registry.Watch("missing", VoiceMediaSessionKind.DirectCall, sessionId, Guid.NewGuid()));
+    }
+
     private static PublishVoiceStreamRequest Request() => new(Guid.NewGuid(),
         VoicePublishedStreamKind.ScreenShare, true, $"browser-{Guid.NewGuid():N}");
 }

@@ -85,12 +85,15 @@ public sealed class BrowserCommunityVoiceMediaClient(IJSRuntime js, ILogger<Brow
     public Task<LocalVoiceStreamPublication> StartScreenShareAsync(CancellationToken cancellationToken = default) =>
         InvokeResultAsync<LocalVoiceStreamPublication>("startScreenShare", cancellationToken);
 
+    public Task<LocalVoiceStreamPublication> SwitchScreenShareAsync(CancellationToken cancellationToken = default) =>
+        InvokeResultAsync<LocalVoiceStreamPublication>("switchScreenShare", cancellationToken);
+
     public Task StopScreenShareAsync(string reason, CancellationToken cancellationToken = default) =>
         InvokeAsync("stopScreenShare", cancellationToken, reason);
 
-    public Task AttachStreamViewerAsync(string mediaStreamId, string elementId, bool audioMuted,
+    public Task AttachStreamViewerAsync(string mediaStreamId, string elementId, bool audioMuted, int volumePercent,
         CancellationToken cancellationToken = default) =>
-        InvokeAsync("attachStreamViewer", cancellationToken, new { mediaStreamId, elementId, audioMuted });
+        InvokeAsync("attachStreamViewer", cancellationToken, new { mediaStreamId, elementId, audioMuted, volumePercent });
 
     public Task DetachStreamViewerAsync(string elementId, CancellationToken cancellationToken = default) =>
         InvokeAsync("detachStreamViewer", cancellationToken, elementId);
@@ -98,6 +101,10 @@ public sealed class BrowserCommunityVoiceMediaClient(IJSRuntime js, ILogger<Brow
     public Task SetStreamAudioMutedAsync(string elementId, bool muted,
         CancellationToken cancellationToken = default) =>
         InvokeAsync("setStreamAudioMuted", cancellationToken, new { elementId, muted });
+
+    public Task SetStreamAudioVolumeAsync(string elementId, int volumePercent,
+        CancellationToken cancellationToken = default) =>
+        InvokeAsync("setStreamAudioVolume", cancellationToken, new { elementId, volumePercent });
 
     public Task RequestStreamFullscreenAsync(string elementId, CancellationToken cancellationToken = default) =>
         InvokeAsync("requestStreamFullscreen", cancellationToken, elementId);

@@ -17,10 +17,12 @@
         <div class="voice-controls">
             @if (LocalScreenShare is null && session.CanPublishMedia && ScreenShareCapability.IsSupported)
             {
-                <button title="Share screen" @onclick="StartScreenShareAsync"><Icon Name="screen" /></button>
+                <button title="Share screen. Audio availability depends on the selected source and browser."
+                        aria-label="Share screen" @onclick="StartScreenShareAsync"><Icon Name="screen" /></button>
             }
-            else
+            else if (LocalScreenShare is not null)
             {
+                <button class="streaming" title="Switch shared source" @onclick="SwitchScreenShareAsync"><Icon Name="refresh" /></button>
                 <button class="streaming" title="Stop sharing screen" @onclick="StopScreenShareAsync"><Icon Name="screen" /></button>
             }
             <button class="@(session.Muted ? "active" : null)" title="@(session.Muted ? "Unmute" : "Mute")" @onclick="ToggleMuteAsync"><Icon Name="microphone" /></button>
@@ -59,6 +61,15 @@
     {
         try { _streamError = null; await Voice.StopScreenShareAsync(); }
         catch (Exception exception) { _streamError = exception.Message; }
+    }
+    private async Task SwitchScreenShareAsync()
+    {
+        try { _streamError = null; await Voice.SwitchScreenShareAsync(); }
+        catch (Exception exception)
+        {
+            Logger.LogDebug(exception, "Screen share source could not be switched");
+            _streamError = ScreenShareFailure.UserMessage(exception);
+        }
     }
     private static string Status(ActiveVoiceSession session) => session.ConnectionState switch
     {

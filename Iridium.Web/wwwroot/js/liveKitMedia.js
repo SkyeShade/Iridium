@@ -1,4 +1,5 @@
-import { createRemoteVoicePlayback, updateRemoteVoicePlayback, destroyRemoteVoicePlayback } from "./voicePlayback.js";
+import { createRemoteVoicePlayback, updateRemoteVoicePlayback, destroyRemoteVoicePlayback,
+    resumeRemoteVoicePlayback } from "./voicePlayback.js";
 
 const sessions = new Map();
 
@@ -320,15 +321,43 @@ function matchingTracks(session, mediaStreamId) {
     return publications.map(p => p.track.mediaStreamTrack);
 }
 
-function refreshViewers(session, mediaStreamId) {
+async function refreshViewers(session, mediaStreamId) {
     for (const viewer of session.viewers.values()) {
         if (viewer.mediaStreamId !== mediaStreamId) continue;
+        const refreshGeneration = ++viewer.refreshGeneration;
         const element = document.getElementById(viewer.elementId);
         if (!element) continue;
-        element.srcObject = new MediaStream(matchingTracks(session, mediaStreamId));
-        element.muted = viewer.audioMuted;
+        const tracks = matchingTracks(session, mediaStreamId);
+        const videoTracks = tracks.filter(track => track.kind === "video");
+        const audioTrack = tracks.find(track => track.kind === "audio");
+        element.srcObject = new MediaStream(videoTracks);
+        // Shared audio has exactly one playback path: a separate GainNode graph. The video is
+        // always muted so attaching the combined LiveKit stream cannot duplicate audio.
+        element.muted = true;
         element.playsInline = true;
-        element.play?.().catch(() => {});
+        try { await element.play?.(); }
+        catch (error) {
+            if (session.diagnostics) console.debug("LiveKit screen video play blocked", { name: error?.name });
+        }
+        if (viewer.audioTrackId === audioTrack?.id) continue;
+        if (viewer.audioPlayback) destroyRemoteVoicePlayback(viewer.audioPlayback);
+        viewer.audioPlayback = null;
+        viewer.audioTrackId = audioTrack?.id ?? null;
+        if (!audioTrack) continue;
+        const playback = await createRemoteVoicePlayback(new MediaStream([audioTrack]), session.audioContext, {
+            volumePercent: viewer.volumePercent, minimumVolumePercent: 0,
+            locallyMuted: viewer.audioMuted, deafened: session.deafened,
+            diagnostic: (event, details) => session.diagnostics && console.debug("LiveKit screen audio", event, {
+                mediaStreamId, volumePercent: viewer.volumePercent, muted: viewer.audioMuted,
+                deafened: session.deafened, ...details
+            })
+        });
+        if (viewer.refreshGeneration !== refreshGeneration) {
+            destroyRemoteVoicePlayback(playback);
+            continue;
+        }
+        viewer.audioPlayback = playback;
+        element.dataset.audioBlocked = playback.playBlocked ? "true" : "false";
     }
 }
 
@@ -345,7 +374,7 @@ async function connectCore(callbackRef, nodeSession, preferences, kind, peerGene
         room: new Room({ autoSubscribe: false, adaptiveStream: false, dynacast: true }),
         preferences: new Map((preferences ?? []).map(p => [accountKey(p.remoteAccountId), p])),
         playbacks: new Map(), viewers: new Map(), watched: new Set(), deafened: false,
-        screenTracks: [], screenStreamId: null,
+        screenTracks: [], screenStreamId: null, screenMediaStreamId: null, screenGeneration: 0,
         audioContext: (globalThis.AudioContext || globalThis.webkitAudioContext)
             ? new (globalThis.AudioContext || globalThis.webkitAudioContext)() : null
     };
@@ -399,6 +428,8 @@ export function setDeafened(id, deafened) {
     session.deafened = deafened;
     for (const [identity, playback] of session.playbacks)
         updateRemoteVoicePlayback(playback, { ...preferenceFor(session, identity), deafened });
+    for (const viewer of session.viewers.values())
+        updateRemoteVoicePlayback(viewer.audioPlayback, { deafened });
 }
 
 export function setParticipantPreference(id, preference) {
@@ -408,27 +439,55 @@ export function setParticipantPreference(id, preference) {
     updateRemoteVoicePlayback(session.playbacks.get(key), { ...preference, deafened: session.deafened });
 }
 
-export async function startScreenShare(id) {
-    const session = sessions.get(id); if (!session) throw new Error("LiveKit media is not connected.");
-    if (!navigator.mediaDevices?.getDisplayMedia)
-        throw new DOMException("Display capture is unavailable on this browser or device.", "NotSupportedError");
-    await stopScreenShare(id, "Replaced");
-    const { createLocalScreenTracks } = sdk();
-    const streamId = crypto.randomUUID(), mediaStreamId = `iridium-screen-${streamId.replaceAll("-", "")}`;
-    const captureOptions = { audio: true, contentHint: "detail" };
-    // LiveKit intentionally leaves Safari screen capture uncapped because applying a resolution
-    // constraint can produce a low-resolution track there; other browsers target native up to 4K60.
-    if (sdk().getBrowser?.()?.name !== "Safari") captureOptions.resolution = screenCaptureTarget;
-    const tracks = await createLocalScreenTracks(captureOptions);
-    session.screenTracks = tracks; session.screenStreamId = streamId;
+export function screenShareCaptureOptions(supported = {}, safari = false) {
+    const captureOptions = { audio: true, video: true };
+    // suppressLocalAudioPlayback is a constrainable property on supporting engines. Unknown
+    // display-picker options are deliberately not guessed, preserving Safari/mobile behavior.
+    if (supported.suppressLocalAudioPlayback)
+        captureOptions.audio = { suppressLocalAudioPlayback: false };
+    // systemAudio is a standardized optional display-picker hint; engines that do not implement
+    // the dictionary member ignore it. It requests browser-provided audio without fabricating it.
+    captureOptions.systemAudio = "include";
+    captureOptions.windowAudio = "window";
+    captureOptions.surfaceSwitching = "include";
+    if (!safari) captureOptions.video = {
+        width: { ideal: screenCaptureTarget.width }, height: { ideal: screenCaptureTarget.height },
+        frameRate: { ideal: screenCaptureTarget.frameRate, max: screenCaptureTarget.frameRate }
+    };
+    return captureOptions;
+}
+
+async function captureScreenTracks() {
+    const { LocalVideoTrack, LocalAudioTrack, Track } = sdk();
+    const supported = navigator.mediaDevices?.getSupportedConstraints?.() ?? {};
+    const media = await navigator.mediaDevices.getDisplayMedia(
+        screenShareCaptureOptions(supported, sdk().getBrowser?.()?.name === "Safari"));
+    const video = media.getVideoTracks()[0];
+    if (!video) {
+        media.getTracks().forEach(track => track.stop());
+        throw new DOMException("Screen capture did not provide a video track.", "NotFoundError");
+    }
+    const videoTrack = new LocalVideoTrack(video, undefined, false);
+    videoTrack.source = Track.Source.ScreenShare;
+    const tracks = [videoTrack], audio = media.getAudioTracks()[0];
+    if (audio) {
+        const audioTrack = new LocalAudioTrack(audio, undefined, false);
+        audioTrack.source = Track.Source.ScreenShareAudio;
+        tracks.push(audioTrack);
+    }
+    return tracks;
+}
+
+async function publishScreenTracks(session, tracks, mediaStreamId) {
     for (const track of tracks) {
-        track.mediaStreamTrack.addEventListener("ended", () => stopScreenShare(id, "BrowserEnded"), { once: true });
         if (track.kind === "video") {
-            // Preserve source glyph/detail fidelity; bitrate is selected after the browser reports actual capture geometry.
             track.mediaStreamTrack.contentHint = "detail";
             const profile = screenSharePublishOptions(track, mediaStreamId);
             await session.room.localParticipant.publishTrack(track, profile.options);
-            if (session.diagnostics) console.debug("LiveKit screen share captured", {
+            if (session.diagnostics) console.debug("LiveKit screen share published", {
+                displayVideoTrackPresent: true, displayAudioTrackPresent: tracks.some(value => value.kind === "audio"),
+                displaySurface: track.mediaStreamTrack.getSettings().displaySurface ?? null,
+                audioTrackPublished: tracks.some(value => value.kind === "audio"),
                 ...profile.settings, contentHint: track.mediaStreamTrack.contentHint,
                 codec: profile.options.videoCodec, targetMaxBitrateBps: profile.maxBitrate,
                 configuredSimulcastLayers: profile.options.screenShareSimulcastLayers.length + 1,
@@ -446,12 +505,77 @@ export async function startScreenShare(id) {
             });
         }
     }
+}
+
+function wireScreenEnded(session, tracks, generation) {
+    const video = tracks.find(track => track.kind === "video");
+    video?.mediaStreamTrack.addEventListener("ended", () => {
+        if (session.screenGeneration === generation)
+            stopScreenShare(session.id, "BrowserEnded");
+    }, { once: true });
+}
+
+export async function startScreenShare(id) {
+    const session = sessions.get(id); if (!session) throw new Error("LiveKit media is not connected.");
+    if (!navigator.mediaDevices?.getDisplayMedia)
+        throw new DOMException("Display capture is unavailable on this browser or device.", "NotSupportedError");
+    if (session.screenTracks.length) return switchScreenShare(id);
+    const streamId = crypto.randomUUID(), mediaStreamId = `iridium-screen-${streamId.replaceAll("-", "")}`;
+    const tracks = await captureScreenTracks();
+    try { await publishScreenTracks(session, tracks, mediaStreamId); }
+    catch (error) {
+        for (const track of tracks) {
+            try { await session.room.localParticipant.unpublishTrack(track, true); } catch { }
+            track.stop();
+        }
+        throw error;
+    }
+    session.screenTracks = tracks; session.screenStreamId = streamId; session.screenMediaStreamId = mediaStreamId;
+    wireScreenEnded(session, tracks, ++session.screenGeneration);
     return { streamId, kind: 0, hasAudio: tracks.some(t => t.kind === "audio"), mediaStreamId };
+}
+
+export async function switchScreenShare(id) {
+    const session = sessions.get(id); if (!session?.screenTracks.length)
+        throw new Error("There is no active screen share to switch.");
+    if (!navigator.mediaDevices?.getDisplayMedia)
+        throw new DOMException("Display capture is unavailable on this browser or device.", "NotSupportedError");
+    // Capture first. Picker cancellation or capture failure therefore cannot disturb the old share.
+    const replacement = await captureScreenTracks();
+    const previous = await replacePublishedScreenTracks(session, replacement);
+    session.screenTracks = replacement;
+    wireScreenEnded(session, replacement, ++session.screenGeneration);
+    for (const track of previous) track.stop();
+    refreshViewers(session, session.screenMediaStreamId);
+    return {
+        streamId: session.screenStreamId, kind: 0,
+        hasAudio: replacement.some(track => track.kind === "audio"),
+        mediaStreamId: session.screenMediaStreamId
+    };
+}
+
+export async function replacePublishedScreenTracks(session, replacement) {
+    const previous = session.screenTracks.slice();
+    try {
+        for (const track of previous)
+            await session.room.localParticipant.unpublishTrack(track, false);
+        await publishScreenTracks(session, replacement, session.screenMediaStreamId);
+    } catch (error) {
+        for (const track of replacement) {
+            try { await session.room.localParticipant.unpublishTrack(track, true); } catch { }
+            track.stop();
+        }
+        // Best-effort rollback keeps the existing browser capture and Iridium stream alive.
+        try { await publishScreenTracks(session, previous, session.screenMediaStreamId); } catch { }
+        throw error;
+    }
+    return previous;
 }
 
 export async function stopScreenShare(id, reason) {
     const session = sessions.get(id); if (!session || session.screenTracks.length === 0) return;
     const tracks = session.screenTracks.splice(0); session.screenStreamId = null;
+    session.screenMediaStreamId = null; session.screenGeneration++;
     for (const track of tracks) {
         try { await session.room.localParticipant.unpublishTrack(track); } catch { }
         track.stop();
@@ -468,9 +592,11 @@ export function setStreamSubscription(id, mediaStreamId, subscribed) {
     refreshViewers(session, mediaStreamId);
 }
 
-export function attachStreamViewer(id, mediaStreamId, elementId, audioMuted) {
+export function attachStreamViewer(id, mediaStreamId, elementId, audioMuted, volumePercent = 100) {
     const session = sessions.get(id); if (!session) return;
-    session.viewers.set(elementId, { mediaStreamId, elementId, audioMuted });
+    session.viewers.set(elementId, { mediaStreamId, elementId, audioMuted,
+        volumePercent: Math.min(300, Math.max(0, Number(volumePercent) || 0)),
+        audioTrackId: null, audioPlayback: null, refreshGeneration: 0 });
     setStreamSubscription(id, mediaStreamId, true); refreshViewers(session, mediaStreamId);
 }
 
@@ -478,15 +604,32 @@ export function detachStreamViewer(id, elementId) {
     const session = sessions.get(id); if (!session) return;
     const viewer = session.viewers.get(elementId), element = document.getElementById(elementId);
     if (element) { element.pause?.(); element.srcObject = null; }
+    if (viewer?.audioPlayback) destroyRemoteVoicePlayback(viewer.audioPlayback);
     session.viewers.delete(elementId);
     if (viewer && !Array.from(session.viewers.values()).some(v => v.mediaStreamId === viewer.mediaStreamId))
         setStreamSubscription(id, viewer.mediaStreamId, session.watched.has(viewer.mediaStreamId));
 }
 
-export function setStreamAudioMuted(id, elementId, muted) {
+export async function setStreamAudioMuted(id, elementId, muted) {
     const session = sessions.get(id), viewer = session?.viewers.get(elementId);
     if (viewer) viewer.audioMuted = muted;
-    const element = document.getElementById(elementId); if (element) element.muted = muted;
+    updateRemoteVoicePlayback(viewer?.audioPlayback, { locallyMuted: muted, deafened: session?.deafened });
+    if (!muted && viewer?.audioPlayback) {
+        await resumeRemoteVoicePlayback(viewer.audioPlayback);
+        const element = document.getElementById(elementId);
+        if (element) element.dataset.audioBlocked = viewer.audioPlayback.playBlocked ? "true" : "false";
+    }
+}
+
+export async function setStreamAudioVolume(id, elementId, volumePercent) {
+    const session = sessions.get(id), viewer = session?.viewers.get(elementId);
+    if (!viewer) return;
+    viewer.volumePercent = Math.min(300, Math.max(0, Number(volumePercent) || 0));
+    updateRemoteVoicePlayback(viewer.audioPlayback, { volumePercent: viewer.volumePercent,
+        locallyMuted: viewer.audioMuted, deafened: session.deafened });
+    await resumeRemoteVoicePlayback(viewer.audioPlayback);
+    const element = document.getElementById(elementId);
+    if (element) element.dataset.audioBlocked = viewer.audioPlayback?.playBlocked ? "true" : "false";
 }
 
 export function requestStreamFullscreen(id, elementId) { return document.getElementById(elementId)?.requestFullscreen?.(); }
@@ -506,7 +649,10 @@ export async function disconnect(id, reason) {
     if (session.speakingFrame) cancelAnimationFrame(session.speakingFrame);
     session.speakingAnalyser?.cleanup?.();
     for (const playback of session.playbacks.values()) destroyRemoteVoicePlayback(playback);
-    for (const elementId of session.viewers.keys()) { const element = document.getElementById(elementId); if (element) element.srcObject = null; }
+    for (const viewer of session.viewers.values()) {
+        destroyRemoteVoicePlayback(viewer.audioPlayback);
+        const element = document.getElementById(viewer.elementId); if (element) element.srcObject = null;
+    }
     await session.room.disconnect();
     await session.audioContext?.close?.();
 }

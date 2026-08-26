@@ -245,6 +245,17 @@ public sealed class ChatHub(
         await Clients.Clients(authorizationResult.OtherParticipantIds).SendAsync(VoiceStreamHubContract.Ended, ended);
     }
 
+    public async Task<PublishedVoiceStreamDto> UpdatePublishedVoiceStream(VoiceMediaSessionKind sessionKind,
+        Guid sessionId, Guid streamId, bool hasAudio)
+    {
+        var authorizationResult = await RequireVoiceStreamSessionAsync(sessionKind, sessionId, publishing: true);
+        var stream = voiceStreams.Update(sessionKind, sessionId, streamId, Context.ConnectionId, hasAudio)
+            ?? throw new HubException("That stream is no longer available.");
+        await Clients.Clients(authorizationResult.OtherParticipantIds)
+            .SendAsync(VoiceStreamHubContract.Published, new VoiceStreamPublishedEvent(stream));
+        return stream;
+    }
+
     public async Task WatchVoiceStream(VoiceMediaSessionKind sessionKind, Guid sessionId, Guid streamId)
     {
         await RequireVoiceStreamSessionAsync(sessionKind, sessionId, publishing: false);

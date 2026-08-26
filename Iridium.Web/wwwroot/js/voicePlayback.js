@@ -1,13 +1,19 @@
-function effectiveGain(state) {
+export function effectiveGain(state) {
     return state.deafened || state.locallyMuted ? 0 : state.volumePercent / 100;
 }
 
+export function clampPlaybackVolume(volumePercent, minimumVolumePercent = 10) {
+    return Math.min(300, Math.max(minimumVolumePercent, Number(volumePercent) || 0));
+}
+
 export async function createRemoteVoicePlayback(stream, audioContext, options = {}) {
+    const minimumVolumePercent = options.minimumVolumePercent ?? 10;
     const state = {
-        stream, audioContext, volumePercent: Math.min(300, Math.max(10, options.volumePercent ?? 100)),
+        stream, audioContext, minimumVolumePercent,
+        volumePercent: clampPlaybackVolume(options.volumePercent ?? 100, minimumVolumePercent),
         locallyMuted: options.locallyMuted === true, deafened: options.deafened === true,
         source: null, gain: null, limiter: null, element: null, mode: "none", disposed: false,
-        diagnostic: options.diagnostic ?? (() => {})
+        diagnostic: options.diagnostic ?? (() => {}), playBlocked: false
     };
     const element = document.createElement("audio");
     element.autoplay = true; element.playsInline = true; element.hidden = true;
@@ -24,6 +30,7 @@ export async function createRemoteVoicePlayback(stream, audioContext, options = 
         state.mode = "element";
         state.diagnostic("AudioPlaySucceeded", { elementMuted:element.muted, elementVolume:element.volume });
     } catch (error) {
+        state.playBlocked = true;
         state.diagnostic("AudioPlayFailed", { name:error?.name, message:error?.message,
             elementMuted:element.muted, elementVolume:element.volume });
     }
@@ -45,6 +52,7 @@ export async function createRemoteVoicePlayback(stream, audioContext, options = 
                 element.pause(); element.muted = true;
                 state.source.connect(state.gain).connect(state.limiter).connect(audioContext.destination);
                 state.mode = "webaudio";
+                state.playBlocked = false;
                 state.diagnostic("GainValue", { gainValue:state.gain.gain.value, audioContextState:audioContext.state });
             }
         } catch (error) {
@@ -55,10 +63,28 @@ export async function createRemoteVoicePlayback(stream, audioContext, options = 
     return state;
 }
 
+export async function resumeRemoteVoicePlayback(state) {
+    if (!state || state.disposed) return false;
+    try {
+        if (state.audioContext?.state === "suspended") await state.audioContext.resume();
+        if (state.mode === "none" && state.element) {
+            state.element.muted = state.deafened || state.locallyMuted;
+            await state.element.play();
+            state.mode = "element";
+        }
+        state.playBlocked = false;
+        return true;
+    } catch (error) {
+        state.playBlocked = true;
+        state.diagnostic("AudioPlayFailed", { name:error?.name, message:error?.message });
+        return false;
+    }
+}
+
 export function updateRemoteVoicePlayback(state, options) {
     if (!state || state.disposed) return;
     if (options.volumePercent !== undefined)
-        state.volumePercent = Math.min(300, Math.max(10, options.volumePercent));
+        state.volumePercent = clampPlaybackVolume(options.volumePercent, state.minimumVolumePercent);
     if (options.locallyMuted !== undefined) state.locallyMuted = options.locallyMuted;
     if (options.deafened !== undefined) state.deafened = options.deafened;
     const gain = effectiveGain(state);

@@ -982,7 +982,7 @@ function detachViewer(session, elementId) {
 }
 
 async function waitForVisualStream(session, mediaStreamId) {
-    if (session.screenShare?.stream?.id === mediaStreamId) return session.screenShare.stream;
+    if (session.screenShare?.mediaStreamId === mediaStreamId) return session.screenShare.stream;
     for (let attempt = 0; attempt < 100; attempt++) {
         const stream = session.visualStreams.get(mediaStreamId);
         if (stream) return stream;
@@ -1053,6 +1053,39 @@ export async function startScreenShare(id) {
     return { streamId, kind:0, hasAudio:stream.getAudioTracks().length > 0, mediaStreamId:stream.id };
 }
 
+export async function switchScreenShare(id) {
+    const session = requireSession(id), share = session.screenShare;
+    if (!share) throw new DOMException("There is no active screen share.", "InvalidStateError");
+    const replacement = await navigator.mediaDevices.getDisplayMedia({
+        video:{ frameRate:{ ideal:30, max:30 } }, audio:true
+    });
+    const videoTrack = replacement.getVideoTracks()[0];
+    if (!videoTrack) {
+        replacement.getTracks().forEach(track => track.stop());
+        throw new DOMException("Screen capture did not provide a video track.", "NotFoundError");
+    }
+    const replacementByKind = new Map(replacement.getTracks().map(track => [track.kind, track]));
+    for (const sender of share.senders) {
+        const kind = sender.track?.kind, next = replacementByKind.get(kind);
+        await sender.replaceTrack(next ?? null);
+        replacementByKind.delete(kind);
+    }
+    for (const track of replacementByKind.values()) share.senders.push(session.peer.addTrack(track, replacement));
+    const old = share.stream;
+    share.stream = replacement; share.stopping = false;
+    for (const [elementId, viewer] of session.viewers)
+        if (viewer.mediaStreamId === share.mediaStreamId) {
+            const element = document.getElementById(elementId); if (element) element.srcObject = replacement;
+        }
+    videoTrack.addEventListener("ended", () => {
+        if (session.screenShare?.stream !== replacement || session.screenShare.stopping) return;
+        session.callback.invokeMethodAsync("OnScreenShareEnded", session.peerGeneration, "BrowserStopSharing").catch(() => {});
+    }, { once:true });
+    old.getTracks().forEach(track => track.stop());
+    return { streamId:share.streamId, kind:0, hasAudio:replacement.getAudioTracks().length > 0,
+        mediaStreamId:share.mediaStreamId };
+}
+
 export async function stopScreenShare(id, reason = "UserStoppedInIridium") {
     const session = requireSession(id);
     const share = session.screenShare;
@@ -1066,7 +1099,7 @@ export async function stopScreenShare(id, reason = "UserStoppedInIridium") {
     diagnostic(session, "ScreenShareEnded", { reason, streamId:share.mediaStreamId });
 }
 
-export async function attachStreamViewer(id, mediaStreamId, elementId, audioMuted) {
+export async function attachStreamViewer(id, mediaStreamId, elementId, audioMuted, volumePercent = 100) {
     const session = requireSession(id);
     const stream = await waitForVisualStream(session, mediaStreamId);
     const element = document.getElementById(elementId);
@@ -1074,6 +1107,7 @@ export async function attachStreamViewer(id, mediaStreamId, elementId, audioMute
     detachViewer(session, elementId);
     element.srcObject = stream;
     element.muted = !!audioMuted || stream.getAudioTracks().length === 0;
+    element.volume = Math.min(1, Math.max(0, Number(volumePercent) || 0) / 100);
     element.playsInline = true;
     session.viewers.set(elementId, { mediaStreamId });
     diagnostic(session, "VideoPlaybackStarted", { streamId:mediaStreamId });
@@ -1087,6 +1121,12 @@ export function setStreamAudioMuted(id, elementId, muted) {
     requireSession(id);
     const element = document.getElementById(elementId);
     if (element) element.muted = !!muted;
+}
+
+export function setStreamAudioVolume(id, elementId, volumePercent) {
+    requireSession(id);
+    const element = document.getElementById(elementId);
+    if (element) element.volume = Math.min(1, Math.max(0, Number(volumePercent) || 0) / 100);
 }
 
 export async function requestStreamFullscreen(id, elementId) {

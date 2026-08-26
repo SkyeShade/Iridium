@@ -20,12 +20,14 @@ public interface IDirectVoiceSession
     Task ToggleMuteAsync(CancellationToken cancellationToken = default);
     Task ToggleDeafenAsync(CancellationToken cancellationToken = default);
     Task StartScreenShareAsync(CancellationToken cancellationToken = default);
+    Task SwitchScreenShareAsync(CancellationToken cancellationToken = default);
     Task StopScreenShareAsync(string reason = "UserStoppedInIridium", CancellationToken cancellationToken = default);
     Task WatchStreamAsync(Guid streamId, CancellationToken cancellationToken = default);
     Task StopWatchingAsync(CancellationToken cancellationToken = default);
-    Task AttachWatchedStreamAsync(string elementId, CancellationToken cancellationToken = default);
+    Task AttachWatchedStreamAsync(string elementId, int volumePercent = 100, CancellationToken cancellationToken = default);
     Task DetachWatchedStreamAsync(string elementId, CancellationToken cancellationToken = default);
     Task SetStreamAudioMutedAsync(string elementId, bool muted, CancellationToken cancellationToken = default);
+    Task SetStreamAudioVolumeAsync(string elementId, int volumePercent, CancellationToken cancellationToken = default);
     Task RequestStreamFullscreenAsync(string elementId, CancellationToken cancellationToken = default);
     Task<string?> CaptureStreamThumbnailAsync(string mediaStreamId, CancellationToken cancellationToken = default);
 }
@@ -44,12 +46,14 @@ public interface ICommunityVoiceControlSession
     Task SetMutedAsync(bool muted, CancellationToken cancellationToken = default);
     Task SetDeafenedAsync(bool deafened, CancellationToken cancellationToken = default);
     Task StartScreenShareAsync(CancellationToken cancellationToken = default);
+    Task SwitchScreenShareAsync(CancellationToken cancellationToken = default);
     Task StopScreenShareAsync(string reason = "UserStoppedInIridium", CancellationToken cancellationToken = default);
     Task WatchStreamAsync(Guid streamId, CancellationToken cancellationToken = default);
     Task StopWatchingAsync(CancellationToken cancellationToken = default);
-    Task AttachWatchedStreamAsync(string elementId, CancellationToken cancellationToken = default);
+    Task AttachWatchedStreamAsync(string elementId, int volumePercent = 100, CancellationToken cancellationToken = default);
     Task DetachWatchedStreamAsync(string elementId, CancellationToken cancellationToken = default);
     Task SetStreamAudioMutedAsync(string elementId, bool muted, CancellationToken cancellationToken = default);
+    Task SetStreamAudioVolumeAsync(string elementId, int volumePercent, CancellationToken cancellationToken = default);
     Task RequestStreamFullscreenAsync(string elementId, CancellationToken cancellationToken = default);
     Task<string?> CaptureStreamThumbnailAsync(string mediaStreamId, CancellationToken cancellationToken = default);
 }

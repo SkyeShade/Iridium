@@ -1,10 +1,52 @@
 using Iridium.Client.Core;
 using Iridium.Protocol;
+using System.Text.Json;
 
 namespace Iridium.Tests;
 
 public sealed class VoiceParticipantPreferencesTests
 {
+    [Fact]
+    public async Task ScreenShareVolumeIsIndependentFromVoiceAndPersists()
+    {
+        var store = new MemoryStore();
+        var accountId = Guid.NewGuid();
+        var service = new VoiceParticipantPreferencesService(store);
+        await service.SetVolumeAsync(accountId, 175);
+        await service.SetScreenShareVolumeAsync(accountId, 35);
+
+        var reloaded = await new VoiceParticipantPreferencesService(store).GetAsync(accountId);
+
+        Assert.Equal(175, reloaded.VolumePercent);
+        Assert.Equal(35, reloaded.ScreenShareVolumePercent);
+        Assert.False(reloaded.LocallyMuted);
+    }
+
+    [Fact]
+    public async Task ScreenShareVolumeAllowsZeroAndClampsToSharedMaximum()
+    {
+        var service = new VoiceParticipantPreferencesService(new MemoryStore());
+        var accountId = Guid.NewGuid();
+        await service.SetScreenShareVolumeAsync(accountId, -1);
+        Assert.Equal(0, (await service.GetAsync(accountId)).ScreenShareVolumePercent);
+        await service.SetScreenShareVolumeAsync(accountId, 500);
+        Assert.Equal(300, (await service.GetAsync(accountId)).ScreenShareVolumePercent);
+    }
+
+    [Fact]
+    public void LegacyPreferenceWithoutScreenVolumeUsesCanonicalDefault()
+    {
+        var accountId = Guid.NewGuid();
+        var json = $$"""{"remoteAccountId":"{{accountId}}","volumePercent":140,"locallyMuted":true}""";
+
+        var preference = JsonSerializer.Deserialize<VoiceParticipantPreference>(json,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        Assert.NotNull(preference);
+        Assert.Equal(100, preference.ScreenShareVolumePercent);
+        Assert.Equal(140, preference.VolumePercent);
+    }
+
     [Fact]
     public async Task UnknownParticipantDefaultsToOneHundredPercentAndAudible()
     {

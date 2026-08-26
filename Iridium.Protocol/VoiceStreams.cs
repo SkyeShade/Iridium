@@ -5,6 +5,7 @@ public static class VoiceStreamHubContract
     public const string GetPublished = "GetPublishedVoiceStreams";
     public const string Publish = "PublishVoiceStream";
     public const string StopPublishing = "StopPublishedVoiceStream";
+    public const string Update = "UpdatePublishedVoiceStream";
     public const string Watch = "WatchVoiceStream";
     public const string StopWatching = "StopWatchingVoiceStream";
     public const string Published = "VoiceStreamPublished";

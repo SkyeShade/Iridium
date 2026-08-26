@@ -89,12 +89,15 @@ public sealed class WebRtcCallMediaService(
     public Task<LocalVoiceStreamPublication> StartScreenShareAsync(CancellationToken cancellationToken = default) =>
         InvokeAsync<LocalVoiceStreamPublication>("startScreenShare", cancellationToken);
 
+    public Task<LocalVoiceStreamPublication> SwitchScreenShareAsync(CancellationToken cancellationToken = default) =>
+        InvokeAsync<LocalVoiceStreamPublication>("switchScreenShare", cancellationToken);
+
     public Task StopScreenShareAsync(string reason, CancellationToken cancellationToken = default) =>
         InvokeVoidAsync("stopScreenShare", cancellationToken, reason);
 
-    public Task AttachStreamViewerAsync(string mediaStreamId, string elementId, bool audioMuted,
+    public Task AttachStreamViewerAsync(string mediaStreamId, string elementId, bool audioMuted, int volumePercent,
         CancellationToken cancellationToken = default) =>
-        InvokeVoidAsync("attachStreamViewer", cancellationToken, mediaStreamId, elementId, audioMuted);
+        InvokeVoidAsync("attachStreamViewer", cancellationToken, mediaStreamId, elementId, audioMuted, volumePercent);
 
     public Task DetachStreamViewerAsync(string elementId, CancellationToken cancellationToken = default) =>
         InvokeVoidAsync("detachStreamViewer", cancellationToken, elementId);
@@ -102,6 +105,10 @@ public sealed class WebRtcCallMediaService(
     public Task SetStreamAudioMutedAsync(string elementId, bool muted,
         CancellationToken cancellationToken = default) =>
         InvokeVoidAsync("setStreamAudioMuted", cancellationToken, elementId, muted);
+
+    public Task SetStreamAudioVolumeAsync(string elementId, int volumePercent,
+        CancellationToken cancellationToken = default) =>
+        InvokeVoidAsync("setStreamAudioVolume", cancellationToken, elementId, volumePercent);
 
     public Task RequestStreamFullscreenAsync(string elementId, CancellationToken cancellationToken = default) =>
         InvokeVoidAsync("requestStreamFullscreen", cancellationToken, elementId);

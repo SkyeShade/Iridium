@@ -60,8 +60,8 @@ public sealed class WebRtcClientArchitectureTests
         var sfu = Source("Iridium.Web", "wwwroot", "js", "liveKitMedia.js");
 
         Assert.Contains("width: 3840, height: 2160, frameRate: 60", sfu);
-        Assert.Contains("name !== \"Safari\"", sfu);
-        Assert.Contains("contentHint: \"detail\"", sfu);
+        Assert.Contains("name === \"Safari\"", sfu);
+        Assert.Contains("contentHint = \"detail\"", sfu);
         Assert.Contains("screenShareEncoding: { maxBitrate, maxFramerate: frameRate, priority: \"high\" }", sfu);
         Assert.Contains("screenShareSimulcastLayers", sfu);
         Assert.Contains("simulcast: true", sfu);
@@ -78,6 +78,11 @@ public sealed class WebRtcClientArchitectureTests
         Assert.Contains("senderEncodingSummary(track)", sfu);
         Assert.Contains("qualityLimitationReasons", sfu);
         Assert.Contains("framesPerSecond", sfu);
+        Assert.Contains("systemAudio = \"include\"", sfu);
+        Assert.Contains("replacement = await captureScreenTracks()", sfu);
+        Assert.Contains("streamId: session.screenStreamId", sfu);
+        Assert.Contains("minimumVolumePercent: 0", sfu);
+        Assert.Contains("element.muted = true", sfu);
     }
 
     [Fact]

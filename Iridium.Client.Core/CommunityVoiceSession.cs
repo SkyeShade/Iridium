@@ -163,6 +163,19 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
         await WatchStreamAsync(publishedStream.StreamId, cancellationToken);
     }
 
+    public async Task SwitchScreenShareAsync(CancellationToken cancellationToken = default)
+    {
+        var accountId = nodeSession.Account?.Id;
+        var stream = _publishedStreams.FirstOrDefault(value => value.OwnerAccountId == accountId &&
+            value.Kind == VoicePublishedStreamKind.ScreenShare);
+        if (stream is null || CurrentRoom is null || _connection?.State != HubConnectionState.Connected) return;
+        var publication = await media.SwitchScreenShareAsync(cancellationToken);
+        var updated = await _connection.InvokeAsync<PublishedVoiceStreamDto>(VoiceStreamHubContract.Update,
+            VoiceMediaSessionKind.CommunityVoice, CurrentRoom.ChannelId, stream.StreamId,
+            publication.HasAudio, cancellationToken);
+        ApplyPublishedStream(updated);
+    }
+
     public async Task StopScreenShareAsync(string reason = "UserStoppedInIridium",
         CancellationToken cancellationToken = default)
     {
@@ -203,9 +216,11 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
         Changed?.Invoke();
     }
 
-    public Task AttachWatchedStreamAsync(string elementId, CancellationToken cancellationToken = default) =>
+    public Task AttachWatchedStreamAsync(string elementId, int volumePercent = 100,
+        CancellationToken cancellationToken = default) =>
         WatchedStream is { } stream
-            ? media.AttachStreamViewerAsync(stream.MediaStreamId, elementId, audioMuted: !stream.HasAudio, cancellationToken)
+            ? media.AttachStreamViewerAsync(stream.MediaStreamId, elementId, audioMuted: !stream.HasAudio,
+                volumePercent, cancellationToken)
             : Task.CompletedTask;
 
     public Task DetachWatchedStreamAsync(string elementId, CancellationToken cancellationToken = default) =>
@@ -214,6 +229,10 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
     public Task SetStreamAudioMutedAsync(string elementId, bool muted,
         CancellationToken cancellationToken = default) =>
         media.SetStreamAudioMutedAsync(elementId, muted, cancellationToken);
+
+    public Task SetStreamAudioVolumeAsync(string elementId, int volumePercent,
+        CancellationToken cancellationToken = default) =>
+        media.SetStreamAudioVolumeAsync(elementId, volumePercent, cancellationToken);
 
     public Task RequestStreamFullscreenAsync(string elementId, CancellationToken cancellationToken = default) =>
         media.RequestStreamFullscreenAsync(elementId, cancellationToken);
@@ -399,6 +418,7 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
         _publishedStreams.RemoveAll(value => value.StreamId == stream.StreamId ||
             value.OwnerAccountId == stream.OwnerAccountId && value.Kind == stream.Kind);
         _publishedStreams.Add(stream);
+        if (WatchedStream?.StreamId == stream.StreamId) WatchedStream = stream;
         Changed?.Invoke();
     }
 

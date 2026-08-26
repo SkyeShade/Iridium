@@ -93,7 +93,7 @@ else if (CallForConversation is { } call)
                 @if (IsSharing || CanStartScreenShare)
                 {
                     <button type="button" class="call-control @(IsSharing ? "selected" : null)"
-                            title="@(IsSharing ? "Stop sharing" : "Share screen")" @onclick="ToggleScreenShareAsync">
+                            title="@(IsSharing ? "Stop sharing" : "Share screen. Audio availability depends on the selected source and browser.")" @onclick="ToggleScreenShareAsync">
                         <Icon Name="screen" /><span>@(IsSharing ? "Stop Sharing" : "Share Screen")</span>
                     </button>
                 }

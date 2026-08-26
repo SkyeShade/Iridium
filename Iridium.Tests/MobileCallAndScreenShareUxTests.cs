@@ -95,7 +95,10 @@ public sealed class MobileCallAndScreenShareUxTests
         Assert.Contains("IsSharing || CanStartScreenShare", directStage);
         Assert.Contains("ScreenShareFailure.UserMessage(exception)", directStage);
         Assert.Contains("typeof navigator?.mediaDevices?.getDisplayMedia === \"function\"", capability);
-        Assert.Contains("@media(max-width:860px){.voice-stream-viewer.floating{display:none}}", viewerCss);
+        Assert.Contains(".voice-stream-viewer.floating{display:none}", viewerCss);
+        Assert.Contains("object-fit:contain", viewerCss);
+        Assert.Contains("orientation:landscape", viewerCss);
+        Assert.Contains("min-width:44px;min-height:44px", viewerCss);
     }
 
     private static CallSessionDto Call(Guid conversationId, CallState state = CallState.Active) => new(

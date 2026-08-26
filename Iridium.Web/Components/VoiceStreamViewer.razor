@@ -2,7 +2,9 @@
 @using Iridium.Protocol
 @implements IAsyncDisposable
 @inject ActiveVoiceSessionCoordinator Voice
+@inject VoiceParticipantPreferencesService Preferences
 @inject IJSRuntime JS
+@inject ILogger<VoiceStreamViewer> Logger
 
 @if (Voice.WatchedStream is { } stream)
 {
@@ -14,21 +16,39 @@
                 <div class="toolbar-actions">
                     @if (stream.HasAudio)
                     {
+                        <div class="stream-volume-control">
                         <button type="button" class="@(_audioMuted ? "selected" : null)"
                                 title="@(_audioMuted ? "Unmute stream audio" : "Mute stream audio")"
+                                aria-label="@(_audioMuted ? "Unmute shared stream audio" : "Mute shared stream audio")"
                                 @onclick="ToggleStreamAudioAsync"><Icon Name="speaker" /></button>
+                        <details>
+                        <summary aria-label="Adjust shared stream volume">@_audioVolume%</summary>
+                        <label title="Shared stream volume is local to this device">
+                            <span class="sr-only">Shared stream volume</span>
+                            <input type="range" min="0" max="300" step="5" value="@_audioVolume"
+                                   aria-label="Shared stream volume" @oninput="SetStreamVolumeAsync" />
+                            <output>@_audioVolume%</output>
+                        </label>
+                        </details>
+                        </div>
                     }
                     else
                     {
-                        <span class="no-audio" title="This stream has no shared audio"><Icon Name="speaker" /> No audio</span>
+                        <span class="no-audio" title="Audio availability depends on the selected source and browser."><Icon Name="speaker" /> No share audio</span>
                     }
-                    <button type="button" title="Fullscreen" @onclick="FullscreenAsync"><Icon Name="fullscreen" /></button>
+                    @if (_fullscreenSupported)
+                    {
+                        <button type="button" title="Fullscreen" aria-label="View stream fullscreen"
+                                @onclick="FullscreenAsync"><Icon Name="fullscreen" /></button>
+                    }
                     @if (!Floating)
                     {
                         <button type="button" title="Minimize to floating viewer" @onclick="MinimizeAsync"><Icon Name="minus" /></button>
                     }
                     @if (stream.OwnerAccountId == Voice.LocalAccountId)
                     {
+                        <button type="button" title="Choose a different screen, window, or tab"
+                                aria-label="Switch shared source" @onclick="SwitchSharingAsync"><Icon Name="refresh" /></button>
                         <button type="button" title="Stop sharing" @onclick="StopSharingAsync"><Icon Name="screen" /></button>
                     }
                     <button type="button" title="Stop watching" @onclick="CloseAsync"><Icon Name="close" /></button>
@@ -84,6 +104,8 @@
     private readonly string _containerId = $"floating-stream-{Guid.NewGuid():N}";
     private Guid? _attachedStreamId;
     private bool _audioMuted;
+    private int _audioVolume = 100;
+    private bool _fullscreenSupported;
     private string? _error;
     private IJSObjectReference? _floatingModule;
     private IJSObjectReference? _floatingHandle;
@@ -94,13 +116,29 @@
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         var stream = Voice.WatchedStream;
-        if (stream is null || _attachedStreamId == stream.StreamId) return;
+        if (stream is null) return;
+        if (_attachedStreamId == stream.StreamId)
+        {
+            var nextMuted = !stream.HasAudio || Voice.IsStreamAudioMuted(stream.StreamId);
+            if (nextMuted != _audioMuted)
+            {
+                _audioMuted = nextMuted;
+                await Voice.SetStreamAudioMutedAsync(_elementId, _audioMuted);
+            }
+            return;
+        }
         try
         {
+            if (_attachedStreamId is not null) await Voice.DetachWatchedStreamAsync(_elementId);
             _audioMuted = !stream.HasAudio || Voice.IsStreamAudioMuted(stream.StreamId);
-            await Voice.AttachWatchedStreamAsync(_elementId);
+            _audioVolume = (await Preferences.GetAsync(stream.OwnerAccountId)).ScreenShareVolumePercent;
+            await Voice.AttachWatchedStreamAsync(_elementId, _audioVolume);
             _attachedStreamId = stream.StreamId;
             _error = null;
+            var viewerModule = await JS.InvokeAsync<IJSObjectReference>("import",
+                $"./js/streamViewerUi.js?build={Uri.EscapeDataString(MediaBuildInfo.Id)}");
+            _fullscreenSupported = await viewerModule.InvokeAsync<bool>("supportsFullscreen", _elementId);
+            await viewerModule.DisposeAsync();
             if (Floating && _floatingHandle is null)
             {
                 _floatingModule ??= await JS.InvokeAsync<IJSObjectReference>("import",
@@ -116,9 +154,20 @@
                 _error = "Stream is no longer available.";
                 await Voice.StopWatchingAsync();
             }
-            else _error = $"Stream playback failed: {exception.Message}";
+            else
+            {
+                Logger.LogDebug(exception, "Screen stream playback failed");
+                _error = "Unable to play this stream.";
+            }
         }
         await InvokeAsync(StateHasChanged);
+    }
+    private async Task SetStreamVolumeAsync(ChangeEventArgs args)
+    {
+        if (!int.TryParse(args.Value?.ToString(), out var value) || Voice.WatchedStream is not { } stream) return;
+        _audioVolume = Math.Clamp(value, 0, 300);
+        await Voice.SetStreamAudioVolumeAsync(_elementId, _audioVolume);
+        await Preferences.SetScreenShareVolumeAsync(stream.OwnerAccountId, _audioVolume);
     }
 
     private async Task ToggleStreamAudioAsync()
@@ -135,6 +184,15 @@
         return Task.CompletedTask;
     }
     private Task StopSharingAsync() => Voice.StopScreenShareAsync();
+    private async Task SwitchSharingAsync()
+    {
+        try { _error = null; await Voice.SwitchScreenShareAsync(); }
+        catch (Exception exception)
+        {
+            Logger.LogDebug(exception, "Screen share source could not be switched");
+            _error = ScreenShareFailure.UserMessage(exception);
+        }
+    }
     private Task ToggleMuteAsync() => Voice.ToggleMuteAsync();
     private Task ToggleDeafenAsync() => Voice.ToggleDeafenAsync();
     private async Task CloseAsync()
