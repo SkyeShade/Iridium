@@ -302,8 +302,17 @@ public sealed class MessageRenderingUiContractTests
         Assert.Contains("_surfaceColor = preferences.SurfaceColor", settings);
         Assert.Contains("const defaultPreferences = readDefaultPreferences()", javascript);
         Assert.Contains("const defaultDerivedProperties = readProperties(derivedProperties)", javascript);
-        Assert.Contains("usesDefaultPalette(preferences)", javascript);
+        Assert.Contains("usesDefaultAccent(preferences)", javascript);
+        Assert.Contains("usesDefaultSurfaces(preferences)", javascript);
+        Assert.Contains("accentDerivedProperties", javascript);
+        Assert.Contains("surfaceDerivedProperties", javascript);
         Assert.Contains("root.style.setProperty(property, defaultDerivedProperties[property])", javascript);
+        Assert.Contains("const preferences = apply(migrated(value) || defaults())", javascript);
+        Assert.Contains("_preferences with { AccentColor = value }", settings);
+        Assert.Contains("_preferences with { BaseBackgroundColor = value }", settings);
+        Assert.Contains("_preferences with { SurfaceColor = value }", settings);
+        Assert.Contains("_preferences with { ShowMessageAvatarPresence = enabled }", settings);
+        Assert.DoesNotContain("private AppearancePreferences CurrentFields()", settings);
         Assert.Contains("const preferences = apply(defaults())", javascript);
         Assert.Contains("localStorage.setItem(storageKey, JSON.stringify(preferences))", javascript);
         Assert.DoesNotContain("localStorage.removeItem(storageKey)", javascript);

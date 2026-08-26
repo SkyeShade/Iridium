@@ -1,11 +1,13 @@
 (() => {
     const storageKey = "iridium.appearance";
     const root = document.documentElement;
-    const derivedProperties = [
-        "--accent-soft", "--accent-deep", "--bg-deep", "--bg-sidebar", "--input-bg",
+    const accentDerivedProperties = ["--accent-soft", "--accent-deep"];
+    const surfaceDerivedProperties = [
+        "--bg-deep", "--bg-sidebar", "--input-bg",
         "--surface-raised", "--surface-hover", "--surface-active", "--border", "--border-subtle",
         "--scrollbar-thumb", "--scrollbar-thumb-hover"
     ];
+    const derivedProperties = [...accentDerivedProperties, ...surfaceDerivedProperties];
     const defaultPreferences = readDefaultPreferences();
     const defaultDerivedProperties = readProperties(derivedProperties);
 
@@ -33,11 +35,6 @@
         return `#${channel(0)}${channel(1)}${channel(2)}`;
     }
 
-    function validPreferences(value) {
-        return value && isHexColor(value.accentColor) &&
-            isHexColor(value.baseBackgroundColor) && isHexColor(value.surfaceColor);
-    }
-
     function sanitized(value) {
         return {
             accentColor: normalize(value.accentColor),
@@ -47,30 +44,50 @@
         };
     }
 
+    function migrated(value) {
+        if (!value || typeof value !== "object") return null;
+        const knownProperties = ["accentColor", "baseBackgroundColor", "surfaceColor", "showMessageAvatarPresence"];
+        if (!knownProperties.some(property => Object.hasOwn(value, property))) return null;
+        return sanitized({
+            accentColor: isHexColor(value.accentColor) ? value.accentColor : defaultPreferences.accentColor,
+            baseBackgroundColor: isHexColor(value.baseBackgroundColor)
+                ? value.baseBackgroundColor : defaultPreferences.baseBackgroundColor,
+            surfaceColor: isHexColor(value.surfaceColor) ? value.surfaceColor : defaultPreferences.surfaceColor,
+            showMessageAvatarPresence: value.showMessageAvatarPresence === true
+        });
+    }
+
     function apply(value) {
         const preferences = sanitized(value);
         root.style.setProperty("--iridium-accent", preferences.accentColor);
         root.style.setProperty("--iridium-bg-base", preferences.baseBackgroundColor);
         root.style.setProperty("--iridium-bg-surface", preferences.surfaceColor);
 
-        if (usesDefaultPalette(preferences)) {
-            for (const property of derivedProperties)
+        if (usesDefaultAccent(preferences)) {
+            for (const property of accentDerivedProperties)
                 root.style.setProperty(property, defaultDerivedProperties[property]);
-            return preferences;
+        }
+        else {
+            root.style.setProperty("--accent-soft", mix(preferences.accentColor, "#ffffff", 0.34));
+            root.style.setProperty("--accent-deep", mix(preferences.accentColor, "#000000", 0.27));
         }
 
-        root.style.setProperty("--accent-soft", mix(preferences.accentColor, "#ffffff", 0.34));
-        root.style.setProperty("--accent-deep", mix(preferences.accentColor, "#000000", 0.27));
-        root.style.setProperty("--bg-deep", mix(preferences.baseBackgroundColor, "#000000", 0.46));
-        root.style.setProperty("--bg-sidebar", mix(preferences.baseBackgroundColor, preferences.surfaceColor, 0.34));
-        root.style.setProperty("--input-bg", mix(preferences.baseBackgroundColor, "#000000", 0.42));
-        root.style.setProperty("--surface-raised", mix(preferences.surfaceColor, "#ffffff", 0.055));
-        root.style.setProperty("--surface-hover", mix(preferences.surfaceColor, "#ffffff", 0.10));
-        root.style.setProperty("--surface-active", mix(preferences.surfaceColor, "#ffffff", 0.16));
-        root.style.setProperty("--border", mix(preferences.surfaceColor, "#ffffff", 0.15));
-        root.style.setProperty("--border-subtle", mix(preferences.surfaceColor, preferences.baseBackgroundColor, 0.55));
-        root.style.setProperty("--scrollbar-thumb", mix(preferences.surfaceColor, "#ffffff", 0.12));
-        root.style.setProperty("--scrollbar-thumb-hover", mix(preferences.surfaceColor, "#ffffff", 0.22));
+        if (usesDefaultSurfaces(preferences)) {
+            for (const property of surfaceDerivedProperties)
+                root.style.setProperty(property, defaultDerivedProperties[property]);
+        }
+        else {
+            root.style.setProperty("--bg-deep", mix(preferences.baseBackgroundColor, "#000000", 0.46));
+            root.style.setProperty("--bg-sidebar", mix(preferences.baseBackgroundColor, preferences.surfaceColor, 0.34));
+            root.style.setProperty("--input-bg", mix(preferences.baseBackgroundColor, "#000000", 0.42));
+            root.style.setProperty("--surface-raised", mix(preferences.surfaceColor, "#ffffff", 0.055));
+            root.style.setProperty("--surface-hover", mix(preferences.surfaceColor, "#ffffff", 0.10));
+            root.style.setProperty("--surface-active", mix(preferences.surfaceColor, "#ffffff", 0.16));
+            root.style.setProperty("--border", mix(preferences.surfaceColor, "#ffffff", 0.15));
+            root.style.setProperty("--border-subtle", mix(preferences.surfaceColor, preferences.baseBackgroundColor, 0.55));
+            root.style.setProperty("--scrollbar-thumb", mix(preferences.surfaceColor, "#ffffff", 0.12));
+            root.style.setProperty("--scrollbar-thumb-hover", mix(preferences.surfaceColor, "#ffffff", 0.22));
+        }
         return preferences;
     }
 
@@ -93,16 +110,22 @@
         return { ...defaultPreferences };
     }
 
-    function usesDefaultPalette(preferences) {
-        return preferences.accentColor === defaultPreferences.accentColor &&
-            preferences.baseBackgroundColor === defaultPreferences.baseBackgroundColor &&
+    function usesDefaultAccent(preferences) {
+        return preferences.accentColor === defaultPreferences.accentColor;
+    }
+
+    function usesDefaultSurfaces(preferences) {
+        return preferences.baseBackgroundColor === defaultPreferences.baseBackgroundColor &&
             preferences.surfaceColor === defaultPreferences.surfaceColor;
     }
 
     function stored() {
         try {
-            const value = JSON.parse(localStorage.getItem(storageKey));
-            return validPreferences(value) ? sanitized(value) : null;
+            const raw = JSON.parse(localStorage.getItem(storageKey));
+            const value = migrated(raw);
+            if (value && JSON.stringify(raw) !== JSON.stringify(value))
+                localStorage.setItem(storageKey, JSON.stringify(value));
+            return value;
         } catch {
             return null;
         }
@@ -116,7 +139,7 @@
             return current || defaults();
         },
         save(value) {
-            const preferences = validPreferences(value) ? apply(value) : defaults();
+            const preferences = apply(migrated(value) || defaults());
             localStorage.setItem(storageKey, JSON.stringify(preferences));
             current = preferences;
             return preferences;

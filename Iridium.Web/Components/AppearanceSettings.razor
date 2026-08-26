@@ -70,19 +70,26 @@
     private async Task ChangeAsync(ColorSetting setting, int inputRevision, ChangeEventArgs eventArgs)
     {
         if (_resetting || inputRevision != _colorInputRevision || _preferences is null || eventArgs.Value is not string value) return;
-        switch (setting)
+        var preferences = setting switch
         {
-            case ColorSetting.Accent: _accentColor = value; break;
-            case ColorSetting.Base: _baseColor = value; break;
-            case ColorSetting.Surface: _surfaceColor = value; break;
-        }
-        await SaveAsync(CurrentFields());
+            ColorSetting.Accent => _preferences with { AccentColor = value },
+            ColorSetting.Base => _preferences with { BaseBackgroundColor = value },
+            ColorSetting.Surface => _preferences with { SurfaceColor = value },
+            _ => _preferences
+        };
+        await SavePartialAsync(preferences);
     }
 
     private Task ChangeMessagePresenceAsync(ChangeEventArgs eventArgs) =>
         _resetting || _preferences is null || eventArgs.Value is not bool enabled
             ? Task.CompletedTask
-            : SaveAsync(CurrentFields() with { ShowMessageAvatarPresence = enabled });
+            : SavePartialAsync(_preferences with { ShowMessageAvatarPresence = enabled });
+
+    private Task SavePartialAsync(AppearancePreferences preferences)
+    {
+        LoadAppearanceFieldsFromCurrentSettings(preferences);
+        return SaveAsync(preferences);
+    }
 
     private async Task SaveAsync(AppearancePreferences preferences)
     {
@@ -136,9 +143,6 @@
         _baseColor = preferences.BaseBackgroundColor;
         _surfaceColor = preferences.SurfaceColor;
     }
-
-    private AppearancePreferences CurrentFields() => new(
-        _accentColor, _baseColor, _surfaceColor, _preferences?.ShowMessageAvatarPresence ?? false);
 
     private enum ColorSetting { Accent, Base, Surface }
 }
