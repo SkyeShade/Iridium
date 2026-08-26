@@ -19,7 +19,7 @@
             </div>
         }
         <div class="profile-banner"><ProfileBanner AccountId="AccountId" /></div>
-        <div class="profile-avatar"><ProfileAvatar AccountId="AccountId" DisplayName="@DisplayName" Presence="@Presence" Size="large" Surface="sidebar" /></div>
+        <div class="profile-avatar" style="position:relative;z-index:1;padding:.3rem;box-shadow:0 0 0 1px var(--bg-sidebar)"><ProfileAvatar AccountId="AccountId" DisplayName="@DisplayName" Presence="@Presence" Size="large" Surface="sidebar" /></div>
         <div class="profile-content" @onclick="CloseRolePicker">
             <h2 class="display-name" style="@NameStyle">@DisplayName</h2>
             <p class="identity">@IridiumIdentity.Format(Username, NodeAuthority)</p>

@@ -245,6 +245,78 @@ public sealed class MessageRenderingUiContractTests
         Assert.Equal("0px", InvariantPixel(double.NegativeInfinity));
     }
 
+    [Fact]
+    public void MessageAvatarPresenceIsLocalDefaultOffAndOwnedBySharedHistoryRenderer()
+    {
+        var service = Source("Iridium.Web", "Services", "AppearanceService.cs");
+        var javascript = Source("Iridium.Web", "wwwroot", "js", "appearance.js");
+        var settings = Source("Iridium.Web", "Components", "AppearanceSettings.razor");
+        var list = Source("Iridium.Web", "Components", "MessageList.razor");
+        var row = Source("Iridium.Web", "Components", "MessageRow.razor");
+        var members = Source("Iridium.Web", "Components", "CommunityMemberSidebar.razor");
+
+        Assert.Contains("bool ShowMessageAvatarPresence = false", service);
+        Assert.Contains("showMessageAvatarPresence: false", javascript);
+        Assert.Contains("value.showMessageAvatarPresence === true", javascript);
+        Assert.Contains("Show activity status on message avatars", settings);
+        Assert.Contains("Appearance.Changed += AppearanceChanged", list);
+        Assert.Contains("ShowAuthorPresence=\"@ShowAuthorPresence\"", list);
+        Assert.Contains("ShowAuthorPresence && AuthorPresence.HasValue", row);
+        Assert.DoesNotContain("ShowMessageAvatarPresence", members);
+    }
+
+    [Fact]
+    public void AnchoredProfileAvatarUsesCardSurfaceRingWithoutChangingAvatarSize()
+    {
+        var card = Source("Iridium.Web", "Components", "AnchoredProfileCard.razor");
+
+        Assert.Contains("Size=\"large\" Surface=\"sidebar\"", card);
+        Assert.Contains("padding:.3rem", card);
+        Assert.Contains("box-shadow:0 0 0 1px var(--bg-sidebar)", card);
+        Assert.Contains("Presence=\"@Presence\"", card);
+    }
+
+    [Fact]
+    public void AppearanceResetSupersedesPendingWritesAndRefreshesAllNativeColorInputs()
+    {
+        var service = Source("Iridium.Web", "Services", "AppearanceService.cs");
+        var settings = Source("Iridium.Web", "Components", "AppearanceSettings.razor");
+        var javascript = Source("Iridium.Web", "wwwroot", "js", "appearance.js");
+        var index = Source("Iridium.Web", "wwwroot", "index.html");
+
+        Assert.Contains("SemaphoreSlim _persistenceGate", service);
+        Assert.Contains("Interlocked.Increment(ref _operationVersion)", service);
+        Assert.Contains("version != Volatile.Read(ref _operationVersion)", service);
+        Assert.Contains("LoadAppearanceFieldsFromCurrentSettings(defaults)", settings);
+        Assert.Contains("_colorInputRevision++", settings);
+        Assert.Equal(3, settings.Split("@key=\"(ColorSetting.", StringSplitOptions.None).Length - 1);
+        Assert.Contains("value=\"@_accentColor\"", settings);
+        Assert.Contains("value=\"@_baseColor\"", settings);
+        Assert.Contains("value=\"@_surfaceColor\"", settings);
+        Assert.Contains("<output>@_accentColor.ToUpperInvariant()</output>", settings);
+        Assert.Contains("<output>@_baseColor.ToUpperInvariant()</output>", settings);
+        Assert.Contains("<output>@_surfaceColor.ToUpperInvariant()</output>", settings);
+        Assert.Contains("inputRevision != _colorInputRevision", settings);
+        Assert.Contains("_accentColor = preferences.AccentColor", settings);
+        Assert.Contains("_baseColor = preferences.BaseBackgroundColor", settings);
+        Assert.Contains("_surfaceColor = preferences.SurfaceColor", settings);
+        Assert.Contains("const defaultPreferences = readDefaultPreferences()", javascript);
+        Assert.Contains("const defaultDerivedProperties = readProperties(derivedProperties)", javascript);
+        Assert.Contains("usesDefaultPalette(preferences)", javascript);
+        Assert.Contains("root.style.setProperty(property, defaultDerivedProperties[property])", javascript);
+        Assert.Contains("const preferences = apply(defaults())", javascript);
+        Assert.Contains("localStorage.setItem(storageKey, JSON.stringify(preferences))", javascript);
+        Assert.DoesNotContain("localStorage.removeItem(storageKey)", javascript);
+        Assert.True(index.IndexOf("css/app.css", StringComparison.Ordinal) <
+                    index.IndexOf("js/appearance.js", StringComparison.Ordinal));
+
+        var accent = settings.IndexOf("Accent Color</strong>", StringComparison.Ordinal);
+        var background = settings.IndexOf("Base Background</strong>", StringComparison.Ordinal);
+        var surface = settings.IndexOf("Surface / Highlight Color</strong>", StringComparison.Ordinal);
+        var presence = settings.IndexOf("Show activity status on message avatars</strong>", StringComparison.Ordinal);
+        Assert.True(accent >= 0 && accent < background && background < surface && surface < presence);
+    }
+
     private static string InvariantPixel(double value) => double.IsFinite(value)
         ? value.ToString(System.Globalization.CultureInfo.InvariantCulture) + "px"
         : "0px";

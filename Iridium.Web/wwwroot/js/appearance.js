@@ -1,12 +1,13 @@
 (() => {
     const storageKey = "iridium.appearance";
     const root = document.documentElement;
-    const customizableProperties = ["--iridium-accent", "--iridium-bg-base", "--iridium-bg-surface"];
     const derivedProperties = [
         "--accent-soft", "--accent-deep", "--bg-deep", "--bg-sidebar", "--input-bg",
         "--surface-raised", "--surface-hover", "--surface-active", "--border", "--border-subtle",
         "--scrollbar-thumb", "--scrollbar-thumb-hover"
     ];
+    const defaultPreferences = readDefaultPreferences();
+    const defaultDerivedProperties = readProperties(derivedProperties);
 
     function isHexColor(value) {
         return typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value);
@@ -41,7 +42,8 @@
         return {
             accentColor: normalize(value.accentColor),
             baseBackgroundColor: normalize(value.baseBackgroundColor),
-            surfaceColor: normalize(value.surfaceColor)
+            surfaceColor: normalize(value.surfaceColor),
+            showMessageAvatarPresence: value.showMessageAvatarPresence === true
         };
     }
 
@@ -50,6 +52,12 @@
         root.style.setProperty("--iridium-accent", preferences.accentColor);
         root.style.setProperty("--iridium-bg-base", preferences.baseBackgroundColor);
         root.style.setProperty("--iridium-bg-surface", preferences.surfaceColor);
+
+        if (usesDefaultPalette(preferences)) {
+            for (const property of derivedProperties)
+                root.style.setProperty(property, defaultDerivedProperties[property]);
+            return preferences;
+        }
 
         root.style.setProperty("--accent-soft", mix(preferences.accentColor, "#ffffff", 0.34));
         root.style.setProperty("--accent-deep", mix(preferences.accentColor, "#000000", 0.27));
@@ -66,13 +74,29 @@
         return preferences;
     }
 
-    function defaults() {
+    function readDefaultPreferences() {
         const styles = getComputedStyle(root);
         return {
             accentColor: styles.getPropertyValue("--iridium-accent").trim().toLowerCase(),
             baseBackgroundColor: styles.getPropertyValue("--iridium-bg-base").trim().toLowerCase(),
-            surfaceColor: styles.getPropertyValue("--iridium-bg-surface").trim().toLowerCase()
+            surfaceColor: styles.getPropertyValue("--iridium-bg-surface").trim().toLowerCase(),
+            showMessageAvatarPresence: false
         };
+    }
+
+    function readProperties(properties) {
+        const styles = getComputedStyle(root);
+        return Object.fromEntries(properties.map(property => [property, styles.getPropertyValue(property).trim()]));
+    }
+
+    function defaults() {
+        return { ...defaultPreferences };
+    }
+
+    function usesDefaultPalette(preferences) {
+        return preferences.accentColor === defaultPreferences.accentColor &&
+            preferences.baseBackgroundColor === defaultPreferences.baseBackgroundColor &&
+            preferences.surfaceColor === defaultPreferences.surfaceColor;
     }
 
     function stored() {
@@ -98,11 +122,10 @@
             return preferences;
         },
         reset() {
-            localStorage.removeItem(storageKey);
-            for (const property of [...customizableProperties, ...derivedProperties])
-                root.style.removeProperty(property);
-            current = null;
-            return defaults();
+            const preferences = apply(defaults());
+            localStorage.setItem(storageKey, JSON.stringify(preferences));
+            current = preferences;
+            return preferences;
         }
     };
 })();

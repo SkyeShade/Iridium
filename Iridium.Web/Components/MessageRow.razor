@@ -37,7 +37,7 @@
     {
         <button type="button" class="message-avatar author-trigger" @onclick="OpenAuthorProfileAsync" @oncontextmenu="OpenAuthorContext" @oncontextmenu:preventDefault="true" title="View @Message.Author.DisplayName's profile">
             <ProfileAvatar AccountId="Message.Author.AccountId" DisplayName="@Message.Author.DisplayName" Presence="@(AuthorPresence ?? PublicPresence.Offline)"
-                           BadgeMode="@(AuthorPresence.HasValue ? AvatarBadgeMode.Presence : AvatarBadgeMode.None)" Size="medium" Surface="base" />
+                           BadgeMode="@(ShowAuthorPresence && AuthorPresence.HasValue ? AvatarBadgeMode.Presence : AvatarBadgeMode.None)" Size="medium" Surface="base" />
         </button>
     }
 
@@ -126,6 +126,7 @@
     [Parameter, EditorRequired] public required string NodeAuthority { get; set; }
     [Parameter] public CommunityManagementDto? CommunityManagement { get; set; }
     [Parameter] public PublicPresence? AuthorPresence { get; set; }
+    [Parameter] public bool ShowAuthorPresence { get; set; }
     [Parameter] public EventCallback OnEditProfile { get; set; }
     [Parameter] public EventCallback<Guid> OnMessage { get; set; }
     [Parameter] public EventCallback<CommunityMemberRolesChange> OnMemberRolesChanged { get; set; }

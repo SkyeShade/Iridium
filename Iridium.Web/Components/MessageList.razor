@@ -4,6 +4,7 @@
 @implements IAsyncDisposable
 @inject IJSRuntime JS
 @inject Iridium.Web.Services.MessageMenuCoordinator MessageMenus
+@inject Iridium.Web.Services.AppearanceService Appearance
 
 @{ var visibleMessages = MessageTimeline.Visible(Messages); }
 <div class="message-list @(_positioning ? "positioning" : null)" role="log" aria-live="polite" @ref="_container" @onclick="CloseMessageMenus">
@@ -33,6 +34,7 @@
                         CanDelete="@(message.Id != RootMessageId && message.Kind == MessageKind.User && message.DeliveryState == MessageDeliveryState.Confirmed && !message.IsDeleted && (message.Author.AccountId == CurrentAccountId || CanManage))"
                         CurrentAccountId="CurrentAccountId" NodeAuthority="@NodeAuthority" CommunityManagement="CommunityManagement"
                         AuthorPresence="@PresenceFor(message.Author.AccountId)"
+                        ShowAuthorPresence="@ShowAuthorPresence"
                         OnEditProfile="OnEditProfile" OnMessage="OnMessage"
                         OnMemberRolesChanged="OnMemberRolesChanged"
                         OnMention="OnMention"
@@ -89,7 +91,11 @@
     private PublicPresence? PresenceFor(Guid accountId) => CommunityManagement?.Members
         .FirstOrDefault(value => value.AccountId == accountId)?.Presence
         ?? (DirectParticipant?.AccountId == accountId ? DirectParticipant.Presence : null);
+    private bool ShowAuthorPresence => Appearance.Current?.ShowMessageAvatarPresence == true;
     private void CloseMessageMenus() => MessageMenus.Close();
+
+    protected override void OnInitialized() => Appearance.Changed += AppearanceChanged;
+    private void AppearanceChanged() => _ = InvokeAsync(StateHasChanged);
 
     protected override void OnParametersSet()
     {
@@ -201,6 +207,7 @@
 
     public async ValueTask DisposeAsync()
     {
+        Appearance.Changed -= AppearanceChanged;
         if (_module is not null)
         {
             await _module.InvokeVoidAsync("unwireMessageViewport", _container);

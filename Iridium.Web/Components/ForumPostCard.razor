@@ -1,34 +1,47 @@
+@using Iridium.Client.Core
 @using Iridium.Protocol
 
 <article class="forum-post-card @(Compact ? "compact" : null) @(Selected ? "selected" : null) @(Post.UnreadCount > 0 ? "unread" : null)"
          role="button" tabindex="0" @onclick="OpenAsync" @onkeydown="CardKeyDownAsync">
-    <ProfileAvatar AccountId="Post.Author.AccountId" DisplayName="@Post.Author.DisplayName" Size="small" Surface="panel" />
     <span class="forum-post-copy">
         <span class="forum-post-title">
             @if (Post.IsPinned) { <span title="Pinned"><Icon Name="pin" /></span> }
             <strong>@Post.Title</strong>
             @if (Post.IsLocked) { <span title="Locked"><Icon Name="lock" /></span> }
         </span>
-        @if (!string.IsNullOrWhiteSpace(Post.RootPreview))
-        {
-            <div class="forum-post-preview">
-                <MentionedMessageContent Content="@Post.RootPreview" Mentions="Post.RootMentions"
-                                         CommunityId="Post.CommunityId" Compact="true" />
-            </div>
-        }
-        <small><span class="display-name">@Post.Author.DisplayName</span> · @RelativeTime(Post.LastActivityAt) · @Post.ReplyCount @(Post.ReplyCount == 1 ? "reply" : "replies")</small>
+        <div class="forum-post-byline">
+            <strong class="forum-post-author display-name" style="@AuthorStyle">@Post.Author.DisplayName:</strong>
+            @if (!string.IsNullOrWhiteSpace(Post.RootPreview))
+            {
+                <span class="forum-post-preview">
+                    <MentionedMessageContent Content="@Post.RootPreview" Mentions="Post.RootMentions"
+                                             CommunityId="Post.CommunityId" Compact="true" />
+                </span>
+            }
+            else
+            {
+                <span class="forum-post-preview attachment-preview">Attachment</span>
+            }
+        </div>
+        <small>@RelativeTime(Post.LastActivityAt) · @Post.ReplyCount @(Post.ReplyCount == 1 ? "reply" : "replies")</small>
     </span>
     @if (Post.UnreadCount > 0) { <span class="unread-count">@Post.UnreadCount</span> }
 </article>
 
 @code {
     [Parameter, EditorRequired] public required CommunityForumPostDto Post { get; set; }
+    [Parameter] public CommunityManagementDto? CommunityManagement { get; set; }
     [Parameter] public bool Compact { get; set; }
     [Parameter] public bool Selected { get; set; }
     [Parameter] public EventCallback<CommunityForumPostDto> OnOpen { get; set; }
 
     private Task OpenAsync() => OnOpen.InvokeAsync(Post);
     private Task CardKeyDownAsync(KeyboardEventArgs args) => args.Key is "Enter" or " " ? OpenAsync() : Task.CompletedTask;
+    private string? AuthorColor => CommunityManagement?.Members
+        .FirstOrDefault(member => member.AccountId == Post.Author.AccountId) is { } member
+        ? CommunityRolePresentation.MemberColor(member, CommunityManagement.Roles)
+        : null;
+    private string? AuthorStyle => AuthorColor is null ? null : $"color:{AuthorColor}";
 
     private static string RelativeTime(DateTimeOffset at)
     {

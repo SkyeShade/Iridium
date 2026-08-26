@@ -232,6 +232,12 @@ public sealed class ForumFlowTests
         Assert.DoesNotContain("MessageExternalEmbeds", card);
         Assert.Contains("text-overflow:ellipsis", css);
         Assert.Contains("white-space:nowrap", css);
+        Assert.DoesNotContain("<ProfileAvatar", card);
+        Assert.Contains("@Post.Author.DisplayName:", card);
+        Assert.Contains("CommunityRolePresentation.MemberColor", card);
+        Assert.Contains("CommunityManagement=\"CommunityManagement\"", forum);
+        Assert.Contains("NodeAuthority=\"@NodeAuthority\"", forum);
+        Assert.DoesNotContain("NodeAuthority=\"NodeAuthority\"", forum);
 
         var italic = Assert.IsType<MessageContainerNode>(Assert.Single(
             MessageContentSegments.Parse("hmm *test*", null), node => node is MessageContainerNode));

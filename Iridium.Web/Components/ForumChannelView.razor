@@ -12,6 +12,7 @@
     {
         case ForumViewMode.Index:
             <ForumPostBrowser ChannelName="@Channel.Name" Posts="FilteredPosts" Search="@_search"
+                              CommunityManagement="CommunityManagement"
                               SearchChangedCallback="SearchChanged" CanCreatePosts="CanCreatePosts"
                               IsLoading="Forum.IsLoading" HasMore="Forum.NextOffset.HasValue"
                               OnNewPost="BeginCreateAsync" OnLoadMore="() => Forum.LoadMoreAsync()" OnOpen="OpenPostAsync" />
@@ -48,6 +49,7 @@
                 <div class="forum-split-shell">
                     <aside class="forum-browser-pane">
                         <ForumPostBrowser ChannelName="@Channel.Name" Posts="FilteredPosts" Search="@_search" Compact="true"
+                                          CommunityManagement="CommunityManagement"
                                           SearchChangedCallback="SearchChanged" CanCreatePosts="CanCreatePosts"
                                           IsLoading="Forum.IsLoading" HasMore="Forum.NextOffset.HasValue"
                                           SelectedPostId="SelectedForumPostId" OnNewPost="BeginCreateAsync"
@@ -84,7 +86,7 @@
                         }
                         <div class="forum-discussion">
                             <ChannelView @key="(selectedPost.DiscussionChannelId, selectedPost.IsLocked)" Community="Community"
-                                         Channel="DiscussionChannel" CurrentAccountId="CurrentAccountId" NodeAuthority="NodeAuthority"
+                                         Channel="DiscussionChannel" CurrentAccountId="CurrentAccountId" NodeAuthority="@NodeAuthority"
                                          CommunityManagement="CommunityManagement" OnEditProfile="OnEditProfile" OnMessage="OnMessage"
                                          OnMemberRolesChanged="OnMemberRolesChanged" CanManageMessages="CanManageMessages"
                                          CanSend="@(!selectedPost.IsLocked || CanManageMessages)" CanAttachFiles="CanAttachFiles"

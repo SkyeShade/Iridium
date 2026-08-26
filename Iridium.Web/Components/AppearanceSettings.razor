@@ -10,29 +10,38 @@
     }
     else
     {
+        var colorInputRevision = _colorInputRevision;
         <div class="appearance-card">
             <div class="color-setting">
                 <div><strong>Accent Color</strong><span>Interactive controls, links, focus, and selected states.</span></div>
-                <label class="color-control">
-                    <input type="color" value="@_preferences.AccentColor" aria-label="Accent Color"
-                           @oninput="eventArgs => ChangeAsync(ColorSetting.Accent, eventArgs)" />
-                    <output>@_preferences.AccentColor.ToUpperInvariant()</output>
+                <label @key="(ColorSetting.Accent, colorInputRevision)" class="color-control">
+                    <input type="color" value="@_accentColor" aria-label="Accent Color"
+                           @oninput="eventArgs => ChangeAsync(ColorSetting.Accent, colorInputRevision, eventArgs)" />
+                    <output>@_accentColor.ToUpperInvariant()</output>
                 </label>
             </div>
             <div class="color-setting">
                 <div><strong>Base Background</strong><span>The deepest and main application background levels.</span></div>
-                <label class="color-control">
-                    <input type="color" value="@_preferences.BaseBackgroundColor" aria-label="Base Background Color"
-                           @oninput="eventArgs => ChangeAsync(ColorSetting.Base, eventArgs)" />
-                    <output>@_preferences.BaseBackgroundColor.ToUpperInvariant()</output>
+                <label @key="(ColorSetting.Base, colorInputRevision)" class="color-control">
+                    <input type="color" value="@_baseColor" aria-label="Base Background Color"
+                           @oninput="eventArgs => ChangeAsync(ColorSetting.Base, colorInputRevision, eventArgs)" />
+                    <output>@_baseColor.ToUpperInvariant()</output>
                 </label>
             </div>
             <div class="color-setting">
                 <div><strong>Surface / Highlight Color</strong><span>Panels, inputs, hover surfaces, and selected navigation.</span></div>
-                <label class="color-control">
-                    <input type="color" value="@_preferences.SurfaceColor" aria-label="Surface and Highlight Color"
-                           @oninput="eventArgs => ChangeAsync(ColorSetting.Surface, eventArgs)" />
-                    <output>@_preferences.SurfaceColor.ToUpperInvariant()</output>
+                <label @key="(ColorSetting.Surface, colorInputRevision)" class="color-control">
+                    <input type="color" value="@_surfaceColor" aria-label="Surface and Highlight Color"
+                           @oninput="eventArgs => ChangeAsync(ColorSetting.Surface, colorInputRevision, eventArgs)" />
+                    <output>@_surfaceColor.ToUpperInvariant()</output>
+                </label>
+            </div>
+            <div class="appearance-toggle-setting">
+                <div><strong>Show activity status on message avatars</strong><span>Displays presence indicators beside avatars in chat history.</span></div>
+                <label class="appearance-toggle">
+                    <input type="checkbox" checked="@_preferences.ShowMessageAvatarPresence"
+                           aria-label="Show activity status on message avatars" @onchange="ChangeMessagePresenceAsync" />
+                    <span aria-hidden="true"></span>
                 </label>
             </div>
         </div>
@@ -47,49 +56,89 @@
 @code {
     private AppearancePreferences? _preferences;
     private bool _busy;
+    private bool _resetting;
+    private long _operationVersion;
+    private int _colorInputRevision;
+    private string _accentColor = string.Empty;
+    private string _baseColor = string.Empty;
+    private string _surfaceColor = string.Empty;
     private string? _error;
 
     protected override async Task OnInitializedAsync() =>
-        _preferences = Appearance.Current ?? await Appearance.InitializeAsync();
+        LoadAppearanceFieldsFromCurrentSettings(Appearance.Current ?? await Appearance.InitializeAsync());
 
-    private async Task ChangeAsync(ColorSetting setting, ChangeEventArgs eventArgs)
+    private async Task ChangeAsync(ColorSetting setting, int inputRevision, ChangeEventArgs eventArgs)
     {
-        if (_preferences is null || eventArgs.Value is not string value) return;
-        var updated = setting switch
+        if (_resetting || inputRevision != _colorInputRevision || _preferences is null || eventArgs.Value is not string value) return;
+        switch (setting)
         {
-            ColorSetting.Accent => _preferences with { AccentColor = value },
-            ColorSetting.Base => _preferences with { BaseBackgroundColor = value },
-            ColorSetting.Surface => _preferences with { SurfaceColor = value },
-            _ => _preferences
-        };
-        await SaveAsync(updated);
+            case ColorSetting.Accent: _accentColor = value; break;
+            case ColorSetting.Base: _baseColor = value; break;
+            case ColorSetting.Surface: _surfaceColor = value; break;
+        }
+        await SaveAsync(CurrentFields());
     }
+
+    private Task ChangeMessagePresenceAsync(ChangeEventArgs eventArgs) =>
+        _resetting || _preferences is null || eventArgs.Value is not bool enabled
+            ? Task.CompletedTask
+            : SaveAsync(CurrentFields() with { ShowMessageAvatarPresence = enabled });
 
     private async Task SaveAsync(AppearancePreferences preferences)
     {
+        var version = ++_operationVersion;
         _busy = true;
         _error = null;
-        try { _preferences = await Appearance.UpdateAsync(preferences); }
+        try
+        {
+            var saved = await Appearance.UpdateAsync(preferences);
+            if (version == _operationVersion) LoadAppearanceFieldsFromCurrentSettings(saved);
+        }
         catch (Exception exception)
         {
             Logger.LogError(exception, "Could not save local appearance preferences.");
-            _error = "Appearance could not be saved in this browser.";
+            if (version == _operationVersion) _error = "Appearance could not be saved in this browser.";
         }
-        finally { _busy = false; }
+        finally { if (version == _operationVersion) _busy = false; }
     }
 
     private async Task ResetAsync()
     {
+        var version = ++_operationVersion;
+        _resetting = true;
         _busy = true;
         _error = null;
-        try { _preferences = await Appearance.ResetAsync(); }
+        try
+        {
+            var defaults = await Appearance.ResetAsync();
+            if (version == _operationVersion)
+            {
+                LoadAppearanceFieldsFromCurrentSettings(defaults);
+                _colorInputRevision++;
+            }
+        }
         catch (Exception exception)
         {
             Logger.LogError(exception, "Could not reset local appearance preferences.");
             _error = "Appearance could not be reset in this browser.";
         }
-        finally { _busy = false; }
+        finally
+        {
+            if (version == _operationVersion) _busy = false;
+            _resetting = false;
+        }
     }
+
+    private void LoadAppearanceFieldsFromCurrentSettings(AppearancePreferences preferences)
+    {
+        _preferences = preferences;
+        _accentColor = preferences.AccentColor;
+        _baseColor = preferences.BaseBackgroundColor;
+        _surfaceColor = preferences.SurfaceColor;
+    }
+
+    private AppearancePreferences CurrentFields() => new(
+        _accentColor, _baseColor, _surfaceColor, _preferences?.ShowMessageAvatarPresence ?? false);
 
     private enum ColorSetting { Accent, Base, Surface }
 }
