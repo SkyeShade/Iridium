@@ -154,6 +154,23 @@ public sealed class ConversationNavigationUiContractTests
         Assert.Contains(".tab ::deep .friend-request-badge{top:-.3rem;right:-.3rem}", friends);
     }
 
+    [Fact]
+    public void MobileHomeAndServerNavigationShareBoundedScrollableCenterAndPersistentFooters()
+    {
+        var shell = Source("Iridium.UI", "ApplicationShell.razor");
+        var shellStyles = Source("Iridium.UI", "ApplicationShell.razor.css");
+        var homeStyles = Source("Iridium.UI", "HomeSidebar.razor.css");
+        var rail = Source("Iridium.UI", "CommunityRail.razor");
+
+        Assert.Equal(1, shell.Split("<ProfilePanel", StringSplitOptions.None).Length - 1);
+        Assert.Equal(1, rail.Split("class=\"rail-item add\"", StringSplitOptions.None).Length - 1);
+        Assert.Contains("grid-template-rows:minmax(0,1fr)", shellStyles);
+        Assert.Contains(".secondary-sidebar { grid-column:2; min-width:0; min-height:0; overflow:hidden; }", shellStyles);
+        Assert.Contains(".sidebar-body { overflow:hidden; }", shellStyles);
+        Assert.Contains(".home-navigation{height:100%;min-height:0;display:flex;flex-direction:column;overflow:hidden}", homeStyles);
+        Assert.Contains(".dm-list{flex:1;min-height:0;padding-bottom:var(--bottom-control-inset)}", homeStyles);
+    }
+
     private static string Slice(string source, string start, string end)
     {
         var from = source.IndexOf(start, StringComparison.Ordinal);
