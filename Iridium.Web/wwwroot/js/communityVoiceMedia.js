@@ -1,3 +1,6 @@
+import { createVoiceActivityGate, evaluateVoiceActivity, inputSensitivityConfiguration,
+    normalizedInputLevel, updateVoiceActivityConfiguration } from "./inputSensitivity.js";
+
 let createRemoteVoicePlayback, updateRemoteVoicePlayback, destroyRemoteVoicePlayback;
 // Community voice media stays behind this module so DevelopmentPeerMesh can be replaced by NodeSfu.
 // TODO: Remove temporary Community voice diagnostics once voice channels are stable.
@@ -125,25 +128,15 @@ async function startVad(session) {
     source.connect(analyser);
     if (context.state === "suspended") await context.resume().catch(() => {});
     const samples = new Float32Array(analyser.fftSize);
-    Object.assign(session, { context, source, analyser, noiseFloor: 0.008, aboveThresholdFrames: 0, lastVoiceAt: 0 });
+    const gate = createVoiceActivityGate(session.inputSensitivity);
+    Object.assign(session, { context, source, analyser, voiceActivityGate: gate });
     const sample = timestamp => {
         if (!sessions.has(session.id)) return;
         analyser.getFloatTimeDomainData(samples);
         let sum = 0;
         for (const value of samples) sum += value * value;
-        const rms = Math.sqrt(sum / samples.length);
-        if (!session.speaking && rms < 0.035) session.noiseFloor = session.noiseFloor * 0.97 + rms * 0.03;
-        const startThreshold = Math.max(0.032, session.noiseFloor * 3.2);
-        const stopThreshold = Math.max(0.019, session.noiseFloor * 2.0);
-        if (!session.muted && rms >= startThreshold) {
-            session.aboveThresholdFrames++;
-            session.lastVoiceAt = timestamp;
-            if (session.aboveThresholdFrames >= 2) publishSpeaking(session, true);
-        } else {
-            session.aboveThresholdFrames = 0;
-            if (session.speaking && (session.muted || rms < stopThreshold) && timestamp - session.lastVoiceAt >= 420)
-                publishSpeaking(session, false);
-        }
+        publishSpeaking(session, evaluateVoiceActivity(gate,
+            normalizedInputLevel(Math.sqrt(sum / samples.length)), timestamp, { muted: session.muted }));
         session.vadFrame = requestAnimationFrame(sample);
     };
     session.vadFrame = requestAnimationFrame(sample);
@@ -357,7 +350,8 @@ export async function getStatsSnapshot(id) {
     return collectStats(requireSession(id));
 }
 
-export async function connect(mediaBuildId, callback, mediaSession, room, localAccountId, preferences = [], iceConfiguration = null) {
+export async function connect(mediaBuildId, callback, mediaSession, room, localAccountId, preferences = [],
+        iceConfiguration = null, localVoicePreference = null) {
     const build = await import(`./mediaBuild.js?build=${encodeURIComponent(mediaBuildId)}`);
     await build.requireMatchingMediaBuild(mediaBuildId);
     ({ createRemoteVoicePlayback, updateRemoteVoicePlayback, destroyRemoteVoicePlayback } =
@@ -366,7 +360,11 @@ export async function connect(mediaBuildId, callback, mediaSession, room, localA
         throw new Error("This browser does not support microphone capture.");
     let localStream;
     try {
-        localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const inputSensitivity = inputSensitivityConfiguration(localVoicePreference);
+        localStream = await navigator.mediaDevices.getUserMedia({ audio: {
+            ...(inputSensitivity.inputDeviceId ? { deviceId: { exact: inputSensitivity.inputDeviceId } } : {}),
+            channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true
+        } });
     } catch (error) {
         throw new Error(`${error?.name ?? "MediaError"}: ${error?.message ?? "Microphone access failed."}`);
     }
@@ -378,7 +376,8 @@ export async function connect(mediaBuildId, callback, mediaSession, room, localA
         room, localAccountId, localParticipantId: mediaSession.participantId,
         localStream, peers: new Map(), muted: localParticipant?.muted === true,
         deafened: localParticipant?.deafened === true, speaking: false,
-        vadFrame: null, context: null, source: null, analyser: null,
+        vadFrame: null, context: null, source: null, analyser: null, voiceActivityGate: null,
+        inputSensitivity: inputSensitivityConfiguration(localVoicePreference),
         diagnostics: mediaSession.diagnosticsEnabled === true,
         participantAccounts:new Map((room.participants ?? []).map(value => [value.participantId, value.accountId])),
         preferences:new Map((preferences ?? []).map(value => [value.remoteAccountId, value])),
@@ -412,8 +411,21 @@ export function setMuted(id, muted) {
     const session = requireSession(id);
     session.muted = muted;
     for (const track of session.localStream.getAudioTracks()) track.enabled = !muted;
-    if (muted) publishSpeaking(session, false);
+    if (muted) {
+        if (session.voiceActivityGate) {
+            session.voiceActivityGate.speaking = false;
+            session.voiceActivityGate.aboveThresholdFrames = 0;
+        }
+        publishSpeaking(session, false);
+    }
     void diagnostic(session, muted ? "Muted" : "Unmuted");
+}
+
+export function setInputSensitivity(id, preference) {
+    const session = sessions.get(id); if (!session) return;
+    session.inputSensitivity = inputSensitivityConfiguration(preference);
+    if (session.voiceActivityGate)
+        updateVoiceActivityConfiguration(session.voiceActivityGate, session.inputSensitivity);
 }
 
 export function setDeafened(id, deafened) {

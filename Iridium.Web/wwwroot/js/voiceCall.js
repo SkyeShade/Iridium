@@ -1,3 +1,6 @@
+import { createVoiceActivityGate, evaluateVoiceActivity, inputSensitivityConfiguration,
+    normalizedInputLevel, updateVoiceActivityConfiguration } from "./inputSensitivity.js";
+
 let createRemoteVoicePlayback, updateRemoteVoicePlayback, destroyRemoteVoicePlayback;
 const sessions = new Map();
 
@@ -522,27 +525,17 @@ async function startVoiceActivityDetection(session) {
     session.audioContext = context;
     session.audioSource = source;
     session.analyser = analyser;
-    session.noiseFloor = 0.008;
-    session.aboveThresholdFrames = 0;
-    session.lastVoiceAt = 0;
+    const gate = createVoiceActivityGate(session.inputSensitivity);
+    session.voiceActivityGate = gate;
 
     const sample = timestamp => {
         if (!sessions.has(session.id)) return;
         analyser.getFloatTimeDomainData(samples);
         let sum = 0;
         for (const value of samples) sum += value * value;
-        const rms = Math.sqrt(sum / samples.length);
-        if (!session.speaking && rms < 0.035) session.noiseFloor = session.noiseFloor * 0.97 + rms * 0.03;
-        const startThreshold = Math.max(0.032, session.noiseFloor * 3.2);
-        const stopThreshold = Math.max(0.019, session.noiseFloor * 2.0);
-        if (rms >= startThreshold) {
-            session.aboveThresholdFrames++;
-            session.lastVoiceAt = timestamp;
-            if (session.aboveThresholdFrames >= 2) setSpeaking(session, true);
-        } else {
-            session.aboveThresholdFrames = 0;
-            if (session.speaking && rms < stopThreshold && timestamp - session.lastVoiceAt >= 420) setSpeaking(session, false);
-        }
+        const next = evaluateVoiceActivity(gate, normalizedInputLevel(Math.sqrt(sum / samples.length)), timestamp,
+            { muted: session.muted === true });
+        setSpeaking(session, next);
         session.vadFrame = requestAnimationFrame(sample);
     };
     session.vadFrame = requestAnimationFrame(sample);
@@ -551,7 +544,7 @@ async function startVoiceActivityDetection(session) {
 
 export async function initialize(mediaBuildId, callback, iceServers, iceTransportPolicy = "all", diagnostics = false, callId = null, localAccountId = null,
     role = "unknown", peerGeneration = 0, negotiationId = null, negotiationGeneration = 0,
-    remoteAccountId = null, participantPreference = null, polite = false) {
+    remoteAccountId = null, participantPreference = null, polite = false, localVoicePreference = null) {
     const build = await import(`./mediaBuild.js?build=${encodeURIComponent(mediaBuildId)}`);
     await build.requireMatchingMediaBuild(mediaBuildId);
     ({ createRemoteVoicePlayback, updateRemoteVoicePlayback, destroyRemoteVoicePlayback } =
@@ -562,7 +555,11 @@ export async function initialize(mediaBuildId, callback, iceServers, iceTranspor
     let localStream;
     try {
         diagnostic(initializing, "GetUserMediaStarted");
-        localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const inputSensitivity = inputSensitivityConfiguration(localVoicePreference);
+        localStream = await navigator.mediaDevices.getUserMedia({ audio: {
+            ...(inputSensitivity.inputDeviceId ? { deviceId: { exact: inputSensitivity.inputDeviceId } } : {}),
+            channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true
+        } });
         const firstTrack = localStream.getAudioTracks()[0];
         diagnostic(initializing, "GetUserMediaSucceeded", { audioTrackCount: localStream.getAudioTracks().length,
             trackEnabled: firstTrack?.enabled, trackReadyState: firstTrack?.readyState });
@@ -598,8 +595,9 @@ export async function initialize(mediaBuildId, callback, iceServers, iceTranspor
             remoteIceQueuedCount: 0, remoteTrackReceived: false, remoteAudioPlaySucceeded: false,
             mediaTrafficDetected: false,
             nonTrickleDiagnostic: diagnostics && localStorage.getItem("iridium.voice.nonTrickleDiagnostic") === "true",
-            pendingRemoteCandidates: [], speaking: false, vadFrame: null, audioContext: null,
+            pendingRemoteCandidates: [], speaking: false, muted: false, vadFrame: null, audioContext: null,
             audioSource: null, analyser: null,
+            inputSensitivity: inputSensitivityConfiguration(localVoicePreference), voiceActivityGate: null,
             remoteAccountId, participantPreference: participantPreference ?? { volumePercent:100, locallyMuted:false },
             remotePlayback: null, deafened: false, visualStreams:new Map(), viewers:new Map(), screenShare:null,
             polite,
@@ -956,8 +954,22 @@ export function getActiveDiagnosticSnapshots() {
 
 export function setMuted(id, muted) {
     const session = requireSession(id);
+    session.muted = muted === true;
     for (const track of session.localStream.getAudioTracks()) track.enabled = !muted;
-    if (muted) setSpeaking(session, false);
+    if (muted) {
+        if (session.voiceActivityGate) {
+            session.voiceActivityGate.speaking = false;
+            session.voiceActivityGate.aboveThresholdFrames = 0;
+        }
+        setSpeaking(session, false);
+    }
+}
+
+export function setInputSensitivity(id, preference) {
+    const session = sessions.get(id); if (!session) return;
+    session.inputSensitivity = inputSensitivityConfiguration(preference);
+    if (session.voiceActivityGate)
+        updateVoiceActivityConfiguration(session.voiceActivityGate, session.inputSensitivity);
 }
 
 export function setDeafened(id, deafened) {

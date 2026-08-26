@@ -10,7 +10,8 @@ public sealed class WebRtcCallMediaService(
     IWebAssemblyHostEnvironment environment,
     ILogger<WebRtcCallMediaService> logger,
     VoiceParticipantPreferencesService preferences,
-    IWebRtcConfigurationProvider webRtcConfiguration) : ICallMediaService
+    IWebRtcConfigurationProvider webRtcConfiguration,
+    LocalVoicePreferenceService localVoicePreferences) : ICallMediaService
 {
     private IJSObjectReference? _module;
     private DotNetObjectReference<WebRtcCallMediaService>? _callback;
@@ -47,7 +48,8 @@ public sealed class WebRtcCallMediaService(
                 environment.IsDevelopment(), context.CallId, context.LocalAccountId,
                 context.Role, context.PeerGeneration, context.NegotiationId, context.NegotiationGeneration,
                 context.RemoteAccountId, preference,
-                context.RemoteAccountId is { } remoteAccountId && context.LocalAccountId.CompareTo(remoteAccountId) > 0);
+                context.RemoteAccountId is { } remoteAccountId && context.LocalAccountId.CompareTo(remoteAccountId) > 0,
+                localVoicePreferences.Current);
         }
         catch (JSException exception) when (IsBuildMismatch(exception))
         {
@@ -59,7 +61,12 @@ public sealed class WebRtcCallMediaService(
                     exception);
             throw;
         }
-        if (!_preferenceSubscribed) { preferences.Changed += PreferenceChanged; _preferenceSubscribed = true; }
+        if (!_preferenceSubscribed)
+        {
+            preferences.Changed += PreferenceChanged;
+            localVoicePreferences.Changed += LocalVoicePreferenceChanged;
+            _preferenceSubscribed = true;
+        }
     }
 
     public Task<WebRtcSessionDescription> CreateOfferAsync(Guid negotiationId, Guid signalId,
@@ -249,12 +256,22 @@ public sealed class WebRtcCallMediaService(
         _ = InvokeVoidAsync("setParticipantPreference", CancellationToken.None, preference);
     }
 
+    private void LocalVoicePreferenceChanged()
+    {
+        if (_sessionId is not null)
+            _ = InvokeVoidAsync("setInputSensitivity", CancellationToken.None, localVoicePreferences.Current);
+    }
+
     private static bool IsBuildMismatch(JSException exception) =>
         exception.Message.Contains("VersionMismatch", StringComparison.OrdinalIgnoreCase);
 
     public async ValueTask DisposeAsync()
     {
-        if (_preferenceSubscribed) preferences.Changed -= PreferenceChanged;
+        if (_preferenceSubscribed)
+        {
+            preferences.Changed -= PreferenceChanged;
+            localVoicePreferences.Changed -= LocalVoicePreferenceChanged;
+        }
         await CleanupAsync("media service disposed");
         if (_module is not null) await _module.DisposeAsync();
         _module = null;

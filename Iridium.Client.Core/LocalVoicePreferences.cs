@@ -1,6 +1,11 @@
 namespace Iridium.Client.Core;
 
-public sealed record LocalVoicePreference(bool PreferredMuted = false, bool PreferredDeafened = false)
+public sealed record LocalVoicePreference(
+    bool PreferredMuted = false,
+    bool PreferredDeafened = false,
+    bool AutoInputSensitivity = true,
+    double ManualInputSensitivityThreshold = 0.5,
+    string? InputDeviceId = null)
 {
     public bool EffectiveMuted => PreferredMuted || PreferredDeafened;
 }
@@ -25,6 +30,9 @@ public sealed class LocalVoicePreferenceService(ILocalVoicePreferenceStore store
     public bool PreferredMuted => Current.PreferredMuted;
     public bool PreferredDeafened => Current.PreferredDeafened;
     public bool EffectiveMuted => Current.EffectiveMuted;
+    public bool AutoInputSensitivity => Current.AutoInputSensitivity;
+    public double ManualInputSensitivityThreshold => Current.ManualInputSensitivityThreshold;
+    public string? InputDeviceId => Current.InputDeviceId;
 
     public async Task SetScopeAsync(string nodeAuthority, Guid accountId,
         CancellationToken cancellationToken = default)
@@ -47,6 +55,23 @@ public sealed class LocalVoicePreferenceService(ILocalVoicePreferenceStore store
 
     public Task SetPreferredDeafenedAsync(bool deafened, CancellationToken cancellationToken = default) =>
         UpdateAsync(Current with { PreferredDeafened = deafened }, cancellationToken);
+
+    public Task SetAutoInputSensitivityAsync(bool automatic,
+        CancellationToken cancellationToken = default) =>
+        UpdateAsync(Current with { AutoInputSensitivity = automatic }, cancellationToken);
+
+    public Task SetManualInputSensitivityThresholdAsync(double threshold,
+        CancellationToken cancellationToken = default) =>
+        UpdateAsync(Current with
+        {
+            ManualInputSensitivityThreshold = Math.Clamp(threshold, 0, 1)
+        }, cancellationToken);
+
+    public Task SetInputDeviceAsync(string? deviceId, CancellationToken cancellationToken = default) =>
+        UpdateAsync(Current with
+        {
+            InputDeviceId = string.IsNullOrWhiteSpace(deviceId) ? null : deviceId.Trim()
+        }, cancellationToken);
 
     private async Task UpdateAsync(LocalVoicePreference preference, CancellationToken cancellationToken)
     {

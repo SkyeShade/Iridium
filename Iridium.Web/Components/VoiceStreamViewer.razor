@@ -8,7 +8,8 @@
 
 @if (Voice.WatchedStream is { } stream)
 {
-    <section id="@_containerId" class="voice-stream-viewer @(Floating ? "floating" : null)" aria-label="Watching @stream.OwnerDisplayName's stream">
+    <section id="@_containerId" class="voice-stream-viewer @(Floating ? "floating" : null)" aria-label="Watching @stream.OwnerDisplayName's stream"
+             @onclick="CloseShareMenu" @onkeydown="ViewerKeyDown">
         <div class="stream-stage">
             <video id="@_elementId" autoplay playsinline></video>
             <div class="stream-toolbar floating-drag-handle">
@@ -89,11 +90,36 @@
                 }
             }
         </div>
-        <div class="viewer-controls">
-            <button type="button" class="@(Voice.Current?.Muted == true ? "selected" : null)" @onclick="ToggleMuteAsync"><Icon Name="microphone" /> Mute</button>
-            <button type="button" class="@(Voice.Current?.Deafened == true ? "selected" : null)" @onclick="ToggleDeafenAsync"><Icon Name="headphones" /> Deafen</button>
-            <button type="button" @onclick="CloseAsync"><Icon Name="close" /> Stop Watching</button>
-            <button type="button" class="leave" @onclick="LeaveAsync"><Icon Name="hangup" /> Leave Voice</button>
+        <div class="viewer-controls-shell">
+            <div class="viewer-controls">
+                <button type="button" class="@(Voice.Current?.Muted == true ? "selected" : null)" @onclick="ToggleMuteAsync"><Icon Name="microphone" /> Mute</button>
+                <button type="button" class="@(Voice.Current?.Deafened == true ? "selected" : null)" @onclick="ToggleDeafenAsync"><Icon Name="headphones" /> Deafen</button>
+                @if (IsOwnPublishedShare(stream))
+                {
+                    <div class="viewer-share-control" @onclick:stopPropagation="true" @onpointerdown:stopPropagation="true">
+                        <button type="button" class="viewer-share-trigger" aria-label="Screen share options"
+                                aria-haspopup="menu" aria-expanded="@_shareMenuOpen" @onclick="ToggleShareMenu">
+                            <Icon Name="screen" /> Share <span class="viewer-share-chevron" aria-hidden="true"><Icon Name="chevron" /></span>
+                        </button>
+                    </div>
+                }
+                else
+                {
+                    <button type="button" @onclick="CloseAsync"><Icon Name="close" /> Stop Watching</button>
+                }
+                <button type="button" class="leave" @onclick="LeaveAsync"><Icon Name="hangup" /> Leave Voice</button>
+            </div>
+            @if (IsOwnPublishedShare(stream) && _shareMenuOpen)
+            {
+                <div class="viewer-share-options" role="menu" aria-label="Screen share options" @onclick:stopPropagation="true">
+                    <button type="button" role="menuitem" aria-label="Change shared window" @onclick="ChangeSharedWindowAsync">
+                        <Icon Name="refresh" /> Change Shared Window
+                    </button>
+                    <button type="button" role="menuitem" class="stop-sharing" aria-label="Stop sharing" @onclick="StopOwnShareAsync">
+                        <Icon Name="screen" /> Stop Sharing
+                    </button>
+                </div>
+            }
         </div>
         }
     </section>
@@ -106,6 +132,7 @@
     private bool _audioMuted;
     private int _audioVolume = 100;
     private bool _fullscreenSupported;
+    private bool _shareMenuOpen;
     private string? _error;
     private IJSObjectReference? _floatingModule;
     private IJSObjectReference? _floatingHandle;
@@ -195,6 +222,26 @@
     }
     private Task ToggleMuteAsync() => Voice.ToggleMuteAsync();
     private Task ToggleDeafenAsync() => Voice.ToggleDeafenAsync();
+    private bool IsOwnPublishedShare(PublishedVoiceStreamDto stream) =>
+        stream.OwnerAccountId == Voice.LocalAccountId &&
+        Voice.PublishedStreams.Any(value => value.StreamId == stream.StreamId &&
+            value.OwnerAccountId == Voice.LocalAccountId && value.Kind == VoicePublishedStreamKind.ScreenShare);
+    private void ToggleShareMenu() => _shareMenuOpen = !_shareMenuOpen;
+    private void CloseShareMenu() => _shareMenuOpen = false;
+    private void ViewerKeyDown(KeyboardEventArgs args)
+    {
+        if (args.Key == "Escape") CloseShareMenu();
+    }
+    private async Task ChangeSharedWindowAsync()
+    {
+        CloseShareMenu();
+        await SwitchSharingAsync();
+    }
+    private async Task StopOwnShareAsync()
+    {
+        CloseShareMenu();
+        await StopSharingAsync();
+    }
     private async Task CloseAsync()
     {
         await Voice.DetachWatchedStreamAsync(_elementId);

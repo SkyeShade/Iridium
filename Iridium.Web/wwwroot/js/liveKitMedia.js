@@ -1,5 +1,7 @@
 import { createRemoteVoicePlayback, updateRemoteVoicePlayback, destroyRemoteVoicePlayback,
     resumeRemoteVoicePlayback } from "./voicePlayback.js";
+import { createVoiceActivityGate, evaluateVoiceActivity, inputSensitivityConfiguration,
+    normalizedInputLevel, updateVoiceActivityConfiguration } from "./inputSensitivity.js";
 
 const sessions = new Map();
 
@@ -78,12 +80,13 @@ function screenSharePublishOptions(track, mediaStreamId) {
     };
 }
 
-export function microphoneProfile(configuredBitrate) {
+export function microphoneProfile(configuredBitrate, inputDeviceId = null) {
     const bitrate = Math.max(64_000, Math.min(128_000, Number(configuredBitrate) || 96_000));
     return {
         bitrate,
         capture: {
             channelCount: 1,
+            ...(inputDeviceId ? { deviceId: { exact: inputDeviceId } } : {}),
             echoCancellation: true,
             noiseSuppression: true,
             autoGainControl: true
@@ -297,15 +300,16 @@ function startLocalSpeaking(session) {
     try {
         const analyser = createAudioAnalyser(publication.track, { fftSize: 512, smoothingTimeConstant: .65 });
         session.speakingAnalyser = analyser;
-        let speaking = false, quietFrames = 0;
+        const gate = createVoiceActivityGate(session.inputSensitivity);
+        session.voiceActivityGate = gate;
         const tick = () => {
             if (!sessions.has(session.id)) return;
-            const active = analyser.calculateVolume() > .035;
-            if (active) quietFrames = 0; else quietFrames++;
-            const next = active || (speaking && quietFrames < 8);
-            if (next !== speaking) {
-                speaking = next;
-                callback(session, "OnSpeakingChanged", ...(session.kind === "call" ? [session.peerGeneration, speaking] : [speaking]));
+            const next = evaluateVoiceActivity(gate, normalizedInputLevel(analyser.calculateVolume()), performance.now(), {
+                muted: session.muted === true
+            });
+            if (next !== session.speaking) {
+                session.speaking = next;
+                callback(session, "OnSpeakingChanged", ...(session.kind === "call" ? [session.peerGeneration, next] : [next]));
             }
             session.speakingFrame = requestAnimationFrame(tick);
         };
@@ -364,11 +368,12 @@ async function refreshViewers(session, mediaStreamId) {
 }
 
 async function connectCore(callbackRef, nodeSession, preferences, kind, peerGeneration = 0,
-        initialMuted = false, initialDeafened = false) {
+        initialMuted = false, initialDeafened = false, localVoicePreference = null) {
     if (!nodeSession?.accessToken || !nodeSession?.publicUrl) throw new Error("The Node did not provide LiveKit room access.");
     const { Room, RoomEvent } = sdk();
     const id = crypto.randomUUID();
-    const microphone = microphoneProfile(nodeSession.voiceBitrate);
+    const inputSensitivity = inputSensitivityConfiguration(localVoicePreference);
+    const microphone = microphoneProfile(nodeSession.voiceBitrate, inputSensitivity.inputDeviceId);
     const voiceBitrate = microphone.bitrate;
     const session = {
         id, kind, peerGeneration, callback: callbackRef, diagnostics: nodeSession.diagnosticsEnabled === true,
@@ -377,6 +382,8 @@ async function connectCore(callbackRef, nodeSession, preferences, kind, peerGene
         room: new Room({ autoSubscribe: false, adaptiveStream: false, dynacast: true }),
         preferences: new Map((preferences ?? []).map(p => [accountKey(p.remoteAccountId), p])),
         playbacks: new Map(), viewers: new Map(), watched: new Set(), deafened: initialDeafened === true,
+        muted: initialMuted === true, speaking: false, inputSensitivity, voiceActivityGate: null,
+        activeInputDeviceId: inputSensitivity.inputDeviceId,
         screenTracks: [], screenStreamId: null, screenMediaStreamId: null, screenGeneration: 0,
         audioContext: (globalThis.AudioContext || globalThis.webkitAudioContext)
             ? new (globalThis.AudioContext || globalThis.webkitAudioContext)() : null
@@ -413,18 +420,40 @@ async function connectCore(callbackRef, nodeSession, preferences, kind, peerGene
     }
 }
 
-export function connectCall(callbackRef, configuration, context, preferences) {
+export function connectCall(callbackRef, configuration, context, preferences, localVoicePreference = null) {
     return connectCore(callbackRef, configuration.nodeSession, preferences, "call", context.peerGeneration,
-        context.muted, context.deafened);
+        context.muted, context.deafened, localVoicePreference);
 }
 
-export function connectCommunity(callbackRef, mediaSession, preferences, muted, deafened) {
-    return connectCore(callbackRef, mediaSession.nodeSession, preferences, "community", 0, muted, deafened);
+export function connectCommunity(callbackRef, mediaSession, preferences, muted, deafened, localVoicePreference = null) {
+    return connectCore(callbackRef, mediaSession.nodeSession, preferences, "community", 0, muted, deafened,
+        localVoicePreference);
 }
 
 export async function setMuted(id, muted) {
     const session = sessions.get(id); if (!session) return;
+    session.muted = muted === true;
+    if (muted && session.voiceActivityGate) {
+        const wasSpeaking = session.speaking;
+        session.voiceActivityGate.speaking = false;
+        session.voiceActivityGate.aboveThresholdFrames = 0;
+        session.speaking = false;
+        if (wasSpeaking)
+            await callback(session, "OnSpeakingChanged", ...(session.kind === "call" ? [session.peerGeneration, false] : [false]));
+    }
     await session.room.localParticipant.setMicrophoneEnabled(!muted);
+}
+
+export async function setInputSensitivity(id, preference) {
+    const session = sessions.get(id); if (!session) return;
+    session.inputSensitivity = inputSensitivityConfiguration(preference);
+    if (session.voiceActivityGate)
+        updateVoiceActivityConfiguration(session.voiceActivityGate, session.inputSensitivity);
+    const deviceId = session.inputSensitivity.inputDeviceId;
+    if (deviceId !== session.activeInputDeviceId && session.room.switchActiveDevice) {
+        await session.room.switchActiveDevice("audioinput", deviceId || "default");
+        session.activeInputDeviceId = deviceId;
+    }
 }
 
 export function setDeafened(id, deafened) {

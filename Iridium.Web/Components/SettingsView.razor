@@ -7,7 +7,7 @@
     <aside class="settings-nav">
         <div class="nav-inner">
             <p>USER SETTINGS</p>
-            @foreach (var section in new[] { "My Account", "Appearance", "Security", "Connections / Nodes", "About" })
+            @foreach (var section in new[] { "My Account", "Voice & Video", "Appearance", "Security", "Connections / Nodes", "About" })
             {
                 <button class="@(section == _section ? "active" : null)" @onclick="() => _section = section">@section</button>
             }
@@ -58,6 +58,10 @@
             {
                 <h1>Appearance</h1>
                 <AppearanceSettings />
+            }
+            else if (_section == "Voice & Video")
+            {
+                <VoiceVideoSettings />
             }
             else
             {

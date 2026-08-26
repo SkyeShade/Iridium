@@ -9,7 +9,8 @@ namespace Iridium.Web.Services;
 public sealed class LiveKitCallMediaService(
     IJSRuntime js,
     IWebAssemblyHostEnvironment environment,
-    VoiceParticipantPreferencesService preferences) : ICallMediaService
+    VoiceParticipantPreferencesService preferences,
+    LocalVoicePreferenceService localVoicePreferences) : ICallMediaService
 {
     private IJSObjectReference? _module;
     private DotNetObjectReference<LiveKitCallMediaService>? _callback;
@@ -39,8 +40,13 @@ public sealed class LiveKitCallMediaService(
         var remotePreferences = context.RemoteAccountId is { } remote
             ? new[] { await preferences.GetAsync(remote, cancellationToken) } : [];
         _sessionId = await _module.InvokeAsync<string>("connectCall", cancellationToken,
-            _callback, configuration, context, remotePreferences);
-        if (!_preferenceSubscribed) { preferences.Changed += PreferenceChanged; _preferenceSubscribed = true; }
+            _callback, configuration, context, remotePreferences, localVoicePreferences.Current);
+        if (!_preferenceSubscribed)
+        {
+            preferences.Changed += PreferenceChanged;
+            localVoicePreferences.Changed += LocalVoicePreferenceChanged;
+            _preferenceSubscribed = true;
+        }
     }
 
     public Task<WebRtcSessionDescription> CreateOfferAsync(Guid negotiationId, Guid signalId,
@@ -96,13 +102,18 @@ public sealed class LiveKitCallMediaService(
             ? await _module.InvokeAsync<T>(method, token, [_sessionId, .. args])
             : throw new InvalidOperationException("SFU media is not connected.");
     private void PreferenceChanged(VoiceParticipantPreference value) { if (_sessionId is not null) _ = Invoke("setParticipantPreference", CancellationToken.None, value); }
+    private void LocalVoicePreferenceChanged() { if (_sessionId is not null) _ = Invoke("setInputSensitivity", CancellationToken.None, localVoicePreferences.Current); }
     private static Exception LegacySignaling() => new InvalidOperationException("Peer-to-peer signaling is not used by SFU media.");
     private static CallConnectionState ParseState(string state) => state switch { "connected" => CallConnectionState.Connected, "connecting" => CallConnectionState.Connecting, "disconnected" => CallConnectionState.Disconnected, "failed" => CallConnectionState.Failed, _ => CallConnectionState.New };
     private static async Task InvokeHandlers<T>(Func<T, Task>? handlers, T value) { if (handlers is null) return; foreach (Func<T, Task> handler in handlers.GetInvocationList()) await handler(value); }
 
     public async ValueTask DisposeAsync()
     {
-        if (_preferenceSubscribed) preferences.Changed -= PreferenceChanged;
+        if (_preferenceSubscribed)
+        {
+            preferences.Changed -= PreferenceChanged;
+            localVoicePreferences.Changed -= LocalVoicePreferenceChanged;
+        }
         await CleanupAsync("SFU media service disposed");
         if (_module is not null) await _module.DisposeAsync();
     }

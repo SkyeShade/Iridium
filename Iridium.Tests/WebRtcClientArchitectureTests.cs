@@ -90,7 +90,7 @@ public sealed class WebRtcClientArchitectureTests
     {
         var sfu = Source("Iridium.Web", "wwwroot", "js", "liveKitMedia.js");
 
-        Assert.Contains("microphoneProfile(nodeSession.voiceBitrate)", sfu);
+        Assert.Contains("microphoneProfile(nodeSession.voiceBitrate, inputSensitivity.inputDeviceId)", sfu);
         Assert.Contains("channelCount: 1", sfu);
         Assert.Contains("echoCancellation: true", sfu);
         Assert.Contains("noiseSuppression: true", sfu);

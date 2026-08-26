@@ -5,7 +5,8 @@ using Microsoft.JSInterop;
 namespace Iridium.Web.Services;
 
 /// <summary>Production community-voice adapter: one LiveKit room, never one peer connection per participant.</summary>
-public sealed class LiveKitCommunityVoiceMediaClient(IJSRuntime js, VoiceParticipantPreferencesService preferences)
+public sealed class LiveKitCommunityVoiceMediaClient(IJSRuntime js, VoiceParticipantPreferencesService preferences,
+    LocalVoicePreferenceService localVoicePreferences)
     : ICommunityVoiceMediaClient
 {
     private IJSObjectReference? _module;
@@ -33,8 +34,13 @@ public sealed class LiveKitCommunityVoiceMediaClient(IJSRuntime js, VoicePartici
         foreach (var accountId in room.Participants.Where(p => p.AccountId != localAccountId).Select(p => p.AccountId).Distinct())
             remotePreferences.Add(await preferences.GetAsync(accountId, cancellationToken));
         _sessionId = await _module.InvokeAsync<string>("connectCommunity", cancellationToken,
-            _callback, mediaSession, remotePreferences, muted, deafened);
-        if (!_preferenceSubscribed) { preferences.Changed += PreferenceChanged; _preferenceSubscribed = true; }
+            _callback, mediaSession, remotePreferences, muted, deafened, localVoicePreferences.Current);
+        if (!_preferenceSubscribed)
+        {
+            preferences.Changed += PreferenceChanged;
+            localVoicePreferences.Changed += LocalVoicePreferenceChanged;
+            _preferenceSubscribed = true;
+        }
     }
 
     public Task SetMutedAsync(bool muted, CancellationToken cancellationToken = default) => Invoke("setMuted", cancellationToken, muted);
@@ -70,11 +76,16 @@ public sealed class LiveKitCommunityVoiceMediaClient(IJSRuntime js, VoicePartici
     private Task Invoke(string method, CancellationToken token, params object?[] args) => _module is not null && _sessionId is not null ? _module.InvokeVoidAsync(method, token, [_sessionId, .. args]).AsTask() : Task.CompletedTask;
     private async Task<T> InvokeResult<T>(string method, CancellationToken token, params object?[] args) => _module is not null && _sessionId is not null ? await _module.InvokeAsync<T>(method, token, [_sessionId, .. args]) : throw new InvalidOperationException("SFU media is not connected.");
     private void PreferenceChanged(VoiceParticipantPreference value) { if (_sessionId is not null) _ = Invoke("setParticipantPreference", CancellationToken.None, value); }
+    private void LocalVoicePreferenceChanged() { if (_sessionId is not null) _ = Invoke("setInputSensitivity", CancellationToken.None, localVoicePreferences.Current); }
     private static async Task InvokeHandlers<T>(Func<T, Task>? handlers, T value) { if (handlers is null) return; foreach (Func<T, Task> handler in handlers.GetInvocationList()) await handler(value); }
 
     public async ValueTask DisposeAsync()
     {
-        if (_preferenceSubscribed) preferences.Changed -= PreferenceChanged;
+        if (_preferenceSubscribed)
+        {
+            preferences.Changed -= PreferenceChanged;
+            localVoicePreferences.Changed -= LocalVoicePreferenceChanged;
+        }
         await DisconnectAsync("SFU community media disposed");
         if (_module is not null) await _module.DisposeAsync();
     }

@@ -1,0 +1,177 @@
+@using Iridium.Client.Core
+@implements IAsyncDisposable
+@inject LocalVoicePreferenceService Preferences
+@inject IJSRuntime JS
+
+<section class="voice-video-settings" aria-labelledby="voice-video-heading">
+    <h1 id="voice-video-heading">Voice &amp; Video</h1>
+
+    <div class="voice-settings-card">
+        <div class="setting-heading">
+            <div>
+                <strong>Input Device</strong>
+                <small>The microphone Iridium uses for voice and the live preview.</small>
+            </div>
+        </div>
+        <select class="microphone-select" value="@(Preferences.InputDeviceId ?? string.Empty)"
+                aria-label="Input device" @onchange="InputDeviceChangedAsync">
+            <option value="">Default microphone</option>
+            @foreach (var device in _devices)
+            {
+                <option value="@device.DeviceId">@device.Label</option>
+            }
+        </select>
+
+        <div class="settings-divider"></div>
+
+        <label class="toggle-row">
+            <span>
+                <strong>Automatically Adjust Input Sensitivity</strong>
+                <small>Controls how loudly you need to speak before Iridium transmits your voice activity.</small>
+            </span>
+            <input type="checkbox" checked="@Preferences.AutoInputSensitivity"
+                   @onchange="AutomaticChangedAsync" />
+            <span class="toggle" aria-hidden="true"></span>
+        </label>
+
+        <div class="sensitivity-preview @ActivityClass" aria-label="Microphone input level">
+            @if (Preferences.AutoInputSensitivity)
+            {
+                <div class="input-meter" role="meter" aria-valuemin="0" aria-valuemax="100"
+                     aria-valuenow="@LevelPercent" aria-label="Current microphone input level">
+                    <span class="meter-level" style="--input-level:@LevelPercent%"></span>
+                </div>
+                <div class="sensitivity-caption"><span>Quiet</span><strong>Automatic sensitivity</strong><span>Loud</span></div>
+            }
+            else
+            {
+                <div class="manual-sensitivity-bar @ActivityClass"
+                     style="--input-level:@LevelPercent%;--input-threshold:@ThresholdPercent%">
+                    <span class="threshold-zones" aria-hidden="true"></span>
+                    <span class="meter-level" aria-hidden="true"></span>
+                    <span class="threshold-marker" aria-hidden="true"></span>
+                    <input type="range" min="0" max="1" step="0.01"
+                           value="@Preferences.ManualInputSensitivityThreshold.ToString(System.Globalization.CultureInfo.InvariantCulture)"
+                           aria-label="Manual input sensitivity threshold"
+                           aria-valuetext="@($"{ThresholdPercent}% input level")"
+                           @oninput="ManualThresholdChangedAsync" />
+                </div>
+                <div class="sensitivity-caption">
+                    <span>More sensitive</span>
+                    <strong>@(_level >= Preferences.ManualInputSensitivityThreshold ? "Voice active" : "Below threshold")</strong>
+                    <span>Less sensitive</span>
+                </div>
+                <p class="manual-note">Only input crossing the marker counts as voice activity.</p>
+            }
+        </div>
+
+        @if (_meterStatus != "ready")
+        {
+            <p class="meter-unavailable" role="status">@_meterMessage</p>
+        }
+    </div>
+</section>
+
+@code {
+    private IJSObjectReference? _module;
+    private DotNetObjectReference<VoiceVideoSettings>? _callback;
+    private string? _meterId;
+    private IReadOnlyList<MicrophoneDeviceOption> _devices = [];
+    private double _level;
+    private string _meterStatus = "loading";
+    private string _meterMessage = "Starting live microphone input preview…";
+    private bool _disposed;
+
+    private int LevelPercent => (int)Math.Round(Math.Clamp(_level, 0, 1) * 100);
+    private int ThresholdPercent => (int)Math.Round(Preferences.ManualInputSensitivityThreshold * 100);
+    private string ActivityClass => !Preferences.AutoInputSensitivity &&
+                                    _level >= Preferences.ManualInputSensitivityThreshold ? "active" : "quiet";
+
+    protected override void OnInitialized() => Preferences.Changed += PreferencesChanged;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        try
+        {
+            _module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/microphoneInputMeter.js");
+            _callback = DotNetObjectReference.Create(this);
+            var result = await _module.InvokeAsync<MicrophoneMeterStartResult>("startMicrophoneInputMeter",
+                _callback, Preferences.InputDeviceId);
+            if (_disposed)
+            {
+                if (result.MeterId is not null)
+                    await _module.InvokeVoidAsync("stopMicrophoneInputMeter", result.MeterId);
+                return;
+            }
+            _meterId = result.MeterId;
+            _meterStatus = result.Status;
+            _meterMessage = result.Message ?? string.Empty;
+            _devices = result.Devices ?? [];
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception exception) when (exception is JSException or JSDisconnectedException)
+        {
+            _meterStatus = "unavailable";
+            _meterMessage = "Live microphone input preview is unavailable.";
+            if (!_disposed) await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    [JSInvokable]
+    public Task OnMicrophoneLevel(double level)
+    {
+        if (_disposed) return Task.CompletedTask;
+        _level = Math.Clamp(level, 0, 1);
+        return InvokeAsync(StateHasChanged);
+    }
+
+    private async Task AutomaticChangedAsync(ChangeEventArgs args)
+    {
+        var automatic = args.Value is bool value && value;
+        await Preferences.SetAutoInputSensitivityAsync(automatic);
+    }
+
+    private async Task ManualThresholdChangedAsync(ChangeEventArgs args)
+    {
+        if (double.TryParse(args.Value?.ToString(), System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var threshold))
+            await Preferences.SetManualInputSensitivityThresholdAsync(threshold);
+    }
+
+    private async Task InputDeviceChangedAsync(ChangeEventArgs args)
+    {
+        var deviceId = string.IsNullOrWhiteSpace(args.Value?.ToString()) ? null : args.Value!.ToString();
+        if (_module is not null && _meterId is not null)
+        {
+            var result = await _module.InvokeAsync<MicrophoneMeterRebindResult>(
+                "rebindMicrophoneInputMeter", _meterId, deviceId);
+            _meterStatus = result.Status;
+            _meterMessage = result.Message ?? string.Empty;
+            if (result.Status != "ready") return;
+        }
+        await Preferences.SetInputDeviceAsync(deviceId);
+    }
+
+    private void PreferencesChanged()
+    {
+        if (!_disposed) _ = InvokeAsync(StateHasChanged);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        Preferences.Changed -= PreferencesChanged;
+        if (_module is not null && _meterId is not null)
+            try { await _module.InvokeVoidAsync("stopMicrophoneInputMeter", _meterId); }
+            catch (JSDisconnectedException) { }
+        _callback?.Dispose();
+        if (_module is not null) await _module.DisposeAsync();
+    }
+
+    private sealed record MicrophoneDeviceOption(string DeviceId, string Label);
+    private sealed record MicrophoneMeterStartResult(string? MeterId, string Status, string? Message,
+        MicrophoneDeviceOption[]? Devices);
+    private sealed record MicrophoneMeterRebindResult(string Status, string? Message);
+}

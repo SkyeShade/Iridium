@@ -7,7 +7,7 @@ namespace Iridium.Web.Services;
 
 public sealed class BrowserCommunityVoiceMediaClient(IJSRuntime js, ILogger<BrowserCommunityVoiceMediaClient> logger,
     IWebAssemblyHostEnvironment environment, VoiceParticipantPreferencesService preferences,
-    IWebRtcConfigurationProvider webRtcConfiguration)
+    IWebRtcConfigurationProvider webRtcConfiguration, LocalVoicePreferenceService localVoicePreferences)
     : ICommunityVoiceMediaClient
 {
     private IJSObjectReference? _module;
@@ -39,7 +39,8 @@ public sealed class BrowserCommunityVoiceMediaClient(IJSRuntime js, ILogger<Brow
         try
         {
             _sessionId = await _module.InvokeAsync<string>("connect", cancellationToken, MediaBuildInfo.Id, _callback,
-                mediaSession, room, localAccountId, remotePreferences, iceConfiguration);
+                mediaSession, room, localAccountId, remotePreferences, iceConfiguration,
+                localVoicePreferences.Current);
         }
         catch (JSException exception) when (exception.Message.Contains("VersionMismatch", StringComparison.OrdinalIgnoreCase))
         {
@@ -54,7 +55,12 @@ public sealed class BrowserCommunityVoiceMediaClient(IJSRuntime js, ILogger<Brow
         await _module.InvokeVoidAsync("start", cancellationToken, _sessionId);
         await SetDeafenedAsync(deafened, cancellationToken);
         await SetMutedAsync(muted, cancellationToken);
-        if (!_preferenceSubscribed) { preferences.Changed += PreferenceChanged; _preferenceSubscribed = true; }
+        if (!_preferenceSubscribed)
+        {
+            preferences.Changed += PreferenceChanged;
+            localVoicePreferences.Changed += LocalVoicePreferenceChanged;
+            _preferenceSubscribed = true;
+        }
         logger.LogDebug("Community voice media prepared for Channel={ChannelId}; Provider={Provider}; Status={Status}.",
             room.ChannelId, mediaSession.Provider, mediaSession.Status);
     }
@@ -217,9 +223,19 @@ public sealed class BrowserCommunityVoiceMediaClient(IJSRuntime js, ILogger<Brow
         _ = InvokeAsync("setParticipantPreference", CancellationToken.None, preference);
     }
 
+    private void LocalVoicePreferenceChanged()
+    {
+        if (_sessionId is not null)
+            _ = InvokeAsync("setInputSensitivity", CancellationToken.None, localVoicePreferences.Current);
+    }
+
     public async ValueTask DisposeAsync()
     {
-        if (_preferenceSubscribed) preferences.Changed -= PreferenceChanged;
+        if (_preferenceSubscribed)
+        {
+            preferences.Changed -= PreferenceChanged;
+            localVoicePreferences.Changed -= LocalVoicePreferenceChanged;
+        }
         await DisconnectAsync("Community media service disposed");
         if (_module is not null) await _module.DisposeAsync();
         _module = null;
