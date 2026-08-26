@@ -130,6 +130,8 @@ public sealed class NotificationResponsiveUiTests
         var root = FindRepositoryRoot();
         var composer = File.ReadAllText(Path.Combine(root, "Iridium.Web", "Components", "MessageComposer.razor"));
         var css = File.ReadAllText(Path.Combine(root, "Iridium.Web", "Components", "MessageComposer.razor.css"));
+        var sourceEditor = File.ReadAllText(Path.Combine(root, "Iridium.Web", "Components", "MarkdownSourceEditor.razor"));
+        var sourceCss = File.ReadAllText(Path.Combine(root, "Iridium.Web", "Components", "MarkdownSourceEditor.razor.css"));
         var shell = File.ReadAllText(Path.Combine(root, "Iridium.UI", "ApplicationShell.razor.css"));
         var swipe = File.ReadAllText(Path.Combine(root, "Iridium.UI", "wwwroot", "js", "mobileConversationSwipe.js"));
 
@@ -137,11 +139,12 @@ public sealed class NotificationResponsiveUiTests
         Assert.Contains("@onclick=\"SubmitFromKeyboardAsync\"", composer);
         Assert.Contains(".mobile-send-button{display:none}", css);
         Assert.Contains("@media (max-width:860px)", css);
-        Assert.Contains("composer-highlight composer-text-geometry", composer);
-        Assert.Contains("composer-rich-editor composer-text-geometry", composer);
-        Assert.Contains(".composer-text-geometry{box-sizing:border-box;min-width:0;width:100%", css);
-        Assert.Contains("overflow-wrap:anywhere;word-break:normal;tab-size:4;scrollbar-gutter:stable", css);
-        Assert.Contains(".composer-editor .composer-highlight{position:absolute;z-index:1;inset:0", css);
+        Assert.Contains("<MarkdownSourceEditor", composer);
+        Assert.Contains("markdown-source-highlight markdown-source-geometry", sourceEditor);
+        Assert.Contains("markdown-source-input markdown-source-geometry", sourceEditor);
+        Assert.Contains(".markdown-source-geometry{box-sizing:border-box;min-width:0;width:100%", sourceCss);
+        Assert.Contains("overflow-wrap:anywhere;word-break:normal;tab-size:4;scrollbar-gutter:stable", sourceCss);
+        Assert.Contains(".markdown-source-highlight{position:absolute;z-index:1;inset:0", sourceCss);
         Assert.Contains("--composer-text-end-padding:4rem", css);
         Assert.Contains("--composer-text-end-padding:0", css);
         Assert.DoesNotContain("inset:0 1rem 0 0", css);

@@ -60,11 +60,13 @@ public sealed class MessageRenderingUiContractTests
     {
         var previewCss = Source("Iridium.Web", "Components", "ComposerMarkdownPreview.razor.css");
         var composer = Source("Iridium.Web", "Components", "MessageComposer.razor");
-        var composerCss = Source("Iridium.Web", "Components", "MessageComposer.razor.css");
+        var sourceEditor = Source("Iridium.Web", "Components", "MarkdownSourceEditor.razor");
+        var sourceEditorCss = Source("Iridium.Web", "Components", "MarkdownSourceEditor.razor.css");
         var messageCss = Source("Iridium.Web", "Components", "MessageContentNodeView.razor.css");
         var appCss = Source("Iridium.Web", "wwwroot", "css", "app.css");
 
-        Assert.Contains("contenteditable=\"true\"", composer);
+        Assert.Contains("<MarkdownSourceEditor", composer);
+        Assert.Contains("contenteditable=\"true\"", sourceEditor);
         Assert.Contains("markdown-marker", previewCss);
         Assert.DoesNotContain("font-family:", previewCss);
         Assert.DoesNotContain("font-size:.92em", previewCss);
@@ -76,9 +78,80 @@ public sealed class MessageRenderingUiContractTests
         Assert.Contains("paint-order:stroke fill", previewCss);
         Assert.Contains("--chat-strong-weight: 700", appCss);
         Assert.Contains("strong{font-weight:var(--chat-strong-weight)}", messageCss);
-        Assert.Contains("composer-highlight composer-text-geometry", composer);
-        Assert.Contains("font-weight:var(--chat-text-weight)", composerCss);
+        Assert.Contains("<ComposerContentPreview", sourceEditor);
+        Assert.Contains("font-weight:var(--markdown-source-weight,var(--chat-text-weight))", sourceEditorCss);
         Assert.DoesNotContain("display:none", previewCss);
+    }
+
+    [Fact]
+    public void EditMessageAndProfileBioReuseSharedSourceEditorAndSafeMessageGrammar()
+    {
+        var editor = Source("Iridium.Web", "Components", "MarkdownSourceEditor.razor");
+        var row = Source("Iridium.Web", "Components", "MessageRow.razor");
+        var editProfile = Source("Iridium.Web", "Components", "EditProfileModal.razor");
+        var bio = Source("Iridium.Web", "Components", "ProfileBioContent.razor");
+        var bioNodes = Source("Iridium.Web", "Components", "ProfileBioNodeView.razor");
+        var identityCard = Source("Iridium.Web", "Components", "ProfileIdentityCard.razor");
+        var anchoredCard = Source("Iridium.Web", "Components", "AnchoredProfileCard.razor");
+        var profilePopup = Source("Iridium.Web", "Components", "ProfilePopup.razor");
+        var directSidebar = Source("Iridium.Web", "Components", "DirectParticipantSidebar.razor");
+        var friends = Source("Iridium.Web", "Components", "FriendsView.razor");
+        var bannerEditor = Source("Iridium.Web", "Components", "BannerEditorModal.razor");
+        var javascript = Source("Iridium.Web", "wwwroot", "js", "chat.js");
+
+        Assert.Contains("<ComposerContentPreview", editor);
+        Assert.Contains("<MarkdownSourceEditor", row);
+        Assert.Contains("SubmitOnEnter=\"true\"", row);
+        Assert.Contains("OnCancel=\"CancelEditAsync\"", row);
+        Assert.Contains("DocumentChanged=\"EditDocumentChanged\"", row);
+        Assert.DoesNotContain("ValueChanged=\"EditContentChanged\"", row);
+        Assert.Contains("_editContent = snapshot.Content ?? string.Empty", row);
+        Assert.True(row.IndexOf("_editContent = snapshot.Content ?? string.Empty", StringComparison.Ordinal) <
+                    row.IndexOf("_editEmojiReferences.Clear()", row.IndexOf("private void EditDocumentChanged", StringComparison.Ordinal), StringComparison.Ordinal));
+        Assert.DoesNotContain("@key", Slice(row, "<MarkdownSourceEditor", "<div class=\"edit-help\""));
+        Assert.Contains("CommunityEmojiDraftCodec.SerializeDocument", row);
+        Assert.Contains("<MarkdownSourceEditor", editProfile);
+        Assert.Contains("MaxLength=\"400\"", editProfile);
+        Assert.Contains("@_description.Length / 400", editProfile);
+        Assert.Contains("MessageContentSegments.Parse", bio);
+        Assert.Contains("target=\"_blank\" rel=\"noopener noreferrer\"", bioNodes);
+        Assert.DoesNotContain("MarkupString", bioNodes);
+        Assert.Contains("<ProfileBioContent", identityCard);
+        Assert.Contains("<ProfileBioContent", anchoredCard);
+        Assert.Contains("<ProfileIdentityCard", profilePopup);
+        Assert.Contains("<ProfileIdentityCard", directSidebar);
+        Assert.Contains("<AnchoredProfileCard", friends);
+        Assert.Contains("<ProfileIdentityCard", bannerEditor);
+        Assert.Contains("wireMarkdownSourceEditor", javascript);
+        Assert.Contains("composerSelectionOffset", javascript);
+        Assert.Contains("setComposerDocument", javascript);
+    }
+
+    [Fact]
+    public void RichTextEmojiCompletionUsesSharedExactIndexAndBoundedDebouncedComposerSearch()
+    {
+        var editor = Source("Iridium.Web", "Components", "MarkdownSourceEditor.razor");
+        var composer = Source("Iridium.Web", "Components", "MessageComposer.razor");
+        var edit = Source("Iridium.Web", "Components", "MessageRow.razor");
+        var bio = Source("Iridium.Web", "Components", "EditProfileModal.razor");
+        var index = Source("Iridium.Client.Core", "EmojiAutocompleteIndex.cs");
+
+        Assert.Contains("EmojiAutocompleteIndex.TryAliasBeforeCaret", editor);
+        Assert.Contains("_emojiIndex.Exact(range.Alias", editor);
+        Assert.Contains("insertComposerEmoji", editor);
+        Assert.Contains("snapshot.tokens.find", Source("Iridium.Web", "wwwroot", "js", "chat.js"));
+        Assert.Contains("EmojiAutocompleteIndex.TryAliasBeforeCaret", composer);
+        Assert.Contains("_emojiIndex.Exact(range.Alias, true)", composer);
+        Assert.Contains("Task.Delay(75, cancellationToken)", composer);
+        Assert.Contains("generation != _emojiSearchGeneration", composer);
+        Assert.Contains("_emojiIndex.Search(query, 8)", composer);
+        Assert.Contains("AllowCustomEmojiCompletion=\"true\"", edit);
+        Assert.Contains("StandardReferences=\"_editStandardEmojiReferences\"", edit);
+        Assert.Contains("SerializeEmojiTokensForValue=\"true\"", bio);
+        Assert.DoesNotContain("AllowCustomEmojiCompletion=\"true\"", bio);
+        Assert.Contains("IReadOnlyDictionary<string, StandardEmoji> Exact", index);
+        Assert.Contains("ReferenceEquals(values, _customSource)", index);
+        Assert.Contains("Take(limit)", index);
     }
 
     [Fact]
@@ -86,7 +159,8 @@ public sealed class MessageRenderingUiContractTests
     {
         var composer = Source("Iridium.Web", "Components", "MessageComposer.razor");
         var javascript = Source("Iridium.Web", "wwwroot", "js", "chat.js");
-        var pasteStart = javascript.IndexOf("const paste = async event =>", StringComparison.Ordinal);
+        var composerStart = javascript.IndexOf("export function wireComposer", StringComparison.Ordinal);
+        var pasteStart = javascript.IndexOf("const paste = async event =>", composerStart, StringComparison.Ordinal);
         var pasteEnd = javascript.IndexOf("const scroll = () =>", pasteStart, StringComparison.Ordinal);
         Assert.True(pasteStart >= 0 && pasteEnd > pasteStart);
         var paste = javascript[pasteStart..pasteEnd];
@@ -331,4 +405,12 @@ public sealed class MessageRenderingUiContractTests
         : "0px";
 
     private static string Source(params string[] parts) => File.ReadAllText(Path.Combine([Root, .. parts]));
+
+    private static string Slice(string source, string start, string end)
+    {
+        var startIndex = source.IndexOf(start, StringComparison.Ordinal);
+        var endIndex = source.IndexOf(end, startIndex, StringComparison.Ordinal);
+        Assert.True(startIndex >= 0 && endIndex > startIndex);
+        return source[startIndex..endIndex];
+    }
 }

@@ -1,0 +1,9 @@
+.profile-bio-content{white-space:pre-wrap;overflow-wrap:anywhere;word-break:normal}
+.profile-bio-content ::deep span,.profile-bio-content ::deep strong,.profile-bio-content ::deep em,.profile-bio-content ::deep s,.profile-bio-content ::deep u{display:inline;margin:0;color:inherit;font:inherit}
+.profile-bio-content ::deep strong{font-weight:var(--chat-strong-weight,700)}
+.profile-bio-content ::deep em{font-style:italic}
+.profile-bio-content ::deep s{text-decoration:line-through}
+.profile-bio-content ::deep u{text-decoration:underline}
+.profile-bio-content ::deep a{color:#55aaff;text-decoration:none;text-underline-offset:.12em}
+.profile-bio-content ::deep a:hover{color:#82c1ff;text-decoration:underline}
+.profile-bio-content ::deep code{padding:.08em .28em;border-radius:.25rem;color:var(--text-strong);background:var(--bg-deep);font:.88em ui-monospace,SFMono-Regular,Consolas,monospace}

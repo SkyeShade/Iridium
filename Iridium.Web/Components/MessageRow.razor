@@ -49,8 +49,13 @@
         <div class="message-content">
             @if (_editing)
             {
-                <textarea class="edit-textarea iridium-textarea-scrollbar" @ref="_editTextarea" value="@_editContent" @oninput="EditContentChanged"
-                          maxlength="4000" rows="1" aria-label="Edit message"></textarea>
+                <MarkdownSourceEditor Value="@_editContent" References="_editEmojiReferences"
+                                      StandardReferences="_editStandardEmojiReferences" Available="_editAvailableEmojis"
+                                      InitialTokens="_editEmojiTokens" DocumentChanged="EditDocumentChanged"
+                                      AllowCustomEmojiCompletion="true"
+                                      Class="edit-markdown-source" AriaLabel="Edit message"
+                                      Autofocus="true" SubmitOnEnter="true" MaxLength="4000"
+                                      OnSubmit="SaveEditAsync" OnCancel="CancelEditAsync" />
                 <div class="edit-help">
                     <span>escape to </span><button type="button" @onclick="CancelEdit">cancel</button>
                     <span class="separator">•</span><span>enter to </span>
@@ -145,11 +150,8 @@
     private CancellationTokenSource? _menuClose;
     private bool _editing;
     private bool _savingEdit;
-    private bool _focusEditorAfterRender;
     private string _editContent = string.Empty;
-    private ElementReference _editTextarea;
     private IJSObjectReference? _module;
-    private DotNetObjectReference<MessageRow>? _selfReference;
     private ResolvedProfileDto? _profile;
     private double _profileX;
     private double _profileY;
@@ -192,61 +194,59 @@
     private Task ReplyFromMenuAsync() { MessageMenus.Close(Message.Id); return ReplyAsync(); }
     private void ToggleMenu() { CancelMenuClose(); MessageMenus.Toggle(Message.Id); }
     private readonly List<CommunityEmojiDraftReference> _editEmojiReferences = [];
+    private readonly List<StandardEmojiDraftReference> _editStandardEmojiReferences = [];
+    private readonly List<ComposerEmojiToken> _editEmojiTokens = [];
     private IReadOnlyList<AvailableCommunityEmoji> _editAvailableEmojis = [];
     private async Task BeginEdit()
     {
         MessageMenus.Close(Message.Id);
         _editAvailableEmojis = await Emojis.GetAvailableAsync();
         var draft = CommunityEmojiDraftCodec.Deserialize(Message.Content, _editAvailableEmojis);
-        _editContent = draft.Text; _editEmojiReferences.Clear(); _editEmojiReferences.AddRange(draft.References);
-        _editing = true; _focusEditorAfterRender = true;
+        _editEmojiReferences.Clear(); _editStandardEmojiReferences.Clear(); _editEmojiTokens.Clear();
+        var source = new System.Text.StringBuilder(draft.Text.Length);
+        var position = 0;
+        foreach (var reference in draft.References.OrderBy(value => value.Start))
+        {
+            source.Append(draft.Text, position, reference.Start - position);
+            var start = source.Length;
+            source.Append(CommunityEmojiDraftCodec.ObjectReplacementCharacter);
+            var available = _editAvailableEmojis.First(value => value.Emoji.Id == reference.EmojiId);
+            var mediaUrl = await Emojis.GetMediaDataUrlAsync(available.Emoji);
+            _editEmojiReferences.Add(reference with { Start = start, Length = 1 });
+            _editEmojiTokens.Add(new(start, reference.EmojiId, reference.Name, reference.CommunityId, mediaUrl,
+                Math.Max(1, available.Emoji.Width), Math.Max(1, available.Emoji.Height)));
+            position = reference.Start + reference.Length;
+        }
+        source.Append(draft.Text, position, draft.Text.Length - position);
+        _editContent = source.ToString();
+        _editing = true;
         await OnEditingChanged.InvokeAsync(true);
     }
     private Task EditFromMenu() => BeginEdit();
     private async Task CancelEditAsync()
     {
         _editing = false; _editContent = string.Empty; _editEmojiReferences.Clear();
+        _editStandardEmojiReferences.Clear(); _editEmojiTokens.Clear();
         await OnEditingChanged.InvokeAsync(false);
     }
     private void CancelEdit() => _ = CancelEditAsync();
-    private void EditContentChanged(ChangeEventArgs args)
+    private void EditDocumentChanged(ComposerDocumentSnapshot snapshot)
     {
-        var next = CommunityEmojiDraftCodec.ToUserFacing(args.Value?.ToString() ?? string.Empty);
-        CommunityEmojiDraftCodec.ReconcileReferences(_editContent, next, _editEmojiReferences);
-        _editContent = next;
+        _editContent = snapshot.Content ?? string.Empty;
+        _editEmojiReferences.Clear();
+        _editEmojiReferences.AddRange(snapshot.Tokens.Where(value => value.EmojiId is not null && value.CommunityId is not null)
+            .Select(value => new CommunityEmojiDraftReference(value.Start, 1, value.EmojiId!.Value, value.Name,
+                value.CommunityId!.Value)));
+        _editStandardEmojiReferences.Clear();
+        _editStandardEmojiReferences.AddRange(snapshot.Tokens.Where(value => value.StandardArtworkKey is not null && value.Glyph is not null)
+            .Select(value => new StandardEmojiDraftReference(value.Start, 1, value.StandardArtworkKey!, value.Glyph!, value.Name)));
     }
-
-    protected override async Task OnAfterRenderAsync(bool firstRender)
-    {
-        if (!_focusEditorAfterRender) return;
-        _focusEditorAfterRender = false;
-        try
-        {
-            _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/chat.js");
-            _selfReference ??= DotNetObjectReference.Create(this);
-            await _module.InvokeVoidAsync("wireMessageEditor", _editTextarea, _selfReference);
-        }
-        catch (Exception exception)
-        {
-            Logger.LogError(exception, "Could not initialize the inline editor for message {MessageId}.", Message.Id);
-        }
-    }
-
-    [JSInvokable]
-    public async Task CancelEditFromKeyboardAsync()
-    {
-        await CancelEditAsync();
-        await InvokeAsync(StateHasChanged);
-    }
-
-    [JSInvokable]
-    public Task SaveEditFromKeyboardAsync() => SaveEditAsync();
 
     private async Task SaveEditAsync()
     {
         if (_savingEdit || string.IsNullOrWhiteSpace(_editContent)) return;
-        var content = CommunityEmojiDraftCodec.Serialize(_editContent.TrimEnd(), _editEmojiReferences,
-            _editAvailableEmojis, Message.CommunityId == Guid.Empty ? null : Message.CommunityId);
+        var content = CommunityEmojiDraftCodec.SerializeDocument(_editContent.TrimEnd(), _editEmojiReferences,
+            _editStandardEmojiReferences);
         if (string.Equals(content, Message.Content, StringComparison.Ordinal))
         {
             await CancelEditAsync();
@@ -369,6 +369,5 @@
             try { await _module.DisposeAsync(); }
             catch (JSDisconnectedException) { }
         }
-        _selfReference?.Dispose();
     }
 }

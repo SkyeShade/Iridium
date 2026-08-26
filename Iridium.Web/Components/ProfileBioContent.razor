@@ -1,0 +1,8 @@
+@using Iridium.Client.Core
+
+<div class="profile-bio-content"><ProfileBioNodeView Nodes="Nodes" /></div>
+
+@code {
+    [Parameter] public string? Content { get; set; }
+    private IReadOnlyList<MessageContentNode> Nodes => MessageContentSegments.Parse(Content ?? string.Empty, null);
+}

@@ -24,7 +24,7 @@
             <h2 class="display-name" style="@NameStyle">@DisplayName</h2>
             <p class="identity">@IridiumIdentity.Format(Username, NodeAuthority)</p>
             @if (!string.IsNullOrWhiteSpace(Pronouns)) { <span class="pronouns">@Pronouns</span> }
-            @if (!string.IsNullOrWhiteSpace(Description)) { <p class="bio">@Description</p> }
+            @if (!string.IsNullOrWhiteSpace(Description)) { <div class="bio"><ProfileBioContent Content="@Description" /></div> }
             @if (DisplayedRoles.Count > 0 || CanManageTargetRoles)
             {
                 <div class="profile-roles" @onclick="CloseRolePicker" @onclick:stopPropagation="true">

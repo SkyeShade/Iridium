@@ -15,7 +15,9 @@
                                 Style="margin:0 0 1.25rem;box-shadow:0 0 0 1px var(--border)" />
                 <label>Display Name <input @bind="_displayName" @bind:event="oninput" maxlength="64" /></label>
                 <label>Pronouns <input @bind="_pronouns" @bind:event="oninput" maxlength="64" placeholder="Optional" /></label>
-                <label class="about-field"><span>About Me</span><textarea class="iridium-textarea-scrollbar bio-input" @bind="_description" @bind:event="oninput" maxlength="400" rows="6" placeholder="Tell people a little about yourself"></textarea><small>@_description.Length / 400</small></label>
+                <label class="about-field"><span>About Me</span><MarkdownSourceEditor Value="@_description" ValueChanged="DescriptionChanged"
+                    Class="bio-input" MaxLength="400" SerializeEmojiTokensForValue="true"
+                    Placeholder="Tell people a little about yourself" AriaLabel="About Me" /><small>@_description.Length / 400</small></label>
                 <div class="readonly"><span>Public identity</span><strong>@PublicIdentity</strong></div>
                 @if (!string.IsNullOrWhiteSpace(_error)) { <p class="error" role="alert">@_error</p> }
                 @if (_saving) { <p class="saving">Saving profile…</p> }
@@ -60,6 +62,7 @@
     private bool _bannerEditorOpen;
     private Task OpenAvatarEditor() { _avatarEditorOpen = true; return Task.CompletedTask; }
     private Task OpenBannerEditor() { _bannerEditorOpen = true; return Task.CompletedTask; }
+    private void DescriptionChanged(string value) => _description = value;
 
     protected override void OnParametersSet()
     {

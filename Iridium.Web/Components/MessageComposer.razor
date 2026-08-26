@@ -48,11 +48,10 @@
                 <InputFile @key="_inputRevision" id="@FileInputId" style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;pointer-events:none" tabindex="-1" OnChange="FilesSelectedAsync" multiple />
                 <button type="button" class="attachment-button" title="Add files" aria-label="Add files" @onclick="OpenFilePickerAsync">+</button>
             }
-            <div class="composer-editor">
-                <div class="composer-highlight composer-text-geometry" aria-hidden="true"><ComposerContentPreview Content="@_content" References="_emojiReferences" StandardReferences="_standardEmojiReferences" Available="_availableEmojis" /></div>
-                <div class="composer-rich-editor composer-text-geometry iridium-textarea-scrollbar" @ref="_textarea" contenteditable="true" spellcheck="true"
-                     data-placeholder="@ComposerPlaceholder" aria-label="@ComposerPlaceholder" role="textbox" aria-multiline="true"></div>
-            </div>
+            <MarkdownSourceEditor Value="@_content" References="_emojiReferences" StandardReferences="_standardEmojiReferences"
+                                  Available="_availableEmojis" Placeholder="@ComposerPlaceholder" AriaLabel="@ComposerPlaceholder"
+                                  Class="composer-editor" ManageInterop="false" OnReady="ComposerEditorReadyAsync"
+                                  Style="grid-column:2;--markdown-source-padding:calc((var(--composer-min-height) - 1.35em)/2) var(--composer-text-end-padding) calc((var(--composer-min-height) - 1.35em)/2) 0;--markdown-source-min-height:var(--composer-editor-min-height,var(--composer-min-height));--markdown-source-max-height:50dvh;--markdown-source-font:var(--chat-text-font);--markdown-source-size:var(--chat-text-size);--markdown-source-weight:var(--chat-text-weight);--markdown-source-line-height:var(--chat-line-height)" />
             <button @ref="_emojiButton" type="button" class="emoji-button" title="Emoji" aria-label="Emoji" @onclick="ToggleEmojiPicker"><Icon Name="emoji" /></button>
             @if (HasSendableText)
             {
@@ -149,6 +148,10 @@
     private int _suggestionIndex;
     private int _emojiStart = -1, _emojiEnd = -1;
     private string _emojiQuery = string.Empty;
+    private IReadOnlyList<EmojiSuggestion> _emojiSuggestions = [];
+    private readonly EmojiAutocompleteIndex _emojiIndex = new();
+    private CancellationTokenSource? _emojiSearchDebounce;
+    private long _emojiSearchGeneration;
     private bool _emojiPickerOpen;
     private IReadOnlyList<AvailableCommunityEmoji> _availableEmojis = [];
     private readonly List<CommunityEmojiDraftReference> _emojiReferences = [];
@@ -178,6 +181,7 @@
     protected override async Task OnParametersSetAsync()
     {
         _availableEmojis = await Emojis.GetAvailableAsync();
+        _emojiIndex.UpdateCustom(_availableEmojis);
         if (_attachmentKey is not { } key || _loadedLimitsKey == key) return;
         try
         {
@@ -196,17 +200,6 @@
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (firstRender)
-        {
-            _module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/chat.js");
-            _selfReference = DotNetObjectReference.Create(this);
-            await _module.InvokeVoidAsync("wireComposer", _textarea, _selfReference, _composerShell);
-            await EnsureDraftLoadedAsync();
-            await SendableContentChanged.InvokeAsync(HasSendableContent);
-            _resizeAfterRender = false;
-            return;
-        }
-
         if (_module is null) return;
         if (_resizeAfterRender)
         {
@@ -218,6 +211,17 @@
             _focusCaretAfterRender = null;
             await _module.InvokeVoidAsync("focusComposerAt", _textarea, caret);
         }
+    }
+
+    private async Task ComposerEditorReadyAsync(ElementReference editor)
+    {
+        _textarea = editor;
+        _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/chat.js");
+        _selfReference ??= DotNetObjectReference.Create(this);
+        await _module.InvokeVoidAsync("wireComposer", _textarea, _selfReference, _composerShell);
+        await EnsureDraftLoadedAsync();
+        await SendableContentChanged.InvokeAsync(HasSendableContent);
+        _resizeAfterRender = false;
     }
 
     [JSInvokable]
@@ -344,12 +348,17 @@
         _mentions.RemoveAll(value => value.Start < 0 || value.Start + value.Length > _content.Length || _content[value.Start] != '@');
         var caret = snapshot.Caret;
         caret = Math.Clamp(caret, 0, _content.Length);
+        if (await CompleteExactEmojiAliasAsync(caret))
+        {
+            await SendableContentChanged.InvokeAsync(HasSendableContent);
+            return;
+        }
         var match = System.Text.RegularExpressions.Regex.Match(_content[..caret],
             @"(?:^|\s|\*{1,3}|__|~~|\|\|)@([\p{L}\p{N}_-]*)$");
         if (match.Success && CommunityManagement is not null)
         {
             _mentionStart = match.Groups[1].Index - 1; _mentionEnd = caret; _mentionQuery = match.Groups[1].Value;
-            _emojiStart = -1;
+            ClearEmojiSuggestions();
         }
         else
         {
@@ -358,27 +367,72 @@
             if (emojiMatch.Success)
             {
                 _emojiStart = emojiMatch.Groups[1].Index - 1; _emojiEnd = caret; _emojiQuery = emojiMatch.Groups[1].Value;
+                ScheduleEmojiSearch();
             }
-            else { _emojiStart = -1; _emojiQuery = string.Empty; }
+            else { ClearEmojiSuggestions(); }
         }
         _suggestionIndex = Math.Clamp(_suggestionIndex, 0, Math.Max(0, Suggestions.Count - 1));
-        await ResolveCompletedEmojisAsync();
         await ResolveStandardEmojisAsync();
         await SendableContentChanged.InvokeAsync(HasSendableContent);
         await InvokeAsync(StateHasChanged);
     }
 
-    private IReadOnlyList<EmojiSuggestion> EmojiSuggestions
+    private IReadOnlyList<EmojiSuggestion> EmojiSuggestions => _emojiSuggestions;
+
+    private void ScheduleEmojiSearch()
     {
-        get
+        _emojiSearchDebounce?.Cancel(); _emojiSearchDebounce?.Dispose();
+        _emojiSuggestions = [];
+        var generation = ++_emojiSearchGeneration;
+        var query = _emojiQuery;
+        var source = _emojiSearchDebounce = new();
+        _ = SearchEmojiSuggestionsAsync(query, generation, source.Token);
+    }
+
+    private async Task SearchEmojiSuggestionsAsync(string query, long generation, CancellationToken cancellationToken)
+    {
+        try
         {
-            if (_emojiStart < 0) return [];
-            var standard = StandardEmojiCatalog.All.Where(value => Match(value.Name, _emojiQuery) || value.Keywords.Any(keyword => Match(keyword, _emojiQuery)))
-                .Take(6).Select(value => new EmojiSuggestion(value.Name, value, null));
-            var custom = CommunityEmojiDraftCodec.Order(_availableEmojis, null)
-                .Where(value => Match(value.Emoji.Name, _emojiQuery)).Take(8)
-                .Select(value => new EmojiSuggestion(value.Emoji.Name, null, value));
-            return standard.Concat(custom).Take(8).ToArray();
+            await Task.Delay(75, cancellationToken);
+            var values = _emojiIndex.Search(query, 8).Select(value =>
+                new EmojiSuggestion(value.Alias, value.Standard, value.Custom)).ToArray();
+            if (generation != _emojiSearchGeneration || cancellationToken.IsCancellationRequested) return;
+            _emojiSuggestions = values;
+            _suggestionIndex = Math.Clamp(_suggestionIndex, 0, Math.Max(0, values.Length - 1));
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (OperationCanceledException) { }
+    }
+
+    private void ClearEmojiSuggestions()
+    {
+        _emojiSearchDebounce?.Cancel(); _emojiSearchDebounce?.Dispose(); _emojiSearchDebounce = null;
+        _emojiSearchGeneration++; _emojiStart = -1; _emojiQuery = string.Empty; _emojiSuggestions = [];
+    }
+
+    private async Task<bool> CompleteExactEmojiAliasAsync(int caret)
+    {
+        if (_module is null || !EmojiAutocompleteIndex.TryAliasBeforeCaret(_content, caret, out var range) ||
+            _emojiIndex.Exact(range.Alias, true) is not { } match) return false;
+        _emojiStart = range.Start; _emojiEnd = range.End;
+        await AcceptEmojiSuggestionAsync(new(match.Alias, match.Standard, match.Custom));
+        return true;
+    }
+
+    private async Task ResolveCompletedEmojisAsync()
+    {
+        if (_module is null) return;
+        foreach (System.Text.RegularExpressions.Match match in System.Text.RegularExpressions.Regex.Matches(_content,
+                     @"(?<![a-zA-Z0-9_]):([a-z0-9_]{2,32}):(?=\s|$)",
+                     System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant))
+        {
+            if (_emojiIndex.ExactCustom(match.Groups[1].Value) is not { } source ||
+                await Emojis.GetMediaDataUrlAsync(source.Emoji) is not { } mediaUrl) continue;
+            ApplySnapshot(await _module.InvokeAsync<ComposerDocumentSnapshot>("insertComposerEmoji", _textarea,
+                new ComposerEmojiToken(0, source.Emoji.Id, source.Emoji.Name, source.Community.Id, mediaUrl,
+                    Math.Max(1, source.Emoji.Width), Math.Max(1, source.Emoji.Height)),
+                match.Index, match.Index + match.Length, false));
+            break;
         }
     }
 
@@ -487,31 +541,8 @@
                 customSource.Community.Id)
             : new(suggestion.Standard!.Glyph, suggestion.Standard.Name,
                 StandardArtworkKey: suggestion.Standard.ArtworkKey));
-        _emojiStart = -1; _emojiQuery = string.Empty; _resizeAfterRender = true;
+        ClearEmojiSuggestions(); _resizeAfterRender = true;
         await InvokeAsync(StateHasChanged);
-    }
-
-    private async Task ResolveCompletedEmojisAsync()
-    {
-        if (_module is null) return;
-        foreach (System.Text.RegularExpressions.Match match in System.Text.RegularExpressions.Regex.Matches(_content,
-                     @"(?<![a-zA-Z0-9_]):([a-z0-9_]{2,32}):(?=\s|$)",
-                     System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant))
-        {
-            var source = CommunityEmojiDraftCodec.Order(_availableEmojis, null).FirstOrDefault(value =>
-                string.Equals(value.Emoji.Name, match.Groups[1].Value, StringComparison.OrdinalIgnoreCase));
-            if (source is null) continue;
-            var mediaUrl = await Emojis.GetMediaDataUrlAsync(source.Emoji);
-            if (mediaUrl is null) continue;
-            var snapshot = await _module.InvokeAsync<ComposerDocumentSnapshot>("insertComposerEmoji", _textarea,
-                new ComposerEmojiToken(0, source.Emoji.Id, source.Emoji.Name, source.Community.Id, mediaUrl,
-                    Math.Max(1, source.Emoji.Width), Math.Max(1, source.Emoji.Height)),
-                match.Index, match.Index + match.Length, false);
-            ApplySnapshot(snapshot);
-            await RecordEmojiUsageAsync(new($":{source.Emoji.Name}:", source.Emoji.Name, source.Emoji.Id,
-                source.Community.Id));
-            break;
-        }
     }
 
     private async Task ResolveStandardEmojisAsync(bool restoreFocus = true)
@@ -611,14 +642,9 @@
     private string? HighestColor(CommunityMemberDto member) => CommunityManagement is null ? null :
         CommunityRolePresentation.MemberColor(member, CommunityManagement.Roles);
     private static bool Match(string value, string query) => string.IsNullOrEmpty(query) || value.Contains(query, StringComparison.OrdinalIgnoreCase);
-    private void CloseSuggestions() { _mentionStart = -1; _mentionEnd = -1; _mentionQuery = string.Empty; _emojiStart = -1; _emojiQuery = string.Empty; _suggestionIndex = 0; }
+    private void CloseSuggestions() { _mentionStart = -1; _mentionEnd = -1; _mentionQuery = string.Empty; ClearEmojiSuggestions(); _suggestionIndex = 0; }
     private sealed record MentionSuggestion(CommunityMentionKind Kind, Guid? TargetId, string Label, CommunityMemberDto? Member, string? Color);
     private sealed record EmojiSuggestion(string Name, StandardEmoji? Standard, AvailableCommunityEmoji? Source);
-    public sealed record ComposerEmojiToken(int Start, Guid? EmojiId, string Name, Guid? CommunityId,
-        string? MediaUrl = null, int Width = 1, int Height = 1, string? StandardArtworkKey = null,
-        string? Glyph = null);
-    public sealed record ComposerDocumentSnapshot(string? Content, int Caret, IReadOnlyList<ComposerEmojiToken> Tokens);
-
     public async Task FocusAsync()
     {
         _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/chat.js");
@@ -649,6 +675,7 @@
     public async ValueTask DisposeAsync()
     {
         CancelDraftDebounce();
+        _emojiSearchDebounce?.Cancel(); _emojiSearchDebounce?.Dispose();
         try
         {
             if (_draftLoadTask is not null)
@@ -760,6 +787,7 @@
     private void OnEmojiCollectionChanged(Guid unusedCommunityId) => _ = InvokeAsync(async () =>
     {
         _availableEmojis = await Emojis.GetAvailableAsync();
+        _emojiIndex.UpdateCustom(_availableEmojis);
         StateHasChanged();
     });
 }

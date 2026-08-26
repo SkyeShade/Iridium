@@ -1,0 +1,9 @@
+.markdown-source-editor{position:relative;min-width:0;width:100%}
+.markdown-source-geometry{box-sizing:border-box;min-width:0;width:100%;padding:var(--markdown-source-padding,.65rem .7rem);border:0;font-family:var(--markdown-source-font,var(--chat-text-font));font-size:var(--markdown-source-size,var(--chat-text-size));font-weight:var(--markdown-source-weight,var(--chat-text-weight));font-style:normal;letter-spacing:normal;word-spacing:normal;line-height:var(--markdown-source-line-height,var(--chat-line-height));white-space:pre-wrap;overflow-wrap:anywhere;word-break:normal;tab-size:4;scrollbar-gutter:stable}
+.markdown-source-highlight{position:absolute;z-index:1;inset:0;overflow:hidden;color:var(--text-strong);pointer-events:none}
+.markdown-source-input{position:relative;z-index:2;height:var(--markdown-source-min-height,2.35rem);min-height:var(--markdown-source-min-height,2.35rem);max-height:var(--markdown-source-max-height,min(16rem,35dvh));overflow-y:hidden;outline:0;color:transparent;-webkit-text-fill-color:transparent;caret-color:var(--text-strong);background:transparent}
+.markdown-source-input:empty::before{content:attr(data-placeholder);color:var(--text-faint);-webkit-text-fill-color:var(--text-faint);pointer-events:none}
+.markdown-source-input::selection,.markdown-source-input *::selection{background:color-mix(in srgb,var(--accent) 38%,transparent)}
+.markdown-source-input ::deep .composer-inline-emoji{color:initial;-webkit-text-fill-color:initial;user-select:none}
+.markdown-source-input ::deep .composer-inline-emoji img{display:block;width:100%;height:100%;object-fit:contain;background:transparent}
+@media(max-width:860px){.markdown-source-geometry{scrollbar-gutter:auto}.markdown-source-input::-webkit-scrollbar{width:0;height:0}}

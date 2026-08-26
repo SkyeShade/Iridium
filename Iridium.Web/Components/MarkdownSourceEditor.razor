@@ -1,0 +1,126 @@
+@using Iridium.Protocol
+@using Iridium.Web.Models
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+@inject CommunityEmojiService Emojis
+
+<div class="markdown-source-editor @Class" style="@Style">
+    <div class="markdown-source-highlight markdown-source-geometry" aria-hidden="true">
+        <ComposerContentPreview Content="@Value" References="References" StandardReferences="StandardReferences" Available="Available" />
+    </div>
+    <div class="markdown-source-input markdown-source-geometry iridium-textarea-scrollbar" @ref="_editor"
+         contenteditable="true" spellcheck="@Spellcheck" data-placeholder="@Placeholder" aria-label="@AriaLabel"
+         role="textbox" aria-multiline="true"></div>
+</div>
+
+@code {
+    [Parameter] public string Value { get; set; } = string.Empty;
+    [Parameter] public EventCallback<string> ValueChanged { get; set; }
+    [Parameter] public IReadOnlyList<CommunityEmojiDraftReference> References { get; set; } = [];
+    [Parameter] public IReadOnlyList<StandardEmojiDraftReference> StandardReferences { get; set; } = [];
+    [Parameter] public IReadOnlyList<AvailableCommunityEmoji> Available { get; set; } = [];
+    [Parameter] public IReadOnlyList<ComposerEmojiToken> InitialTokens { get; set; } = [];
+    [Parameter] public EventCallback<ComposerDocumentSnapshot> DocumentChanged { get; set; }
+    [Parameter] public string? Placeholder { get; set; }
+    [Parameter] public string AriaLabel { get; set; } = "Markdown source";
+    [Parameter] public string? Class { get; set; }
+    [Parameter] public string? Style { get; set; }
+    [Parameter] public bool Spellcheck { get; set; } = true;
+    [Parameter] public bool Autofocus { get; set; }
+    [Parameter] public bool SubmitOnEnter { get; set; }
+    [Parameter] public int? MaxLength { get; set; }
+    [Parameter] public EventCallback OnSubmit { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+    [Parameter] public EventCallback<ElementReference> OnReady { get; set; }
+    [Parameter] public bool ManageInterop { get; set; } = true;
+    [Parameter] public bool EmojiCompletion { get; set; } = true;
+    [Parameter] public bool AllowCustomEmojiCompletion { get; set; }
+    [Parameter] public bool SerializeEmojiTokensForValue { get; set; }
+
+    private ElementReference _editor;
+    private IJSObjectReference? _module;
+    private DotNetObjectReference<MarkdownSourceEditor>? _self;
+    private string _domValue = string.Empty;
+    private string _lastReportedValue = string.Empty;
+    private bool _initialized;
+    private readonly EmojiAutocompleteIndex _emojiIndex = new();
+
+    protected override void OnParametersSet() => _emojiIndex.UpdateCustom(Available);
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            if (ManageInterop)
+            {
+                _module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/chat.js");
+                _self = DotNetObjectReference.Create(this);
+                await _module.InvokeVoidAsync("setComposerDocument", _editor, Value, InitialTokens);
+                _domValue = Value;
+                _lastReportedValue = Value;
+                await _module.InvokeVoidAsync("wireMarkdownSourceEditor", _editor, _self,
+                    new { submitOnEnter = SubmitOnEnter, canCancel = OnCancel.HasDelegate, autofocus = Autofocus, maxLength = MaxLength });
+            }
+            _initialized = true;
+            await OnReady.InvokeAsync(_editor);
+            return;
+        }
+        if (!ManageInterop || _module is null || string.Equals(Value, _lastReportedValue, StringComparison.Ordinal)) return;
+        await _module.InvokeVoidAsync("setComposerText", _editor, Value);
+        _domValue = _lastReportedValue = Value;
+    }
+
+    [JSInvokable] public async Task MarkdownSourceChangedAsync(ComposerDocumentSnapshot snapshot)
+    {
+        snapshot = await CompleteEmojiAliasAsync(snapshot);
+        _domValue = snapshot.Content ?? string.Empty;
+        await DocumentChanged.InvokeAsync(snapshot);
+        _lastReportedValue = SerializeEmojiTokensForValue ? SerializeDocument(snapshot) : _domValue;
+        await ValueChanged.InvokeAsync(_lastReportedValue);
+    }
+    [JSInvokable] public Task SubmitMarkdownSourceAsync() => OnSubmit.InvokeAsync();
+    [JSInvokable] public Task CancelMarkdownSourceAsync() => OnCancel.InvokeAsync();
+
+    private async Task<ComposerDocumentSnapshot> CompleteEmojiAliasAsync(ComposerDocumentSnapshot snapshot)
+    {
+        var content = snapshot.Content ?? string.Empty;
+        if (!EmojiCompletion || _module is null ||
+            !EmojiAutocompleteIndex.TryAliasBeforeCaret(content, snapshot.Caret, out var range) ||
+            _emojiIndex.Exact(range.Alias, AllowCustomEmojiCompletion) is not { } match) return snapshot;
+        ComposerEmojiToken token;
+        if (match.Standard is { } standard)
+            token = new(0, null, standard.Name, null, StandardEmojiArtworkSource.Resolve(standard.ArtworkKey),
+                StandardArtworkKey: standard.ArtworkKey, Glyph: standard.Glyph);
+        else if (match.Custom is { } custom && await Emojis.GetMediaDataUrlAsync(custom.Emoji) is { } mediaUrl)
+            token = new(0, custom.Emoji.Id, custom.Emoji.Name, custom.Community.Id, mediaUrl,
+                Math.Max(1, custom.Emoji.Width), Math.Max(1, custom.Emoji.Height));
+        else return snapshot;
+        return await _module.InvokeAsync<ComposerDocumentSnapshot>("insertComposerEmoji", _editor, token,
+            range.Start, range.End, false);
+    }
+
+    private static string SerializeDocument(ComposerDocumentSnapshot snapshot)
+    {
+        var custom = snapshot.Tokens.Where(value => value.EmojiId is not null && value.CommunityId is not null)
+            .Select(value => new CommunityEmojiDraftReference(value.Start, 1, value.EmojiId!.Value, value.Name,
+                value.CommunityId!.Value)).ToArray();
+        var standard = snapshot.Tokens.Where(value => value.StandardArtworkKey is not null && value.Glyph is not null)
+            .Select(value => new StandardEmojiDraftReference(value.Start, 1, value.StandardArtworkKey!, value.Glyph!,
+                value.Name)).ToArray();
+        return CommunityEmojiDraftCodec.SerializeDocument(snapshot.Content ?? string.Empty, custom, standard);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_module is not null)
+        {
+            try
+            {
+                if (_initialized && ManageInterop) await _module.InvokeVoidAsync("unwireMarkdownSourceEditor", _editor);
+                await _module.DisposeAsync();
+            }
+            catch (JSDisconnectedException) { }
+        }
+        _self?.Dispose();
+    }
+}

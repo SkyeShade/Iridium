@@ -1,5 +1,5 @@
 .composer-wrap { padding: 0 var(--bottom-control-inset) var(--bottom-control-inset); background: var(--bg-base); }
-.composer-editor{--composer-text-end-padding:4rem;position:relative;grid-column:2;min-width:0}
+.composer-input-row ::deep .composer-editor{--composer-text-end-padding:4rem;position:relative;grid-column:2;min-width:0}
 .composer-text-geometry{box-sizing:border-box;min-width:0;width:100%;padding:calc((var(--composer-min-height) - 1.35em)/2) var(--composer-text-end-padding) calc((var(--composer-min-height) - 1.35em)/2) 0;border:0;font-family:var(--chat-text-font);font-size:var(--chat-text-size);font-weight:var(--chat-text-weight);font-style:normal;letter-spacing:normal;word-spacing:normal;line-height:var(--chat-line-height);white-space:pre-wrap;overflow-wrap:anywhere;word-break:normal;tab-size:4;scrollbar-gutter:stable}
 .composer-editor .composer-highlight{position:absolute;z-index:1;inset:0;overflow:hidden;color:var(--text-strong);pointer-events:none}
 .composer-rich-editor{position:relative;z-index:2;height:var(--composer-editor-min-height,var(--composer-min-height));min-height:var(--composer-editor-min-height,var(--composer-min-height));max-height:50dvh;overflow-y:hidden;outline:0;color:transparent;-webkit-text-fill-color:transparent;caret-color:var(--text-strong);background:transparent}
@@ -27,7 +27,7 @@ textarea { grid-column:2;min-width:0;width:100%;height:var(--composer-min-height
     .composer-wrap{padding:0 .25rem var(--iridium-mobile-safe-bottom,env(safe-area-inset-bottom,0px))}
     .composer-input-row{grid-template-columns:3rem minmax(0,1fr) 2.7rem;align-items:end}
     .composer-input-row.has-mobile-send{grid-template-columns:3rem minmax(0,1fr) 2.7rem 2.7rem}
-    .composer-editor{--composer-text-end-padding:0;grid-column:2}
+    .composer-input-row ::deep .composer-editor{--composer-text-end-padding:0;grid-column:2}
     .composer-text-geometry{scrollbar-gutter:auto}
     .composer-rich-editor::-webkit-scrollbar{width:0;height:0}
     .attachment-button{align-self:end;margin:0 0 calc((var(--composer-min-height) - 2.25rem)/2)}

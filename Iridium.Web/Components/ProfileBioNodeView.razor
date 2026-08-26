@@ -1,0 +1,22 @@
+@using Iridium.Client.Core
+
+@foreach (var node in Nodes)
+{
+    switch (node)
+    {
+        case MessageTextNode text: <EmojiText Text="@text.Text" /> break;
+        case MessageLinkNode link: <a href="@link.Url" target="_blank" rel="noopener noreferrer"><ProfileBioNodeView Nodes="link.Children" /></a> break;
+        case MessageContainerNode { Kind: MessageContentKind.Bold } container: <strong><ProfileBioNodeView Nodes="container.Children" /></strong> break;
+        case MessageContainerNode { Kind: MessageContentKind.Italic } container: <em><ProfileBioNodeView Nodes="container.Children" /></em> break;
+        case MessageContainerNode { Kind: MessageContentKind.Underline } container: <u><ProfileBioNodeView Nodes="container.Children" /></u> break;
+        case MessageContainerNode { Kind: MessageContentKind.Strikethrough } container: <s><ProfileBioNodeView Nodes="container.Children" /></s> break;
+        case MessageContainerNode { Kind: MessageContentKind.InlineCode } container: <code>@MessageContentSegments.PlainText(container.Children)</code> break;
+        case MessageMentionNode mention: @mention.Mention.DisplayText break;
+        case MessageListNode list:
+            @foreach (var item in list.Items) { <ProfileBioNodeView Nodes="item.Children" /> }
+            break;
+        case MessageContainerNode container: <ProfileBioNodeView Nodes="container.Children" /> break;
+    }
+}
+
+@code { [Parameter, EditorRequired] public required IReadOnlyList<MessageContentNode> Nodes { get; set; } }

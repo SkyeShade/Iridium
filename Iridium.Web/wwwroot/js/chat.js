@@ -1,5 +1,5 @@
 const composerHandlers = new WeakMap();
-const messageEditorHandlers = new WeakMap();
+const markdownSourceEditorHandlers = new WeakMap();
 const channelSorters = new WeakMap();
 const messageViewports = new WeakMap();
 const searchAutocompleteHandlers = new WeakMap();
@@ -319,7 +319,8 @@ export function resizeComposer(textarea) {
 }
 
 export function syncComposerPreview(textarea) {
-    const preview = textarea?.closest(".composer-editor")?.querySelector(".composer-highlight");
+    const preview = textarea?.closest(".composer-editor, .markdown-source-editor")
+        ?.querySelector(".composer-highlight, .markdown-source-highlight");
     if (!preview) return;
     preview.scrollTop = textarea.scrollTop;
     preview.scrollLeft = textarea.scrollLeft;
@@ -535,6 +536,14 @@ export function setComposerText(editor, text) {
     return composerSnapshot(editor);
 }
 
+export function setComposerDocument(editor, text, tokens = []) {
+    let snapshot = setComposerText(editor, text);
+    for (const token of Array.from(tokens || []).sort((left, right) => right.start - left.start)) {
+        snapshot = replaceComposerRange(editor, token.start, token.start + 1, createComposerEmoji(token));
+    }
+    return snapshot;
+}
+
 export function wireSearchAutocomplete(input, dotNetReference) {
     if (!input || searchAutocompleteHandlers.has(input)) return;
     const keydown = async event => {
@@ -618,8 +627,93 @@ export function profileCardPosition(clientX, clientY, context) {
     return { x: (avatarRect?.right ?? clientX) - 4, y: rowRect?.top ?? clientY };
 }
 
-function resizeMessageEditor(textarea) {
-    resizeTextarea(textarea, 0.35, 256);
+export function wireMarkdownSourceEditor(editor, dotNetReference, options = {}) {
+    if (!editor || markdownSourceEditorHandlers.has(editor)) return;
+    let handlingShortcut = false;
+    let lastAccepted = composerSnapshot(editor);
+    const notify = async snapshot => {
+        lastAccepted = snapshot;
+        await dotNetReference.invokeMethodAsync("MarkdownSourceChangedAsync", snapshot);
+    };
+    const keydown = async event => {
+        if (event.isComposing || event.keyCode === 229 || handlingShortcut) return;
+        const selection = window.getSelection();
+        if (selection?.isCollapsed && editor.contains(selection.focusNode)) {
+            const caret = composerSelectionOffset(editor), snapshot = composerSnapshot(editor);
+            const before = snapshot.tokens.find(token => token.start + 1 === caret);
+            const after = snapshot.tokens.find(token => token.start === caret);
+            if ((event.key === "Backspace" && before) || (event.key === "Delete" && after)) {
+                event.preventDefault();
+                const token = event.key === "Backspace" ? before : after;
+                await notify(replaceComposerRange(editor, token.start, token.start + 1, document.createTextNode("")));
+                return;
+            }
+            if (event.key === "ArrowLeft" && before) { event.preventDefault(); setComposerCaret(editor, before.start); return; }
+            if (event.key === "ArrowRight" && after) { event.preventDefault(); setComposerCaret(editor, after.start + 1); return; }
+        }
+        const cancel = options.canCancel && event.key === "Escape";
+        const submit = options.submitOnEnter && event.key === "Enter" && !event.shiftKey;
+        if (cancel || submit) {
+            event.preventDefault();
+            handlingShortcut = true;
+            try {
+                await dotNetReference.invokeMethodAsync(cancel ? "CancelMarkdownSourceAsync" : "SubmitMarkdownSourceAsync");
+            } finally { handlingShortcut = false; }
+            return;
+        }
+        if (event.key === "Enter" && event.shiftKey) {
+            event.preventDefault();
+            const caret = composerSelectionOffset(editor);
+            const snapshot = replaceComposerRange(editor, caret, caret, document.createTextNode("\n"));
+            await notify(snapshot);
+        }
+    };
+    const input = async () => {
+        let snapshot = composerSnapshot(editor);
+        if (Number.isFinite(options.maxLength) && snapshot.content.length > options.maxLength) {
+            snapshot = setComposerDocument(editor, lastAccepted.content, lastAccepted.tokens);
+            focusComposerAt(editor, Math.min(lastAccepted.caret, lastAccepted.content.length));
+        } else await notify(snapshot);
+        resizeComposer(editor);
+    };
+    const paste = async event => {
+        event.preventDefault();
+        const text = event.clipboardData?.getData("text/plain") || "";
+        const selection = window.getSelection();
+        let start = composerSelectionOffset(editor), end = start;
+        if (selection?.rangeCount && !selection.isCollapsed) {
+            const range = selection.getRangeAt(0);
+            start = composerOffsetWithin(editor, range.startContainer, range.startOffset);
+            end = composerOffsetWithin(editor, range.endContainer, range.endOffset);
+        }
+        const allowed = Number.isFinite(options.maxLength)
+            ? text.slice(0, Math.max(0, options.maxLength - (lastAccepted.content.length - (end - start))))
+            : text;
+        await notify(replaceComposerRange(editor, start, end, document.createTextNode(allowed)));
+    };
+    const scroll = () => syncComposerPreview(editor);
+    const preview = editor.closest(".markdown-source-editor")?.querySelector(".markdown-source-highlight");
+    const highlightObserver = preview && typeof MutationObserver !== "undefined"
+        ? new MutationObserver(() => syncComposerPreview(editor)) : null;
+    markdownSourceEditorHandlers.set(editor, { keydown, input, paste, scroll, highlightObserver });
+    editor.addEventListener("keydown", keydown);
+    editor.addEventListener("input", input);
+    editor.addEventListener("paste", paste);
+    editor.addEventListener("scroll", scroll, { passive: true });
+    highlightObserver?.observe(preview, { childList: true, subtree: true, characterData: true });
+    resizeComposer(editor);
+    if (options.autofocus) focusComposerAt(editor, lastAccepted.content.length);
+}
+
+export function unwireMarkdownSourceEditor(editor) {
+    const handlers = editor ? markdownSourceEditorHandlers.get(editor) : null;
+    if (!handlers) return;
+    editor.removeEventListener("keydown", handlers.keydown);
+    editor.removeEventListener("input", handlers.input);
+    editor.removeEventListener("paste", handlers.paste);
+    editor.removeEventListener("scroll", handlers.scroll);
+    handlers.highlightObserver?.disconnect();
+    markdownSourceEditorHandlers.delete(editor);
 }
 
 export function wireComposer(textarea, dotNetReference, composerRoot) {
@@ -719,7 +813,7 @@ export function wireComposer(textarea, dotNetReference, composerRoot) {
         await dotNetReference.invokeMethodAsync("ComposerDocumentChangedAsync", composerSnapshot(textarea));
     };
     const scroll = () => syncComposerPreview(textarea);
-    const preview = textarea.closest(".composer-editor")?.querySelector(".composer-highlight");
+    const preview = textarea.closest(".composer-editor")?.querySelector(".composer-highlight, .markdown-source-highlight");
     const highlightObserver = preview && typeof MutationObserver !== "undefined"
         ? new MutationObserver(() => syncComposerPreview(textarea))
         : null;
@@ -853,46 +947,6 @@ export async function analyzeComposerFiles(composerRoot) {
         finally { bitmap?.close?.(); }
         return result;
     }));
-}
-
-export function wireMessageEditor(textarea, dotNetReference) {
-    if (!textarea || messageEditorHandlers.has(textarea)) return;
-    let handlingShortcut = false;
-    const keydown = async event => {
-        if (event.isComposing || event.keyCode === 229 || handlingShortcut) return;
-        const cancel = event.key === "Escape";
-        const save = event.key === "Enter" && !event.shiftKey;
-        if (!cancel && !save) return;
-
-        event.preventDefault();
-        handlingShortcut = true;
-        try {
-            await dotNetReference.invokeMethodAsync(cancel
-                ? "CancelEditFromKeyboardAsync"
-                : "SaveEditFromKeyboardAsync");
-        } catch (error) {
-            console.error("Iridium inline message editing failed in the client.", error);
-        } finally {
-            handlingShortcut = false;
-        }
-    };
-    const input = () => resizeMessageEditor(textarea);
-
-    messageEditorHandlers.set(textarea, { keydown, input });
-    textarea.addEventListener("keydown", keydown);
-    textarea.addEventListener("input", input);
-    resizeMessageEditor(textarea);
-    textarea.focus({ preventScroll: true });
-    const end = textarea.value.length;
-    textarea.setSelectionRange(end, end);
-}
-
-export function unwireMessageEditor(textarea) {
-    const handlers = textarea ? messageEditorHandlers.get(textarea) : null;
-    if (!handlers) return;
-    textarea.removeEventListener("keydown", handlers.keydown);
-    textarea.removeEventListener("input", handlers.input);
-    messageEditorHandlers.delete(textarea);
 }
 
 export function scrollToEnd(container, force) {
