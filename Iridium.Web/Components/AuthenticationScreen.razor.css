@@ -60,5 +60,8 @@ input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in sr
 .cancel-auth { width: 100%; margin-top: .35rem; padding: .4rem; border: 0; color: var(--text-muted); background: transparent; font-size: .72rem; cursor: pointer; }
 .cancel-auth:hover { color: var(--text-strong); }
 .auth-error { margin: 0; padding: .55rem; border-radius: .35rem; color: #ffc4c4; background: #7c313138; font-size: .75rem; }
-@media (max-width: 520px) { .auth-screen { padding: 0; align-items: stretch; } .auth-card { width: 100%; max-height: none; min-height: 100dvh; border: 0; border-radius: 0; padding: 1.2rem; } }
+@media (max-width: 520px) {
+    .auth-screen { width:100%;height:100dvh;min-height:100dvh;align-items:start;overflow-x:hidden;overflow-y:auto;padding:0;overscroll-behavior-y:contain;-webkit-overflow-scrolling:touch; }
+    .auth-card { width:100%;height:auto;max-height:none;min-height:100%;overflow:visible;border:0;border-radius:0;padding:max(1.2rem,env(safe-area-inset-top,0px)) 1.2rem max(1.2rem,env(safe-area-inset-bottom,0px)); }
+}
 @media (max-width: 430px) { .add-node-form { grid-template-columns: 1fr; } .add-node-actions { justify-content: flex-end; } }

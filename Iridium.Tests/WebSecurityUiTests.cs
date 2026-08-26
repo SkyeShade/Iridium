@@ -67,4 +67,18 @@ public sealed class WebSecurityUiTests
         Assert.DoesNotContain("localStorage", home, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("sessionStorage", home, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Fact]
+    public void MobileAuthenticationOwnsOneDynamicViewportScrollSurface()
+    {
+        var styles = File.ReadAllText(Path.Combine(Root, "Iridium.Web", "Components", "AuthenticationScreen.razor.css"));
+        var mobile = styles[styles.IndexOf("@media (max-width: 520px)", StringComparison.Ordinal)..];
+
+        Assert.Contains("height:100dvh", mobile);
+        Assert.Contains("overflow-y:auto", mobile);
+        Assert.Contains(".auth-card { width:100%;height:auto;max-height:none;min-height:100%;overflow:visible", mobile);
+        Assert.Contains("env(safe-area-inset-top,0px)", mobile);
+        Assert.Contains("env(safe-area-inset-bottom,0px)", mobile);
+        Assert.DoesNotContain(".auth-card { width:100%;height:100dvh", mobile);
+    }
 }
