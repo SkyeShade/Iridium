@@ -6,6 +6,7 @@ const directionDeadZone = 14;
 const dominance = 1.2;
 const completionRatio = 0.5;
 const ignoredSelector = 'input,textarea,select,button,a,img,video,audio,canvas,iframe,[draggable="true"],[contenteditable="true"],[role="button"],[role="slider"],[data-no-mobile-swipe],.composer-wrap,.message-actions,.context-menu,.emoji-picker,.youtube-embed,.video-attachment,.voice-stream-viewer';
+const mobileViewportLayoutEvent = 'iridium-mobile-viewport-layout';
 
 const mobileQuery = () => matchMedia('(max-width: 860px)');
 const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -267,6 +268,7 @@ export function wireMobileViewport(shell, dotnet) {
     let composerFocused = document.activeElement?.matches?.('.composer-rich-editor') === true;
     let unfocusedViewportHeight = window.visualViewport?.height ?? window.innerHeight;
     let unfocusedViewportWidth = window.visualViewport?.width ?? window.innerWidth;
+    let appliedViewportHeight = null;
     const reportMobileLayout = () => {
         void dotnet.invokeMethodAsync(
             'MobileLayoutChangedAsync',
@@ -279,6 +281,7 @@ export function wireMobileViewport(shell, dotnet) {
             shell.style.removeProperty('--iridium-mobile-viewport-height');
             shell.style.removeProperty('--iridium-mobile-viewport-offset');
             shell.style.removeProperty('--iridium-mobile-safe-bottom');
+            appliedViewportHeight = null;
             return;
         }
         const viewport = window.visualViewport;
@@ -298,6 +301,10 @@ export function wireMobileViewport(shell, dotnet) {
             shouldSuppressMobileSafeBottom(query.matches, composerFocused, Boolean(viewport), viewportConstrained)
                 ? '0px'
                 : 'env(safe-area-inset-bottom, 0px)');
+        if (appliedViewportHeight !== height) {
+            appliedViewportHeight = height;
+            window.dispatchEvent(new CustomEvent(mobileViewportLayoutEvent, { detail: { height } }));
+        }
     };
     const schedule = () => {
         if (frame) cancelAnimationFrame(frame);

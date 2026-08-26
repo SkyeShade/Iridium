@@ -130,9 +130,10 @@ public sealed class CallClientService(
                 CurrentCall = await _connection!.InvokeAsync<CallSessionDto?>(VoiceCallHubContract.GetCurrent, cancellationToken)
                     ?? throw new InvalidOperationException("The call ended before it could be accepted.");
                 IncomingCall = null;
-                await StartMediaAsync(cancellationToken);
                 MediaConnectionState = CallConnectionState.Connecting;
                 StatusMessage = "Connecting media…";
+                NotifyChanged();
+                await StartMediaAsync(cancellationToken);
                 if (_pendingOffer is not null) await AnswerPendingOfferAsync(cancellationToken);
                 NotifyChanged();
             }
@@ -227,6 +228,9 @@ public sealed class CallClientService(
             if (_activeMediaMode == MediaMode.NodeSfu)
             {
                 await ResetMediaAsync("SFU retry replacement", cancellationToken);
+                MediaConnectionState = CallConnectionState.Connecting;
+                StatusMessage = "Connecting media…";
+                NotifyChanged();
                 await StartMediaAsync(cancellationToken);
                 NotifyChanged();
                 return;
@@ -864,9 +868,12 @@ public sealed class CallClientService(
 
     private async Task MediaConnectionChangedAsync(CallConnectionState state)
     {
+        var previousState = MediaConnectionState;
         MediaConnectionState = state;
-        logger.LogDebug("Call {CallId} account {AccountId}: WebRTC connectionState changed to {ConnectionState}.",
-            CurrentCall?.Id, _accountId, state);
+        if (media.DiagnosticsEnabled)
+            logger.LogDebug(
+                "DirectCall media: role={Role} callId={CallId} old={OldState} new={NewState} source={Source}.",
+                _mediaRole, CurrentCall?.Id, previousState, state, MediaStateSource(state));
         StatusMessage = state switch
         {
             CallConnectionState.Connected => "Connected",
@@ -885,6 +892,17 @@ public sealed class CallClientService(
         NotifyChanged();
         if (state == CallConnectionState.Failed) await FailMediaAsync("Unable to establish the media connection.", "WEBRTC FAILED");
     }
+
+    private string MediaStateSource(CallConnectionState state) => _activeMediaMode == MediaMode.NodeSfu
+        ? state switch
+        {
+            CallConnectionState.Connected => "LiveKitRoomConnected",
+            CallConnectionState.Connecting => "LiveKitRoomConnecting",
+            CallConnectionState.Disconnected => "LiveKitRoomReconnectingOrDisconnected",
+            CallConnectionState.Failed => "LiveKitRoomFailed",
+            _ => "LiveKitRoomStateChanged"
+        }
+        : "WebRtcConnectionStateChanged";
 
     private Task MediaIceConnectionChangedAsync(string state)
     {

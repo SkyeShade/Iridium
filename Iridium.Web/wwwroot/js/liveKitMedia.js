@@ -279,11 +279,13 @@ function wireRoom(session) {
         if (playback) destroyRemoteVoicePlayback(playback);
         session.playbacks.delete(key);
     });
-    room.on(RoomEvent.Reconnecting, () => reportState(session, "connecting"));
+    room.on(RoomEvent.Reconnecting, () => reportState(session, "disconnected"));
     room.on(RoomEvent.Reconnected, () => reportState(session, "connected"));
     room.on(RoomEvent.Disconnected, () => reportState(session, "disconnected"));
     room.on(RoomEvent.ConnectionStateChanged, state => {
-        const mapped = state === "connected" ? "connected" : state === "disconnected" ? "disconnected" : "connecting";
+        const mapped = state === "connected" ? "connected"
+            : state === "disconnected" || state === "reconnecting" ? "disconnected"
+            : "connecting";
         reportState(session, mapped);
     });
 }

@@ -3,6 +3,16 @@ const markdownSourceEditorHandlers = new WeakMap();
 const channelSorters = new WeakMap();
 const messageViewports = new WeakMap();
 const searchAutocompleteHandlers = new WeakMap();
+const mobileViewportLayoutEvent = "iridium-mobile-viewport-layout";
+
+export function messageViewportBottomDistance(scrollHeight, scrollTop, clientHeight) {
+    return Math.max(0, scrollHeight - scrollTop - clientHeight);
+}
+
+export function messageViewportAnchoredScrollTop(scrollHeight, clientHeight, bottomDistance) {
+    const maximum = Math.max(0, scrollHeight - clientHeight);
+    return Math.max(0, Math.min(maximum, scrollHeight - clientHeight - Math.max(0, bottomDistance)));
+}
 
 export function wireChannelSorter(root, dotNetReference, initialProjection) {
     if (!root || channelSorters.has(root)) return;
@@ -963,11 +973,17 @@ export function wireMessageViewport(container, dotNetReference) {
         programmaticLatest: false,
         topRequested: false,
         prependHeight: 0,
-        prependTop: 0
+        prependTop: 0,
+        bottomDistance: messageViewportBottomDistance(container.scrollHeight, container.scrollTop, container.clientHeight),
+        clientHeight: container.clientHeight,
+        interactionRevision: 0,
+        anchorFrame: 0,
+        pendingMobileAnchor: null
     };
     const update = () => {
         const suppressTopRequest = state.programmaticLatest;
-        const distance = Math.max(0, container.scrollHeight - container.scrollTop - container.clientHeight);
+        const distance = messageViewportBottomDistance(container.scrollHeight, container.scrollTop, container.clientHeight);
+        state.bottomDistance = distance;
         const isPinnedToLatest = distance <= 2;
         const jumpThreshold = Math.max(240, container.clientHeight * 0.35);
         const shouldShowJumpToLatest = distance >= jumpThreshold;
@@ -982,7 +998,52 @@ export function wireMessageViewport(container, dotNetReference) {
             dotNetReference.invokeMethodAsync("LoadOlderFromScrollAsync").finally(() => state.topRequested = false);
         }
     };
-    const cancelProgrammaticLatest = () => { state.programmaticLatest = false; };
+    const cancelPendingAnchor = () => {
+        state.pendingMobileAnchor = null;
+        if (state.anchorFrame) cancelAnimationFrame(state.anchorFrame);
+        state.anchorFrame = 0;
+    };
+    const cancelProgrammaticLatest = () => {
+        state.programmaticLatest = false;
+        state.interactionRevision++;
+        cancelPendingAnchor();
+    };
+    const mobileQuery = window.matchMedia("(max-width: 860px)");
+    const queueMobileAnchorRestore = () => {
+        if (!mobileQuery.matches) return;
+        state.pendingMobileAnchor ??= {
+            bottomDistance: state.bottomDistance,
+            interactionRevision: state.interactionRevision
+        };
+        if (state.anchorFrame) cancelAnimationFrame(state.anchorFrame);
+        state.anchorFrame = requestAnimationFrame(() => {
+            state.anchorFrame = 0;
+            const anchor = state.pendingMobileAnchor;
+            state.pendingMobileAnchor = null;
+            if (!anchor || !mobileQuery.matches || anchor.interactionRevision !== state.interactionRevision) return;
+            const previous = container.style.scrollBehavior;
+            container.style.scrollBehavior = "auto";
+            container.scrollTop = messageViewportAnchoredScrollTop(
+                container.scrollHeight, container.clientHeight, anchor.bottomDistance);
+            container.style.scrollBehavior = previous;
+            state.clientHeight = container.clientHeight;
+            update();
+        });
+    };
+    const mobileViewportLayout = () => queueMobileAnchorRestore();
+    const resizeObserver = typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(() => {
+            const clientHeight = container.clientHeight;
+            if (clientHeight === state.clientHeight) return;
+            state.clientHeight = clientHeight;
+            if (mobileQuery.matches) queueMobileAnchorRestore();
+            else {
+                cancelPendingAnchor();
+                state.bottomDistance = messageViewportBottomDistance(
+                    container.scrollHeight, container.scrollTop, clientHeight);
+            }
+        })
+        : null;
     const scrollEnd = () => {
         state.programmaticLatest = true;
         update();
@@ -993,7 +1054,11 @@ export function wireMessageViewport(container, dotNetReference) {
     container.addEventListener("pointerdown", cancelProgrammaticLatest, { passive: true });
     container.addEventListener("touchstart", cancelProgrammaticLatest, { passive: true });
     container.addEventListener("scrollend", scrollEnd, { passive: true });
-    messageViewports.set(container, { state, update, cancelProgrammaticLatest, scrollEnd });
+    window.addEventListener(mobileViewportLayoutEvent, mobileViewportLayout);
+    resizeObserver?.observe(container);
+    messageViewports.set(container, {
+        state, update, cancelProgrammaticLatest, scrollEnd, mobileViewportLayout, resizeObserver, cancelPendingAnchor
+    });
 }
 
 export function unwireMessageViewport(container) {
@@ -1004,6 +1069,9 @@ export function unwireMessageViewport(container) {
     container.removeEventListener("pointerdown", wired.cancelProgrammaticLatest);
     container.removeEventListener("touchstart", wired.cancelProgrammaticLatest);
     container.removeEventListener("scrollend", wired.scrollEnd);
+    window.removeEventListener(mobileViewportLayoutEvent, wired.mobileViewportLayout);
+    wired.resizeObserver?.disconnect();
+    wired.cancelPendingAnchor();
     messageViewports.delete(container);
 }
 
