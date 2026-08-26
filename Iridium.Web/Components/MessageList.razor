@@ -41,6 +41,7 @@
                         OnReply="OnReply" Edit="Edit" OnDelete="OnDelete" OnFocusReply="FocusMessageAsync"
                         EditRequest="@(_editRequestedMessageId == message.Id ? _editRequest : 0)"
                         OnEditingChanged="@(editing => EditingChanged(message.Id, editing))"
+                        OnEditCompleted="OnEditCompleted"
                         OnRetryLocal="OnRetryLocal" OnRemoveLocal="OnRemoveLocal" />
                 @if (message.Id == RootMessageId)
                 {
@@ -72,6 +73,7 @@
     [Parameter] public EventCallback<Guid> OnRemoveLocal { get; set; }
     [Parameter] public EventCallback OnLoadOlder { get; set; }
     [Parameter] public EventCallback<MessageViewportState> OnViewportStateChanged { get; set; }
+    [Parameter] public EventCallback OnEditCompleted { get; set; }
     [Parameter] public int WindowRevision { get; set; }
     [Parameter] public Guid? TargetMessageId { get; set; }
     [Parameter] public Guid? RootMessageId { get; set; }

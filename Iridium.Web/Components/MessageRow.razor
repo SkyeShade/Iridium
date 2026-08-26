@@ -144,6 +144,7 @@
     [Parameter] public EventCallback<Guid> OnFocusReply { get; set; }
     [Parameter] public long EditRequest { get; set; }
     [Parameter] public EventCallback<bool> OnEditingChanged { get; set; }
+    [Parameter] public EventCallback OnEditCompleted { get; set; }
     private bool _menuOpen => MessageMenus.OpenMessageId == Message.Id;
     private bool _messageHovered;
     private bool _menuHovered;
@@ -228,6 +229,7 @@
         _editing = false; _editContent = string.Empty; _editEmojiReferences.Clear();
         _editStandardEmojiReferences.Clear(); _editEmojiTokens.Clear();
         await OnEditingChanged.InvokeAsync(false);
+        await OnEditCompleted.InvokeAsync();
     }
     private void CancelEdit() => _ = CancelEditAsync();
     private void EditDocumentChanged(ComposerDocumentSnapshot snapshot)
@@ -262,6 +264,7 @@
                 _editing = false;
                 _editContent = string.Empty;
                 await OnEditingChanged.InvokeAsync(false);
+                await OnEditCompleted.InvokeAsync();
             }
         }
         finally

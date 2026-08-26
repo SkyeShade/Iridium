@@ -25,6 +25,7 @@
                      EmptyIcon="message" EmptyTitle="No messages yet" EmptyDescription="Send the first Direct Message."
                      OnReply="BeginReply" Edit="EditMessageAsync" OnDelete="DeleteMessageAsync"
                      OnRetryLocal="RetryMessageAsync" OnRemoveLocal="RemoveLocalMessage"
+                     OnEditCompleted="FocusComposerAfterEditAsync"
                      WindowRevision="Messaging.WindowRevision" TargetMessageId="@(Messaging.WindowMode == MessageWindowMode.SearchTarget ? _loadedTargetMessageId : null)"
                      OnLoadOlder="LoadOlderAsync" OnViewportStateChanged="ViewportStateChanged" />
         @if (ShowJumpToLatest) { <button class="jump-latest" @onclick="JumpToLatestAsync">Jump to Latest</button> }
@@ -47,6 +48,7 @@
     [Parameter] public EventCallback OnEditProfile { get; set; }
     [Parameter] public EventCallback<Guid> OnMessage { get; set; }
     [Parameter] public EventCallback OnStartVoiceCall { get; set; }
+    [Parameter] public bool IsMobileLayout { get; set; }
     [Parameter] public Guid? TargetMessageId { get; set; }
     [Parameter] public long FocusRequest { get; set; }
     [Parameter] public EventCallback<long> OnFocusConsumed { get; set; }
@@ -117,6 +119,13 @@
         _consumedFocusRequest = FocusRequest;
         if (_composer is not null) await _composer.FocusAsync();
         await OnFocusConsumed.InvokeAsync(FocusRequest);
+    }
+
+    private async Task FocusComposerAfterEditAsync()
+    {
+        if (IsMobileLayout) return;
+        _focusAfterRender = true;
+        await InvokeAsync(StateHasChanged);
     }
 
     private void MessagesChanged() => _ = InvokeAsync(StateHasChanged);

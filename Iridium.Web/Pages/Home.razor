@@ -184,6 +184,7 @@ else
                 @if (_homeView == "dm" && _selectedDirectConversation is not null)
                 {
                     <DirectMessageView @key="_selectedDirectConversation.Id" @ref="_directMessageView" Conversation="_selectedDirectConversation"
+                                       IsMobileLayout="_isMobileLayout"
                                        FocusRequest="@(_composerFocusConversationId == _selectedDirectConversation.Id ? _composerFocusRequest : 0)"
                                        OnFocusConsumed="ComposerFocusConsumed"
                                        CurrentAccountId="Session.Account!.Id" NodeAuthority="@(Session.SelectedNode!.PublicAuthority)"
@@ -219,6 +220,7 @@ else
                 else if (_selectedChannel.Kind == CommunityChannelKind.Forum)
                 {
                     <ForumChannelView @key="(_selectedChannel.Id, _selectedChannel.EffectivePermissions)" @ref="_forumView"
+                                      IsMobileLayout="_isMobileLayout"
                                       Community="_selectedCommunity" Channel="_selectedChannel"
                                       CurrentAccountId="Session.Account!.Id" NodeAuthority="@(Session.SelectedNode!.PublicAuthority)"
                                       CommunityManagement="CommunityState.Management" OnEditProfile="OpenProfileEditor"
@@ -232,6 +234,7 @@ else
                 else
                 {
                     <ChannelView @key="(_selectedChannel.Id, _selectedChannel.EffectivePermissions)" Community="_selectedCommunity" Channel="_selectedChannel"
+                                 IsMobileLayout="_isMobileLayout"
                                  FocusRequest="@(_composerFocusChannelId == _selectedChannel.Id ? _composerFocusRequest : 0)"
                                  OnFocusConsumed="ComposerFocusConsumed"
                                  CurrentAccountId="Session.Account!.Id"
