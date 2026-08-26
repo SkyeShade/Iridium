@@ -1,11 +1,23 @@
 @using Iridium.Protocol
+@using Iridium.Client.Core
+@implements IDisposable
+@inject ActiveVoiceSessionCoordinator Voice
 
-<div class="profile-panel" role="button" tabindex="0" @onclick="OnProfile" @onkeydown="HandleKey">
+<div class="profile-panel @(ShowVoiceControls ? "has-voice-controls" : null)" role="button" tabindex="0" @onclick="OnProfile" @onkeydown="HandleKey">
     <ProfileAvatar AccountId="AccountId" AvatarRevision="AvatarRevision" DisplayName="@DisplayName" Presence="Presence" Surface="raised" />
     <div class="profile-copy">
         <span class="display-name">@DisplayName</span>
         <span>@PublicIdentity</span>
     </div>
+    @if (ShowVoiceControls)
+    {
+        <button class="voice-button @(Voice.EffectiveMuted ? "active" : null)" title="@(Voice.PreferredMuted ? "Unmute" : "Mute")"
+                aria-label="@(Voice.PreferredMuted ? "Unmute" : "Mute")" aria-pressed="@Voice.PreferredMuted"
+                @onclick="ToggleMuteAsync" @onclick:stopPropagation="true"><Icon Name="microphone" Size="17" /></button>
+        <button class="voice-button @(Voice.PreferredDeafened ? "active" : null)" title="@(Voice.PreferredDeafened ? "Undeafen" : "Deafen")"
+                aria-label="@(Voice.PreferredDeafened ? "Undeafen" : "Deafen")" aria-pressed="@Voice.PreferredDeafened"
+                @onclick="ToggleDeafenAsync" @onclick:stopPropagation="true"><Icon Name="headphones" Size="17" /></button>
+    }
     <button class="settings-button" title="Settings" aria-label="Open settings"
             @onclick="OpenSettings" @onclick:stopPropagation="true">
         <Icon Name="settings" Size="17" />
@@ -20,7 +32,14 @@
     [Parameter] public PublicPresence Presence { get; set; }
     [Parameter] public EventCallback OnProfile { get; set; }
     [Parameter] public EventCallback OnSettings { get; set; }
+    [Parameter] public bool ShowVoiceControls { get; set; }
+
+    protected override void OnInitialized() => Voice.Changed += VoiceChanged;
 
     private Task OpenSettings(MouseEventArgs args) => OnSettings.InvokeAsync();
+    private Task ToggleMuteAsync(MouseEventArgs args) => Voice.ToggleMuteAsync();
+    private Task ToggleDeafenAsync(MouseEventArgs args) => Voice.ToggleDeafenAsync();
     private Task HandleKey(KeyboardEventArgs args) => args.Key is "Enter" or " " ? OnProfile.InvokeAsync() : Task.CompletedTask;
+    private void VoiceChanged() => _ = InvokeAsync(StateHasChanged);
+    public void Dispose() => Voice.Changed -= VoiceChanged;
 }

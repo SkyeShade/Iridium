@@ -15,6 +15,7 @@ public sealed class AccountSwitchService(
         await session.InitializeAsync(nodes, cancellationToken);
         if (session.IsAuthenticated)
         {
+            await InitializeVoicePreferencesAsync(cancellationToken);
             await messaging.ConnectAsync(cancellationToken);
             if (calls is not null) await calls.ConnectAsync(cancellationToken);
         }
@@ -29,6 +30,7 @@ public sealed class AccountSwitchService(
         if (activation is null) return false;
         await ResetAccountContextAsync(cancellationToken);
         await session.ActivateSwitchAsync(activation, cancellationToken);
+        await InitializeVoicePreferencesAsync(cancellationToken);
         await messaging.ConnectAsync(cancellationToken);
         if (calls is not null) await calls.ConnectAsync(cancellationToken);
         return true;
@@ -70,6 +72,7 @@ public sealed class AccountSwitchService(
         var activation = await session.PrepareAuthenticationAsync(result, cancellationToken);
         await ResetAccountContextAsync(cancellationToken);
         await session.AcceptAuthenticationAsync(activation, cancellationToken);
+        await InitializeVoicePreferencesAsync(cancellationToken);
         await messaging.ConnectAsync(cancellationToken);
         if (calls is not null) await calls.ConnectAsync(cancellationToken);
     }
@@ -87,4 +90,9 @@ public sealed class AccountSwitchService(
         await messaging.DisconnectAsync(cancellationToken);
         communities.Clear();
     }
+
+    private Task InitializeVoicePreferencesAsync(CancellationToken cancellationToken) =>
+        voiceSessions is not null && session.SelectedNode is { } node && session.Account is { } account
+            ? voiceSessions.SetPreferenceScopeAsync(node.Address, account.Id, cancellationToken)
+            : Task.CompletedTask;
 }

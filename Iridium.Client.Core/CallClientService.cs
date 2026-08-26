@@ -193,19 +193,25 @@ public sealed class CallClientService(
 
     public async Task ToggleMuteAsync(CancellationToken cancellationToken = default)
     {
-        if (CurrentCall is null || !_mediaReady) return;
-        IsMuted = !IsMuted;
-        await media.SetMutedAsync(IsMuted, cancellationToken);
-        await PublishParticipantStateAsync(cancellationToken);
-        NotifyChanged();
+        await SetLocalVoiceStateAsync(!IsMuted, IsDeafened, cancellationToken);
     }
 
     public async Task ToggleDeafenAsync(CancellationToken cancellationToken = default)
     {
-        if (CurrentCall is null || !_mediaReady) return;
-        IsDeafened = !IsDeafened;
-        await media.SetDeafenedAsync(IsDeafened, cancellationToken);
-        await PublishParticipantStateAsync(cancellationToken);
+        await SetLocalVoiceStateAsync(IsMuted, !IsDeafened, cancellationToken);
+    }
+
+    public async Task SetLocalVoiceStateAsync(bool muted, bool deafened,
+        CancellationToken cancellationToken = default)
+    {
+        IsMuted = muted;
+        IsDeafened = deafened;
+        if (_mediaReady)
+        {
+            await media.SetDeafenedAsync(IsDeafened, cancellationToken);
+            await media.SetMutedAsync(IsMuted, cancellationToken);
+            await PublishParticipantStateAsync(cancellationToken);
+        }
         NotifyChanged();
     }
 
@@ -809,7 +815,9 @@ public sealed class CallClientService(
         var remoteAccountId = CurrentCall?.Participants.FirstOrDefault(value => value.AccountId != accountId)?.AccountId;
         await media.InitializeAsync(configuration,
             new CallMediaSessionContext(callId, accountId, _mediaRole, _peerGeneration, _negotiationId,
-                _negotiationGeneration, remoteAccountId), cancellationToken);
+                _negotiationGeneration, remoteAccountId, IsMuted, IsDeafened), cancellationToken);
+        await media.SetDeafenedAsync(IsDeafened, cancellationToken);
+        await media.SetMutedAsync(IsMuted, cancellationToken);
         logger.LogDebug("Call {CallId} account {AccountId} role {Role}: PeerGeneration {PeerGeneration} created; getUserMedia succeeded; local audio track attached.",
             callId, accountId, _mediaRole, _peerGeneration);
         _mediaReady = true;

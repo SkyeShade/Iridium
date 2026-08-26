@@ -63,14 +63,13 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
         _publishedStreams.AddRange(await connection.InvokeAsync<IReadOnlyList<PublishedVoiceStreamDto>>(
             VoiceStreamHubContract.GetPublished, VoiceMediaSessionKind.CommunityVoice, channelId, cancellationToken));
         _rooms[channelId] = room;
-        Muted = room.Participants.FirstOrDefault(value => value.ParticipantId == connection.ConnectionId)?.Muted ?? false;
-        Deafened = room.Participants.FirstOrDefault(value => value.ParticipantId == connection.ConnectionId)?.Deafened ?? false;
+        await connection.InvokeAsync(CommunityVoiceHubContract.SetState, Muted, Deafened, cancellationToken);
         MediaError = null;
         try
         {
             await media.ConnectAsync(MediaSession, room,
                 nodeSession.Account?.Id ?? throw new InvalidOperationException("The active account changed."),
-                cancellationToken);
+                Muted, Deafened, cancellationToken);
             _mediaConnected = true;
             MediaSession = MediaSession with { Status = CommunityVoiceMediaStatus.Connected };
         }
@@ -100,7 +99,7 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
             if (previousRoom is not null && MediaSession is not null)
             {
                 await media.ConnectAsync(MediaSession, previousRoom,
-                    nodeSession.Account?.Id ?? Guid.Empty, cancellationToken);
+                    nodeSession.Account?.Id ?? Guid.Empty, Muted, Deafened, cancellationToken);
                 _mediaConnected = true;
             }
             throw;
@@ -108,7 +107,6 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
         CurrentRoom = null;
         MediaSession = null;
         MediaError = null;
-        Muted = Deafened = false;
         _publishedStreams.Clear();
         WatchedStream = null;
         Changed?.Invoke();
@@ -116,24 +114,26 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
 
     public async Task SetMutedAsync(bool muted, CancellationToken cancellationToken = default)
     {
-        if (_connection?.State != HubConnectionState.Connected || CurrentRoom is null) return;
-        Muted = muted || Deafened;
-        if (_mediaConnected) await media.SetMutedAsync(Muted, cancellationToken);
-        await _connection.InvokeAsync(CommunityVoiceHubContract.SetState, Muted, Deafened, cancellationToken);
-        Changed?.Invoke();
+        await SetLocalVoiceStateAsync(muted, Deafened, cancellationToken);
     }
 
     public async Task SetDeafenedAsync(bool deafened, CancellationToken cancellationToken = default)
     {
-        if (_connection?.State != HubConnectionState.Connected || CurrentRoom is null) return;
+        await SetLocalVoiceStateAsync(Muted, deafened, cancellationToken);
+    }
+
+    public async Task SetLocalVoiceStateAsync(bool muted, bool deafened,
+        CancellationToken cancellationToken = default)
+    {
+        Muted = muted;
         Deafened = deafened;
-        if (deafened) Muted = true;
         if (_mediaConnected)
         {
-            await media.SetMutedAsync(Muted, cancellationToken);
             await media.SetDeafenedAsync(Deafened, cancellationToken);
+            await media.SetMutedAsync(Muted, cancellationToken);
         }
-        await _connection.InvokeAsync(CommunityVoiceHubContract.SetState, Muted, Deafened, cancellationToken);
+        if (_connection?.State == HubConnectionState.Connected && CurrentRoom is not null)
+            await _connection.InvokeAsync(CommunityVoiceHubContract.SetState, Muted, Deafened, cancellationToken);
         Changed?.Invoke();
     }
 
@@ -340,13 +340,13 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
             _rooms[room.ChannelId] = room;
             _publishedStreams.Clear();
             _publishedStreams.AddRange(streams);
-            Muted = room.Participants.FirstOrDefault(value => value.ParticipantId == context.Connection.ConnectionId)?.Muted ?? false;
-            Deafened = room.Participants.FirstOrDefault(value => value.ParticipantId == context.Connection.ConnectionId)?.Deafened ?? false;
+            await context.Connection.InvokeAsync(CommunityVoiceHubContract.SetState, Muted, Deafened,
+                cancellationToken);
             if (!_mediaConnected)
             {
                 await media.ConnectAsync(mediaSession, room,
                     nodeSession.Account?.Id ?? throw new InvalidOperationException("The active account changed."),
-                    cancellationToken);
+                    Muted, Deafened, cancellationToken);
                 _mediaConnected = true;
             }
             logger.LogInformation("Restored Community voice signaling for {CommunityId}/{ChannelId} without replacing healthy media.",

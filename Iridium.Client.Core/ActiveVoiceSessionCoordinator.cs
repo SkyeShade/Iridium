@@ -34,6 +34,7 @@ public sealed class ActiveVoiceSessionCoordinator : IAsyncDisposable
 {
     private readonly IDirectVoiceSession _direct;
     private readonly ICommunityVoiceControlSession _community;
+    private readonly LocalVoicePreferenceService _preferences;
     private readonly SemaphoreSlim _switchGate = new(1, 1);
     private readonly HashSet<Guid> _mutedStreamAudio = [];
     private readonly Dictionary<Guid, string> _streamThumbnails = [];
@@ -42,11 +43,17 @@ public sealed class ActiveVoiceSessionCoordinator : IAsyncDisposable
     private bool _disposed;
 
     public ActiveVoiceSessionCoordinator(IDirectVoiceSession direct, ICommunityVoiceControlSession community)
+        : this(direct, community, new LocalVoicePreferenceService(new TransientLocalVoicePreferenceStore())) { }
+
+    public ActiveVoiceSessionCoordinator(IDirectVoiceSession direct, ICommunityVoiceControlSession community,
+        LocalVoicePreferenceService preferences)
     {
         _direct = direct;
         _community = community;
+        _preferences = preferences;
         _direct.Changed += UnderlyingChanged;
         _community.Changed += UnderlyingChanged;
+        _preferences.Changed += PreferencesChanged;
     }
 
     public event Action? Changed;
@@ -56,6 +63,9 @@ public sealed class ActiveVoiceSessionCoordinator : IAsyncDisposable
     public ICommunityVoiceControlSession CommunityVoice => _community;
     public IReadOnlyList<PublishedVoiceStreamDto> PublishedStreams => Current?.PublishedStreams ?? [];
     public PublishedVoiceStreamDto? WatchedStream => Current?.WatchedStream;
+    public bool PreferredMuted => _preferences.PreferredMuted;
+    public bool PreferredDeafened => _preferences.PreferredDeafened;
+    public bool EffectiveMuted => _preferences.EffectiveMuted;
     public StreamViewerMode ViewerMode { get; private set; }
     public IReadOnlyDictionary<Guid, string> StreamThumbnails => _streamThumbnails;
     public Guid? LocalAccountId => _direct.AccountId ?? (_community.MediaSession?.ParticipantId is { } participantId
@@ -65,10 +75,18 @@ public sealed class ActiveVoiceSessionCoordinator : IAsyncDisposable
     public string? GetStreamThumbnail(Guid streamId) =>
         _streamThumbnails.TryGetValue(streamId, out var value) ? value : null;
 
+    public async Task SetPreferenceScopeAsync(string nodeAuthority, Guid accountId,
+        CancellationToken cancellationToken = default)
+    {
+        await _preferences.SetScopeAsync(nodeAuthority, accountId, cancellationToken);
+        await ApplyPreferencesAsync(cancellationToken);
+    }
+
     public async Task StartDirectAsync(DirectConversationDto conversation,
         CancellationToken cancellationToken = default) => await SwitchAsync(async token =>
     {
         await LeaveCurrentUnsafeAsync("starting a Direct Call", token);
+        await ApplyPreferencesAsync(token);
         await _direct.StartAsync(conversation, token);
     }, cancellationToken);
 
@@ -78,6 +96,7 @@ public sealed class ActiveVoiceSessionCoordinator : IAsyncDisposable
             if (_direct.IncomingCall is null) return;
             if (_community.CurrentRoom is not null) await _community.LeaveAsync(token);
             if (_direct.CurrentCall is not null) await _direct.HangUpAsync(token);
+            await ApplyPreferencesAsync(token);
             await _direct.AcceptAsync(token);
         }, cancellationToken);
 
@@ -91,6 +110,7 @@ public sealed class ActiveVoiceSessionCoordinator : IAsyncDisposable
             _community.CurrentRoom.ChannelId == channelId) return;
         if (_direct.CurrentCall is not null) await _direct.HangUpAsync(token);
         if (_community.CurrentRoom is not null) await _community.LeaveAsync(token);
+        await ApplyPreferencesAsync(token);
         await _community.JoinAsync(communityId, channelId, token);
     }, cancellationToken);
 
@@ -98,19 +118,26 @@ public sealed class ActiveVoiceSessionCoordinator : IAsyncDisposable
         CancellationToken cancellationToken = default) => await SwitchAsync(
         token => LeaveCurrentUnsafeAsync(reason, token), cancellationToken);
 
-    public Task ToggleMuteAsync(CancellationToken cancellationToken = default) => Current?.Kind switch
+    public async Task ToggleMuteAsync(CancellationToken cancellationToken = default)
     {
-        ActiveVoiceSessionKind.DirectCall => _direct.ToggleMuteAsync(cancellationToken),
-        ActiveVoiceSessionKind.CommunityVoiceChannel => _community.SetMutedAsync(!_community.Muted, cancellationToken),
-        _ => Task.CompletedTask
-    };
+        await _preferences.SetPreferredMutedAsync(!_preferences.PreferredMuted, cancellationToken);
+        await ApplyPreferencesAsync(cancellationToken);
+    }
 
-    public Task ToggleDeafenAsync(CancellationToken cancellationToken = default) => Current?.Kind switch
+    public async Task ToggleDeafenAsync(CancellationToken cancellationToken = default)
     {
-        ActiveVoiceSessionKind.DirectCall => _direct.ToggleDeafenAsync(cancellationToken),
-        ActiveVoiceSessionKind.CommunityVoiceChannel => _community.SetDeafenedAsync(!_community.Deafened, cancellationToken),
-        _ => Task.CompletedTask
-    };
+        await _preferences.SetPreferredDeafenedAsync(!_preferences.PreferredDeafened, cancellationToken);
+        await ApplyPreferencesAsync(cancellationToken);
+    }
+
+    private async Task ApplyPreferencesAsync(CancellationToken cancellationToken)
+    {
+        await _direct.SetLocalVoiceStateAsync(_preferences.EffectiveMuted,
+            _preferences.PreferredDeafened, cancellationToken);
+        await _community.SetLocalVoiceStateAsync(_preferences.EffectiveMuted,
+            _preferences.PreferredDeafened, cancellationToken);
+        Changed?.Invoke();
+    }
 
     public Task StartScreenShareAsync(CancellationToken cancellationToken = default) => Current?.Kind switch
     {
@@ -311,6 +338,8 @@ public sealed class ActiveVoiceSessionCoordinator : IAsyncDisposable
         Changed?.Invoke();
     }
 
+    private void PreferencesChanged() => Changed?.Invoke();
+
     private void EnsureThumbnailLoop()
     {
         if (PublishedStreams.Count == 0)
@@ -343,6 +372,7 @@ public sealed class ActiveVoiceSessionCoordinator : IAsyncDisposable
         _disposed = true;
         _direct.Changed -= UnderlyingChanged;
         _community.Changed -= UnderlyingChanged;
+        _preferences.Changed -= PreferencesChanged;
         _thumbnailLoopCancellation?.Cancel();
         _thumbnailLoopCancellation?.Dispose();
         _switchGate.Dispose();

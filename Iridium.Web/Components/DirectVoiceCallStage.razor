@@ -86,10 +86,10 @@ else if (CallForConversation is { } call)
                 @if (!string.IsNullOrWhiteSpace(_shareError)) { <small>@_shareError</small> }
             </div>
             <div class="active-call-controls">
-                <button type="button" class="call-control @(Calls.IsMuted ? "selected" : null)" title="@(Calls.IsMuted ? "Unmute microphone" : "Mute microphone")"
-                        aria-pressed="@Calls.IsMuted" @onclick="ToggleMuteAsync"><Icon Name="microphone" /><span>@(Calls.IsMuted ? "Unmute" : "Mute")</span></button>
-                <button type="button" class="call-control @(Calls.IsDeafened ? "selected" : null)" title="@(Calls.IsDeafened ? "Undeafen" : "Deafen")"
-                        aria-pressed="@Calls.IsDeafened" @onclick="ToggleDeafenAsync"><Icon Name="headphones" /><span>@(Calls.IsDeafened ? "Undeafen" : "Deafen")</span></button>
+                <button type="button" class="call-control @(Calls.IsMuted ? "selected" : null)" title="@(VoiceSessions.PreferredMuted ? "Unmute microphone" : "Mute microphone")"
+                        aria-pressed="@VoiceSessions.PreferredMuted" @onclick="ToggleMuteAsync"><Icon Name="microphone" /><span>@(VoiceSessions.PreferredMuted ? "Unmute" : "Mute")</span></button>
+                <button type="button" class="call-control @(Calls.IsDeafened ? "selected" : null)" title="@(VoiceSessions.PreferredDeafened ? "Undeafen" : "Deafen")"
+                        aria-pressed="@VoiceSessions.PreferredDeafened" @onclick="ToggleDeafenAsync"><Icon Name="headphones" /><span>@(VoiceSessions.PreferredDeafened ? "Undeafen" : "Deafen")</span></button>
                 @if (IsSharing || CanStartScreenShare)
                 {
                     <button type="button" class="call-control @(IsSharing ? "selected" : null)"

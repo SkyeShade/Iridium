@@ -32,6 +32,8 @@ builder.Services.AddScoped<ISavedAccountStore>(sp => sp.GetRequiredService<Brows
 builder.Services.AddScoped<IActiveAccountSelectionStore>(sp => sp.GetRequiredService<BrowserClientStorage>());
 builder.Services.AddScoped<IVoiceParticipantPreferenceStore>(sp => sp.GetRequiredService<BrowserClientStorage>());
 builder.Services.AddScoped<VoiceParticipantPreferencesService>();
+builder.Services.AddScoped<ILocalVoicePreferenceStore>(sp => sp.GetRequiredService<BrowserClientStorage>());
+builder.Services.AddScoped<LocalVoicePreferenceService>();
 builder.Services.AddScoped<IEmojiPickerPreferenceStore>(sp => sp.GetRequiredService<BrowserClientStorage>());
 builder.Services.AddScoped<IMessageDraftStore>(sp => sp.GetRequiredService<BrowserClientStorage>());
 builder.Services.AddScoped<ICommunityForumPostCache>(sp => sp.GetRequiredService<BrowserClientStorage>());

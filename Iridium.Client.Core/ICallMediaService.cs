@@ -9,7 +9,9 @@ public sealed record CallMediaSessionContext(
     int PeerGeneration,
     Guid? NegotiationId,
     int NegotiationGeneration,
-    Guid? RemoteAccountId = null);
+    Guid? RemoteAccountId = null,
+    bool Muted = false,
+    bool Deafened = false);
 
 public sealed record RemoteAnswerApplyResult(bool Applied, string SignalingState, string? IgnoreReason);
 public sealed record LocalIceCandidateSignal(

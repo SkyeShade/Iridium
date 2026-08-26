@@ -361,7 +361,8 @@ async function refreshViewers(session, mediaStreamId) {
     }
 }
 
-async function connectCore(callbackRef, nodeSession, preferences, kind, peerGeneration = 0) {
+async function connectCore(callbackRef, nodeSession, preferences, kind, peerGeneration = 0,
+        initialMuted = false, initialDeafened = false) {
     if (!nodeSession?.accessToken || !nodeSession?.publicUrl) throw new Error("The Node did not provide LiveKit room access.");
     const { Room, RoomEvent } = sdk();
     const id = crypto.randomUUID();
@@ -373,7 +374,7 @@ async function connectCore(callbackRef, nodeSession, preferences, kind, peerGene
         // Screen viewers are deliberately subscribed by Watch/Stop Watching rather than SDK-managed elements.
         room: new Room({ autoSubscribe: false, adaptiveStream: false, dynacast: true }),
         preferences: new Map((preferences ?? []).map(p => [accountKey(p.remoteAccountId), p])),
-        playbacks: new Map(), viewers: new Map(), watched: new Set(), deafened: false,
+        playbacks: new Map(), viewers: new Map(), watched: new Set(), deafened: initialDeafened === true,
         screenTracks: [], screenStreamId: null, screenMediaStreamId: null, screenGeneration: 0,
         audioContext: (globalThis.AudioContext || globalThis.webkitAudioContext)
             ? new (globalThis.AudioContext || globalThis.webkitAudioContext)() : null
@@ -383,7 +384,7 @@ async function connectCore(callbackRef, nodeSession, preferences, kind, peerGene
     try {
         await session.room.connect(nodeSession.publicUrl, nodeSession.accessToken, { autoSubscribe: false });
         const microphonePublication = await session.room.localParticipant.setMicrophoneEnabled(
-            true, microphone.capture, microphone.publish);
+            initialMuted !== true, microphone.capture, microphone.publish);
         if (session.diagnostics && microphonePublication?.track) {
             const settings = microphonePublication.track.mediaStreamTrack.getSettings();
             console.debug("LiveKit microphone published", {
@@ -411,11 +412,12 @@ async function connectCore(callbackRef, nodeSession, preferences, kind, peerGene
 }
 
 export function connectCall(callbackRef, configuration, context, preferences) {
-    return connectCore(callbackRef, configuration.nodeSession, preferences, "call", context.peerGeneration);
+    return connectCore(callbackRef, configuration.nodeSession, preferences, "call", context.peerGeneration,
+        context.muted, context.deafened);
 }
 
-export function connectCommunity(callbackRef, mediaSession, preferences) {
-    return connectCore(callbackRef, mediaSession.nodeSession, preferences, "community");
+export function connectCommunity(callbackRef, mediaSession, preferences, muted, deafened) {
+    return connectCore(callbackRef, mediaSession.nodeSession, preferences, "community", 0, muted, deafened);
 }
 
 export async function setMuted(id, muted) {

@@ -130,6 +130,36 @@ public sealed class ActiveVoiceSessionCoordinatorTests
     }
 
     [Fact]
+    public async Task IdlePreferencesSeedNewSessionsAndSharedControlsStaySynchronized()
+    {
+        var direct = new FakeDirect([]);
+        var community = new FakeCommunity([]);
+        var preferences = new LocalVoicePreferenceService(new MemoryLocalStore());
+        await using var coordinator = new ActiveVoiceSessionCoordinator(direct, community, preferences);
+        await coordinator.SetPreferenceScopeAsync("node-a", Guid.NewGuid());
+
+        await coordinator.ToggleMuteAsync();
+        Assert.True(coordinator.PreferredMuted);
+        Assert.True(direct.IsMuted);
+        Assert.True(community.Muted);
+
+        await coordinator.StartDirectAsync(Conversation(Guid.NewGuid(), Guid.NewGuid(), 0));
+        Assert.True(coordinator.Current!.Muted);
+
+        await coordinator.ToggleDeafenAsync();
+        Assert.True(coordinator.PreferredDeafened);
+        Assert.True(coordinator.EffectiveMuted);
+        Assert.True(direct.IsDeafened);
+
+        await coordinator.ToggleMuteAsync();
+        Assert.False(coordinator.PreferredMuted);
+        Assert.True(coordinator.Current.Muted);
+        await coordinator.ToggleDeafenAsync();
+        Assert.False(coordinator.Current.Muted);
+        Assert.False(coordinator.Current.Deafened);
+    }
+
+    [Fact]
     public void RingingCallerProjectionReusesUnreadEntryAndIncludesCallOnlyEntryOnce()
     {
         var caller = Guid.NewGuid();
@@ -175,6 +205,8 @@ public sealed class ActiveVoiceSessionCoordinatorTests
         { IsMuted = !IsMuted; Changed?.Invoke(); return Task.CompletedTask; }
         public Task ToggleDeafenAsync(CancellationToken cancellationToken = default)
         { IsDeafened = !IsDeafened; Changed?.Invoke(); return Task.CompletedTask; }
+        public Task SetLocalVoiceStateAsync(bool muted, bool deafened, CancellationToken cancellationToken = default)
+        { IsMuted = muted; IsDeafened = deafened; Changed?.Invoke(); return Task.CompletedTask; }
         public Task StartScreenShareAsync(CancellationToken cancellationToken = default)
         { order.Add("direct-share"); return Task.CompletedTask; }
         public Task SwitchScreenShareAsync(CancellationToken cancellationToken = default)
@@ -210,6 +242,8 @@ public sealed class ActiveVoiceSessionCoordinatorTests
         { Muted = muted; Changed?.Invoke(); return Task.CompletedTask; }
         public Task SetDeafenedAsync(bool deafened, CancellationToken cancellationToken = default)
         { Deafened = deafened; Changed?.Invoke(); return Task.CompletedTask; }
+        public Task SetLocalVoiceStateAsync(bool muted, bool deafened, CancellationToken cancellationToken = default)
+        { Muted = muted; Deafened = deafened; Changed?.Invoke(); return Task.CompletedTask; }
         public Task StartScreenShareAsync(CancellationToken cancellationToken = default)
         { order.Add("community-share"); return Task.CompletedTask; }
         public Task SwitchScreenShareAsync(CancellationToken cancellationToken = default)
@@ -226,6 +260,16 @@ public sealed class ActiveVoiceSessionCoordinatorTests
         public Task SetStreamAudioVolumeAsync(string elementId, int volumePercent, CancellationToken cancellationToken = default) => Task.CompletedTask;
         public Task RequestStreamFullscreenAsync(string elementId, CancellationToken cancellationToken = default) => Task.CompletedTask;
         public Task<string?> CaptureStreamThumbnailAsync(string mediaStreamId, CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
+    }
+
+    private sealed class MemoryLocalStore : ILocalVoicePreferenceStore
+    {
+        private readonly Dictionary<LocalVoicePreferenceScope, LocalVoicePreference> _values = [];
+        public Task<LocalVoicePreference?> LoadAsync(LocalVoicePreferenceScope scope,
+            CancellationToken cancellationToken = default) => Task.FromResult(_values.GetValueOrDefault(scope));
+        public Task SaveAsync(LocalVoicePreferenceScope scope, LocalVoicePreference preference,
+            CancellationToken cancellationToken = default)
+        { _values[scope] = preference; return Task.CompletedTask; }
     }
 
 

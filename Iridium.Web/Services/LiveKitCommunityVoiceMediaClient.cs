@@ -20,7 +20,8 @@ public sealed class LiveKitCommunityVoiceMediaClient(IJSRuntime js, VoicePartici
     public event Func<string, Guid, WebRtcIceCandidate, Task>? IceCandidateGenerated { add { } remove { } }
 
     public async Task ConnectAsync(CommunityVoiceMediaSessionDto mediaSession, ActiveVoiceRoomDto room,
-        Guid localAccountId, CancellationToken cancellationToken = default)
+        Guid localAccountId, bool muted = false, bool deafened = false,
+        CancellationToken cancellationToken = default)
     {
         if (!string.Equals(mediaSession.Provider, "livekit", StringComparison.OrdinalIgnoreCase) || mediaSession.NodeSession is null)
             throw new InvalidOperationException("This production media adapter requires a LiveKit session.");
@@ -32,7 +33,7 @@ public sealed class LiveKitCommunityVoiceMediaClient(IJSRuntime js, VoicePartici
         foreach (var accountId in room.Participants.Where(p => p.AccountId != localAccountId).Select(p => p.AccountId).Distinct())
             remotePreferences.Add(await preferences.GetAsync(accountId, cancellationToken));
         _sessionId = await _module.InvokeAsync<string>("connectCommunity", cancellationToken,
-            _callback, mediaSession, remotePreferences);
+            _callback, mediaSession, remotePreferences, muted, deafened);
         if (!_preferenceSubscribed) { preferences.Changed += PreferenceChanged; _preferenceSubscribed = true; }
     }
 

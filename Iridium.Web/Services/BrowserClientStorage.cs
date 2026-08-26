@@ -7,7 +7,7 @@ namespace Iridium.Web.Services;
 public sealed class BrowserClientStorage(IJSRuntime js) : ISavedNodeStore, INodeTokenStore, ISavedAccountStore,
     IActiveAccountSelectionStore, ICategoryCollapseStore, ILastCommunityChannelStore,
     IVoiceParticipantPreferenceStore, IEmojiPickerPreferenceStore, IMessageDraftStore,
-    ICommunityForumPostCache, IAsyncDisposable
+    ICommunityForumPostCache, ILocalVoicePreferenceStore, IAsyncDisposable
 {
     private const string MessageDraftNamespace = "iridium.messageDrafts.v1";
     private const int MaximumMessageDrafts = 500;
@@ -119,6 +119,23 @@ public sealed class BrowserClientStorage(IJSRuntime js) : ISavedNodeStore, INode
         var module = await ModuleAsync(cancellationToken);
         await module.InvokeVoidAsync("save", cancellationToken, "iridium.voiceParticipantPreferences", preferences);
     }
+
+    async Task<LocalVoicePreference?> ILocalVoicePreferenceStore.LoadAsync(LocalVoicePreferenceScope scope,
+        CancellationToken cancellationToken)
+    {
+        var module = await ModuleAsync(cancellationToken);
+        return await module.InvokeAsync<LocalVoicePreference?>("loadValue", cancellationToken, VoicePreferenceKey(scope));
+    }
+
+    async Task ILocalVoicePreferenceStore.SaveAsync(LocalVoicePreferenceScope scope,
+        LocalVoicePreference preference, CancellationToken cancellationToken)
+    {
+        var module = await ModuleAsync(cancellationToken);
+        await module.InvokeVoidAsync("save", cancellationToken, VoicePreferenceKey(scope), preference);
+    }
+
+    private static string VoicePreferenceKey(LocalVoicePreferenceScope scope) =>
+        $"iridium.voicePreferences.v1:{Uri.EscapeDataString(scope.NodeAuthority)}:{scope.AccountId:N}";
 
     async Task<EmojiPickerPreferenceData> IEmojiPickerPreferenceStore.LoadAsync(Guid accountId,
         CancellationToken cancellationToken)

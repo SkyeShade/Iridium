@@ -15,7 +15,8 @@ public interface ICommunityVoiceMediaClient : IAsyncDisposable
     event Func<string, Guid, WebRtcSessionDescription, Task>? AnswerCreated;
     event Func<string, Guid, WebRtcIceCandidate, Task>? IceCandidateGenerated;
     Task ConnectAsync(CommunityVoiceMediaSessionDto mediaSession, ActiveVoiceRoomDto room,
-        Guid localAccountId, CancellationToken cancellationToken = default);
+        Guid localAccountId, bool muted = false, bool deafened = false,
+        CancellationToken cancellationToken = default);
     Task SetMutedAsync(bool muted, CancellationToken cancellationToken = default);
     Task SetDeafenedAsync(bool deafened, CancellationToken cancellationToken = default);
     Task ParticipantJoinedAsync(VoiceParticipantDto participant, CancellationToken cancellationToken = default);

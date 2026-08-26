@@ -162,8 +162,14 @@ public sealed class ConversationNavigationUiContractTests
         var homeStyles = Source("Iridium.UI", "HomeSidebar.razor.css");
         var rail = Source("Iridium.UI", "CommunityRail.razor");
 
-        Assert.Equal(1, shell.Split("<ProfilePanel", StringSplitOptions.None).Length - 1);
+        Assert.Equal(2, shell.Split("<ProfilePanel", StringSplitOptions.None).Length - 1);
+        Assert.Contains("class=\"desktop-player-panel-slot\"", shell);
+        Assert.Contains("class=\"mobile-profile-panel-slot\"", shell);
+        Assert.Equal(1, shell.Split("ShowVoiceControls=\"true\"", StringSplitOptions.None).Length - 1);
         Assert.Equal(1, rail.Split("class=\"rail-item add\"", StringSplitOptions.None).Length - 1);
+        Assert.True(rail.IndexOf("class=\"rail-item add\"", StringComparison.Ordinal) <
+                    rail.IndexOf("</div>", rail.IndexOf("class=\"rail-item add\"", StringComparison.Ordinal),
+                        StringComparison.Ordinal));
         Assert.Contains("grid-template-rows:minmax(0,1fr)", shellStyles);
         Assert.Contains(".secondary-sidebar { grid-column:2; min-width:0; min-height:0; overflow:hidden; }", shellStyles);
         Assert.Contains(".sidebar-body { overflow:hidden; }", shellStyles);

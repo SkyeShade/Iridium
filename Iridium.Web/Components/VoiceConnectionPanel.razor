@@ -25,8 +25,8 @@
                 <button class="streaming" title="Switch shared source" @onclick="SwitchScreenShareAsync"><Icon Name="refresh" /></button>
                 <button class="streaming" title="Stop sharing screen" @onclick="StopScreenShareAsync"><Icon Name="screen" /></button>
             }
-            <button class="@(session.Muted ? "active" : null)" title="@(session.Muted ? "Unmute" : "Mute")" @onclick="ToggleMuteAsync"><Icon Name="microphone" /></button>
-            <button class="@(session.Deafened ? "active" : null)" title="@(session.Deafened ? "Undeafen" : "Deafen")" @onclick="ToggleDeafenAsync"><Icon Name="headphones" /></button>
+            <button class="@(session.Muted ? "active" : null)" title="@(Voice.PreferredMuted ? "Unmute" : "Mute")" @onclick="ToggleMuteAsync"><Icon Name="microphone" /></button>
+            <button class="@(session.Deafened ? "active" : null)" title="@(Voice.PreferredDeafened ? "Undeafen" : "Deafen")" @onclick="ToggleDeafenAsync"><Icon Name="headphones" /></button>
             <button class="disconnect" title="Disconnect" @onclick="DisconnectAsync"><Icon Name="hangup" /></button>
         </div>
         @if (!string.IsNullOrWhiteSpace(_streamError)) { <small class="stream-error">@_streamError</small> }

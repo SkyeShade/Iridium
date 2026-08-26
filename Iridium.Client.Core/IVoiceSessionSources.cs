@@ -19,6 +19,7 @@ public interface IDirectVoiceSession
     Task HangUpAsync(CancellationToken cancellationToken = default);
     Task ToggleMuteAsync(CancellationToken cancellationToken = default);
     Task ToggleDeafenAsync(CancellationToken cancellationToken = default);
+    Task SetLocalVoiceStateAsync(bool muted, bool deafened, CancellationToken cancellationToken = default);
     Task StartScreenShareAsync(CancellationToken cancellationToken = default);
     Task SwitchScreenShareAsync(CancellationToken cancellationToken = default);
     Task StopScreenShareAsync(string reason = "UserStoppedInIridium", CancellationToken cancellationToken = default);
@@ -45,6 +46,7 @@ public interface ICommunityVoiceControlSession
     Task LeaveAsync(CancellationToken cancellationToken = default);
     Task SetMutedAsync(bool muted, CancellationToken cancellationToken = default);
     Task SetDeafenedAsync(bool deafened, CancellationToken cancellationToken = default);
+    Task SetLocalVoiceStateAsync(bool muted, bool deafened, CancellationToken cancellationToken = default);
     Task StartScreenShareAsync(CancellationToken cancellationToken = default);
     Task SwitchScreenShareAsync(CancellationToken cancellationToken = default);
     Task StopScreenShareAsync(string reason = "UserStoppedInIridium", CancellationToken cancellationToken = default);

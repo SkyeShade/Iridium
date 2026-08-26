@@ -23,7 +23,8 @@ public sealed class BrowserCommunityVoiceMediaClient(IJSRuntime js, ILogger<Brow
     public event Func<string, Guid, WebRtcIceCandidate, Task>? IceCandidateGenerated;
 
     public async Task ConnectAsync(CommunityVoiceMediaSessionDto mediaSession, ActiveVoiceRoomDto room,
-        Guid localAccountId, CancellationToken cancellationToken = default)
+        Guid localAccountId, bool muted = false, bool deafened = false,
+        CancellationToken cancellationToken = default)
     {
         await DisconnectAsync("Community media replacement", cancellationToken);
         _module ??= await js.InvokeAsync<IJSObjectReference>("import", cancellationToken,
@@ -51,6 +52,8 @@ public sealed class BrowserCommunityVoiceMediaClient(IJSRuntime js, ILogger<Brow
             throw;
         }
         await _module.InvokeVoidAsync("start", cancellationToken, _sessionId);
+        await SetDeafenedAsync(deafened, cancellationToken);
+        await SetMutedAsync(muted, cancellationToken);
         if (!_preferenceSubscribed) { preferences.Changed += PreferenceChanged; _preferenceSubscribed = true; }
         logger.LogDebug("Community voice media prepared for Channel={ChannelId}; Provider={Provider}; Status={Status}.",
             room.ChannelId, mediaSession.Provider, mediaSession.Status);

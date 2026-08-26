@@ -26,9 +26,16 @@
             @if (SidebarContent is not null) { @SidebarContent }
         </div>
         @if (VoiceConnection is not null) { <div class="voice-connection-slot">@VoiceConnection</div> }
-        <ProfilePanel AccountId="AccountId" AvatarRevision="AvatarRevision" DisplayName="@DisplayName"
-                      PublicIdentity="@PublicIdentity" Presence="Presence" OnProfile="OnProfile" OnSettings="OnSettings" />
+        <div class="mobile-profile-panel-slot">
+            <ProfilePanel AccountId="AccountId" AvatarRevision="AvatarRevision" DisplayName="@DisplayName"
+                          PublicIdentity="@PublicIdentity" Presence="Presence" OnProfile="OnProfile" OnSettings="OnSettings" />
+        </div>
     </aside>
+    <div class="desktop-player-panel-slot">
+        <ProfilePanel AccountId="AccountId" AvatarRevision="AvatarRevision" DisplayName="@DisplayName"
+                      PublicIdentity="@PublicIdentity" Presence="Presence" OnProfile="OnProfile" OnSettings="OnSettings"
+                      ShowVoiceControls="true" />
+    </div>
     <main class="main-content" @ref="_mainContent">
         <header class="mobile-conversation-header @(UseCompactMobileConversationHeader ? "compact-dm" : null)">
             <button type="button" class="mobile-back" aria-label="Back to navigation" @onclick="OnMobileBack"><Icon Name="chevron" Size="48" /></button>
