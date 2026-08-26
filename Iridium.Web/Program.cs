@@ -69,6 +69,7 @@ builder.Services.AddScoped<IDirectVoiceSession>(sp => sp.GetRequiredService<Call
 builder.Services.AddScoped<ICommunityVoiceControlSession>(sp => sp.GetRequiredService<CommunityVoiceSession>());
 builder.Services.AddScoped<ActiveVoiceSessionCoordinator>();
 builder.Services.AddScoped<BrowserScreenShareCapability>();
+builder.Services.AddScoped<MobileDirectCallPresentationState>();
 builder.Services.AddScoped<AccountSwitchService>();
 builder.Services.AddScoped<IIdentityProfileResolver, SameNodeIdentityProfileResolver>();
 builder.Services.AddScoped<ICommunityInviteResolver, CommunityInviteResolver>();

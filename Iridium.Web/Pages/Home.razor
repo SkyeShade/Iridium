@@ -18,6 +18,7 @@
 @inject ILastCommunityChannelStore LastChannelStore
 @inject Iridium.Web.Services.MessageMenuCoordinator MessageMenus
 @inject ActiveVoiceSessionCoordinator VoiceSessions
+@inject MobileDirectCallPresentationState MobileCallPresentation
 @inject UiSoundService UiSounds
 @inject FaviconNotificationService FaviconNotifications
 @inject MobilePanelNavigationState MobilePanels
@@ -187,6 +188,8 @@ else
                 {
                     <DirectMessageView @key="_selectedDirectConversation.Id" @ref="_directMessageView" Conversation="_selectedDirectConversation"
                                        IsMobileLayout="_isMobileLayout"
+                                       MobileCallExpanded="@IsExpandedMobileDirectCall"
+                                       OnMobileCallMinimize="CollapseMobileDirectCall"
                                        FocusRequest="@(_composerFocusConversationId == _selectedDirectConversation.Id ? _composerFocusRequest : 0)"
                                        OnFocusConsumed="ComposerFocusConsumed"
                                        CurrentAccountId="Session.Account!.Id" NodeAuthority="@(Session.SelectedNode!.PublicAuthority)"
@@ -418,9 +421,19 @@ else
         _selectedCommunity is not null ? "community" : _homeView;
     private bool HasCurrentDirectCall => VoiceSessions.DirectCalls.CurrentCall is
         { State: CallState.Ringing or CallState.Active };
+    private Guid? CurrentDirectCallConversationId => VoiceSessions.DirectCalls.CurrentCall is
+        { State: CallState.Ringing or CallState.Active, DirectConversationId: { } conversationId }
+        ? conversationId : null;
+    private bool IsExpandedMobileDirectCall => _isMobileLayout && MobilePanels.Current == MobilePanel.Conversation &&
+        IsDirectConversationSelected &&
+        _selectedDirectConversation is { } conversation &&
+        CurrentDirectCallConversationId == conversation.Id &&
+        MobileCallPresentation.IsExpandedFor(conversation.Id) &&
+        !(VoiceSessions.WatchedStream is not null && VoiceSessions.ViewerMode == StreamViewerMode.Full);
     private bool ShowMobileDirectCallBar => MobileDirectCallBarState.ShouldShow(
         VoiceSessions.DirectCalls.CurrentCall,
-        VoiceSessions.WatchedStream is not null && VoiceSessions.ViewerMode == StreamViewerMode.Full);
+        VoiceSessions.WatchedStream is not null && VoiceSessions.ViewerMode == StreamViewerMode.Full) &&
+        !IsExpandedMobileDirectCall;
     private string DirectCallButtonLabel => VoiceSessions.DirectCalls.CurrentCall is not null
         ? "Voice Call Active"
         : VoiceSessions.IncomingCall is not null ? "Incoming Voice Call" : "Start Voice Call";
@@ -446,6 +459,7 @@ else
         Session.CommunityChannelActivity += OnCommunityChannelActivity;
         Messaging.Changed += OnSessionChanged;
         VoiceSessions.Changed += OnSessionChanged;
+        MobileCallPresentation.Changed += OnMobileCallPresentationChanged;
         await AccountSwitching.InitializeAsync(SavedNodes.Nodes);
         if (IsRecoveryRoute())
         {
@@ -769,6 +783,7 @@ else
     private async Task SelectCommunity(CommunityDto? community, bool focusRestoredChannel = false,
         string? mobilePanelSource = null)
     {
+        CollapseMobileDirectCall();
         var generation = ++_shellNavigationGeneration;
         _composerFocusChannelId = null;
         _composerFocusConversationId = null;
@@ -809,6 +824,7 @@ else
     private async Task SelectChannelAsync(CommunityChannelDto? channel, bool requestComposerFocus = false,
         Guid? searchTargetMessageId = null, string? mobilePanelSource = null)
     {
+        CollapseMobileDirectCall();
         ++_shellNavigationGeneration;
         _composerFocusChannelId = null;
         _composerFocusConversationId = null;
@@ -861,6 +877,7 @@ else
         _directMessageView?.OpenSearchResultAsync(result) ?? Task.CompletedTask;
     private void SelectHomeView(string view)
     {
+        CollapseMobileDirectCall();
         _composerFocusChannelId = null;
         _composerFocusConversationId = null;
         VoiceSessions.MinimizeWatchedStream();
@@ -898,6 +915,7 @@ else
     private Task RemoveFriendAsync(FriendDto friend) => RemoveFriendshipAsync(friend.FriendshipId);
     private async Task OpenDirectMessageAsync(Guid accountId)
     {
+        CollapseMobileDirectCall();
         _composerFocusChannelId = null;
         _composerFocusConversationId = null;
         VoiceSessions.MinimizeWatchedStream();
@@ -919,6 +937,7 @@ else
     private async Task SelectDirectConversationAsync(DirectConversationDto conversation,
         bool requestComposerFocus = false, string? mobilePanelSource = null)
     {
+        if (MobileCallPresentation.ConversationId != conversation.Id) CollapseMobileDirectCall();
         ++_shellNavigationGeneration;
         _composerFocusChannelId = null;
         _composerFocusConversationId = null;
@@ -951,6 +970,7 @@ else
             await _forumView.BackAsync();
             return;
         }
+        CollapseMobileDirectCall();
         SetMobilePanel(MobilePanels.ShowNavigation("Back"));
     }
     private void ForumPostOpenChanged(CommunityForumPostDto? post)
@@ -1043,9 +1063,12 @@ else
         if (VoiceSessions.Current is not { Kind: ActiveVoiceSessionKind.DirectCall, DirectConversationId: { } conversationId }) return;
         var conversation = Session.DirectConversations.FirstOrDefault(value => value.Id == conversationId);
         if (conversation is null) return;
+        MobileCallPresentation.Expand(conversationId);
         ShowMobileConversation("ReturnToActiveCall");
         await SelectDirectConversationAsync(conversation);
     }
+    private void CollapseMobileDirectCall() => MobileCallPresentation.Collapse();
+    private void OnMobileCallPresentationChanged() => _ = InvokeAsync(StateHasChanged);
     private async Task ReturnToActiveDirectStreamAsync(Guid streamId)
     {
         await ReturnToActiveDirectCallAsync();
@@ -1151,6 +1174,10 @@ else
     }
     private void OnSessionChanged() => _ = InvokeAsync(async () =>
     {
+        if (CurrentDirectCallConversationId is not { } activeCallConversationId ||
+            MobileCallPresentation.ConversationId is { } expandedConversationId &&
+            expandedConversationId != activeCallConversationId)
+            MobileCallPresentation.Reset();
         var viewerMode = VoiceSessions.ViewerMode;
         if (viewerMode == StreamViewerMode.Full && _lastViewerMode != StreamViewerMode.Full)
         {
@@ -1264,6 +1291,7 @@ else
         Session.CommunityChannelActivity -= OnCommunityChannelActivity;
         Messaging.Changed -= OnSessionChanged;
         VoiceSessions.Changed -= OnSessionChanged;
+        MobileCallPresentation.Changed -= OnMobileCallPresentationChanged;
     }
     private static string UserMessage(Exception exception) => exception is NodeApiException ? exception.Message : exception.Message;
     private static string CommunityInitials(string name) => string.Concat(name.Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(2).Select(word => char.ToUpperInvariant(word[0])));

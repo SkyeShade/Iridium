@@ -23,10 +23,6 @@
             </span>
         </button>
         <div class="mobile-call-actions">
-            @if (!projection.IsPreAnswer)
-            {
-                <button type="button" aria-label="Return to call" title="Return to call" @onclick="ReturnToCallAsync"><Icon Name="phone" /></button>
-            }
             @if (projection.CanUseMediaControls && RelevantStream is not null)
             {
                 <button type="button" aria-label="Watch or return to screen stream" title="Watch or return to stream"

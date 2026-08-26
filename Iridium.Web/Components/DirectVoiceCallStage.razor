@@ -22,15 +22,37 @@
 else if (CallForConversation is { } call)
 {
     var isRinging = call.State == CallState.Ringing;
-    <section class="dm-call-stage @(isRinging ? "outgoing" : "active")" aria-label="@(isRinging ? "Outgoing voice call" : "Active voice call")">
+    <section class="dm-call-stage @(isRinging ? "outgoing" : "active") @(MobileExpanded ? "mobile-expanded" : null)" aria-label="@(isRinging ? "Outgoing voice call" : "Active voice call")">
+        @if (MobileExpanded)
+        {
+            <button type="button" class="mobile-call-minimize" title="Minimize call" aria-label="Minimize call"
+                    @onclick="MinimizeMobileAsync"><Icon Name="minus" /></button>
+        }
         @if (isRinging)
         {
+            @if (MobileExpanded)
+            {
+                <div class="call-participants mobile-preanswer-participants">
+                    <div class="call-participant">
+                        <div class="call-avatar"><ProfileAvatar AccountId="CurrentAccountId" DisplayName="@CurrentParticipantName" Presence="PublicPresence.Online" Size="large" Surface="base" /></div>
+                        <strong>@CurrentParticipantName</strong><span>You</span>
+                    </div>
+                    <div class="call-participant">
+                        <div class="call-avatar"><ProfileAvatar AccountId="Participant.AccountId" DisplayName="@Participant.DisplayName" Presence="@Participant.Presence" Size="large" Surface="base" /></div>
+                        <strong>@Participant.DisplayName</strong><span>Calling</span>
+                    </div>
+                </div>
+            }
+            else
+            {
             <div class="single-call-participant">
                 <div class="call-avatar"><ProfileAvatar AccountId="Participant.AccountId" DisplayName="@Participant.DisplayName" Presence="@Participant.Presence" Size="large" Surface="base" /></div>
                 <strong>@Participant.DisplayName</strong>
                 <span>Calling…</span>
             </div>
-            <button type="button" class="leave-button" @onclick="HangUpAsync"><Icon Name="hangup" /> Cancel</button>
+            }
+            @if (MobileExpanded) { <span class="mobile-call-duration" aria-live="off"><VoiceElapsedTimer StartedAt="call.CreatedAt" /></span> }
+            <button type="button" class="leave-button" aria-label="Cancel call" @onclick="HangUpAsync"><Icon Name="hangup" /> Cancel</button>
         }
         else
         {
@@ -72,6 +94,7 @@ else if (CallForConversation is { } call)
                         }
                         <strong>@callParticipant.DisplayName</strong>
                         @if (callParticipant.IsMuted) { <span>Muted</span> }
+                        @if (MobileExpanded && callParticipant.IsDeafened) { <span>Deafened</span> }
                         @if (_menuRemoteAccountId == callParticipant.AccountId)
                         {
                             <VoiceParticipantMenu AccountId="callParticipant.AccountId" DisplayName="callParticipant.DisplayName"
@@ -81,27 +104,52 @@ else if (CallForConversation is { } call)
                 }
             </div>
             <div class="media-status @(Calls.MediaConnectionState == CallConnectionState.Failed ? "failed" : null)">
-                <span>@(Calls.StatusMessage ?? MediaStatus)</span>
-                @if (!string.IsNullOrWhiteSpace(Calls.ErrorMessage)) { <small>@Calls.ErrorMessage</small> }
+                <span>@(MobileExpanded ? MobileProjection?.Status ?? MediaStatus : Calls.StatusMessage ?? MediaStatus)</span>
+                @if (MobileExpanded)
+                {
+                    <small aria-live="off"><VoiceElapsedTimer StartedAt="@(call.AcceptedAt ?? call.CreatedAt)" /></small>
+                }
+                else if (!string.IsNullOrWhiteSpace(Calls.ErrorMessage)) { <small>@Calls.ErrorMessage</small> }
                 @if (!string.IsNullOrWhiteSpace(_shareError)) { <small>@_shareError</small> }
             </div>
             <div class="active-call-controls">
                 <button type="button" class="call-control @(Calls.IsMuted ? "selected" : null)" title="@(VoiceSessions.PreferredMuted ? "Unmute microphone" : "Mute microphone")"
+                        aria-label="@(VoiceSessions.PreferredMuted ? "Unmute microphone" : "Mute microphone")"
                         aria-pressed="@VoiceSessions.PreferredMuted" @onclick="ToggleMuteAsync"><Icon Name="microphone" /><span>@(VoiceSessions.PreferredMuted ? "Unmute" : "Mute")</span></button>
                 <button type="button" class="call-control @(Calls.IsDeafened ? "selected" : null)" title="@(VoiceSessions.PreferredDeafened ? "Undeafen" : "Deafen")"
+                        aria-label="@(VoiceSessions.PreferredDeafened ? "Undeafen" : "Deafen")"
                         aria-pressed="@VoiceSessions.PreferredDeafened" @onclick="ToggleDeafenAsync"><Icon Name="headphones" /><span>@(VoiceSessions.PreferredDeafened ? "Undeafen" : "Deafen")</span></button>
                 @if (IsSharing || CanStartScreenShare)
                 {
                     <button type="button" class="call-control @(IsSharing ? "selected" : null)"
-                            title="@(IsSharing ? "Stop sharing" : "Share screen. Audio availability depends on the selected source and browser.")" @onclick="ToggleScreenShareAsync">
-                        <Icon Name="screen" /><span>@(IsSharing ? "Stop Sharing" : "Share Screen")</span>
+                            title="@(IsSharing ? "Stop sharing" : "Share screen. Audio availability depends on the selected source and browser.")"
+                            aria-label="@(IsSharing ? "Stop screen sharing" : "Start screen sharing")" @onclick="ToggleScreenShareAsync">
+                        <Icon Name="screen" /><span>@(IsSharing ? "Stop Sharing" : MobileExpanded ? "Start Screen Share" : "Share Screen")</span>
                     </button>
+                }
+                @if (MobileExpanded && RemoteScreenShare is { } remoteStream)
+                {
+                    @if (Calls.WatchedStream?.StreamId == remoteStream.StreamId)
+                    {
+                        <button type="button" class="call-control selected" title="Stop watching stream"
+                                aria-label="Stop watching stream" @onclick="StopWatchingAsync">
+                            <Icon Name="screen" /><span>Stop Watching</span>
+                        </button>
+                    }
+                    else
+                    {
+                        <button type="button" class="call-control" title="Watch stream"
+                                aria-label="Watch stream" @onclick="() => WatchStreamAsync(remoteStream.StreamId)">
+                            <Icon Name="screen" /><span>Watch Stream</span>
+                        </button>
+                    }
                 }
                 @if (Calls.CanRetry)
                 {
-                    <button type="button" class="call-control retry" title="Retry media connection" @onclick="RetryAsync"><Icon Name="refresh" /><span>Retry</span></button>
+                    <button type="button" class="call-control retry" title="Retry media connection" aria-label="Retry media connection" @onclick="RetryAsync"><Icon Name="refresh" /><span>Retry</span></button>
                 }
-                <button type="button" class="call-control leave" title="Leave call" @onclick="HangUpAsync"><Icon Name="hangup" /><span>Leave</span></button>
+                <button type="button" class="call-control leave" title="@(MobileExpanded ? "Hang up" : "Leave call")"
+                        aria-label="@(MobileExpanded ? "Hang up" : "Leave call")" @onclick="HangUpAsync"><Icon Name="hangup" /><span>@(MobileExpanded ? "Hang Up" : "Leave")</span></button>
             </div>
         }
     </section>
@@ -111,6 +159,8 @@ else if (CallForConversation is { } call)
     [Parameter, EditorRequired] public required Guid ConversationId { get; set; }
     [Parameter, EditorRequired] public required Guid CurrentAccountId { get; set; }
     [Parameter, EditorRequired] public required DirectParticipantDto Participant { get; set; }
+    [Parameter] public bool MobileExpanded { get; set; }
+    [Parameter] public EventCallback OnMobileMinimize { get; set; }
     private IncomingCallEvent? IncomingForConversation => Calls.IncomingCall is { DirectConversationId: var id } incoming && id == ConversationId ? incoming : null;
     private CallSessionDto? CallForConversation => Calls.CurrentCall is { DirectConversationId: var id } call && id == ConversationId ? call : null;
     private string MediaStatus => Calls.MediaConnectionState switch
@@ -122,8 +172,14 @@ else if (CallForConversation is { } call)
     };
     private Guid? _menuRemoteAccountId;
     private string? _shareError;
+    private string CurrentParticipantName => CallForConversation?.Participants
+        .FirstOrDefault(value => value.AccountId == CurrentAccountId)?.DisplayName ?? "You";
+    private MobileDirectCallBarProjection? MobileProjection => MobileDirectCallBarState.Project(
+        Calls.CurrentCall, Calls.MediaConnectionState);
     private bool IsSharing => Calls.PublishedStreams.Any(value => value.OwnerAccountId == CurrentAccountId &&
         value.Kind == VoicePublishedStreamKind.ScreenShare);
+    private PublishedVoiceStreamDto? RemoteScreenShare => Calls.PublishedStreams.FirstOrDefault(value =>
+        value.OwnerAccountId != CurrentAccountId && value.Kind == VoicePublishedStreamKind.ScreenShare);
     private bool CanStartScreenShare => Calls.CurrentCall?.State == CallState.Active &&
         Calls.MediaConnectionState == CallConnectionState.Connected && ScreenShareCapability.IsSupported;
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -141,6 +197,8 @@ else if (CallForConversation is { } call)
     private Task ToggleDeafenAsync() => VoiceSessions.ToggleDeafenAsync();
     private Task RetryAsync() => Calls.RetryMediaAsync();
     private Task WatchStreamAsync(Guid streamId) => VoiceSessions.WatchStreamAsync(streamId);
+    private Task StopWatchingAsync() => VoiceSessions.StopWatchingAsync();
+    private Task MinimizeMobileAsync() => OnMobileMinimize.InvokeAsync();
     private async Task ToggleScreenShareAsync()
     {
         try
