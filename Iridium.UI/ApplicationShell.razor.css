@@ -12,7 +12,7 @@
 .placeholder-note { padding: .5rem; color: var(--text-faint); font-size: .75rem; }
 .main-content { min-width: 0; min-height: 0; overflow: auto; background: var(--bg-base); }
 .context-sidebar { position:relative; z-index:20; min-width:0; min-height:0; overflow:visible; border-left:1px solid var(--border-subtle); background:var(--bg-sidebar); }
-.mobile-conversation-header,.mobile-context-header,.mobile-context-backdrop { display:none; }
+.mobile-conversation-header,.mobile-context-header,.mobile-context-backdrop,.mobile-call-bar-slot { display:none; }
 .main-content-slot { display:contents; }
 .voice-connection-slot { display:contents; }
 @media (max-width: 1180px) {
@@ -21,9 +21,13 @@
 }
 @media (max-width: 860px) {
     .app-shell,.app-shell.has-context-sidebar { position:fixed; inset-inline:0; top:var(--iridium-mobile-viewport-offset,0px); grid-template-columns:4.25rem minmax(0,1fr); grid-template-rows:minmax(0,1fr); height:var(--iridium-mobile-viewport-height,100dvh); }
+    .app-shell.has-mobile-call-bar,.app-shell.has-mobile-call-bar.has-context-sidebar { grid-template-rows:3rem minmax(0,1fr); }
+    .mobile-call-bar-slot { position:relative;z-index:80;grid-column:1/-1;grid-row:1;display:block;min-width:0;overflow:hidden; }
+    .has-mobile-call-bar ::deep .community-rail,.has-mobile-call-bar .secondary-sidebar { grid-row:2; }
     .secondary-sidebar { grid-column:2; min-width:0; min-height:0; overflow:hidden; }
     .sidebar-body { overflow:hidden; }
     .main-content { position:absolute; z-index:30; inset:0; display:flex; flex-direction:column; overflow:hidden; transform:translateX(100%); visibility:hidden; pointer-events:none; touch-action:pan-y; will-change:transform; background:var(--bg-base); }
+    .has-mobile-call-bar .main-content { top:3rem; }
     .main-content-slot { display:block; flex:1; min-height:0; overflow:hidden; }
     .mobile-conversation .main-content,.mobile-context .main-content { transform:none; visibility:visible; pointer-events:auto; }
     .mobile-conversation-header { flex:0 0 3.25rem; display:grid; grid-template-columns:3.1rem minmax(0,1fr) 2.75rem; align-items:center; gap:.35rem; padding:0 .35rem; border-bottom:1px solid var(--border-subtle); background:var(--bg-base); box-shadow:0 1px 4px #0003; }
@@ -49,5 +53,7 @@
     .mobile-header-spacer { width:2.75rem; }
     .community-header { min-height:3.45rem; }
     .mobile-conversation .voice-connection-slot,.mobile-context .voice-connection-slot { position:fixed; z-index:45; top:3.7rem; right:.5rem; width:min(22rem,calc(100vw - 1rem)); display:block; border-radius:var(--radius-md); overflow:hidden; box-shadow:0 8px 24px #0008; }
+    .suppress-mobile-voice-connection .voice-connection-slot { display:none; }
+    .has-mobile-call-bar .context-sidebar,.has-mobile-call-bar .mobile-context-backdrop { top:3rem; }
     @media (prefers-reduced-motion:reduce) { .context-sidebar { transition:none; } }
 }

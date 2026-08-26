@@ -26,6 +26,7 @@ public sealed record ActiveVoiceSession(
     CallConnectionState ConnectionState,
     bool Muted,
     bool Deafened,
+    bool CanPublishMedia,
     IReadOnlyList<PublishedVoiceStreamDto> PublishedStreams,
     PublishedVoiceStreamDto? WatchedStream);
 
@@ -253,6 +254,7 @@ public sealed class ActiveVoiceSessionCoordinator : IAsyncDisposable
             return new(ActiveVoiceSessionKind.DirectCall, call.Id, remote?.DisplayName ?? "Direct Call",
                 null, null, call.DirectConversationId, call.AcceptedAt ?? call.CreatedAt,
                 _direct.MediaConnectionState, _direct.IsMuted, _direct.IsDeafened,
+                call.State == CallState.Active && _direct.MediaConnectionState == CallConnectionState.Connected,
                 _direct.PublishedStreams, _direct.WatchedStream);
         }
         if (_community.CurrentRoom is { } room)
@@ -266,7 +268,9 @@ public sealed class ActiveVoiceSessionCoordinator : IAsyncDisposable
             };
             return new(ActiveVoiceSessionKind.CommunityVoiceChannel, room.ChannelId, room.ChannelName,
                 room.CommunityId, room.ChannelId, null, room.StartedAt, state,
-                _community.Muted, _community.Deafened, _community.PublishedStreams, _community.WatchedStream);
+                _community.Muted, _community.Deafened,
+                _community.MediaSession?.Status == CommunityVoiceMediaStatus.Connected,
+                _community.PublishedStreams, _community.WatchedStream);
         }
         return null;
     }

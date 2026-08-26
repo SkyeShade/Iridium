@@ -1,6 +1,8 @@
 @using Iridium.Protocol
 @inject CallClientService Calls
 @inject ActiveVoiceSessionCoordinator VoiceSessions
+@inject BrowserScreenShareCapability ScreenShareCapability
+@inject ILogger<DirectVoiceCallStage> Logger
 
 @if (IncomingForConversation is { } incoming)
 {
@@ -88,10 +90,13 @@ else if (CallForConversation is { } call)
                         aria-pressed="@Calls.IsMuted" @onclick="ToggleMuteAsync"><Icon Name="microphone" /><span>@(Calls.IsMuted ? "Unmute" : "Mute")</span></button>
                 <button type="button" class="call-control @(Calls.IsDeafened ? "selected" : null)" title="@(Calls.IsDeafened ? "Undeafen" : "Deafen")"
                         aria-pressed="@Calls.IsDeafened" @onclick="ToggleDeafenAsync"><Icon Name="headphones" /><span>@(Calls.IsDeafened ? "Undeafen" : "Deafen")</span></button>
-                <button type="button" class="call-control @(IsSharing ? "selected" : null)"
-                        title="@(IsSharing ? "Stop sharing" : "Share screen")" @onclick="ToggleScreenShareAsync">
-                    <Icon Name="screen" /><span>@(IsSharing ? "Stop Sharing" : "Share Screen")</span>
-                </button>
+                @if (IsSharing || CanStartScreenShare)
+                {
+                    <button type="button" class="call-control @(IsSharing ? "selected" : null)"
+                            title="@(IsSharing ? "Stop sharing" : "Share screen")" @onclick="ToggleScreenShareAsync">
+                        <Icon Name="screen" /><span>@(IsSharing ? "Stop Sharing" : "Share Screen")</span>
+                    </button>
+                }
                 @if (Calls.CanRetry)
                 {
                     <button type="button" class="call-control retry" title="Retry media connection" @onclick="RetryAsync"><Icon Name="refresh" /><span>Retry</span></button>
@@ -119,6 +124,14 @@ else if (CallForConversation is { } call)
     private string? _shareError;
     private bool IsSharing => Calls.PublishedStreams.Any(value => value.OwnerAccountId == CurrentAccountId &&
         value.Kind == VoicePublishedStreamKind.ScreenShare);
+    private bool CanStartScreenShare => Calls.CurrentCall?.State == CallState.Active &&
+        Calls.MediaConnectionState == CallConnectionState.Connected && ScreenShareCapability.IsSupported;
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        await ScreenShareCapability.DetectAsync();
+        await InvokeAsync(StateHasChanged);
+    }
     private void OpenParticipantMenu(CallParticipantDto participant) =>
         _menuRemoteAccountId = participant.AccountId == CurrentAccountId ? null : participant.AccountId;
     private Task AcceptAsync() => VoiceSessions.AcceptIncomingDirectAsync();
@@ -136,8 +149,10 @@ else if (CallForConversation is { } call)
             if (IsSharing) await VoiceSessions.StopScreenShareAsync();
             else await VoiceSessions.StartScreenShareAsync();
         }
-        catch (Exception exception) when (exception.Message.Contains("NotAllowedError", StringComparison.OrdinalIgnoreCase))
-        { _shareError = null; }
-        catch (Exception exception) { _shareError = exception.Message; }
+        catch (Exception exception)
+        {
+            Logger.LogDebug(exception, "Screen sharing could not be started in a Direct Call");
+            _shareError = ScreenShareFailure.UserMessage(exception);
+        }
     }
 }

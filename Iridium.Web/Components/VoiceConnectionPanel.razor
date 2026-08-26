@@ -2,6 +2,8 @@
 @using Iridium.Protocol
 @implements IDisposable
 @inject ActiveVoiceSessionCoordinator Voice
+@inject BrowserScreenShareCapability ScreenShareCapability
+@inject ILogger<VoiceConnectionPanel> Logger
 
 @if (Voice.Current is { } session)
 {
@@ -13,7 +15,7 @@
             @if (session.StartedAt is { } startedAt) { <VoiceElapsedTimer StartedAt="startedAt" /> }
         </div>
         <div class="voice-controls">
-            @if (LocalScreenShare is null)
+            @if (LocalScreenShare is null && session.CanPublishMedia && ScreenShareCapability.IsSupported)
             {
                 <button title="Share screen" @onclick="StartScreenShareAsync"><Icon Name="screen" /></button>
             }
@@ -31,6 +33,12 @@
 
 @code {
     protected override void OnInitialized() => Voice.Changed += OnChanged;
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        await ScreenShareCapability.DetectAsync();
+        await InvokeAsync(StateHasChanged);
+    }
     private void OnChanged() => _ = InvokeAsync(StateHasChanged);
     private Task ToggleMuteAsync() => Voice.ToggleMuteAsync();
     private Task ToggleDeafenAsync() => Voice.ToggleDeafenAsync();
@@ -41,9 +49,11 @@
     private async Task StartScreenShareAsync()
     {
         try { _streamError = null; await Voice.StartScreenShareAsync(); }
-        catch (Exception exception) when (exception.Message.Contains("NotAllowedError", StringComparison.OrdinalIgnoreCase))
-        { _streamError = null; }
-        catch (Exception exception) { _streamError = exception.Message; }
+        catch (Exception exception)
+        {
+            Logger.LogDebug(exception, "Screen sharing could not be started");
+            _streamError = ScreenShareFailure.UserMessage(exception);
+        }
     }
     private async Task StopScreenShareAsync()
     {

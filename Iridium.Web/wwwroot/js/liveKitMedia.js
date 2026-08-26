@@ -410,6 +410,8 @@ export function setParticipantPreference(id, preference) {
 
 export async function startScreenShare(id) {
     const session = sessions.get(id); if (!session) throw new Error("LiveKit media is not connected.");
+    if (!navigator.mediaDevices?.getDisplayMedia)
+        throw new DOMException("Display capture is unavailable on this browser or device.", "NotSupportedError");
     await stopScreenShare(id, "Replaced");
     const { createLocalScreenTracks } = sdk();
     const streamId = crypto.randomUUID(), mediaStreamId = `iridium-screen-${streamId.replaceAll("-", "")}`;

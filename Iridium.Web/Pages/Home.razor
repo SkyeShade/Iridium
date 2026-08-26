@@ -75,11 +75,20 @@ else
                       ActiveMobilePanel="_mobilePanels.Current"
                       MobileConversationTitle="@MobileConversationTitle"
                       UseCompactMobileConversationHeader="@IsDirectConversationSelected"
+                      SuppressMobileVoiceConnection="@HasCurrentDirectCall"
+                      ShowMobileCallBar="@ShowMobileDirectCallBar"
 
                       OnMobileBack="HandleMobileBackAsync"
                       OnMobileContext="ShowMobileContext"
                       OnMobileContextClose="CloseMobileContext"
                       OnMobileLayoutChanged="OnMobileLayoutChanged">
+        <MobileCallBar>
+            @if (VoiceSessions.Current is { } mobileCall)
+            {
+                <MobileDirectCallBar Session="mobileCall" OnReturnToCall="ReturnToActiveDirectCallAsync"
+                                     OnReturnToStream="ReturnToActiveDirectStreamAsync" />
+            }
+        </MobileCallBar>
         <SidebarHeader>
             <div class="sidebar-heading @(_selectedCommunity?.BannerUrl is not null ? "has-community-banner" : null)">
                 @if (_selectedCommunity?.BannerIsProcessed == true && !string.IsNullOrWhiteSpace(_selectedCommunity.BannerUrl))
@@ -255,7 +264,7 @@ else
         </RightSidebar>
     </ApplicationShell>
 
-    @if (VoiceSessions.WatchedStream is not null && VoiceSessions.ViewerMode == StreamViewerMode.Floating)
+    @if (!_isMobileLayout && VoiceSessions.WatchedStream is not null && VoiceSessions.ViewerMode == StreamViewerMode.Floating)
     {
         <VoiceStreamViewer @key="@($"floating-{VoiceSessions.WatchedStream.StreamId}")" Floating="true"
                            OnExpand="ExpandFloatingStreamAsync" />
@@ -397,6 +406,11 @@ else
         _selectedCommunity is null && _homeView == "dm" && _selectedDirectConversation is not null;
     private bool IsDirectConversationSelected =>
         _selectedCommunity is null && _homeView == "dm" && _selectedDirectConversation is not null;
+    private bool HasCurrentDirectCall => VoiceSessions.DirectCalls.CurrentCall is
+        { State: CallState.Ringing or CallState.Active };
+    private bool ShowMobileDirectCallBar => MobileDirectCallBarState.ShouldShow(
+        VoiceSessions.DirectCalls.CurrentCall,
+        VoiceSessions.WatchedStream is not null && VoiceSessions.ViewerMode == StreamViewerMode.Full);
     private string DirectCallButtonLabel => VoiceSessions.DirectCalls.CurrentCall is not null
         ? "Voice Call Active"
         : VoiceSessions.IncomingCall is not null ? "Incoming Voice Call" : "Start Voice Call";
@@ -992,6 +1006,20 @@ else
             if (community is not null) await SelectCommunity(community);
         }
         VoiceSessions.ShowWatchedStreamFull();
+    }
+    private async Task ReturnToActiveDirectCallAsync()
+    {
+        if (VoiceSessions.Current is not { Kind: ActiveVoiceSessionKind.DirectCall, DirectConversationId: { } conversationId }) return;
+        var conversation = Session.DirectConversations.FirstOrDefault(value => value.Id == conversationId);
+        if (conversation is null) return;
+        _mobilePanels.ShowConversation();
+        await SelectDirectConversationAsync(conversation);
+    }
+    private async Task ReturnToActiveDirectStreamAsync(Guid streamId)
+    {
+        await ReturnToActiveDirectCallAsync();
+        if (VoiceSessions.WatchedStream?.StreamId == streamId) VoiceSessions.ShowWatchedStreamFull();
+        else await VoiceSessions.WatchStreamAsync(streamId);
     }
     private async Task MinimizeFullStreamAsync()
     {

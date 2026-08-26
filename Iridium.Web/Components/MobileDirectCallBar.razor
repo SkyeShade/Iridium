@@ -1,0 +1,72 @@
+@using Iridium.Client.Core
+@using Iridium.Protocol
+@inject ActiveVoiceSessionCoordinator Voice
+@inject CallClientService Calls
+@implements IDisposable
+
+@if (Session is { Kind: ActiveVoiceSessionKind.DirectCall } session && Projection is { } projection)
+{
+    <section class="mobile-direct-call-bar phase-@projection.Phase.ToString().ToLowerInvariant()"
+             aria-label="@projection.Status Direct Call">
+        <button type="button" class="mobile-call-summary" aria-label="Return to call with @session.DisplayName"
+                @onclick="ReturnToCallAsync">
+            <span class="mobile-call-dot" aria-hidden="true"></span>
+            <span class="mobile-call-copy">
+                <strong>@projection.Status</strong>
+                <span>
+                    @session.DisplayName
+                    @if (session.StartedAt is { } startedAt)
+                    {
+                        <span aria-hidden="true"> · </span><span aria-live="off"><VoiceElapsedTimer StartedAt="startedAt" /></span>
+                    }
+                </span>
+            </span>
+        </button>
+        <div class="mobile-call-actions">
+            @if (!projection.IsPreAnswer)
+            {
+                <button type="button" aria-label="Return to call" title="Return to call" @onclick="ReturnToCallAsync"><Icon Name="phone" /></button>
+            }
+            @if (projection.CanUseMediaControls && RelevantStream is not null)
+            {
+                <button type="button" aria-label="Watch or return to screen stream" title="Watch or return to stream"
+                        @onclick="ReturnToStreamAsync"><Icon Name="screen" /></button>
+            }
+            @if (projection.CanUseMediaControls)
+            {
+                <button type="button" class="@(session.Muted ? "active" : null)"
+                        aria-label="@(session.Muted ? "Unmute microphone" : "Mute microphone")" aria-pressed="@session.Muted"
+                        @onclick="ToggleMuteAsync"><Icon Name="microphone" /></button>
+                <button type="button" class="@(session.Deafened ? "active" : null)"
+                        aria-label="@(session.Deafened ? "Undeafen" : "Deafen")" aria-pressed="@session.Deafened"
+                        @onclick="ToggleDeafenAsync"><Icon Name="headphones" /></button>
+            }
+            @if (Calls.CanRetry)
+            {
+                <button type="button" aria-label="Retry media connection" title="Retry media connection" @onclick="RetryAsync"><Icon Name="refresh" /></button>
+            }
+            <button type="button" class="leave" aria-label="@(projection.IsPreAnswer ? "Cancel call" : "Hang up")"
+                    title="@(projection.IsPreAnswer ? "Cancel" : "Hang up")" @onclick="HangUpAsync"><Icon Name="hangup" /></button>
+        </div>
+    </section>
+}
+
+@code {
+    [Parameter, EditorRequired] public required ActiveVoiceSession Session { get; set; }
+    [Parameter] public EventCallback OnReturnToCall { get; set; }
+    [Parameter] public EventCallback<Guid> OnReturnToStream { get; set; }
+    private MobileDirectCallBarProjection? Projection => MobileDirectCallBarState.Project(
+        Calls.CurrentCall, Session.ConnectionState);
+    private PublishedVoiceStreamDto? RelevantStream => Voice.WatchedStream ?? Voice.PublishedStreams
+        .FirstOrDefault(value => value.Kind == VoicePublishedStreamKind.ScreenShare);
+    private Task ReturnToCallAsync() => OnReturnToCall.InvokeAsync();
+    private Task ReturnToStreamAsync() => RelevantStream is { } stream
+        ? OnReturnToStream.InvokeAsync(stream.StreamId) : Task.CompletedTask;
+    private Task ToggleMuteAsync() => Voice.ToggleMuteAsync();
+    private Task ToggleDeafenAsync() => Voice.ToggleDeafenAsync();
+    private Task RetryAsync() => Calls.RetryMediaAsync();
+    private Task HangUpAsync() => Voice.LeaveCurrentVoiceSessionAsync("mobile Direct Call bar cancel or hang up");
+    protected override void OnInitialized() => Voice.Changed += VoiceChanged;
+    private void VoiceChanged() => _ = InvokeAsync(StateHasChanged);
+    public void Dispose() => Voice.Changed -= VoiceChanged;
+}

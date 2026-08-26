@@ -8,8 +8,9 @@
 @inject ILogger<ApplicationShell> Logger
 @inject ModifierKeyStateService ModifierKeys
 
-<div class="app-shell @(ShowRightSidebar ? "has-context-sidebar" : null) mobile-@ActiveMobilePanel.ToString().ToLowerInvariant()" @ref="_shell"
+<div class="app-shell @(ShowRightSidebar ? "has-context-sidebar" : null) @(ShowMobileCallBar ? "has-mobile-call-bar" : null) @(SuppressMobileVoiceConnection ? "suppress-mobile-voice-connection" : null) mobile-@ActiveMobilePanel.ToString().ToLowerInvariant()" @ref="_shell"
      @onclick="OnBackgroundInteraction" @onkeydown="ShellKeyDown">
+    @if (ShowMobileCallBar && MobileCallBar is not null) { <div class="mobile-call-bar-slot">@MobileCallBar</div> }
     <CommunityRail Communities="Communities" SelectedCommunityId="SelectedCommunity?.Id"
                    DirectConversations="DirectConversations" NodeAuthority="@NodeAuthority"
                    RingingCallerAccountId="RingingCallerAccountId"
@@ -88,6 +89,9 @@
     [Parameter] public bool UseCompactMobileConversationHeader { get; set; }
     [Parameter] public RenderFragment? MobileConversationIdentity { get; set; }
     [Parameter] public RenderFragment? MobileConversationAction { get; set; }
+    [Parameter] public RenderFragment? MobileCallBar { get; set; }
+    [Parameter] public bool ShowMobileCallBar { get; set; }
+    [Parameter] public bool SuppressMobileVoiceConnection { get; set; }
     [Parameter] public EventCallback OnMobileBack { get; set; }
     [Parameter] public EventCallback OnMobileContext { get; set; }
     [Parameter] public EventCallback OnMobileContextClose { get; set; }
