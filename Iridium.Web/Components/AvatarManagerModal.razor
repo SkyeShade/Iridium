@@ -1,0 +1,165 @@
+@using Iridium.Client.Core
+@using Iridium.Protocol
+@inject NodeSession Session
+
+<ModalShell Title="@($"Avatars for {CommunityName}")" Size="large" OnClose="OnClose">
+    <div class="avatar-manager">
+        <header><span>SERVER IDENTITIES</span><h1>Avatars for @CommunityName</h1><p>Names and optional profile pictures used only in this Server.</p></header>
+        @if (_loading)
+        {
+            <p class="status">Loading Avatars…</p>
+        }
+        else
+        {
+            <div class="avatar-preset-list" aria-label="Saved Avatars">
+                @foreach (var preset in _presets)
+                {
+                    <button @key="preset.Id" class="avatar-preset-card @(_selected?.Id == preset.Id ? "selected" : null)"
+                            @onclick="() => Select(preset)">
+                        <ProfileAvatar AccountId="Account.Id" AvatarPresetId="preset.Avatar?.Id"
+                                       AvatarRevision="@(preset.Avatar?.Revision ?? Account.AvatarRevision)"
+                                       DisplayName="@preset.DisplayName" BadgeMode="AvatarBadgeMode.None" Size="medium" Surface="panel" />
+                        <span class="display-name">@preset.DisplayName</span>
+                    </button>
+                }
+                <button class="avatar-preset-card add" @onclick="AddAsync"><span aria-hidden="true">+</span><strong>Add Avatar</strong></button>
+            </div>
+
+            @if (_selected is { } selected)
+            {
+                <section class="avatar-preset-editor">
+                    <div class="avatar-preview">
+                        <button type="button" class="avatar-pfp-trigger" aria-label="Edit avatar profile picture"
+                                title="Edit avatar profile picture" @onclick="OpenPfpEditor">
+                            <ProfileAvatar AccountId="Account.Id" AvatarPresetId="selected.Avatar?.Id"
+                                           AvatarRevision="@(selected.Avatar?.Revision ?? Account.AvatarRevision)"
+                                           DisplayName="@_displayName" BadgeMode="AvatarBadgeMode.None" Size="large" Surface="panel" />
+                            <span class="avatar-pfp-edit"><Icon Name="edit" /></span>
+                        </button>
+                        <div><strong class="display-name">@_displayName</strong><span>@PublicIdentity</span></div>
+                    </div>
+                    <label>Display Name
+                        <input @bind="_displayName" @bind:event="oninput" maxlength="64" />
+                    </label>
+                    <div class="avatar-pfp-row">
+                        <div><strong>Profile Picture</strong><span>@(selected.Avatar is null ? "Using default profile picture" : "Custom profile picture")</span></div>
+                        <small>Click the picture to @(selected.Avatar is null ? "add a custom PFP" : "edit or remove it").</small>
+                    </div>
+                    <div class="avatar-editor-actions">
+                        <button class="danger" @onclick="() => _confirmDelete = true">Delete Avatar</button>
+                        <button class="primary" disabled="@_saving" @onclick="SaveNameAsync">@(_saving ? "Saving…" : "Save Name")</button>
+                    </div>
+                </section>
+            }
+            @if (!string.IsNullOrWhiteSpace(_error)) { <p class="error" role="alert">@_error</p> }
+        }
+    </div>
+</ModalShell>
+
+@if (_pfpEditorOpen && _selected is { } pfpTarget)
+{
+    <AvatarEditorModal Account="Account" ProfilePresetTargetId="pfpTarget.Id" ProfilePresetCommunityId="CommunityId"
+                       InitialAvatarPresetId="pfpTarget.Avatar?.Id" AvatarDisplayName="@_displayName"
+                       PublicIdentity="PublicIdentity" OnSaved="PfpSavedAsync"
+                       OnClosed="ClosePfpEditorAsync" />
+}
+
+@if (_confirmDelete && _selected is { } deleting)
+{
+    <div class="avatar-delete-backdrop" @onclick="() => _confirmDelete = false">
+        <section class="avatar-delete-confirm" role="alertdialog" aria-modal="true" aria-label="Delete Avatar" @onclick:stopPropagation="true">
+            <h2>Delete @deleting.DisplayName?</h2>
+            <p>This Server will return to your Default Profile if this Avatar is active.</p>
+            <div><button class="secondary" @onclick="() => _confirmDelete = false">Cancel</button><button class="danger" @onclick="DeleteAsync">Delete</button></div>
+        </section>
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public required NodeAccountDto Account { get; set; }
+    [Parameter, EditorRequired] public required string PublicIdentity { get; set; }
+    [Parameter, EditorRequired] public Guid CommunityId { get; set; }
+    [Parameter, EditorRequired] public required string CommunityName { get; set; }
+    [Parameter] public EventCallback OnChanged { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    private IReadOnlyList<UserProfilePresetDto> _presets = [];
+    private UserProfilePresetDto? _selected;
+    private string _displayName = string.Empty;
+    private string? _error;
+    private bool _loading = true;
+    private bool _saving;
+    private bool _pfpEditorOpen;
+    private bool _confirmDelete;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await ReloadAsync();
+        _loading = false;
+    }
+
+    private void Select(UserProfilePresetDto preset)
+    {
+        _selected = preset;
+        _displayName = preset.DisplayName;
+        _error = null;
+    }
+
+    private async Task AddAsync()
+    {
+        try
+        {
+            var created = await Session.CreateProfilePresetAsync(CommunityId, "New Avatar");
+            await ReloadAsync(created.Id);
+            await OnChanged.InvokeAsync();
+        }
+        catch (Exception exception) { _error = exception.Message; }
+    }
+
+    private async Task SaveNameAsync()
+    {
+        if (_selected is null || _saving) return;
+        var name = _displayName.Trim();
+        if (name.Length is < 1 or > 64) { _error = "Display Name must be between 1 and 64 characters."; return; }
+        _saving = true;
+        try
+        {
+            var updated = await Session.UpdateProfilePresetAsync(CommunityId, _selected.Id, name);
+            await ReloadAsync(updated.Id);
+            await OnChanged.InvokeAsync();
+        }
+        catch (Exception exception) { _error = exception.Message; }
+        finally { _saving = false; }
+    }
+
+    private Task OpenPfpEditor() { _pfpEditorOpen = true; return Task.CompletedTask; }
+    private Task ClosePfpEditorAsync() { _pfpEditorOpen = false; return Task.CompletedTask; }
+    private async Task PfpSavedAsync()
+    {
+        if (_selected is null) return;
+        var displayNameDraft = _displayName;
+        await ReloadAsync(_selected.Id);
+        _displayName = displayNameDraft;
+        await OnChanged.InvokeAsync();
+    }
+
+    private async Task DeleteAsync()
+    {
+        if (_selected is null) return;
+        try
+        {
+            await Session.DeleteProfilePresetAsync(CommunityId, _selected.Id);
+            _confirmDelete = false;
+            _selected = null;
+            await ReloadAsync();
+            await OnChanged.InvokeAsync();
+        }
+        catch (Exception exception) { _error = exception.Message; }
+    }
+
+    private async Task ReloadAsync(Guid? selectId = null)
+    {
+        _presets = await Session.GetProfilePresetsAsync(CommunityId);
+        if (selectId is { } id && _presets.FirstOrDefault(value => value.Id == id) is { } selected) Select(selected);
+        else if (_selected is not null && _presets.FirstOrDefault(value => value.Id == _selected.Id) is { } current) Select(current);
+    }
+}

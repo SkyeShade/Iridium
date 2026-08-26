@@ -47,7 +47,8 @@
                 value.OwnerParticipantId == participant.ParticipantId);
             <div class="voice-participant @(participant.Speaking ? "speaking" : null)" title="@(participant.MediaStatus == CommunityVoiceMediaStatus.MediaUnavailable ? "Voice control connected; media backend unavailable" : participant.MediaStatus.ToString())"
                  @oncontextmenu="() => OpenParticipantMenu(participant)" @oncontextmenu:preventDefault="true" @oncontextmenu:stopPropagation="true">
-                <span class="participant-avatar"><ProfileAvatar AccountId="participant.AccountId" DisplayName="participant.DisplayName" Presence="participant.Presence" Size="tiny" Surface="sidebar" /></span>
+                <span class="participant-avatar"><ProfileAvatar AccountId="participant.AccountId" DisplayName="participant.DisplayName" Presence="participant.Presence"
+                    AvatarPresetId="participant.AvatarPresetId" AvatarRevision="participant.AvatarRevision" Size="tiny" Surface="sidebar" /></span>
                 <span class="display-name">@participant.DisplayName</span>
                 @if (participant.Muted) { <Icon Name="microphone" Size="12" /> }
                 @if (participant.Deafened) { <Icon Name="headphones" Size="12" /> }

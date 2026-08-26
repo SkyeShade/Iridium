@@ -7,6 +7,8 @@ public sealed class ProfileMediaService : IDisposable
     private readonly NodeSession _session;
     private readonly Dictionary<Guid, long> _avatarRevisions = [];
     private readonly Dictionary<Guid, ProfileAvatarDto> _presentations = [];
+    private readonly Dictionary<(Guid AccountId, Guid PresetId), ProfileAvatarDto> _presetPresentations = [];
+    private readonly Dictionary<Guid, ProfileAvatarDto> _messageSnapshots = [];
     private readonly Dictionary<Guid, long> _bannerRevisions = [];
     private readonly Dictionary<Guid, ProfileBannerDto> _banners = [];
     public event Action<Guid>? Changed;
@@ -28,6 +30,8 @@ public sealed class ProfileMediaService : IDisposable
         if (revision > _avatarRevisions.GetValueOrDefault(accountId))
             _avatarRevisions[accountId] = revision;
         _presentations.Remove(accountId);
+        foreach (var key in _presetPresentations.Keys.Where(value => value.AccountId == accountId).ToArray())
+            _presetPresentations.Remove(key);
         Changed?.Invoke(accountId);
     }
 
@@ -51,6 +55,33 @@ public sealed class ProfileMediaService : IDisposable
             var value = await _session.AuthorizedClient.GetProfileAvatarAsync(accountId, cancellationToken);
             _presentations[accountId] = value;
             Observe(accountId, value.Revision);
+            return value;
+        }
+        catch { return null; }
+    }
+
+    public async Task<ProfileAvatarDto?> GetAvatarPresetAsync(Guid accountId, Guid presetId,
+        long observedRevision = 0, CancellationToken cancellationToken = default)
+    {
+        var key = (accountId, presetId);
+        if (_presetPresentations.TryGetValue(key, out var cached) && cached.Revision >= observedRevision) return cached;
+        try
+        {
+            var value = await _session.AuthorizedClient.GetProfileAvatarPresetAsync(accountId, presetId, cancellationToken);
+            _presetPresentations[key] = value;
+            return value;
+        }
+        catch { return null; }
+    }
+
+    public async Task<ProfileAvatarDto?> GetMessageSnapshotAsync(Guid messageId,
+        CancellationToken cancellationToken = default)
+    {
+        if (_messageSnapshots.TryGetValue(messageId, out var cached)) return cached;
+        try
+        {
+            var value = await _session.AuthorizedClient.GetMessageAuthorAvatarSnapshotAsync(messageId, cancellationToken);
+            _messageSnapshots[messageId] = value;
             return value;
         }
         catch { return null; }
@@ -92,6 +123,8 @@ public sealed class ProfileMediaService : IDisposable
         {
             _avatarRevisions[change.AccountId] = change.AvatarRevision;
             _presentations.Remove(change.AccountId);
+            foreach (var key in _presetPresentations.Keys.Where(value => value.AccountId == change.AccountId).ToArray())
+                _presetPresentations.Remove(key);
             changed = true;
         }
         if (_bannerRevisions.GetValueOrDefault(change.AccountId) < change.BannerRevision)

@@ -39,6 +39,30 @@ public sealed class MessageGroupingTests
         Assert.True(MessageGrouping.StartsNewGroup(first, reply));
     }
 
+    [Fact]
+    public void HistoricalPresentationChangeInterruptsGroupingButSameSnapshotPresentationDoesNot()
+    {
+        var author = Guid.NewGuid();
+        var first = Message(author, DateTimeOffset.UtcNow) with
+        {
+            Author = new(author, "user", "Aria", AvatarRevision: 10,
+                AvatarSnapshotMessageId: Guid.NewGuid(), HasHistoricalSnapshot: true)
+        };
+        var samePresentation = Message(author, first.CreatedAt.AddSeconds(2)) with
+        {
+            Author = new(author, "user", "Aria", AvatarRevision: 10,
+                AvatarSnapshotMessageId: Guid.NewGuid(), HasHistoricalSnapshot: true)
+        };
+        var changed = Message(author, first.CreatedAt.AddSeconds(3)) with
+        {
+            Author = new(author, "user", "GM Skye", AvatarRevision: 11,
+                AvatarSnapshotMessageId: Guid.NewGuid(), HasHistoricalSnapshot: true)
+        };
+
+        Assert.False(MessageGrouping.StartsNewGroup(first, samePresentation));
+        Assert.True(MessageGrouping.StartsNewGroup(samePresentation, changed));
+    }
+
     private static ChannelMessageDto Message(Guid authorId, DateTimeOffset at) => new(
         Guid.NewGuid(),
         Guid.NewGuid(),

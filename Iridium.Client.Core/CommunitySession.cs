@@ -472,7 +472,7 @@ public sealed class CommunitySession : IDisposable
         change.StartsWith("member", StringComparison.Ordinal) ||
         change.StartsWith("permission", StringComparison.Ordinal) ||
         change.StartsWith("invite", StringComparison.Ordinal) ||
-        change is "overview";
+        change is "overview" or "member-profile-updated";
 
     private async Task ReloadAsync(CancellationToken cancellationToken) => await LoadAsync(RequireCommunity(), cancellationToken);
     private Guid RequireCommunity() => CommunityId ?? throw new InvalidOperationException("Select a Server first.");

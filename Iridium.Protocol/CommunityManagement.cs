@@ -100,7 +100,19 @@ public sealed record CommunityMemberDto(
     DateTimeOffset JoinedAt,
     bool IsOwner,
     PublicPresence Presence,
-    IReadOnlyList<Guid> RoleIds);
+    IReadOnlyList<Guid> RoleIds,
+    Guid? ProfilePresetId = null,
+    long AvatarRevision = 0,
+    Guid? AvatarPresetId = null);
+
+public sealed record SetCommunityProfileRequest(Guid? ProfilePresetId);
+public sealed record CommunityProfileAssignmentDto(
+    Guid CommunityId,
+    Guid AccountId,
+    Guid? ProfilePresetId,
+    string DisplayName,
+    long AvatarRevision,
+    Guid? AvatarPresetId = null);
 
 public sealed record CommunityBanDto(
     Guid AccountId,

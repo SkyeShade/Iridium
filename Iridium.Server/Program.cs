@@ -54,6 +54,7 @@ builder.Services.AddRateLimiter(options => options.AddPolicy("password-recovery"
             AutoReplenishment = true
         })));
 builder.Services.AddScoped<CommunityAuthorizationService>();
+builder.Services.AddScoped<HistoricalAuthorPresentationService>();
 builder.Services.AddScoped<CommunityInviteService>();
 builder.Services.AddSingleton<IAttachmentStorage, LocalAttachmentStorage>();
 builder.Services.AddSingleton<IImagePreviewGenerator, ImagePreviewGenerator>();
@@ -169,6 +170,7 @@ app.MapDirectMessageEndpoints();
 app.MapCommunityManagementEndpoints();
 app.MapAttachmentEndpoints();
 app.MapAvatarPresetEndpoints();
+app.MapProfilePresetEndpoints();
 app.MapBannerPresetEndpoints();
 app.MapCommunityMediaEndpoints();
 app.MapCommunityEmojiEndpoints();

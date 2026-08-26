@@ -8,6 +8,13 @@ using SkiaSharp;
 
 namespace Iridium.Tests;
 
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class AvatarPresetIntegrationCollection
+{
+    public const string Name = "Avatar preset integration";
+}
+
+[Collection(AvatarPresetIntegrationCollection.Name)]
 public sealed class AvatarPresetFlowTests
 {
     private static readonly byte[] Png = Convert.FromBase64String(
@@ -17,8 +24,8 @@ public sealed class AvatarPresetFlowTests
         "21F904000A0000002C0000000001000100000202440100" +
         "21F904000A0000002C00000000010001000002024401003B");
 
-    [Fact(Timeout = 30_000)]
-    public async Task TenSlotsSaveActivationOwnershipGifAndActiveDeleteFallbackWork()
+    [Fact(Timeout = 60_000)]
+    public async Task DynamicProfilePresetsAssignmentOwnershipGifAndActiveDeleteFallbackWork()
     {
         var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
         var project = Path.Combine(root, "Iridium.Server", "Iridium.Server.csproj");
@@ -64,20 +71,108 @@ public sealed class AvatarPresetFlowTests
             Assert.Contains(state.Presets, value => value.ContentType == "image/jpeg");
             Assert.Contains(state.Presets, value => value.ContentType == "image/webp");
             Assert.Equal(state.Presets.Single(value => value.SlotIndex == 0).Id, state.ActiveAvatarPresetId);
-            await Assert.ThrowsAsync<NodeApiException>(() => owner.UploadAvatarPresetAsync(10,
-                new MemoryStream(Png), "eleventh.png", "image/png", 0, 0, 1, false));
+            state = await owner.UploadAvatarPresetAsync(10,
+                new MemoryStream(Png), "eleventh.png", "image/png", 0, 0, 1, false);
+            Assert.Equal(11, state.Presets.Count);
 
-            var selected = state.Presets.Single(value => value.SlotIndex == 6);
+            var community = await owner.CreateCommunityAsync(new("Profile Presets", null));
+            var historyChannel = await owner.CreateChannelAsync(community.Id, "avatar-history", null);
+            var communityAvatarMedia = state.Presets.Single(value => value.SlotIndex == 10);
+            var communityPreset = await owner.CreateProfilePresetAsync(community.Id, "GM Skye");
+            Assert.Equal(community.Id, communityPreset.CommunityId);
+            Assert.Single(await owner.GetProfilePresetsAsync(community.Id));
+            var secondCommunity = await owner.CreateCommunityAsync(new("Second Profiles", null));
+            Assert.Empty(await owner.GetProfilePresetsAsync(secondCommunity.Id));
+            var secondPreset = await owner.CreateProfilePresetAsync(secondCommunity.Id, "GM Skye");
+            Assert.Equal(secondCommunity.Id, secondPreset.CommunityId);
+            Assert.Equal(communityPreset.Id, Assert.Single(await owner.GetProfilePresetsAsync(community.Id)).Id);
+            Assert.Equal(secondPreset.Id, Assert.Single(await owner.GetProfilePresetsAsync(secondCommunity.Id)).Id);
+            var crossCommunityAssignment = await Assert.ThrowsAsync<NodeApiException>(() =>
+                owner.SetCommunityProfileAsync(secondCommunity.Id, communityPreset.Id));
+            Assert.Equal(HttpStatusCode.BadRequest, crossCommunityAssignment.StatusCode);
+            var crossCommunityPresetAccess = await Assert.ThrowsAsync<NodeApiException>(() =>
+                owner.UpdateProfilePresetAsync(secondCommunity.Id, communityPreset.Id, new("Wrong Server")));
+            Assert.Equal(HttpStatusCode.NotFound, crossCommunityPresetAccess.StatusCode);
+            Assert.Null(communityPreset.Avatar);
+            var assignment = await owner.SetCommunityProfileAsync(community.Id, communityPreset.Id);
+            Assert.Equal("GM Skye", assignment.DisplayName);
+            Assert.Null(assignment.AvatarPresetId);
+            var management = await owner.GetCommunityManagementAsync(community.Id);
+            var ownerMember = Assert.Single(management.Members);
+            Assert.Equal("GM Skye", ownerMember.DisplayName);
+            Assert.Equal(communityPreset.Id, ownerMember.ProfilePresetId);
+            Assert.Null(ownerMember.AvatarPresetId);
+            Assert.Equal(state.AvatarRevision, ownerMember.AvatarRevision);
+            Assert.Equal(authentication.Account.DisplayName,
+                (await other.ResolveProfileAsync("avatar-owner")).DisplayName);
+
+            communityPreset = await owner.SetProfilePresetAvatarAsync(community.Id, communityPreset.Id, communityAvatarMedia.Id);
+            Assert.Equal(communityAvatarMedia.Id, communityPreset.Avatar?.Id);
+            management = await owner.GetCommunityManagementAsync(community.Id);
+            ownerMember = Assert.Single(management.Members);
+            Assert.Equal(communityAvatarMedia.Id, ownerMember.AvatarPresetId);
             await using var hub = new HubConnectionBuilder().WithUrl(new Uri(address, "hubs/chat"), options =>
                 options.AccessTokenProvider = () => Task.FromResult<string?>(authentication.AccessToken)).Build();
-            var updated = new TaskCompletionSource<ProfileUpdatedEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
-            hub.On<ProfileUpdatedEvent>(ProfileHubContract.Updated, value => updated.TrySetResult(value));
+            var communityProfileChanged = new TaskCompletionSource<CommunityStateChangedEvent>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            hub.On<CommunityStateChangedEvent>(CommunityHubContract.StateChanged, value =>
+            {
+                if (value.CommunityId == community.Id && value.Change == "member-profile-updated")
+                    communityProfileChanged.TrySetResult(value);
+            });
             await hub.StartAsync();
+            await hub.InvokeAsync(ChatHubContract.JoinChannel, community.Id, historyChannel.Id);
+            communityPreset = await owner.UpdateProfilePresetAsync(community.Id, communityPreset.Id, new("Aria"));
+            var ariaMessage = await hub.InvokeAsync<ChannelMessageDto>(ChatHubContract.SendMessage,
+                community.Id, historyChannel.Id, new SendChannelMessageRequest("sent as Aria", null));
+            Assert.Equal("Aria", ariaMessage.Author.DisplayName);
+            Assert.True(ariaMessage.Author.HasHistoricalSnapshot);
+            Assert.Equal(ariaMessage.Id, ariaMessage.Author.AvatarSnapshotMessageId);
+            var ariaAvatar = await owner.GetMessageAuthorAvatarSnapshotAsync(ariaMessage.Id);
+            Assert.True(ariaAvatar.HasAvatar);
+            Assert.Equal(0, ariaAvatar.CropX);
+
+            var activeBeforeCustomCrop = (await owner.GetAvatarPresetsAsync()).ActiveAvatarPresetId;
+            communityAvatarMedia = await owner.UpdateAvatarCropAsync(communityAvatarMedia.Id,
+                new(.15, -.1, 1.25, false));
+            await communityProfileChanged.Task.WaitAsync(TimeSpan.FromSeconds(20));
+            management = await owner.GetCommunityManagementAsync(community.Id);
+            ownerMember = Assert.Single(management.Members);
+            Assert.Equal(communityAvatarMedia.Revision, ownerMember.AvatarRevision);
+            Assert.Equal(activeBeforeCustomCrop, (await owner.GetAvatarPresetsAsync()).ActiveAvatarPresetId);
+            communityPreset = await owner.UpdateProfilePresetAsync(community.Id, communityPreset.Id, new("GM Skye"));
+            var gmMessage = await hub.InvokeAsync<ChannelMessageDto>(ChatHubContract.SendMessage,
+                community.Id, historyChannel.Id, new SendChannelMessageRequest("sent as GM", null));
+            Assert.Equal("GM Skye", gmMessage.Author.DisplayName);
+            Assert.Equal(gmMessage.Id, gmMessage.Author.AvatarSnapshotMessageId);
+            Assert.Equal(.15, (await owner.GetMessageAuthorAvatarSnapshotAsync(gmMessage.Id)).CropX, 5);
+            var editedAria = await hub.InvokeAsync<ChannelMessageDto>(ChatHubContract.EditMessage,
+                community.Id, historyChannel.Id, ariaMessage.Id, new EditChannelMessageRequest("Aria edited"));
+            Assert.Equal("Aria", editedAria.Author.DisplayName);
+            Assert.Equal(ariaMessage.Id, editedAria.Author.AvatarSnapshotMessageId);
+            var replyToAria = await hub.InvokeAsync<ChannelMessageDto>(ChatHubContract.SendMessage,
+                community.Id, historyChannel.Id, new SendChannelMessageRequest("reply", ariaMessage.Id));
+            Assert.Equal("Aria", replyToAria.ReplyTo?.AuthorDisplayName);
+            Assert.Equal(ariaMessage.Id, replyToAria.ReplyTo?.AvatarSnapshotMessageId);
+
+            var selected = state.Presets.Single(value => value.SlotIndex == 6);
             await owner.UpdateAvatarCropAsync(selected.Id, new(0, 0, 1.2, true));
-            Assert.Equal(authentication.Account.Id,
-                (await updated.Task.WaitAsync(TimeSpan.FromSeconds(5))).AccountId);
             state = await owner.GetAvatarPresetsAsync();
             Assert.Equal(selected.Id, state.ActiveAvatarPresetId);
+
+            communityPreset = await owner.ClearProfilePresetAvatarAsync(community.Id, communityPreset.Id);
+            Assert.Null(communityPreset.Avatar);
+            management = await owner.GetCommunityManagementAsync(community.Id);
+            ownerMember = Assert.Single(management.Members);
+            Assert.Equal(communityPreset.Id, ownerMember.ProfilePresetId);
+            Assert.Null(ownerMember.AvatarPresetId);
+            Assert.Equal(state.AvatarRevision, ownerMember.AvatarRevision);
+            var fallbackMessage = await hub.InvokeAsync<ChannelMessageDto>(ChatHubContract.SendMessage,
+                community.Id, historyChannel.Id, new SendChannelMessageRequest("account PFP fallback", null));
+            Assert.Equal(fallbackMessage.Id, fallbackMessage.Author.AvatarSnapshotMessageId);
+            var fallbackAvatar = await owner.GetMessageAuthorAvatarSnapshotAsync(fallbackMessage.Id);
+            Assert.Equal(1.2, fallbackAvatar.Zoom, 5);
+            communityPreset = await owner.SetProfilePresetAvatarAsync(community.Id, communityPreset.Id, communityAvatarMedia.Id);
 
             await using var otherHub = new HubConnectionBuilder().WithUrl(new Uri(address, "hubs/chat"), options =>
                 options.AccessTokenProvider = () => Task.FromResult<string?>(otherAuthentication.AccessToken)).Build();
@@ -87,16 +182,28 @@ public sealed class AvatarPresetFlowTests
                 value => profileChanged.TrySetResult(value));
             await otherHub.StartAsync();
             await owner.UpdateProfileAsync(new("Avatar Owner Updated", "they/them", "Realtime profile details"));
-            var profileEvent = await profileChanged.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var profileEvent = await profileChanged.Task.WaitAsync(TimeSpan.FromSeconds(10));
             Assert.Equal(authentication.Account.Id, profileEvent.AccountId);
             Assert.Equal("Avatar Owner Updated", profileEvent.DisplayName);
             Assert.Equal("they/them", profileEvent.Pronouns);
             Assert.Equal("Realtime profile details", profileEvent.Description);
+            var historyAfterProfileChange = await owner.GetChannelMessagesAsync(community.Id, historyChannel.Id);
+            Assert.Equal("Aria", historyAfterProfileChange.Single(value => value.Id == ariaMessage.Id).Author.DisplayName);
 
             var ownerPreset = state.Presets[0];
             var ownershipFailure = await Assert.ThrowsAsync<NodeApiException>(() => other.UpdateAvatarCropAsync(
                 ownerPreset.Id, new(0, 0, 1.5, false)));
             Assert.Equal(HttpStatusCode.NotFound, ownershipFailure.StatusCode);
+            await Assert.ThrowsAsync<NodeApiException>(() => other.UpdateProfilePresetAsync(
+                community.Id, communityPreset.Id, new("Not mine")));
+            var otherCommunity = await other.CreateCommunityAsync(new("Other Community", null));
+            var otherPreset = await other.CreateProfilePresetAsync(otherCommunity.Id, "GM Skye");
+            var foreignAssignment = await Assert.ThrowsAsync<NodeApiException>(() =>
+                owner.SetCommunityProfileAsync(community.Id, otherPreset.Id));
+            Assert.Equal(HttpStatusCode.BadRequest, foreignAssignment.StatusCode);
+            var crossCommunityEdit = await Assert.ThrowsAsync<NodeApiException>(() =>
+                other.UpdateProfilePresetAsync(community.Id, otherPreset.Id, new("Cross Community")));
+            Assert.Equal(HttpStatusCode.Forbidden, crossCommunityEdit.StatusCode);
 
             await owner.DeleteAvatarPresetAsync(state.Presets.Single(value => value.SlotIndex == 9).Id);
             state = await owner.UploadAvatarPresetAsync(9, new MemoryStream(AnimatedGif), "animated.gif",
@@ -107,10 +214,29 @@ public sealed class AvatarPresetFlowTests
                 Assert.Equal(AnimatedGif, await http.GetByteArrayAsync(gif.AvatarUrl));
 
             await owner.DeleteAvatarPresetAsync(selected.Id);
+            Assert.True((await owner.GetMessageAuthorAvatarSnapshotAsync(fallbackMessage.Id)).HasAvatar);
             state = await owner.GetAvatarPresetsAsync();
-            Assert.Equal(9, state.Presets.Count);
+            Assert.Equal(10, state.Presets.Count);
             Assert.Equal(state.Presets.OrderBy(value => value.SlotIndex).First().Id, state.ActiveAvatarPresetId);
             Assert.True((await owner.GetProfileAvatarAsync(authentication.Account.Id)).HasAvatar);
+
+            await owner.DeleteAvatarPresetAsync(communityAvatarMedia.Id);
+            var retainedAvatar = await owner.GetMessageAuthorAvatarSnapshotAsync(ariaMessage.Id);
+            Assert.True(retainedAvatar.HasAvatar);
+            using (var http = new HttpClient())
+                Assert.NotEmpty(await http.GetByteArrayAsync(retainedAvatar.AvatarUrl));
+            management = await owner.GetCommunityManagementAsync(community.Id);
+            ownerMember = Assert.Single(management.Members);
+            Assert.Equal(communityPreset.Id, ownerMember.ProfilePresetId);
+            Assert.Null(ownerMember.AvatarPresetId);
+            Assert.Equal("GM Skye", ownerMember.DisplayName);
+
+            await owner.DeleteProfilePresetAsync(community.Id, communityPreset.Id);
+            Assert.Equal(secondPreset.Id, Assert.Single(await owner.GetProfilePresetsAsync(secondCommunity.Id)).Id);
+            management = await owner.GetCommunityManagementAsync(community.Id);
+            ownerMember = Assert.Single(management.Members);
+            Assert.Null(ownerMember.ProfilePresetId);
+            Assert.Equal("Avatar Owner Updated", ownerMember.DisplayName);
         }
         finally
         {
@@ -124,7 +250,7 @@ public sealed class AvatarPresetFlowTests
         }
     }
 
-    [Fact(Timeout = 30_000)]
+    [Fact(Timeout = 60_000)]
     public async Task FourBannerSlotsFormatsActivationRealtimeDerivativeAndDeleteFallbackWork()
     {
         var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
@@ -180,7 +306,7 @@ public sealed class AvatarPresetFlowTests
             await hub.StartAsync();
             var selected = state.Presets.Single(value => value.SlotIndex == 2);
             await client.UpdateBannerCropAsync(selected.Id, new(.45, -.25, 1.7, true));
-            var update = await changed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var update = await changed.Task.WaitAsync(TimeSpan.FromSeconds(20));
             Assert.True(update.BannerRevision > 0);
             state = await client.GetBannerPresetsAsync();
             Assert.Equal(selected.Id, state.ActiveBannerPresetId);

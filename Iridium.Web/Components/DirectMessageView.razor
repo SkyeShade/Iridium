@@ -24,12 +24,13 @@
         <div class="dm-message-history">
         <MessageList @key="Conversation.Id" @ref="_messageList" Messages="ProjectedMessages" CurrentAccountId="CurrentAccountId" CanManage="false"
                      DirectParticipant="Conversation.OtherParticipant"
-                     NodeAuthority="@NodeAuthority" OnEditProfile="OnEditProfile" OnMessage="OnMessage"
+                     NodeAuthority="@NodeAuthority" OnEditProfile="OnEditProfile" OnEditAvatars="OnEditAvatars" OnMessage="OnMessage"
                      EmptyIcon="message" EmptyTitle="No messages yet" EmptyDescription="Send the first Direct Message."
                      OnReply="BeginReply" Edit="EditMessageAsync" OnDelete="DeleteMessageAsync"
                      OnRetryLocal="RetryMessageAsync" OnRemoveLocal="RemoveLocalMessage"
                      OnEditCompleted="FocusComposerAfterEditAsync"
-                     WindowRevision="Messaging.WindowRevision" TargetMessageId="@(Messaging.WindowMode == MessageWindowMode.SearchTarget ? _loadedTargetMessageId : null)"
+                     WindowRevision="Messaging.WindowRevision" ReconciliationRevision="Messaging.RecentReconciliationRevision" FollowLatest="_isPinnedToLatest"
+                     TargetMessageId="@(Messaging.WindowMode == MessageWindowMode.SearchTarget ? _loadedTargetMessageId : null)"
                      OnLoadOlder="LoadOlderAsync" OnViewportStateChanged="ViewportStateChanged" />
         @if (ShowJumpToLatest) { <button class="jump-latest" @onclick="JumpToLatestAsync">Jump to Latest</button> }
         </div>
@@ -49,6 +50,7 @@
     [Parameter, EditorRequired] public required Guid CurrentAccountId { get; set; }
     [Parameter, EditorRequired] public required string NodeAuthority { get; set; }
     [Parameter] public EventCallback OnEditProfile { get; set; }
+    [Parameter] public EventCallback OnEditAvatars { get; set; }
     [Parameter] public EventCallback<Guid> OnMessage { get; set; }
     [Parameter] public EventCallback OnStartVoiceCall { get; set; }
     [Parameter] public bool IsMobileLayout { get; set; }

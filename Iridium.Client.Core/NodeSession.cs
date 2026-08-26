@@ -83,6 +83,33 @@ public sealed class NodeSession(
         CancellationToken cancellationToken = default) =>
         AuthorizedClient.UpdateAvatarCropAsync(presetId, request, cancellationToken);
 
+    public async Task<IReadOnlyList<UserProfilePresetDto>> GetProfilePresetsAsync(Guid communityId,
+        CancellationToken cancellationToken = default) =>
+        await AuthorizedClient.GetProfilePresetsAsync(communityId, cancellationToken);
+
+    public Task<UserProfilePresetDto> CreateProfilePresetAsync(Guid communityId, string displayName,
+        CancellationToken cancellationToken = default) =>
+        AuthorizedClient.CreateProfilePresetAsync(communityId, displayName, cancellationToken);
+
+    public Task<UserProfilePresetDto> UpdateProfilePresetAsync(Guid communityId, Guid presetId, string displayName,
+        CancellationToken cancellationToken = default) =>
+        AuthorizedClient.UpdateProfilePresetAsync(communityId, presetId, new(displayName), cancellationToken);
+
+    public Task<UserProfilePresetDto> SetProfilePresetAvatarAsync(Guid communityId, Guid presetId, Guid avatarPresetId,
+        CancellationToken cancellationToken = default) =>
+        AuthorizedClient.SetProfilePresetAvatarAsync(communityId, presetId, avatarPresetId, cancellationToken);
+
+    public Task<UserProfilePresetDto> ClearProfilePresetAvatarAsync(Guid communityId, Guid presetId,
+        CancellationToken cancellationToken = default) =>
+        AuthorizedClient.ClearProfilePresetAvatarAsync(communityId, presetId, cancellationToken);
+
+    public Task DeleteProfilePresetAsync(Guid communityId, Guid presetId, CancellationToken cancellationToken = default) =>
+        AuthorizedClient.DeleteProfilePresetAsync(communityId, presetId, cancellationToken);
+
+    public Task<CommunityProfileAssignmentDto> SetCommunityProfileAsync(Guid communityId, Guid? presetId,
+        CancellationToken cancellationToken = default) =>
+        AuthorizedClient.SetCommunityProfileAsync(communityId, presetId, cancellationToken);
+
     public Task ActivateAvatarPresetAsync(Guid presetId, CancellationToken cancellationToken = default) =>
         AuthorizedClient.ActivateAvatarPresetAsync(presetId, cancellationToken);
 

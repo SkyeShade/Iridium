@@ -1,5 +1,5 @@
 const databaseName = "IridiumClientCache";
-const schemaVersion = 1;
+const schemaVersion = 2;
 const recentMessageLimit = 300;
 const initialWindowLimit = 50;
 const globalMessageLimit = 10000;
@@ -25,7 +25,7 @@ function transactionDone(transaction) {
 function openDatabase() {
     databasePromise ??= new Promise((resolve, reject) => {
         const opening = indexedDB.open(databaseName, schemaVersion);
-        opening.onupgradeneeded = () => {
+        opening.onupgradeneeded = event => {
             const db = opening.result;
             const store = name => db.objectStoreNames.contains(name)
                 ? opening.transaction.objectStore(name)
@@ -39,6 +39,14 @@ function openDatabase() {
             for (const name of ["accountKey", "nodeKey", "lastAccess"]) index(conversations, name);
             const media = store("media");
             for (const name of ["conversationKey", "accountKey", "nodeKey", "lastAccess"]) index(media, name);
+            // Version 1 payloads may contain a Community-profile projection for legacy
+            // messages. That projection cannot be distinguished from an account default,
+            // so discard it once and let canonical history repopulate the cache.
+            if (event.oldVersion > 0 && event.oldVersion < 2) {
+                messages.clear();
+                conversations.clear();
+                media.clear();
+            }
         };
         opening.onsuccess = () => resolve(opening.result);
         opening.onerror = () => reject(opening.error);

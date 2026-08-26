@@ -7,6 +7,8 @@ using Iridium.Server.Persistence;
 using Iridium.Server.Security;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using Microsoft.AspNetCore.SignalR;
+using Iridium.Server.Voice;
 
 namespace Iridium.Server.Api;
 
@@ -24,6 +26,7 @@ public static class CommunityManagementEndpoints
         group.MapPost("/roles/{roleId:guid}/move", MoveRoleAsync);
         group.MapDelete("/roles/{roleId:guid}", DeleteRoleAsync);
         group.MapPut("/members/{accountId:guid}/roles", SetMemberRolesAsync);
+        group.MapPut("/members/@me/profile", SetOwnCommunityProfileAsync);
         group.MapDelete("/members/@me", LeaveCommunityAsync);
         group.MapPost("/members/{accountId:guid}/kick", KickMemberAsync);
         group.MapPost("/bans/{accountId:guid}", BanMemberAsync);
@@ -52,13 +55,16 @@ public static class CommunityManagementEndpoints
         var roles = await db.CommunityRoles.AsNoTracking().Where(value => value.CommunityId == communityId)
             .OrderByDescending(value => value.Position).ThenBy(value => value.Name).Select(value => ToDto(value)).ToListAsync();
         var members = await db.CommunityMembers.AsNoTracking().Where(value => value.CommunityId == communityId)
-            .Include(value => value.Account).Include(value => value.Roles)
+            .Include(value => value.Account).Include(value => value.ProfilePreset).ThenInclude(value => value!.AvatarPreset)
+            .Include(value => value.Roles)
             .OrderBy(value => value.Account.DisplayName).ThenBy(value => value.Account.Username).ToListAsync();
         var memberDtos = members.Select(value => new CommunityMemberDto(
-            value.AccountId, value.Account.Username, value.Account.DisplayName, value.Account.Pronouns,
+            value.AccountId, value.Account.Username, ChannelMessageMapper.ResolveDisplayName(value), value.Account.Pronouns,
             value.Account.Description, value.Nickname, value.JoinedAt,
             value.AccountId == community.OwnerAccountId, presence.GetPublic(value.AccountId),
-            value.Roles.Select(role => role.RoleId).ToArray())).ToArray();
+            value.Roles.Select(role => role.RoleId).ToArray(), ChannelMessageMapper.ValidPreset(value)?.Id,
+            ChannelMessageMapper.ValidPreset(value)?.AvatarPreset?.Revision ?? value.Account.AvatarRevision,
+            ChannelMessageMapper.ValidPreset(value)?.AvatarPresetId)).ToArray();
 
         var invites = access.Has(CommunityPermission.CreateInvites)
             ? await LoadInvitesAsync(communityId, db)
@@ -68,6 +74,44 @@ public static class CommunityManagementEndpoints
             : [];
         return Results.Ok(new CommunityManagementDto(ToDto(community), access, roles, memberDtos, invites, bans,
             limitService.GetEffectiveLimits(communityId)));
+    }
+
+    private static async Task<IResult> SetOwnCommunityProfileAsync(
+        Guid communityId, SetCommunityProfileRequest request, HttpContext context, IridiumDbContext db,
+        SessionService sessions, CommunityRealtimePublisher realtime, CommunityVoiceRoomService voiceRooms,
+        IHubContext<ChatHub> chatHub, CancellationToken cancellationToken)
+    {
+        var session = await sessions.GetAsync(context, db);
+        if (session is null) return Results.Unauthorized();
+        var member = await db.CommunityMembers.Include(value => value.Account)
+            .SingleOrDefaultAsync(value => value.CommunityId == communityId && value.AccountId == session.AccountId,
+                cancellationToken);
+        if (member is null) return Results.Forbid();
+        UserProfilePreset? preset = null;
+        if (request.ProfilePresetId is { } presetId)
+        {
+            preset = await db.UserProfilePresets.Include(value => value.AvatarPreset).SingleOrDefaultAsync(value =>
+                value.Id == presetId && value.AccountId == session.AccountId && value.CommunityId == communityId,
+                cancellationToken);
+            if (preset is null) return Results.BadRequest(new { message = "Choose one of your own profile presets." });
+        }
+        member.ProfilePresetId = preset?.Id;
+        member.ProfilePreset = preset;
+        await db.SaveChangesAsync(cancellationToken);
+        var displayName = ChannelMessageMapper.ResolveDisplayName(member);
+        var voiceChanges = voiceRooms.UpdateDisplayProfile(communityId, session.AccountId, displayName,
+            preset?.AvatarPresetId, preset?.AvatarPreset?.Revision ?? member.Account.AvatarRevision);
+        if (voiceChanges.Count > 0)
+        {
+            var recipients = await db.CommunityMembers.AsNoTracking().Where(value => value.CommunityId == communityId)
+                .Select(value => value.AccountId).Distinct().ToArrayAsync(cancellationToken);
+            foreach (var change in voiceChanges)
+                await chatHub.Clients.Groups(recipients.Select(ChatHub.AccountGroup).ToArray()).SendAsync(
+                    CommunityVoiceHubContract.ParticipantStateChanged, change, cancellationToken);
+        }
+        await realtime.PublishAsync(communityId, "member-profile-updated", db, cancellationToken);
+        return Results.Ok(new CommunityProfileAssignmentDto(communityId, session.AccountId, preset?.Id,
+            displayName, preset?.AvatarPreset?.Revision ?? member.Account.AvatarRevision, preset?.AvatarPresetId));
     }
 
     private static async Task<IResult> UpdateCommunityAsync(
@@ -242,9 +286,13 @@ public static class CommunityManagementEndpoints
         var overwrites = await db.CommunityPermissionOverwrites.Where(value => value.CommunityId == communityId &&
             value.TargetType == PermissionOverwriteTargetType.Member && value.TargetId == session.AccountId).ToListAsync();
         await using var transaction = await db.Database.BeginTransactionAsync();
+        var profilePresets = await db.UserProfilePresets.Where(value => value.CommunityId == communityId &&
+            value.AccountId == session.AccountId).ToListAsync();
+        member.ProfilePresetId = null;
         db.CommunityPermissionOverwrites.RemoveRange(overwrites);
         db.CommunityMemberRoles.RemoveRange(member.Roles);
         db.CommunityMembers.Remove(member);
+        db.UserProfilePresets.RemoveRange(profilePresets);
         await db.SaveChangesAsync();
         await transaction.CommitAsync();
         await realtime.PublishAccessRevokedAsync(new CommunityAccessRevokedEvent(communityId, session.AccountId, "left"));
@@ -285,11 +333,15 @@ public static class CommunityManagementEndpoints
         }
         if (member is not null)
         {
+            var profilePresets = await db.UserProfilePresets.Where(value => value.CommunityId == communityId &&
+                value.AccountId == accountId).ToListAsync();
+            member.ProfilePresetId = null;
             var overwriteRows = await db.CommunityPermissionOverwrites.Where(value => value.CommunityId == communityId &&
                 value.TargetType == PermissionOverwriteTargetType.Member && value.TargetId == accountId).ToListAsync();
             db.CommunityPermissionOverwrites.RemoveRange(overwriteRows);
             db.CommunityMemberRoles.RemoveRange(member.Roles);
             db.CommunityMembers.Remove(member);
+            db.UserProfilePresets.RemoveRange(profilePresets);
         }
         await db.SaveChangesAsync();
         await realtime.PublishAccessRevokedAsync(

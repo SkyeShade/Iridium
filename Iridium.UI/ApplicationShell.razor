@@ -30,12 +30,12 @@
             @if (VoiceConnection is not null) { <div class="voice-connection-slot">@VoiceConnection</div> }
         </aside>
         <div class="mobile-profile-panel-slot">
-            <ProfilePanel AccountId="AccountId" AvatarRevision="AvatarRevision" DisplayName="@DisplayName"
+            <ProfilePanel AccountId="AccountId" AvatarRevision="AvatarRevision" AvatarPresetId="AvatarPresetId" DisplayName="@DisplayName"
                           PublicIdentity="@PublicIdentity" Presence="Presence" OnProfile="OnProfile" OnSettings="OnSettings" />
         </div>
     </div>
     <div class="desktop-player-panel-slot">
-        <ProfilePanel AccountId="AccountId" AvatarRevision="AvatarRevision" DisplayName="@DisplayName"
+        <ProfilePanel AccountId="AccountId" AvatarRevision="AvatarRevision" AvatarPresetId="AvatarPresetId" DisplayName="@DisplayName"
                       PublicIdentity="@PublicIdentity" Presence="Presence" OnProfile="OnProfile" OnSettings="OnSettings"
                       ShowVoiceControls="true" />
     </div>
@@ -80,6 +80,7 @@
     [Parameter, EditorRequired] public required string DisplayName { get; set; }
     [Parameter] public Guid? AccountId { get; set; }
     [Parameter] public long AvatarRevision { get; set; }
+    [Parameter] public Guid? AvatarPresetId { get; set; }
     [Parameter, EditorRequired] public required string PublicIdentity { get; set; }
     [Parameter] public PublicPresence Presence { get; set; }
     [Parameter] public EventCallback<CommunityDto?> OnCommunitySelected { get; set; }

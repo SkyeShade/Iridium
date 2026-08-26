@@ -63,8 +63,9 @@ else
                       NodeAuthority="@(Session.SelectedNode!.PublicAuthority)"
                       SelectedCommunity="_selectedCommunity"
                       AccountId="Session.Account!.Id"
-                      AvatarRevision="Session.Account!.AvatarRevision"
-                      DisplayName="@Session.Account!.DisplayName"
+                      AvatarRevision="PlayerAvatarRevision"
+                      AvatarPresetId="PlayerAvatarPresetId"
+                      DisplayName="@PlayerDisplayName"
                       PublicIdentity="@PublicIdentity"
                       Presence="@CurrentPresence"
                       OnBackgroundInteraction="CloseMessageMenus"
@@ -193,7 +194,7 @@ else
                                        FocusRequest="@(_composerFocusConversationId == _selectedDirectConversation.Id ? _composerFocusRequest : 0)"
                                        OnFocusConsumed="ComposerFocusConsumed"
                                        CurrentAccountId="Session.Account!.Id" NodeAuthority="@(Session.SelectedNode!.PublicAuthority)"
-                                       OnEditProfile="OpenProfileEditor" OnMessage="OpenDirectMessageAsync"/>
+                                       OnEditProfile="OpenProfileEditor" OnEditAvatars="OpenAvatarManager" OnMessage="OpenDirectMessageAsync"/>
                 }
                 else if (_homeView == "requests")
                 {
@@ -229,6 +230,7 @@ else
                                       Community="_selectedCommunity" Channel="_selectedChannel"
                                       CurrentAccountId="Session.Account!.Id" NodeAuthority="@(Session.SelectedNode!.PublicAuthority)"
                                       CommunityManagement="CommunityState.Management" OnEditProfile="OpenProfileEditor"
+                                      OnEditAvatars="OpenAvatarManager" OnCommunityProfileChanged="RefreshCommunityProfileAsync"
                                       OnMessage="OpenDirectMessageAsync" OnMemberRolesChanged="SetCommunityMemberRolesAsync"
                                       OnPostOpenChanged="ForumPostOpenChanged" OnSubViewChanged="ForumSubViewChanged"
                                       CanCreatePosts="@HasSelectedChannelPermission(CommunityPermission.CreateForumPosts)"
@@ -244,7 +246,8 @@ else
                                  OnFocusConsumed="ComposerFocusConsumed"
                                  CurrentAccountId="Session.Account!.Id"
                                  NodeAuthority="@(Session.SelectedNode!.PublicAuthority)" CommunityManagement="CommunityState.Management"
-                                 OnEditProfile="OpenProfileEditor" OnMessage="OpenDirectMessageAsync"
+                                 OnEditProfile="OpenProfileEditor" OnEditAvatars="OpenAvatarManager"
+                                 OnCommunityProfileChanged="RefreshCommunityProfileAsync" OnMessage="OpenDirectMessageAsync"
                                  OnMemberRolesChanged="SetCommunityMemberRolesAsync"
                                  CanManageMessages="@HasSelectedChannelPermission(CommunityPermission.ManageMessages)"
                                  CanSend="@HasSelectedChannelPermission(CommunityPermission.SendMessages)"
@@ -259,6 +262,7 @@ else
             {
                 <CommunityMemberSidebar Management="management" CurrentAccountId="Session.Account!.Id"
                                         NodeAuthority="@(Session.SelectedNode!.PublicAuthority)" OnEditProfile="OpenProfileEditor"
+                                        OnEditAvatars="OpenAvatarManager" OnCommunityProfileChanged="RefreshCommunityProfileAsync"
                                         Channels="CommunityState.Channels" OnSearchResultSelected="OpenCommunitySearchResultAsync"
                                         OnMessage="OpenDirectMessageAsync" OnMemberRolesChanged="SetCommunityMemberRolesAsync"/>
             }
@@ -312,6 +316,12 @@ else
         <EditProfileModal Account="Session.Account!" PublicIdentity="@PublicIdentity"
                           Save="SaveProfileAsync" OnClosed="CloseProfileEditor" />
     }
+    @if (_showAvatarManager && _selectedCommunity is not null)
+    {
+        <AvatarManagerModal Account="Session.Account!" PublicIdentity="@PublicIdentity"
+                            CommunityId="_selectedCommunity.Id" CommunityName="_selectedCommunity.Name"
+                            OnChanged="RefreshCommunityProfileAsync" OnClose="CloseAvatarManager" />
+    }
     @if (_showCommunitySettings && _selectedCommunity is not null)
     {
         <CommunitySettingsModal Community="_selectedCommunity" State="CommunityState"
@@ -355,10 +365,16 @@ else
     private bool _showSettings;
     private bool _showAddFriend;
     private bool _showEditProfile;
+    private bool _showAvatarManager;
     private bool _showCommunityCreate;
     private bool _showCommunitySettings;
     private bool _showQuickInvite;
     private bool _showCommunityMenu;
+    private CommunityMemberDto? CurrentCommunityMember => _selectedCommunity is null ? null :
+        CommunityState.Management?.Members.FirstOrDefault(value => value.AccountId == Session.Account?.Id);
+    private string PlayerDisplayName => CurrentCommunityMember?.DisplayName ?? Session.Account!.DisplayName;
+    private Guid? PlayerAvatarPresetId => CurrentCommunityMember?.AvatarPresetId;
+    private long PlayerAvatarRevision => CurrentCommunityMember?.AvatarRevision ?? Session.Account!.AvatarRevision;
     private bool _showLeaveConfirm;
     private string? _leaveError;
     private CommunitySidebar? _communitySidebar;
@@ -1040,6 +1056,19 @@ else
     private void OpenProfilePopup() { VoiceSessions.MinimizeWatchedStream(); _showProfile = true; }
     private void CloseAddFriend() { _showAddFriend = false; _error = null; }
     private void OpenProfileEditor() { _showProfile = false; _showEditProfile = true; _error = null; }
+    private void OpenAvatarManager()
+    {
+        if (_selectedCommunity is null) return;
+        _showProfile = false;
+        _showAvatarManager = true;
+        _error = null;
+    }
+    private void CloseAvatarManager() { _showAvatarManager = false; _error = null; }
+    private async Task RefreshCommunityProfileAsync()
+    {
+        if (_selectedCommunity is not null) await CommunityState.LoadManagementAsync();
+        await InvokeAsync(StateHasChanged);
+    }
 
     private async Task ExpandFloatingStreamAsync()
     {
@@ -1166,6 +1195,7 @@ else
         _showProfile = false;
         _showAddFriend = false;
         _showEditProfile = false;
+        _showAvatarManager = false;
         _showCommunityCreate = false;
         _showCommunitySettings = false;
         _showQuickInvite = false;

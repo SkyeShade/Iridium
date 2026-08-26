@@ -50,6 +50,7 @@ public sealed class ChannelMessagingSession(
     public bool IsLoadingOlder => _loadingOlder;
     public MessageWindowMode WindowMode { get; private set; } = MessageWindowMode.Latest;
     public int WindowRevision { get; private set; }
+    public long RecentReconciliationRevision { get; private set; }
     public bool IsConnected => _connection?.State == HubConnectionState.Connected;
     public event Action? Changed;
 
@@ -129,6 +130,7 @@ public sealed class ChannelMessagingSession(
                 return;
             }
             ReconcileChannelRecent(history, incrementRevision: !hot && cached is null);
+            RecentReconciliationRevision++;
             SaveActiveHotStates();
             CacheSafely(_historyCache.ReconcileRecentChannelAsync(scope, history), "reconcile channel history");
             _channelReady = true;
@@ -212,6 +214,7 @@ public sealed class ChannelMessagingSession(
                 return;
             }
             ReconcileDirectRecent(history, incrementRevision: !hot && cached is null);
+            RecentReconciliationRevision++;
             SaveActiveHotStates();
             CacheSafely(_historyCache.ReconcileRecentDirectAsync(scope, history), "reconcile Direct Message history");
             await nodeSession.MarkDirectConversationReadAsync(conversationId, cancellationToken);
@@ -458,9 +461,10 @@ public sealed class ChannelMessagingSession(
 
     public Guid QueueMessage(string content, Guid? replyToMessageId = null,
         IReadOnlyList<CommunityMentionInput>? mentions = null, IReadOnlyList<AttachmentDto>? attachments = null,
-        Func<CancellationToken, Task<IReadOnlyList<AttachmentDto>>>? uploadAttachments = null) =>
+        Func<CancellationToken, Task<IReadOnlyList<AttachmentDto>>>? uploadAttachments = null,
+        MessageAuthorDto? optimisticAuthor = null) =>
         BeginMessage(content, replyToMessageId, mentions, attachments: attachments,
-            uploadAttachments: uploadAttachments).ClientMessageId;
+            uploadAttachments: uploadAttachments, optimisticAuthor: optimisticAuthor).ClientMessageId;
 
     public Task SendAsync(string content, Guid? replyToMessageId = null,
         IReadOnlyList<CommunityMentionInput>? mentions = null, CancellationToken cancellationToken = default) =>
@@ -470,6 +474,7 @@ public sealed class ChannelMessagingSession(
         string content, Guid? replyToMessageId, IReadOnlyList<CommunityMentionInput>? mentions,
         IReadOnlyList<AttachmentDto>? attachments = null,
         Func<CancellationToken, Task<IReadOnlyList<AttachmentDto>>>? uploadAttachments = null,
+        MessageAuthorDto? optimisticAuthor = null,
         CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
@@ -478,7 +483,7 @@ public sealed class ChannelMessagingSession(
         var clientMessageId = Guid.NewGuid();
         var pending = new ChannelMessageDto(
             clientMessageId, communityId, channelId,
-            new(account.Id, account.Username, account.DisplayName), content, DateTimeOffset.UtcNow,
+            optimisticAuthor ?? new(account.Id, account.Username, account.DisplayName), content, DateTimeOffset.UtcNow,
             null, false, ChannelReply(replyToMessageId), OptimisticMentions(content, mentions),
             clientMessageId, MessageDeliveryState.Pending, Attachments: attachments);
         var reloadLatest = AddOptimisticChannel(pending);
@@ -1199,10 +1204,12 @@ public sealed class ChannelMessagingSession(
     {
         var serverMessages = page.Messages.Where(value => !value.IsDeleted).ToArray();
         var oldest = serverMessages.Length == 0 ? (DateTimeOffset?)null : serverMessages.Min(value => value.CreatedAt);
+        var newest = serverMessages.Length == 0 ? (DateTimeOffset?)null : serverMessages.Max(value => value.CreatedAt);
         lock (_messageSync)
         {
             _messages.RemoveAll(value => value.DeliveryState == MessageDeliveryState.Confirmed &&
-                (oldest is null || value.CreatedAt >= oldest) && serverMessages.All(server => server.Id != value.Id));
+                (oldest is null || value.CreatedAt >= oldest) && (newest is null || value.CreatedAt <= newest) &&
+                serverMessages.All(server => server.Id != value.Id));
         }
         foreach (var message in serverMessages) Upsert(message, notify: false);
         _channelOlderCursor = page.OlderCursor;
@@ -1215,10 +1222,12 @@ public sealed class ChannelMessagingSession(
     {
         var serverMessages = page.Messages.Where(value => !value.IsDeleted).ToArray();
         var oldest = serverMessages.Length == 0 ? (DateTimeOffset?)null : serverMessages.Min(value => value.CreatedAt);
+        var newest = serverMessages.Length == 0 ? (DateTimeOffset?)null : serverMessages.Max(value => value.CreatedAt);
         lock (_messageSync)
         {
             _directMessages.RemoveAll(value => value.DeliveryState == MessageDeliveryState.Confirmed &&
-                (oldest is null || value.CreatedAt >= oldest) && serverMessages.All(server => server.Id != value.Id));
+                (oldest is null || value.CreatedAt >= oldest) && (newest is null || value.CreatedAt <= newest) &&
+                serverMessages.All(server => server.Id != value.Id));
         }
         foreach (var message in serverMessages) UpsertDirect(message, notify: false);
         _directOlderCursor = page.OlderCursor;
@@ -1465,6 +1474,10 @@ public sealed class ChannelMessagingSession(
                     ReplyTo = _messages[position].ReplyTo! with
                     {
                         AuthorDisplayName = message.Author.DisplayName,
+                        AvatarPresetId = message.Author.AvatarPresetId,
+                        AvatarRevision = message.Author.AvatarRevision,
+                        AvatarSnapshotMessageId = message.Author.AvatarSnapshotMessageId,
+                        HasHistoricalSnapshot = message.Author.HasHistoricalSnapshot,
                         Excerpt = excerpt,
                         IsDeleted = message.IsDeleted
                     }
@@ -1499,6 +1512,10 @@ public sealed class ChannelMessagingSession(
                     ReplyTo = _directMessages[position].ReplyTo! with
                     {
                         AuthorDisplayName = message.Author.DisplayName,
+                        AvatarPresetId = message.Author.AvatarPresetId,
+                        AvatarRevision = message.Author.AvatarRevision,
+                        AvatarSnapshotMessageId = message.Author.AvatarSnapshotMessageId,
+                        HasHistoricalSnapshot = message.Author.HasHistoricalSnapshot,
                         Excerpt = excerpt,
                         IsDeleted = message.IsDeleted
                     }

@@ -13,10 +13,12 @@ public sealed class CommunityVoiceRoomService(TimeProvider timeProvider, ICommun
     {
         public required Guid AccountId { get; init; }
         public required string ParticipantId { get; init; }
-        public required string DisplayName { get; init; }
+        public required string DisplayName { get; set; }
         public required string Username { get; init; }
         public required PublicPresence Presence { get; init; }
         public required DateTimeOffset JoinedAt { get; init; }
+        public Guid? AvatarPresetId { get; set; }
+        public long AvatarRevision { get; set; }
         public bool Muted { get; set; }
         public bool Deafened { get; set; }
         public bool Speaking { get; set; }
@@ -50,6 +52,7 @@ public sealed class CommunityVoiceRoomService(TimeProvider timeProvider, ICommun
 
     public async Task<VoiceJoinResult> JoinAsync(Guid communityId, Guid channelId, Guid accountId,
         string participantId, string displayName, string username, PublicPresence presence, string communityName, string channelName,
+        Guid? avatarPresetId = null, long avatarRevision = 0,
         CancellationToken cancellationToken = default)
     {
         VoiceLeaveResult? previous = null;
@@ -76,7 +79,8 @@ public sealed class CommunityVoiceRoomService(TimeProvider timeProvider, ICommun
             participant = new Participant
             {
                 AccountId = accountId, ParticipantId = participantId, DisplayName = displayName, Username = username,
-                Presence = presence, JoinedAt = timeProvider.GetUtcNow()
+                Presence = presence, JoinedAt = timeProvider.GetUtcNow(), AvatarPresetId = avatarPresetId,
+                AvatarRevision = avatarRevision
             };
             duplicate = !room.Participants.TryAdd(participantId, participant);
             _connectionRooms[participantId] = key;
@@ -95,7 +99,7 @@ public sealed class CommunityVoiceRoomService(TimeProvider timeProvider, ICommun
         string participantId, string displayName, PublicPresence presence, string communityName, string channelName,
         CancellationToken cancellationToken = default) =>
         JoinAsync(communityId, channelId, accountId, participantId, displayName, displayName, presence,
-            communityName, channelName, cancellationToken);
+            communityName, channelName, cancellationToken: cancellationToken);
 
     public async Task<VoiceLeaveResult?> LeaveAsync(string participantId, CancellationToken cancellationToken = default)
     {
@@ -144,6 +148,32 @@ public sealed class CommunityVoiceRoomService(TimeProvider timeProvider, ICommun
         }
     }
 
+    public IReadOnlyList<VoiceParticipantStateChangedEvent> UpdateDisplayName(
+        Guid communityId, Guid accountId, string displayName)
+        => UpdateDisplayProfile(communityId, accountId, displayName, null, 0, updateAvatar: false);
+
+    public IReadOnlyList<VoiceParticipantStateChangedEvent> UpdateDisplayProfile(
+        Guid communityId, Guid accountId, string displayName, Guid? avatarPresetId, long avatarRevision,
+        bool updateAvatar = true)
+    {
+        lock (_gate)
+        {
+            var changed = new List<VoiceParticipantStateChangedEvent>();
+            foreach (var room in _rooms.Values.Where(value => value.CommunityId == communityId))
+            foreach (var participant in room.Participants.Values.Where(value => value.AccountId == accountId))
+            {
+                participant.DisplayName = displayName;
+                if (updateAvatar)
+                {
+                    participant.AvatarPresetId = avatarPresetId;
+                    participant.AvatarRevision = avatarRevision;
+                }
+                changed.Add(new(communityId, room.ChannelId, ToDto(participant)));
+            }
+            return changed;
+        }
+    }
+
     private VoiceLeaveResult? LeaveLocked(string participantId)
     {
         if (!_connectionRooms.Remove(participantId, out var key) || !_rooms.TryGetValue(key, out var room) ||
@@ -158,5 +188,5 @@ public sealed class CommunityVoiceRoomService(TimeProvider timeProvider, ICommun
         room.CommunityName, room.ChannelName);
     private VoiceParticipantDto ToDto(Participant value) => new(value.AccountId, value.ParticipantId,
         value.DisplayName, value.Presence, value.JoinedAt, value.Muted, value.Deafened, value.Speaking, media.Status,
-        value.Username);
+        value.Username, value.AvatarPresetId, value.AvatarRevision);
 }

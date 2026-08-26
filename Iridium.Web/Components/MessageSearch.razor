@@ -79,7 +79,10 @@
             @foreach (var result in _results)
             {
                 <button class="search-result" @onclick="() => SelectResultAsync(result)">
-                    <ProfileAvatar AccountId="result.Author.AccountId" DisplayName="@result.Author.DisplayName" Size="small" BadgeMode="AvatarBadgeMode.None" />
+                    <ProfileAvatar AccountId="result.Author.AccountId" DisplayName="@result.Author.DisplayName"
+                                   AvatarPresetId="result.Author.AvatarPresetId" AvatarRevision="result.Author.AvatarRevision"
+                                   AvatarSnapshotMessageId="result.Author.AvatarSnapshotMessageId"
+                                   Size="small" BadgeMode="AvatarBadgeMode.None" />
                     <span class="result-copy"><span><strong class="display-name">@result.Author.DisplayName</strong>
                         @if (!string.IsNullOrWhiteSpace(result.ChannelName)) { <small>#@result.ChannelName</small> }
                         <time>@result.CreatedAt.ToLocalTime().ToString("g")</time></span>

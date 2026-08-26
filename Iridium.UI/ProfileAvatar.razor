@@ -34,6 +34,8 @@ else
     [Parameter] public string DisplayName { get; set; } = string.Empty;
     [Parameter] public Guid? AccountId { get; set; }
     [Parameter] public long AvatarRevision { get; set; }
+    [Parameter] public Guid? AvatarPresetId { get; set; }
+    [Parameter] public Guid? AvatarSnapshotMessageId { get; set; }
     [Parameter] public PublicPresence Presence { get; set; } = PublicPresence.Offline;
     [Parameter] public AvatarBadgeMode BadgeMode { get; set; } = AvatarBadgeMode.Presence;
     [Parameter] public int NotificationCount { get; set; }
@@ -54,13 +56,21 @@ else
     private bool _imageFailed;
     private Guid? _loadedAccountId;
     private long _loadedRevision = -1;
+    private Guid? _loadedPresetId;
+    private Guid? _loadedSnapshotMessageId;
 
     protected override async Task OnParametersSetAsync()
     {
         if (AccountId is not { } accountId) return;
-        if (_loadedAccountId == accountId && _loadedRevision == AvatarRevision) return;
-        _loadedAccountId = accountId; _loadedRevision = AvatarRevision; _imageFailed = false;
-        _avatar = await ProfileMedia.GetAvatarAsync(accountId, AvatarRevision);
+        if (_loadedAccountId == accountId && _loadedRevision == AvatarRevision && _loadedPresetId == AvatarPresetId &&
+            _loadedSnapshotMessageId == AvatarSnapshotMessageId) return;
+        _loadedAccountId = accountId; _loadedRevision = AvatarRevision; _loadedPresetId = AvatarPresetId;
+        _loadedSnapshotMessageId = AvatarSnapshotMessageId; _imageFailed = false;
+        _avatar = AvatarSnapshotMessageId is { } snapshotMessageId
+            ? await ProfileMedia.GetMessageSnapshotAsync(snapshotMessageId)
+            : AvatarPresetId is { } presetId
+                ? await ProfileMedia.GetAvatarPresetAsync(accountId, presetId, AvatarRevision)
+                : await ProfileMedia.GetAvatarAsync(accountId, AvatarRevision);
     }
 
     protected override void OnInitialized() => ProfileMedia.Changed += ProfileChanged;
@@ -69,7 +79,11 @@ else
         if (AccountId != accountId) return;
         _ = InvokeAsync(async () =>
         {
-            _avatar = await ProfileMedia.GetAvatarAsync(accountId);
+            _avatar = AvatarSnapshotMessageId is { } snapshotMessageId
+                ? await ProfileMedia.GetMessageSnapshotAsync(snapshotMessageId)
+                : AvatarPresetId is { } presetId
+                    ? await ProfileMedia.GetAvatarPresetAsync(accountId, presetId)
+                    : await ProfileMedia.GetAvatarAsync(accountId);
             _imageFailed = false;
             StateHasChanged();
         });

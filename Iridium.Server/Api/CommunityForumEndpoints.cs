@@ -74,7 +74,7 @@ public static class CommunityForumEndpoints
     private static async Task<IResult> CreateAsync(Guid communityId, Guid channelId,
         CreateCommunityForumPostRequest request, HttpContext context, IridiumDbContext db, SessionService sessions,
         CommunityAuthorizationService authorization, ICommunityLimitsService limits, IOptions<NodeOptions> nodeOptions,
-        IHubContext<ChatHub> hub)
+        IHubContext<ChatHub> hub, HistoricalAuthorPresentationService historicalAuthors)
     {
         var session = await sessions.GetAsync(context, db);
         if (session is null) return Results.Unauthorized();
@@ -122,6 +122,7 @@ public static class CommunityForumEndpoints
                 ? null : JsonSerializer.Serialize(mentionResult.Mentions),
             AuthorAccount = session.Account, Channel = discussion
         };
+        await historicalAuthors.CaptureAsync(root, communityId, session.AccountId);
         foreach (var attachment in attachmentsResult.Attachments)
         {
             attachment.ChannelMessageId = root.Id;
@@ -232,7 +233,12 @@ public static class CommunityForumEndpoints
 
     internal static CommunityForumPostDto ToDto(CommunityForumPost value, int unreadCount = 0) => new(
         value.Id, value.CommunityId, value.ForumChannelId, value.DiscussionChannelId, value.RootMessageId,
-        new(value.AuthorAccountId, value.AuthorAccount.Username, value.AuthorAccount.DisplayName), value.Title,
+        new(value.AuthorAccountId, value.AuthorAccount.Username,
+            value.RootMessage.AuthorDisplayNameSnapshot ?? value.AuthorAccount.DisplayName,
+            AvatarRevision: value.RootMessage.AuthorAvatarRevisionSnapshot ?? value.AuthorAccount.AvatarRevision,
+            AvatarSnapshotMessageId: value.RootMessage.AuthorAvatarObjectKeySnapshot is null
+                ? null : value.RootMessage.Id,
+            HasHistoricalSnapshot: value.RootMessage.AuthorDisplayNameSnapshot is not null), value.Title,
         value.CreatedAt, value.UpdatedAt, value.LastActivityAt, value.ReplyCount, value.IsLocked, value.IsPinned,
         unreadCount, RootPreview(value.RootMessage?.Content),
         ChannelMessageMapper.DeserializeMentions(value.RootMessage?.MentionsJson));

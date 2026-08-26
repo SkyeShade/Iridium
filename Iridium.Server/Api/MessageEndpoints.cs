@@ -1,6 +1,7 @@
 using Iridium.Protocol;
 using Iridium.Server.Persistence;
 using Iridium.Server.Security;
+using Iridium.Server.Storage;
 using Microsoft.EntityFrameworkCore;
 
 namespace Iridium.Server.Api;
@@ -17,7 +18,44 @@ public static class MessageEndpoints
             MarkReadAsync);
         endpoints.MapGet("/api/communities/{communityId:guid}/messages/search", SearchAsync);
         endpoints.MapPost("/api/communities/{communityId:guid}/messages/search", SearchRequestAsync);
+        endpoints.MapGet("/api/messages/{messageId:guid}/author-avatar/metadata", GetAuthorAvatarMetadataAsync);
+        endpoints.MapGet("/api/messages/{messageId:guid}/author-avatar", DownloadAuthorAvatarAsync);
         return endpoints;
+    }
+
+    private static async Task<IResult> GetAuthorAvatarMetadataAsync(
+        Guid messageId, HttpContext context, IridiumDbContext db, SessionService sessions,
+        CommunityAuthorizationService authorization)
+    {
+        var session = await sessions.GetAsync(context, db);
+        if (session is null) return Results.Unauthorized();
+        var message = await db.ChannelMessages.AsNoTracking().SingleOrDefaultAsync(value => value.Id == messageId);
+        if (message?.AuthorAvatarObjectKeySnapshot is null) return Results.NotFound();
+        var access = await authorization.GetChannelAccessAsync(
+            message.CommunityId, message.ChannelId, session.AccountId, db);
+        if (!access.Has(CommunityPermission.ViewChannels) ||
+            !access.Has(CommunityPermission.ReadMessageHistory)) return Results.Forbid();
+        var revision = message.AuthorAvatarRevisionSnapshot ?? 0;
+        var url = $"{context.Request.Scheme}://{context.Request.Host}/api/messages/{message.Id}/author-avatar?v={revision}";
+        return Results.Ok(new ProfileAvatarDto(true, url, revision,
+            message.AuthorAvatarCropXSnapshot ?? 0, message.AuthorAvatarCropYSnapshot ?? 0,
+            message.AuthorAvatarZoomSnapshot ?? 1, message.AuthorAvatarWidthSnapshot ?? 0,
+            message.AuthorAvatarHeightSnapshot ?? 0));
+    }
+
+    private static async Task<IResult> DownloadAuthorAvatarAsync(
+        Guid messageId, HttpContext context, IridiumDbContext db, IAttachmentStorage storage,
+        CancellationToken cancellationToken)
+    {
+        var avatar = await db.ChannelMessages.AsNoTracking().Where(value => value.Id == messageId)
+            .Select(value => new { value.AuthorAvatarObjectKeySnapshot, value.AuthorAvatarContentTypeSnapshot })
+            .SingleOrDefaultAsync(cancellationToken);
+        if (avatar?.AuthorAvatarObjectKeySnapshot is null) return Results.NotFound();
+        var stream = await storage.OpenReadAsync(avatar.AuthorAvatarObjectKeySnapshot, cancellationToken);
+        if (stream is not null && context.Request.Query.ContainsKey("v"))
+            context.Response.Headers.CacheControl = "public,max-age=31536000,immutable";
+        return stream is null ? Results.NotFound() : Results.File(stream,
+            avatar.AuthorAvatarContentTypeSnapshot ?? "application/octet-stream", enableRangeProcessing: true);
     }
 
     private static async Task<IResult> MarkReadAsync(
@@ -104,7 +142,8 @@ public static class MessageEndpoints
         if (hasOlder) newest.RemoveAt(newest.Count - 1);
         var messages = newest.OrderBy(value => value.CreatedAt).ThenBy(value => value.Id)
             .Select(ChannelMessageMapper.ToDto).ToList();
-        var resolved = await ChannelMessageMapper.ResolveMentionNamesAsync(messages, db);
+        var profiled = await ChannelMessageMapper.ResolveCommunityProfilesAsync(messages, db);
+        var resolved = await ChannelMessageMapper.ResolveMentionNamesAsync(profiled, db);
         var olderCursor = resolved.Count == 0 ? null : MessageHistoryCursor.Encode(resolved[0].CreatedAt, resolved[0].Id);
         return Results.Ok(new MessageHistoryPage<ChannelMessageDto>(resolved, olderCursor, hasOlder));
     }
@@ -141,7 +180,8 @@ public static class MessageEndpoints
             .OrderBy(value => value.CreatedAt).ThenBy(value => value.Id).Take(half).ToListAsync();
         var entities = before.OrderBy(value => value.CreatedAt).ThenBy(value => value.Id).Append(target).Concat(after);
         var messages = entities.Select(ChannelMessageMapper.ToDto).ToList();
-        var resolved = await ChannelMessageMapper.ResolveMentionNamesAsync(messages, db);
+        var profiled = await ChannelMessageMapper.ResolveCommunityProfilesAsync(messages, db);
+        var resolved = await ChannelMessageMapper.ResolveMentionNamesAsync(profiled, db);
         var olderCursor = resolved.Count == 0 ? null : MessageHistoryCursor.Encode(resolved[0].CreatedAt, resolved[0].Id);
         return Results.Ok(new MessageHistoryPage<ChannelMessageDto>(resolved, olderCursor, hasOlder, true, targetId));
     }
@@ -190,7 +230,11 @@ public static class MessageEndpoints
         var hasMore = found.Count > take;
         if (hasMore) found.RemoveAt(found.Count - 1);
         var results = found.Select(value => new MessageSearchResultDto(value.Id, value.CommunityId, value.ChannelId, null,
-            value.Channel.Name, new(value.AuthorAccountId, value.AuthorAccount.Username, value.AuthorAccount.DisplayName),
+            value.Channel.Name, new(value.AuthorAccountId, value.AuthorAccount.Username,
+                value.AuthorDisplayNameSnapshot ?? value.AuthorAccount.DisplayName,
+                AvatarRevision: value.AuthorAvatarRevisionSnapshot ?? value.AuthorAccount.AvatarRevision,
+                AvatarSnapshotMessageId: value.AuthorAvatarObjectKeySnapshot is null ? null : value.Id,
+                HasHistoricalSnapshot: value.AuthorDisplayNameSnapshot is not null),
             value.Content, value.CreatedAt)).ToArray();
         var next = results.Length == 0 ? null : MessageHistoryCursor.Encode(results[^1].CreatedAt, results[^1].MessageId);
         return Results.Ok(new MessageSearchPageDto(results, next, hasMore));
@@ -249,7 +293,11 @@ public static class MessageEndpoints
         var hasMore = found.Count > take;
         if (hasMore) found.RemoveAt(found.Count - 1);
         var results = found.Select(value => new MessageSearchResultDto(value.Id, value.CommunityId, value.ChannelId, null,
-            value.Channel.Name, new(value.AuthorAccountId, value.AuthorAccount.Username, value.AuthorAccount.DisplayName),
+            value.Channel.Name, new(value.AuthorAccountId, value.AuthorAccount.Username,
+                value.AuthorDisplayNameSnapshot ?? value.AuthorAccount.DisplayName,
+                AvatarRevision: value.AuthorAvatarRevisionSnapshot ?? value.AuthorAccount.AvatarRevision,
+                AvatarSnapshotMessageId: value.AuthorAvatarObjectKeySnapshot is null ? null : value.Id,
+                HasHistoricalSnapshot: value.AuthorDisplayNameSnapshot is not null),
             value.Content, value.CreatedAt)).ToArray();
         var next = results.Length == 0 ? null : MessageHistoryCursor.Encode(results[^1].CreatedAt, results[^1].MessageId);
         return Results.Ok(new MessageSearchPageDto(results, next, hasMore));
@@ -269,4 +317,5 @@ public static class MessageEndpoints
         }
         return result;
     }
+
 }

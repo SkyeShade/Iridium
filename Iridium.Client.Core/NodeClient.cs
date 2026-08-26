@@ -76,6 +76,14 @@ public sealed class NodeClient(Uri nodeAddress)
     public Task<ProfileAvatarDto> GetProfileAvatarAsync(Guid accountId, CancellationToken cancellationToken = default) =>
         SendAsync<ProfileAvatarDto>(HttpMethod.Get, $"api/profiles/{accountId}/avatar-metadata", null, cancellationToken);
 
+    public Task<ProfileAvatarDto> GetProfileAvatarPresetAsync(Guid accountId, Guid presetId,
+        CancellationToken cancellationToken = default) => SendAsync<ProfileAvatarDto>(HttpMethod.Get,
+          $"api/profiles/{accountId}/avatar/{presetId}/metadata", null, cancellationToken);
+
+    public Task<ProfileAvatarDto> GetMessageAuthorAvatarSnapshotAsync(Guid messageId,
+        CancellationToken cancellationToken = default) => SendAsync<ProfileAvatarDto>(HttpMethod.Get,
+        $"api/messages/{messageId}/author-avatar/metadata", null, cancellationToken);
+
     public async Task<AccountAvatarPresetsDto> UploadAvatarPresetAsync(int slotIndex, Stream content,
         string fileName, string contentType, double cropX, double cropY, double zoom, bool setActive,
         CancellationToken cancellationToken = default)
@@ -103,6 +111,30 @@ public sealed class NodeClient(Uri nodeAddress)
     public Task<AccountAvatarPresetDto> UpdateAvatarCropAsync(Guid presetId, UpdateAvatarCropRequest request,
         CancellationToken cancellationToken = default) => SendAsync<AccountAvatarPresetDto>(HttpMethod.Patch,
         $"api/account/avatar-presets/{presetId}", request, cancellationToken);
+
+    public Task<List<UserProfilePresetDto>> GetProfilePresetsAsync(Guid communityId,
+        CancellationToken cancellationToken = default) => SendAsync<List<UserProfilePresetDto>>(HttpMethod.Get,
+        $"api/communities/{communityId}/profile-presets", null, cancellationToken);
+
+    public Task<UserProfilePresetDto> CreateProfilePresetAsync(Guid communityId, string displayName,
+        CancellationToken cancellationToken = default) => SendAsync<UserProfilePresetDto>(HttpMethod.Post,
+        $"api/communities/{communityId}/profile-presets", new CreateUserProfilePresetRequest(displayName), cancellationToken);
+
+    public Task<UserProfilePresetDto> UpdateProfilePresetAsync(Guid communityId, Guid presetId, UpdateProfilePresetRequest request,
+        CancellationToken cancellationToken = default) => SendAsync<UserProfilePresetDto>(HttpMethod.Patch,
+        $"api/communities/{communityId}/profile-presets/{presetId}", request, cancellationToken);
+
+    public Task<UserProfilePresetDto> SetProfilePresetAvatarAsync(Guid communityId, Guid presetId, Guid avatarPresetId,
+        CancellationToken cancellationToken = default) => SendAsync<UserProfilePresetDto>(HttpMethod.Put,
+        $"api/communities/{communityId}/profile-presets/{presetId}/avatar", new SetUserProfilePresetAvatarRequest(avatarPresetId),
+        cancellationToken);
+
+    public Task<UserProfilePresetDto> ClearProfilePresetAvatarAsync(Guid communityId, Guid presetId,
+        CancellationToken cancellationToken = default) => SendAsync<UserProfilePresetDto>(HttpMethod.Delete,
+        $"api/communities/{communityId}/profile-presets/{presetId}/avatar", null, cancellationToken);
+
+    public Task DeleteProfilePresetAsync(Guid communityId, Guid presetId, CancellationToken cancellationToken = default) =>
+        SendNoContentAsync(HttpMethod.Delete, $"api/communities/{communityId}/profile-presets/{presetId}", null, cancellationToken);
 
     public Task ActivateAvatarPresetAsync(Guid presetId, CancellationToken cancellationToken = default) =>
         SendNoContentAsync(HttpMethod.Put, $"api/account/avatar-presets/{presetId}/active", null, cancellationToken);
@@ -366,6 +398,10 @@ public sealed class NodeClient(Uri nodeAddress)
 
     public Task<CommunityManagementDto> GetCommunityManagementAsync(Guid communityId, CancellationToken cancellationToken = default) =>
         SendAsync<CommunityManagementDto>(HttpMethod.Get, $"api/communities/{communityId}/management", null, cancellationToken);
+
+    public Task<CommunityProfileAssignmentDto> SetCommunityProfileAsync(Guid communityId, Guid? presetId,
+        CancellationToken cancellationToken = default) => SendAsync<CommunityProfileAssignmentDto>(HttpMethod.Put,
+        $"api/communities/{communityId}/members/@me/profile", new SetCommunityProfileRequest(presetId), cancellationToken);
 
     public Task<CommunityDto> UpdateCommunityAsync(Guid communityId, UpdateCommunityRequest request, CancellationToken cancellationToken = default) =>
         SendAsync<CommunityDto>(HttpMethod.Patch, $"api/communities/{communityId}", request, cancellationToken);

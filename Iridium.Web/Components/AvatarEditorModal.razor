@@ -9,15 +9,18 @@
 @inject ILogger<AvatarEditorModal> Logger
 @implements IAsyncDisposable
 
-<ModalShell Title="@(IsCommunity ? "Edit Server Icon" : "Edit Avatar")" Size="extra-large" OnClose="TryCloseAsync">
+<ModalShell Title="@(IsCommunity ? "Edit Server Icon" : ProfilePresetTargetId is not null ? "Edit Avatar PFP" : "Edit Avatar")"
+            Size="@(SinglePictureMode ? "large" : "extra-large")" OnClose="TryCloseAsync">
     <div class="avatar-editor">
-        <header class="editor-heading"><div><span>@(IsCommunity ? "SERVER ICON" : "PROFILE AVATAR")</span><h1>@(IsCommunity ? "Edit Server Icon" : "Edit Avatar")</h1></div><small>PNG, animated GIF, JPEG, or WebP · up to ten presets</small></header>
+        <header class="editor-heading"><div><span>@(IsCommunity ? "SERVER ICON" : ProfilePresetTargetId is not null ? "AVATAR PFP" : "PROFILE AVATAR")</span><h1>@(IsCommunity ? "Edit Server Icon" : ProfilePresetTargetId is not null ? "Edit Avatar PFP" : "Edit Avatar")</h1></div><small>PNG, animated GIF, JPEG, or WebP</small></header>
         @if (_loading)
         {
             <div class="editor-loading">Loading avatar presets…</div>
         }
         else
         {
+            @if (!SinglePictureMode)
+            {
             <div class="preset-strip" aria-label="Saved avatar presets">
                 @for (var slot = 0; slot < ProfileAvatarLimits.MaximumPresets; slot++)
                 {
@@ -40,56 +43,60 @@
                     }
                 }
             </div>
+            }
 
             @if (_editState is not null)
             {
-                <div class="avatar-workspace">
-                    <section class="crop-column">
-                        <div class="crop-stage @(_dragging ? "dragging" : null)" @ref="_cropStage"
-                             @onpointerdown="StartDraggingAsync" @onpointermove="DragImage"
-                             @onpointerup="StopDraggingAsync" @onpointercancel="StopDraggingAsync">
-                            <img class="crop-image" src="@_editState.SourceUrl" alt="Avatar source" draggable="false"
-                                 style="@_editState.EditorImageStyle" />
-                            <div class="crop-shade"></div>
-                            <div class="crop-outline"></div>
-                        </div>
-                        <label class="zoom-control"><span class="zoom-label">Zoom</span><span aria-hidden="true">−</span><input type="range" min="1" max="3" step="0.01" value="@_editState.Zoom" style="@_editState.ZoomFillStyle" @oninput="ZoomChanged" /><span aria-hidden="true">+</span></label>
-                        <div class="preset-actions">
-                            <label class="replace-button"><Icon Name="upload" /> Replace Image<InputFile class="file-input-overlay" style="position:absolute;inset:0;width:100%;height:100%;margin:0;padding:0;opacity:0;cursor:pointer;font-size:0" aria-label="Replace avatar image" accept="image/png,image/gif,image/jpeg,image/webp" OnChange="args => SelectFileAsync(_selectedSlot, args)" /></label>
-                            @if (_selectedPreset is not null)
-                            {
-                                <button type="button" class="delete-button" @onclick="DeleteSelectedAsync"><Icon Name="trash" /> Delete</button>
-                            }
-                        </div>
-                    </section>
-                    <aside class="chat-preview" aria-label="@(IsCommunity ? "Server icon preview" : "Avatar chat preview")">
-                        <span class="preview-label">@(IsCommunity ? "SERVER RAIL PREVIEW" : "CHAT PREVIEW")</span>
-                        @if (IsCommunity)
-                        {
-                            <div class="community-icon-preview"><span><AvatarCroppedPreview State="_editState" /></span><strong>@Community!.Name</strong></div>
-                        }
-                        else
-                        {
-                            <div class="preview-message">
-                                <span class="preview-avatar"><AvatarCroppedPreview State="_editState" /></span>
-                                <div><div><strong>@Account!.DisplayName</strong><time>Today at 14:32</time></div><p>This is what your avatar will look like in chat.</p><p>Follow-up example message</p></div>
-                            </div>
-                        }
-                        @if (IsGif)
-                        {
-                            <small class="gif-note">Animated GIF preview remains animated.</small>
-                        }
-                    </aside>
-                </div>
+                <SinglePfpEditor State="_editState" Mode="@EditorMode" DisplayName="@EditorDisplayName"
+                                 PublicIdentity="PublicIdentity" IsGif="IsGif" IsNewImage="@(_selectedPreset is null)"
+                                 CanRemove="@(_selectedPreset is not null)"
+                                 RemoveLabel="@(SinglePictureMode ? "Remove Custom PFP" : "Delete")"
+                                 OnFileSelected="args => SelectFileAsync(_selectedSlot, args)"
+                                 OnRemove="RemoveOrDeleteAsync" OnChanged="EditorChanged" />
                 <footer><button type="button" class="secondary" @onclick="TryCloseAsync">Cancel</button><button type="button" class="primary" disabled="@_saving" @onclick="SaveAsync">@(_saving ? "Saving…" : "Save")</button></footer>
             }
             else
             {
                 <div class="empty-editor">
-                    <span class="empty-editor-icon" aria-hidden="true"><Icon Name="upload" Size="26" /></span>
-                    <h2>Choose an empty preset slot</h2>
-                    <p>Upload an image to begin cropping your @(IsCommunity ? "Server icon" : "avatar").</p>
+                    @if (SinglePictureMode)
+                    {
+                        <div class="fallback-workspace">
+                            <section class="fallback-editor">
+                                <label class="fallback-upload" aria-label="Upload custom Avatar profile picture">
+                                    <span class="fallback-avatar">
+                                        <ProfileAvatar AccountId="Account!.Id" DisplayName="AvatarDisplayName" AvatarRevision="Account.AvatarRevision"
+                                                       BadgeMode="AvatarBadgeMode.None" Size="fill" Surface="panel" />
+                                        <span class="edit-overlay"><Icon Name="edit" /></span>
+                                    </span>
+                                    <span class="fallback-upload-label"><Icon Name="upload" /> Upload Custom PFP</span>
+                                    <InputFile class="file-input-overlay"
+                                               style="position:absolute;inset:0;width:100%;height:100%;margin:0;padding:0;opacity:0;cursor:pointer;font-size:0"
+                                               accept="image/png,image/gif,image/jpeg,image/webp"
+                                               OnChange="args => SelectFileAsync(_selectedSlot, args)" />
+                                </label>
+                                <h2>Using default profile picture</h2>
+                                <p>This Avatar follows your account profile picture until you add a custom image.</p>
+                            </section>
+                            <aside class="fallback-preview" aria-label="Avatar fallback preview">
+                                <span class="preview-label">LIVE PREVIEW</span>
+                                <ProfileAvatar AccountId="Account!.Id" DisplayName="AvatarDisplayName" AvatarRevision="Account.AvatarRevision"
+                                               BadgeMode="AvatarBadgeMode.None" Size="large" Surface="panel" />
+                                <strong>@AvatarDisplayName</strong>
+                                <small>@PublicIdentity</small>
+                            </aside>
+                        </div>
+                    }
+                    else
+                    {
+                        <span class="empty-editor-icon" aria-hidden="true"><Icon Name="upload" Size="26" /></span>
+                        <h2>Choose an empty preset slot</h2>
+                        <p>Upload an image to begin cropping your @(IsCommunity ? "Server icon" : "avatar").</p>
+                    }
                 </div>
+                @if (SinglePictureMode)
+                {
+                    <footer><button type="button" class="secondary" @onclick="TryCloseAsync">Cancel</button></footer>
+                }
             }
             @if (!string.IsNullOrWhiteSpace(_error)) { <p class="editor-error" role="alert">@_error</p> }
         }
@@ -108,6 +115,11 @@
 @code {
     [Parameter] public NodeAccountDto? Account { get; set; }
     [Parameter] public CommunityDto? Community { get; set; }
+    [Parameter] public Guid? ProfilePresetTargetId { get; set; }
+    [Parameter] public Guid? ProfilePresetCommunityId { get; set; }
+    [Parameter] public Guid? InitialAvatarPresetId { get; set; }
+    [Parameter] public string? AvatarDisplayName { get; set; }
+    [Parameter] public string? PublicIdentity { get; set; }
     [Parameter] public EventCallback OnClosed { get; set; }
     [Parameter] public EventCallback OnSaved { get; set; }
     private AccountAvatarPresetsDto? _presets;
@@ -119,12 +131,13 @@
     private string? _error;
     private int _selectedSlot;
     private AvatarEditState? _editState;
-    private ElementReference _cropStage;
     private IJSObjectReference? _editorModule;
-    private long? _activePointerId;
-    private double _stagePixels = 1;
-    private bool _loading = true, _saving, _dragging, _dirty, _confirmClose;
+    private bool _loading = true, _saving, _dirty, _confirmClose;
     private bool IsCommunity => Community is not null;
+    private bool SinglePictureMode => ProfilePresetTargetId is not null;
+    private string EditorMode => IsCommunity ? "community" : SinglePictureMode ? "avatar" : "account";
+    private string EditorDisplayName => IsCommunity ? Community!.Name :
+        SinglePictureMode ? AvatarDisplayName ?? Account!.DisplayName : Account!.DisplayName;
     private bool IsGif => string.Equals(_pendingContentType ?? _selectedPreset?.ContentType, "image/gif", StringComparison.OrdinalIgnoreCase);
 
     protected override async Task OnInitializedAsync()
@@ -133,9 +146,11 @@
         {
             _presets = IsCommunity ? await Session.GetCommunityAvatarPresetsAsync(Community!.Id) : await Session.GetAvatarPresetsAsync();
             if (!IsCommunity) ProfileMedia.Observe(Account!.Id, _presets.AvatarRevision);
-            var initial = _presets.Presets.FirstOrDefault(value => value.Id == _presets.ActiveAvatarPresetId)
-                          ?? _presets.Presets.FirstOrDefault();
+            var initial = _presets.Presets.FirstOrDefault(value => value.Id == InitialAvatarPresetId)
+                          ?? (SinglePictureMode ? null : _presets.Presets.FirstOrDefault(value => value.Id == _presets.ActiveAvatarPresetId)
+                              ?? _presets.Presets.FirstOrDefault());
             if (initial is not null) SelectPreset(initial);
+            else if (SinglePictureMode) _selectedSlot = (_presets.Presets.Select(value => value.SlotIndex).DefaultIfEmpty(-1).Max() + 1);
         }
         catch (Exception exception) { _error = exception.Message; }
         finally { _loading = false; }
@@ -193,33 +208,7 @@
         catch (Exception exception) { _error = exception.Message; }
     }
 
-    private async Task StartDraggingAsync(PointerEventArgs args)
-    {
-        if (args.Button != 0 || _editState is null) return;
-        _activePointerId = args.PointerId;
-        _stagePixels = await (await EditorModuleAsync()).InvokeAsync<double>("capturePointer", _cropStage, args.PointerId);
-        _dragging = true;
-    }
-    private async Task StopDraggingAsync(PointerEventArgs args)
-    {
-        if (_activePointerId != args.PointerId) return;
-        _dragging = false; _activePointerId = null;
-        if (_editorModule is not null) await _editorModule.InvokeVoidAsync("releasePointer", _cropStage, args.PointerId);
-    }
-    private void DragImage(PointerEventArgs args)
-    {
-        if (!_dragging || _activePointerId != args.PointerId || _editState is null) return;
-        var logicalScale = _editState.ViewportWidth / Math.Max(1, _stagePixels);
-        _editState.Pan(args.MovementX * logicalScale, args.MovementY * logicalScale);
-        _dirty = true;
-    }
-    private void ZoomChanged(ChangeEventArgs args)
-    {
-        if (!double.TryParse(args.Value?.ToString(), System.Globalization.NumberStyles.Float,
-                System.Globalization.CultureInfo.InvariantCulture, out var value)) return;
-        _editState?.SetZoom(value);
-        _dirty = true;
-    }
+    private void EditorChanged() => _dirty = true;
 
     private async Task SaveAsync()
     {
@@ -236,7 +225,7 @@
                         _editState.NormalizedOffsetX, _editState.NormalizedOffsetY, _editState.Zoom)
                     : await Session.UploadAvatarPresetAsync(_selectedSlot, stream, _pendingName ?? "avatar",
                         _pendingContentType ?? "application/octet-stream", _editState.NormalizedOffsetX,
-                        _editState.NormalizedOffsetY, _editState.Zoom, true);
+                        _editState.NormalizedOffsetY, _editState.Zoom, ProfilePresetTargetId is null);
                 var saved = _presets.Presets.Single(value => value.SlotIndex == _selectedSlot);
                 SelectPreset(saved);
             }
@@ -246,10 +235,12 @@
                     ? await Session.UpdateCommunityAvatarCropAsync(Community!.Id, _selectedPreset.Id,
                         new(_editState.NormalizedOffsetX, _editState.NormalizedOffsetY, _editState.Zoom, true))
                     : await Session.UpdateAvatarCropAsync(_selectedPreset.Id,
-                        new(_editState.NormalizedOffsetX, _editState.NormalizedOffsetY, _editState.Zoom, true));
+                        new(_editState.NormalizedOffsetX, _editState.NormalizedOffsetY, _editState.Zoom, !SinglePictureMode));
                 _selectedPreset = saved; _dirty = false;
                 _presets = IsCommunity ? await Session.GetCommunityAvatarPresetsAsync(Community!.Id) : await Session.GetAvatarPresetsAsync();
             }
+            if (!IsCommunity && ProfilePresetTargetId is { } profilePresetId && _selectedPreset is not null)
+                await Session.SetProfilePresetAvatarAsync(ProfilePresetCommunityId!.Value, profilePresetId, _selectedPreset.Id);
             if (_presets is not null && !IsCommunity) ProfileMedia.Invalidate(Account!.Id, _presets.AvatarRevision);
             _confirmClose = false;
             await OnSaved.InvokeAsync();
@@ -279,9 +270,25 @@
         finally { _saving = false; }
     }
 
+    private async Task RemoveCustomPfpAsync()
+    {
+        if (ProfilePresetTargetId is not { } profilePresetId || _saving) return;
+        _saving = true; _error = null;
+        try
+        {
+            await Session.ClearProfilePresetAvatarAsync(ProfilePresetCommunityId!.Value, profilePresetId);
+            await OnSaved.InvokeAsync();
+            await OnClosed.InvokeAsync();
+        }
+        catch (Exception exception) { _error = exception.Message; }
+        finally { _saving = false; }
+    }
+
+    private Task RemoveOrDeleteAsync() => SinglePictureMode ? RemoveCustomPfpAsync() : DeleteSelectedAsync();
+
     private Task TryCloseAsync()
     {
-        if (_dirty) { _confirmClose = true; return Task.CompletedTask; }
+        if (_dirty && !SinglePictureMode) { _confirmClose = true; return Task.CompletedTask; }
         return OnClosed.InvokeAsync();
     }
     private async Task DiscardAsync() { _dirty = false; _confirmClose = false; await OnClosed.InvokeAsync(); }

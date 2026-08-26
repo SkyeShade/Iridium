@@ -80,7 +80,8 @@ public sealed record AccountAvatarPresetDto(
     double CropY,
     double Zoom,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    string? DisplayName = null);
 
 public sealed record AccountAvatarPresetsDto(
     Guid AccountId,
@@ -89,6 +90,20 @@ public sealed record AccountAvatarPresetsDto(
     IReadOnlyList<AccountAvatarPresetDto> Presets);
 
 public sealed record UpdateAvatarCropRequest(double CropX, double CropY, double Zoom, bool SetActive = false);
+public sealed record UpdateProfilePresetRequest(string DisplayName);
+
+public sealed record UserProfilePresetDto(
+    Guid Id,
+    Guid AccountId,
+    Guid CommunityId,
+    string DisplayName,
+    AccountAvatarPresetDto? Avatar,
+    int Position,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt);
+
+public sealed record CreateUserProfilePresetRequest(string DisplayName);
+public sealed record SetUserProfilePresetAvatarRequest(Guid? AvatarPresetId);
 
 public sealed record ProfileBannerDto(bool HasBanner, string? BannerUrl, string? SourceUrl, long Revision,
     double CropX = 0, double CropY = 0, double Zoom = 1, int Width = 0, int Height = 0,

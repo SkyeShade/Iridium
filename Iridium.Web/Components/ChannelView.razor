@@ -18,13 +18,15 @@
     <div class="message-region">
         <MessageList @key="Channel.Id" @ref="_messageList" Messages="VisibleMessages" CurrentAccountId="CurrentAccountId" CanManage="CanManageMessages"
                      NodeAuthority="@NodeAuthority" CommunityManagement="CommunityManagement"
-                     OnEditProfile="OnEditProfile" OnMessage="OnMessage" OnMemberRolesChanged="OnMemberRolesChanged"
+                     OnEditProfile="OnEditProfile" OnEditAvatars="OnEditAvatars"
+                     OnCommunityProfileChanged="OnCommunityProfileChanged" OnMessage="OnMessage" OnMemberRolesChanged="OnMemberRolesChanged"
                      OnMention="MentionMemberAsync"
                      OnReply="BeginReply" Edit="EditMessageAsync" OnDelete="DeleteMessageAsync"
                      OnRetryLocal="RetryMessageAsync" OnRemoveLocal="RemoveLocalMessage"
                      OnEditCompleted="FocusComposerAfterEditAsync"
                      RootMessageId="RootMessageId"
-                     WindowRevision="Messaging.WindowRevision" TargetMessageId="@(Messaging.WindowMode == MessageWindowMode.SearchTarget ? _loadedTargetMessageId : null)"
+                     WindowRevision="Messaging.WindowRevision" ReconciliationRevision="Messaging.RecentReconciliationRevision" FollowLatest="_isPinnedToLatest"
+                     TargetMessageId="@(Messaging.WindowMode == MessageWindowMode.SearchTarget ? _loadedTargetMessageId : null)"
                      OnLoadOlder="LoadOlderAsync" OnViewportStateChanged="ViewportStateChanged" />
         @if (ShowJumpToLatest)
         {
@@ -62,6 +64,8 @@
     [Parameter, EditorRequired] public required string NodeAuthority { get; set; }
     [Parameter] public CommunityManagementDto? CommunityManagement { get; set; }
     [Parameter] public EventCallback OnEditProfile { get; set; }
+    [Parameter] public EventCallback OnEditAvatars { get; set; }
+    [Parameter] public EventCallback OnCommunityProfileChanged { get; set; }
     [Parameter] public EventCallback<Guid> OnMessage { get; set; }
     [Parameter] public EventCallback<CommunityMemberRolesChange> OnMemberRolesChanged { get; set; }
     [Parameter] public Guid? TargetMessageId { get; set; }
@@ -188,8 +192,11 @@
         {
             var smooth = ShowJumpToLatest;
             _messageList?.PrepareUserLatestTransition(smooth);
+            var currentMember = CommunityManagement?.Members.FirstOrDefault(value => value.AccountId == CurrentAccountId);
             Messaging.QueueMessage(submission.Content, _replyTo?.Id, submission.Mentions, submission.Attachments,
-                submission.UploadAttachments);
+                submission.UploadAttachments, currentMember is null ? null : new MessageAuthorDto(
+                    currentMember.AccountId, currentMember.Username, currentMember.DisplayName,
+                    currentMember.AvatarPresetId, currentMember.AvatarRevision));
             _replyTo = null;
             await RenderAsync();
             if (_composer is not null) await _composer.FocusAsync();

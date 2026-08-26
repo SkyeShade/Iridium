@@ -5,7 +5,8 @@
 @inject ChannelMessagingSession Messaging
 
 <div class="profile-card-layer" @onclick="OnClose">
-    <section class="profile-card" style="--profile-x:@CssPixel(X);--profile-y:@CssPixel(Y)" @onclick:stopPropagation="true">
+    <section class="profile-card" style="--profile-x:@CssPixel(X);--profile-y:@CssPixel(Y)" tabindex="-1"
+             @onkeydown="ProfileKeyDown" @onclick="CloseTransientMenus" @onclick:stopPropagation="true">
         <button type="button" class="profile-more" title="Profile actions" @onclick="ToggleActionMenu" @onclick:stopPropagation="true"><Icon Name="more" /></button>
         @if (_actionMenuOpen)
         {
@@ -19,9 +20,52 @@
             </div>
         }
         <div class="profile-banner"><ProfileBanner AccountId="AccountId" /></div>
-        <div class="profile-avatar" style="position:relative;z-index:1;padding:.3rem;box-shadow:0 0 0 1px var(--bg-sidebar)"><ProfileAvatar AccountId="AccountId" DisplayName="@DisplayName" Presence="@Presence" Size="large" Surface="sidebar" /></div>
+        @if (CanSwitchAvatar)
+        {
+            <button type="button" class="profile-avatar identity-switch" style="position:relative;z-index:1;padding:.3rem;box-shadow:0 0 0 1px var(--bg-sidebar)" aria-label="Choose Community Avatar"
+                    aria-expanded="@_avatarPickerOpen" @onclick="ToggleAvatarPickerAsync" @onclick:stopPropagation="true">
+                <ProfileAvatar AccountId="AccountId" DisplayName="@EffectiveDisplayName" Presence="@Presence"
+                               Size="large" Surface="sidebar" AvatarPresetId="EffectiveAvatarPresetId" AvatarRevision="EffectiveAvatarRevision" />
+            </button>
+        }
+        else
+        {
+            <div class="profile-avatar" style="position:relative;z-index:1;padding:.3rem;box-shadow:0 0 0 1px var(--bg-sidebar)"><ProfileAvatar AccountId="AccountId" DisplayName="@EffectiveDisplayName" Presence="@Presence"
+                 Size="large" Surface="sidebar" AvatarPresetId="EffectiveAvatarPresetId" AvatarRevision="EffectiveAvatarRevision" /></div>
+        }
+        @if (_avatarPickerOpen && CanSwitchAvatar)
+        {
+            <div class="avatar-switcher" role="menu" aria-label="Community Avatars" @onclick:stopPropagation="true">
+                <button role="menuitemradio" aria-checked="@(ActiveProfilePresetId is null)" @onclick="() => SelectAvatarAsync(null)">
+                    <ProfileAvatar AccountId="AccountId" DisplayName="@AccountDisplayName" AvatarRevision="AccountAvatarRevision"
+                                   BadgeMode="AvatarBadgeMode.None" Size="small" Surface="sidebar" />
+                    <span>Default Profile</span>@if (ActiveProfilePresetId is null) { <Icon Name="check" /> }
+                </button>
+                @foreach (var preset in _avatarPresets)
+                {
+                    <button @key="preset.Id" role="menuitemradio" aria-checked="@(ActiveProfilePresetId == preset.Id)"
+                            @onclick="() => SelectAvatarAsync(preset)">
+                        <ProfileAvatar AccountId="AccountId" DisplayName="@preset.DisplayName" AvatarPresetId="preset.Avatar?.Id"
+                                       AvatarRevision="@(preset.Avatar?.Revision ?? AccountAvatarRevision)"
+                                       BadgeMode="AvatarBadgeMode.None" Size="small" Surface="sidebar" />
+                        <span>@preset.DisplayName</span>@if (ActiveProfilePresetId == preset.Id) { <Icon Name="check" /> }
+                    </button>
+                }
+                @if (_loadingAvatars) { <p>Loading Avatars…</p> }
+                @if (!string.IsNullOrWhiteSpace(_avatarError)) { <p class="avatar-switch-error" role="alert">@_avatarError</p> }
+            </div>
+        }
         <div class="profile-content" @onclick="CloseRolePicker">
-            <h2 class="display-name" style="@NameStyle">@DisplayName</h2>
+            @if (CanSwitchAvatar)
+            {
+                <button type="button" class="profile-display-name display-name" style="@NameStyle"
+                        aria-label="Choose Community Avatar" aria-expanded="@_avatarPickerOpen"
+                        @onclick="ToggleAvatarPickerAsync" @onclick:stopPropagation="true">@EffectiveDisplayName</button>
+            }
+            else
+            {
+                <h2 class="display-name" style="@NameStyle">@EffectiveDisplayName</h2>
+            }
             <p class="identity">@IridiumIdentity.Format(Username, NodeAuthority)</p>
             @if (!string.IsNullOrWhiteSpace(Pronouns)) { <span class="pronouns">@Pronouns</span> }
             @if (!string.IsNullOrWhiteSpace(Description)) { <div class="bio"><ProfileBioContent Content="@Description" /></div> }
@@ -63,6 +107,7 @@
                 @if (AccountId == CurrentAccountId)
                 {
                     <button @onclick="OnEditProfile">Edit Profile</button>
+                    @if (CanSwitchAvatar && OnEditAvatars.HasDelegate) { <button @onclick="OnEditAvatars">Edit Avatars</button> }
                 }
                 else
                 {
@@ -76,6 +121,8 @@
 
 @code {
     [Parameter, EditorRequired] public required Guid AccountId { get; set; }
+    [Parameter] public Guid? AvatarPresetId { get; set; }
+    [Parameter] public long AvatarRevision { get; set; }
     [Parameter, EditorRequired] public required Guid CurrentAccountId { get; set; }
     [Parameter, EditorRequired] public required string Username { get; set; }
     [Parameter, EditorRequired] public required string DisplayName { get; set; }
@@ -90,6 +137,8 @@
     [Parameter] public double Y { get; set; }
     [Parameter] public EventCallback OnClose { get; set; }
     [Parameter] public EventCallback OnEditProfile { get; set; }
+    [Parameter] public EventCallback OnEditAvatars { get; set; }
+    [Parameter] public EventCallback OnCommunityProfileChanged { get; set; }
     [Parameter] public EventCallback<Guid> OnMessage { get; set; }
     [Parameter] public EventCallback<CommunityMemberRolesChange> OnMemberRolesChanged { get; set; }
     [Parameter] public bool IsBlocked { get; set; }
@@ -100,7 +149,21 @@
     private bool _actionMenuOpen;
     private bool _blocked;
     private bool _sendingMessage;
+    private bool _avatarPickerOpen;
+    private bool _loadingAvatars;
+    private string? _avatarError;
+    private IReadOnlyList<UserProfilePresetDto> _avatarPresets = [];
+    private Guid? _loadedAvatarCommunityId;
+    private CommunityProfileAssignmentDto? _localAssignment;
     private string _quickMessage = string.Empty;
+    private bool CanSwitchAvatar => AccountId == CurrentAccountId && CommunityContext is not null;
+    private CommunityMemberDto? CurrentMember => CommunityContext?.Members.FirstOrDefault(member => member.AccountId == CurrentAccountId);
+    private Guid? ActiveProfilePresetId => _localAssignment?.ProfilePresetId ?? CurrentMember?.ProfilePresetId;
+    private string AccountDisplayName => Session.Account?.DisplayName ?? DisplayName;
+    private long AccountAvatarRevision => Session.Account?.AvatarRevision ?? AvatarRevision;
+    private string EffectiveDisplayName => _localAssignment?.DisplayName ?? DisplayName;
+    private Guid? EffectiveAvatarPresetId => _localAssignment?.AvatarPresetId ?? AvatarPresetId;
+    private long EffectiveAvatarRevision => _localAssignment?.AvatarRevision ?? AvatarRevision;
     private static string CssPixel(double value) =>
         double.IsFinite(value) ? value.ToString(CultureInfo.InvariantCulture) + "px" : "0px";
     private string? NameStyle
@@ -133,11 +196,59 @@
 
     protected override void OnParametersSet()
     {
+        var communityId = CommunityContext?.Community.Id;
+        if (_loadedAvatarCommunityId != communityId)
+        {
+            _loadedAvatarCommunityId = communityId;
+            _avatarPresets = [];
+            _avatarPickerOpen = false;
+        }
         var ids = TargetMember?.RoleIds ?? Roles.Select(role => role.Id).ToArray();
         _assignedRoleIds.Clear();
         _assignedRoleIds.UnionWith(ids);
         _blocked = IsBlocked;
+        if (_localAssignment is { } local && (CommunityContext?.Community.Id != local.CommunityId ||
+            CurrentMember?.ProfilePresetId == local.ProfilePresetId)) _localAssignment = null;
         if (!CanManageTargetRoles) _rolePickerOpen = false;
+    }
+
+    private async Task ToggleAvatarPickerAsync()
+    {
+        if (!CanSwitchAvatar) return;
+        _avatarPickerOpen = !_avatarPickerOpen;
+        _actionMenuOpen = false;
+        _rolePickerOpen = false;
+        if (!_avatarPickerOpen || _avatarPresets.Count > 0 || _loadingAvatars) return;
+        _loadingAvatars = true;
+        _avatarError = null;
+        try { _avatarPresets = await Session.GetProfilePresetsAsync(CommunityContext!.Community.Id); }
+        catch { _avatarError = "Avatars could not be loaded."; }
+        finally { _loadingAvatars = false; }
+    }
+
+    private async Task SelectAvatarAsync(UserProfilePresetDto? preset)
+    {
+        if (CommunityContext is null) return;
+        _avatarError = null;
+        try
+        {
+            _localAssignment = await Session.SetCommunityProfileAsync(CommunityContext.Community.Id, preset?.Id);
+            _avatarPickerOpen = false;
+            await OnCommunityProfileChanged.InvokeAsync();
+        }
+        catch { _avatarError = "The Community Avatar could not be changed."; }
+    }
+
+    private void CloseTransientMenus()
+    {
+        _avatarPickerOpen = false;
+        _actionMenuOpen = false;
+        CloseRolePicker();
+    }
+
+    private void ProfileKeyDown(KeyboardEventArgs args)
+    {
+        if (args.Key == "Escape") CloseTransientMenus();
     }
 
     private void ToggleActionMenu() => _actionMenuOpen = !_actionMenuOpen;

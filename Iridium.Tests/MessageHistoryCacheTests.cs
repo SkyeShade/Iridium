@@ -74,6 +74,23 @@ public sealed class MessageHistoryCacheTests
         Assert.Equal(values.Skip(6).Take(5).Select(value => value.Id), result.Select(value => value.Id));
     }
 
+    [Fact]
+    public void FreshReconciliationFollowsOnlyWhenViewportWasPinnedToLatest()
+    {
+        Assert.True(MessageHistoryFollowLatest.ShouldFollow(true, 12, 13));
+        Assert.False(MessageHistoryFollowLatest.ShouldFollow(false, 12, 13));
+        Assert.False(MessageHistoryFollowLatest.ShouldFollow(true, -1, 13));
+        Assert.False(MessageHistoryFollowLatest.ShouldFollow(true, 13, 13));
+    }
+
+    [Fact]
+    public void ServerSnapshotReconciliationPreservesRealtimeRowsNewerThanSnapshot()
+    {
+        var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
+        var source = File.ReadAllText(Path.Combine(root, "Iridium.Client.Core", "ChannelMessagingSession.cs"));
+        Assert.Equal(2, source.Split("value.CreatedAt <= newest", StringSplitOptions.None).Length - 1);
+    }
+
     private static ChannelMessageDto ChannelMessage(string content, DateTimeOffset createdAt) => new(
         Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), new(Guid.NewGuid(), "user", "User"),
         content, createdAt, null, false, null);

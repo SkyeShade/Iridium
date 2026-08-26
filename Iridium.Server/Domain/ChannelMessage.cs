@@ -7,6 +7,15 @@ public sealed class ChannelMessage
     public Guid ChannelId { get; set; }
     public Guid AuthorAccountId { get; set; }
     public Guid? ClientMessageId { get; set; }
+    public string? AuthorDisplayNameSnapshot { get; set; }
+    public string? AuthorAvatarObjectKeySnapshot { get; set; }
+    public string? AuthorAvatarContentTypeSnapshot { get; set; }
+    public int? AuthorAvatarWidthSnapshot { get; set; }
+    public int? AuthorAvatarHeightSnapshot { get; set; }
+    public double? AuthorAvatarCropXSnapshot { get; set; }
+    public double? AuthorAvatarCropYSnapshot { get; set; }
+    public double? AuthorAvatarZoomSnapshot { get; set; }
+    public long? AuthorAvatarRevisionSnapshot { get; set; }
     public required string Content { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset? EditedAt { get; set; }

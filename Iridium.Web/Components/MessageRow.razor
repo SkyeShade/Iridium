@@ -17,6 +17,8 @@
             <button type="button" class="reply-focus" title="Go to replied message"
                     aria-label="Go to message from @reply.AuthorDisplayName" @onclick="() => OnFocusReply.InvokeAsync(reply.MessageId)">
                 <ProfileAvatar AccountId="reply.AuthorAccountId" DisplayName="@reply.AuthorDisplayName"
+                               AvatarPresetId="reply.AvatarPresetId" AvatarRevision="reply.AvatarRevision"
+                               AvatarSnapshotMessageId="reply.AvatarSnapshotMessageId"
                                BadgeMode="AvatarBadgeMode.None" Size="tiny" Surface="base" />
                 @if (reply.IsDeleted) { <span class="reply-deleted">Deleted message</span> }
                 else {
@@ -37,6 +39,8 @@
     {
         <button type="button" class="message-avatar author-trigger" @onclick="OpenAuthorProfileAsync" @oncontextmenu="OpenAuthorContext" @oncontextmenu:preventDefault="true" title="View @Message.Author.DisplayName's profile">
             <ProfileAvatar AccountId="Message.Author.AccountId" DisplayName="@Message.Author.DisplayName" Presence="@(AuthorPresence ?? PublicPresence.Offline)"
+                           AvatarPresetId="Message.Author.AvatarPresetId" AvatarRevision="Message.Author.AvatarRevision"
+                           AvatarSnapshotMessageId="Message.Author.AvatarSnapshotMessageId"
                            BadgeMode="@(ShowAuthorPresence && AuthorPresence.HasValue ? AvatarBadgeMode.Presence : AvatarBadgeMode.None)" Size="medium" Surface="base" />
         </button>
     }
@@ -108,10 +112,12 @@
 @if (_profile is { } profile)
 {
     <AnchoredProfileCard AccountId="profile.AccountId" CurrentAccountId="CurrentAccountId" Username="@profile.Username"
-        DisplayName="@profile.DisplayName" Pronouns="@profile.Pronouns" Description="@profile.Description" Presence="profile.Presence"
+        DisplayName="@(CurrentCommunityAuthor?.DisplayName ?? profile.DisplayName)" Pronouns="@profile.Pronouns" Description="@profile.Description" Presence="profile.Presence"
+        AvatarPresetId="CurrentCommunityAuthor?.AvatarPresetId" AvatarRevision="@(CurrentCommunityAuthor?.AvatarRevision ?? 0)"
         NodeAuthority="@NodeAuthority" Roles="_profileRoles" CommunityContext="CommunityManagement"
         NameColor="@_profileColor" X="_profileX" Y="_profileY"
-        OnClose="CloseProfile" OnEditProfile="OnEditProfile" OnMessage="OnMessage"
+        OnClose="CloseProfile" OnEditProfile="OnEditProfile" OnEditAvatars="OnEditAvatars"
+        OnCommunityProfileChanged="OnCommunityProfileChanged" OnMessage="OnMessage"
         IsBlocked="profile.IsBlockedByCurrentAccount"
         OnMemberRolesChanged="OnMemberRolesChanged" />
 }
@@ -133,6 +139,8 @@
     [Parameter] public PublicPresence? AuthorPresence { get; set; }
     [Parameter] public bool ShowAuthorPresence { get; set; }
     [Parameter] public EventCallback OnEditProfile { get; set; }
+    [Parameter] public EventCallback OnEditAvatars { get; set; }
+    [Parameter] public EventCallback OnCommunityProfileChanged { get; set; }
     [Parameter] public EventCallback<Guid> OnMessage { get; set; }
     [Parameter] public EventCallback<CommunityMemberRolesChange> OnMemberRolesChanged { get; set; }
     [Parameter] public EventCallback<CommunityMemberDto> OnMention { get; set; }
@@ -165,6 +173,8 @@
         .FirstOrDefault(value => value.AccountId == Message.Author.AccountId) is { } member
         ? CommunityManagement.Roles.Where(value => member.RoleIds.Contains(value.Id)).OrderByDescending(value => value.Position).ToArray()
         : [];
+    private CommunityMemberDto? CurrentCommunityAuthor => CommunityManagement?.Members
+        .FirstOrDefault(value => value.AccountId == Message.Author.AccountId);
     private string? AuthorColor => CommunityManagement?.Members
         .FirstOrDefault(value => value.AccountId == Message.Author.AccountId) is { } member
         ? CommunityRolePresentation.MemberColor(member, CommunityManagement.Roles)
@@ -316,7 +326,7 @@
         var position = await ProfilePositionAsync(args);
         var result = await ProfileResolver.ResolveAsync(IridiumIdentity.Format(Message.Author.Username, NodeAuthority));
         if (result.Profile is null) return;
-        _profile = result.Profile;
+        _profile = result.Profile with { DisplayName = CurrentCommunityAuthor?.DisplayName ?? result.Profile.DisplayName };
         _profileRoles = AuthorRoles;
         _profileColor = AuthorColor;
         _profileX = position.X;
@@ -330,7 +340,7 @@
         if (member is null) return;
         var result = await ProfileResolver.ResolveAsync(IridiumIdentity.Format(member.Username, NodeAuthority));
         if (result.Profile is null) return;
-        _profile = result.Profile;
+        _profile = result.Profile with { DisplayName = member.DisplayName };
         _profileRoles = CommunityManagement!.Roles.Where(value => member.RoleIds.Contains(value.Id))
             .OrderByDescending(value => value.Position).ToArray();
         _profileColor = _profileRoles.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value.Color))?.Color;

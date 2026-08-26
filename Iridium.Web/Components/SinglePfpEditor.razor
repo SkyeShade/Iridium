@@ -1,0 +1,115 @@
+@using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.AspNetCore.Components.Web
+@inject IJSRuntime JS
+@implements IAsyncDisposable
+
+<div class="avatar-workspace">
+    <section class="crop-column">
+        <div class="crop-stage @(_dragging ? "dragging" : null)" @ref="_cropStage"
+             @onpointerdown="StartDraggingAsync" @onpointermove="DragImage"
+             @onpointerup="StopDraggingAsync" @onpointercancel="StopDraggingAsync">
+            <img class="crop-image" src="@State.SourceUrl" alt="Avatar source" draggable="false"
+                 style="@State.EditorImageStyle" />
+            <div class="crop-shade"></div>
+            <div class="crop-outline"></div>
+        </div>
+        <label class="zoom-control"><span class="zoom-label">Zoom</span><span aria-hidden="true">&minus;</span>
+            <input type="range" min="1" max="3" step="0.01" value="@State.Zoom" style="@State.ZoomFillStyle"
+                   aria-label="Avatar zoom" @oninput="ZoomChanged" /><span aria-hidden="true">+</span></label>
+        <div class="image-actions">
+            <label class="replace-button"><Icon Name="upload" /> @(IsNewImage ? "Choose Image" : "Replace Image")
+                <InputFile class="file-input-overlay"
+                           style="position:absolute;inset:0;width:100%;height:100%;margin:0;padding:0;opacity:0;cursor:pointer;font-size:0"
+                           aria-label="Replace avatar image" accept="image/png,image/gif,image/jpeg,image/webp"
+                           OnChange="OnFileSelected" />
+            </label>
+            @if (CanRemove)
+            {
+                <button type="button" class="remove-button" @onclick="OnRemove"><Icon Name="trash" /> @RemoveLabel</button>
+            }
+        </div>
+    </section>
+    <aside class="image-preview" aria-label="Avatar live preview">
+        <span class="preview-label">@(Mode == "community" ? "SERVER RAIL PREVIEW" : "LIVE PREVIEW")</span>
+        @if (Mode == "community")
+        {
+            <div class="community-icon-preview"><span><AvatarCroppedPreview State="State" /></span><strong>@DisplayName</strong></div>
+        }
+        else if (Mode == "avatar")
+        {
+            <div class="identity-preview">
+                <span class="identity-avatar"><AvatarCroppedPreview State="State" /></span>
+                <strong>@DisplayName</strong>
+                <small>@PublicIdentity</small>
+            </div>
+        }
+        else
+        {
+            <div class="preview-message">
+                <span class="preview-avatar"><AvatarCroppedPreview State="State" /></span>
+                <div><div><strong>@DisplayName</strong><time>Today at 14:32</time></div>
+                    <p>This is what your avatar will look like in chat.</p><p>Follow-up example message</p></div>
+            </div>
+        }
+        @if (IsGif) { <small class="gif-note">Animated GIF preview remains animated.</small> }
+    </aside>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public required AvatarEditState State { get; set; }
+    [Parameter] public string Mode { get; set; } = "account";
+    [Parameter] public string DisplayName { get; set; } = string.Empty;
+    [Parameter] public string? PublicIdentity { get; set; }
+    [Parameter] public bool CanRemove { get; set; }
+    [Parameter] public bool IsNewImage { get; set; }
+    [Parameter] public bool IsGif { get; set; }
+    [Parameter] public string RemoveLabel { get; set; } = "Delete";
+    [Parameter] public EventCallback<InputFileChangeEventArgs> OnFileSelected { get; set; }
+    [Parameter] public EventCallback OnRemove { get; set; }
+    [Parameter] public EventCallback OnChanged { get; set; }
+    private ElementReference _cropStage;
+    private IJSObjectReference? _module;
+    private long? _activePointerId;
+    private double _stagePixels = 1;
+    private bool _dragging;
+
+    private async Task StartDraggingAsync(PointerEventArgs args)
+    {
+        if (args.Button != 0) return;
+        _activePointerId = args.PointerId;
+        _stagePixels = await (await ModuleAsync()).InvokeAsync<double>("capturePointer", _cropStage, args.PointerId);
+        _dragging = true;
+    }
+
+    private async Task StopDraggingAsync(PointerEventArgs args)
+    {
+        if (_activePointerId != args.PointerId) return;
+        _dragging = false;
+        _activePointerId = null;
+        if (_module is not null) await _module.InvokeVoidAsync("releasePointer", _cropStage, args.PointerId);
+    }
+
+    private async Task DragImage(PointerEventArgs args)
+    {
+        if (!_dragging || _activePointerId != args.PointerId) return;
+        var logicalScale = State.ViewportWidth / Math.Max(1, _stagePixels);
+        State.Pan(args.MovementX * logicalScale, args.MovementY * logicalScale);
+        await OnChanged.InvokeAsync();
+    }
+
+    private async Task ZoomChanged(ChangeEventArgs args)
+    {
+        if (!double.TryParse(args.Value?.ToString(), System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var value)) return;
+        State.SetZoom(value);
+        await OnChanged.InvokeAsync();
+    }
+
+    private async Task<IJSObjectReference> ModuleAsync() =>
+        _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/avatarEditor.js");
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_module is not null) await _module.DisposeAsync();
+    }
+}

@@ -19,6 +19,7 @@ public sealed class ChatHub(
     IridiumDbContext db,
     SessionService sessions,
     CommunityAuthorizationService authorization,
+    HistoricalAuthorPresentationService historicalAuthors,
     IOptions<NodeOptions> nodeOptions,
     ICommunityLimitsService limitService,
     ICallService calls,
@@ -135,9 +136,13 @@ public sealed class ChatHub(
             throw new HubException($"Development Community voice rooms support at most {maximum} connected clients.");
         var names = await db.CommunityChannels.Where(value => value.CommunityId == communityId && value.Id == channelId)
             .Select(value => new { CommunityName = value.Community.Name, ChannelName = value.Name }).SingleAsync();
+        var member = await db.CommunityMembers.Include(value => value.Account).Include(value => value.ProfilePreset)
+            .ThenInclude(value => value!.AvatarPreset)
+            .SingleAsync(value => value.CommunityId == communityId && value.AccountId == session.AccountId);
         var joined = await communityVoice.JoinAsync(communityId, channelId, session.AccountId, Context.ConnectionId,
-            session.Account.DisplayName, session.Account.Username, presence.GetPublic(session.AccountId),
-            names.CommunityName, names.ChannelName);
+            ChannelMessageMapper.ResolveDisplayName(member), session.Account.Username, presence.GetPublic(session.AccountId),
+            names.CommunityName, names.ChannelName, ChannelMessageMapper.ValidPreset(member)?.AvatarPresetId,
+            ChannelMessageMapper.ValidPreset(member)?.AvatarPreset?.Revision ?? member.Account.AvatarRevision);
         var voiceAccess = await authorization.GetChannelAccessAsync(communityId, channelId, session.AccountId, db);
         if (!voiceAccess.Has(CommunityPermission.SpeakVoice) &&
             await communityVoice.SetStateAsync(Context.ConnectionId, true, false) is { } initialState)
@@ -318,7 +323,8 @@ public sealed class ChatHub(
                 .SingleOrDefaultAsync(value => value.AuthorAccountId == session.AccountId &&
                     value.CommunityId == communityId && value.ChannelId == channelId &&
                     value.ClientMessageId == existingClientId);
-            if (existing is not null) return ChannelMessageMapper.ToDto(existing);
+            if (existing is not null) return await ChannelMessageMapper.ResolveCommunityProfileAsync(
+                ChannelMessageMapper.ToDto(existing), db);
         }
         var attachments = await ValidateAttachmentsAsync(request.AttachmentIds, session.AccountId);
         if (attachments.Count > 0)
@@ -351,6 +357,7 @@ public sealed class ChatHub(
             ReplyToMessage = reply,
             MentionsJson = mentions.Count == 0 ? null : JsonSerializer.Serialize(mentions)
         };
+        await historicalAuthors.CaptureAsync(message, communityId, session.AccountId);
         foreach (var attachment in attachments)
         {
             attachment.ChannelMessageId = message.Id;
@@ -378,7 +385,7 @@ public sealed class ChatHub(
             forumPost.UpdatedAt = message.CreatedAt;
         }
         await db.SaveChangesAsync();
-        var result = ChannelMessageMapper.ToDto(message);
+        var result = await ChannelMessageMapper.ResolveCommunityProfileAsync(ChannelMessageMapper.ToDto(message), db);
         await Clients.Group(GroupName(communityId, channelId)).SendAsync(ChatHubContract.MessageCreated, result);
         var communityRecipients = await db.CommunityMembers
             .Where(value => value.CommunityId == communityId && value.AccountId != session.AccountId)
@@ -420,7 +427,7 @@ public sealed class ChatHub(
         message.EditedAt = DateTimeOffset.UtcNow;
         if (rootForumPost is not null) rootForumPost.UpdatedAt = message.EditedAt.Value;
         await db.SaveChangesAsync();
-        var result = ChannelMessageMapper.ToDto(message);
+        var result = await ChannelMessageMapper.ResolveCommunityProfileAsync(ChannelMessageMapper.ToDto(message), db);
         await Clients.Group(GroupName(communityId, channelId)).SendAsync(ChatHubContract.MessageUpdated, result);
         if (rootForumPost is not null) await PublishForumPostAsync(rootForumPost, "updated", accountId);
         return result;

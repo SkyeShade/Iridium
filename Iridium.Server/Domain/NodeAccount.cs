@@ -22,6 +22,7 @@ public sealed class NodeAccount
     public ICollection<Community> OwnedCommunities { get; set; } = [];
     public ICollection<ChannelMessage> Messages { get; set; } = [];
     public ICollection<AccountAvatarPreset> AvatarPresets { get; set; } = [];
+    public ICollection<UserProfilePreset> ProfilePresets { get; set; } = [];
     public ICollection<AccountBannerPreset> BannerPresets { get; set; } = [];
     public ICollection<PasswordRecoveryToken> PasswordRecoveryTokens { get; set; } = [];
 }

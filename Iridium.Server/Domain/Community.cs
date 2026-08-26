@@ -20,4 +20,5 @@ public sealed class Community
     public ICollection<CommunityChannel> Channels { get; set; } = [];
     public ICollection<CommunityMediaPreset> MediaPresets { get; set; } = [];
     public ICollection<CommunityEmoji> Emojis { get; set; } = [];
+    public ICollection<UserProfilePreset> ProfilePresets { get; set; } = [];
 }

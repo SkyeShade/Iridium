@@ -6,7 +6,7 @@
 @inject Iridium.Web.Services.MessageMenuCoordinator MessageMenus
 @inject Iridium.Web.Services.AppearanceService Appearance
 
-@{ var visibleMessages = MessageTimeline.Visible(Messages); }
+@{ var visibleMessages = DisplayMessages(); }
 <div class="message-list @(_positioning ? "positioning" : null)" role="log" aria-live="polite" @ref="_container" @onclick="CloseMessageMenus">
     @if (visibleMessages.Count == 0)
     {
@@ -35,7 +35,8 @@
                         CurrentAccountId="CurrentAccountId" NodeAuthority="@NodeAuthority" CommunityManagement="CommunityManagement"
                         AuthorPresence="@PresenceFor(message.Author.AccountId)"
                         ShowAuthorPresence="@ShowAuthorPresence"
-                        OnEditProfile="OnEditProfile" OnMessage="OnMessage"
+                        OnEditProfile="OnEditProfile" OnEditAvatars="OnEditAvatars"
+                        OnCommunityProfileChanged="OnCommunityProfileChanged" OnMessage="OnMessage"
                         OnMemberRolesChanged="OnMemberRolesChanged"
                         OnMention="OnMention"
                         OnReply="OnReply" Edit="Edit" OnDelete="OnDelete" OnFocusReply="FocusMessageAsync"
@@ -63,6 +64,8 @@
     [Parameter] public CommunityManagementDto? CommunityManagement { get; set; }
     [Parameter] public DirectParticipantDto? DirectParticipant { get; set; }
     [Parameter] public EventCallback OnEditProfile { get; set; }
+    [Parameter] public EventCallback OnEditAvatars { get; set; }
+    [Parameter] public EventCallback OnCommunityProfileChanged { get; set; }
     [Parameter] public EventCallback<Guid> OnMessage { get; set; }
     [Parameter] public EventCallback<CommunityMemberRolesChange> OnMemberRolesChanged { get; set; }
     [Parameter] public EventCallback<CommunityMemberDto> OnMention { get; set; }
@@ -75,6 +78,8 @@
     [Parameter] public EventCallback<MessageViewportState> OnViewportStateChanged { get; set; }
     [Parameter] public EventCallback OnEditCompleted { get; set; }
     [Parameter] public int WindowRevision { get; set; }
+    [Parameter] public long ReconciliationRevision { get; set; }
+    [Parameter] public bool FollowLatest { get; set; } = true;
     [Parameter] public Guid? TargetMessageId { get; set; }
     [Parameter] public Guid? RootMessageId { get; set; }
     private ElementReference _container;
@@ -82,6 +87,7 @@
     private DotNetObjectReference<MessageList>? _selfReference;
     private int _renderedCount = -1;
     private int _renderedRevision = -1;
+    private long _renderedReconciliationRevision = -1;
     private bool _positioning = true;
     private bool _restorePrepend;
     private bool _suppressInitialPositionOnce;
@@ -94,6 +100,8 @@
         .FirstOrDefault(value => value.AccountId == accountId)?.Presence
         ?? (DirectParticipant?.AccountId == accountId ? DirectParticipant.Presence : null);
     private bool ShowAuthorPresence => Appearance.Current?.ShowMessageAvatarPresence == true;
+    private IReadOnlyList<ChannelMessageDto> DisplayMessages()
+        => MessageTimeline.Visible(Messages);
     private void CloseMessageMenus() => MessageMenus.Close();
 
     protected override void OnInitialized() => Appearance.Changed += AppearanceChanged;
@@ -101,6 +109,14 @@
 
     protected override void OnParametersSet()
     {
+        if (_renderedReconciliationRevision != ReconciliationRevision)
+        {
+            var shouldFollow = MessageHistoryFollowLatest.ShouldFollow(
+                FollowLatest, _renderedReconciliationRevision, ReconciliationRevision);
+            _renderedReconciliationRevision = ReconciliationRevision;
+            if (shouldFollow)
+                _latestScrollAfterRender = LatestScrollBehavior.Instant;
+        }
         if (_renderedRevision == WindowRevision) return;
         _renderedRevision = WindowRevision;
         _renderedCount = -1;

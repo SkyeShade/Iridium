@@ -6,6 +6,7 @@ public sealed class AccountAvatarPreset
     public Guid AccountId { get; set; }
     public required NodeAccount Account { get; set; }
     public int SlotIndex { get; set; }
+    public string? DisplayName { get; set; }
     public required string OriginalObjectKey { get; set; }
     public string? ProcessedObjectKey { get; set; }
     public required string ContentType { get; set; }

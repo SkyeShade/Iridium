@@ -29,6 +29,7 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
     public DbSet<DirectMessage> DirectMessages => Set<DirectMessage>();
     public DbSet<Attachment> Attachments => Set<Attachment>();
     public DbSet<AccountAvatarPreset> AccountAvatarPresets => Set<AccountAvatarPreset>();
+    public DbSet<UserProfilePreset> UserProfilePresets => Set<UserProfilePreset>();
     public DbSet<AccountBannerPreset> AccountBannerPresets => Set<AccountBannerPreset>();
     public DbSet<CommunityMediaPreset> CommunityMediaPresets => Set<CommunityMediaPreset>();
     public DbSet<CommunityEmoji> CommunityEmojis => Set<CommunityEmoji>();
@@ -49,6 +50,7 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
 
         var avatarPreset = modelBuilder.Entity<AccountAvatarPreset>();
         avatarPreset.HasKey(value => value.Id);
+        avatarPreset.Property(value => value.DisplayName).HasMaxLength(64);
         avatarPreset.Property(value => value.OriginalObjectKey).HasMaxLength(64);
         avatarPreset.Property(value => value.ProcessedObjectKey).HasMaxLength(64);
         avatarPreset.Property(value => value.ContentType).HasMaxLength(64);
@@ -59,6 +61,21 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
         avatarPreset.HasIndex(value => new { value.AccountId, value.SlotIndex }).IsUnique();
         avatarPreset.HasOne(value => value.Account).WithMany(value => value.AvatarPresets)
             .HasForeignKey(value => value.AccountId).OnDelete(DeleteBehavior.Cascade);
+
+        var profilePreset = modelBuilder.Entity<UserProfilePreset>();
+        profilePreset.HasKey(value => value.Id);
+        profilePreset.Property(value => value.DisplayName).HasMaxLength(64);
+        profilePreset.Property(value => value.CreatedAt)
+            .HasConversion(value => value.UtcTicks, value => new DateTimeOffset(value, TimeSpan.Zero));
+        profilePreset.Property(value => value.UpdatedAt)
+            .HasConversion(value => value.UtcTicks, value => new DateTimeOffset(value, TimeSpan.Zero));
+        profilePreset.HasIndex(value => new { value.AccountId, value.CommunityId, value.Position }).IsUnique();
+        profilePreset.HasOne(value => value.Account).WithMany(value => value.ProfilePresets)
+            .HasForeignKey(value => value.AccountId).OnDelete(DeleteBehavior.Cascade);
+        profilePreset.HasOne(value => value.Community).WithMany(value => value.ProfilePresets)
+            .HasForeignKey(value => value.CommunityId).OnDelete(DeleteBehavior.Cascade);
+        profilePreset.HasOne(value => value.AvatarPreset).WithMany()
+            .HasForeignKey(value => value.AvatarPresetId).OnDelete(DeleteBehavior.SetNull);
 
         var bannerPreset = modelBuilder.Entity<AccountBannerPreset>();
         bannerPreset.HasKey(value => value.Id);
@@ -111,6 +128,8 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
         member.Property(value => value.Nickname).HasMaxLength(64);
         member.HasOne(value => value.Community).WithMany(value => value.Members).HasForeignKey(value => value.CommunityId);
         member.HasOne(value => value.Account).WithMany(value => value.CommunityMemberships).HasForeignKey(value => value.AccountId);
+        member.HasOne(value => value.ProfilePreset).WithMany().HasForeignKey(value => value.ProfilePresetId)
+            .OnDelete(DeleteBehavior.SetNull);
 
         var role = modelBuilder.Entity<CommunityRole>();
         role.HasKey(value => new { value.CommunityId, value.Id });
@@ -254,6 +273,9 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
         var message = modelBuilder.Entity<ChannelMessage>();
         message.HasKey(value => value.Id);
         message.Property(value => value.Content);
+        message.Property(value => value.AuthorDisplayNameSnapshot).HasMaxLength(64);
+        message.Property(value => value.AuthorAvatarObjectKeySnapshot).HasMaxLength(64);
+        message.Property(value => value.AuthorAvatarContentTypeSnapshot).HasMaxLength(64);
         message.Property(value => value.MentionsJson).HasMaxLength(8000);
         message.Property(value => value.CreatedAt)
             .HasConversion(value => value.UtcTicks, value => new DateTimeOffset(value, TimeSpan.Zero));

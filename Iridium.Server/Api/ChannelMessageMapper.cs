@@ -6,7 +6,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Iridium.Server.Api;
 
-internal static class ChannelMessageMapper
+public static class ChannelMessageMapper
 {
     public static ChannelMessageDto ToDto(ChannelMessage message)
     {
@@ -16,17 +16,24 @@ internal static class ChannelMessageMapper
             reply = new MessageReplyDto(
                 original.Id,
                 original.AuthorAccountId,
-                original.AuthorAccount.DisplayName,
+                original.AuthorDisplayNameSnapshot ?? original.AuthorAccount.DisplayName,
                 original.IsDeleted ? null : Excerpt(original.Content),
                 original.IsDeleted,
-                original.IsDeleted ? null : AttachmentSummary(original.Attachments));
+                original.IsDeleted ? null : AttachmentSummary(original.Attachments),
+                AvatarRevision: original.AuthorAvatarRevisionSnapshot ?? original.AuthorAccount.AvatarRevision,
+                AvatarSnapshotMessageId: original.AuthorAvatarObjectKeySnapshot is null ? null : original.Id,
+                HasHistoricalSnapshot: original.AuthorDisplayNameSnapshot is not null);
         }
 
         return new ChannelMessageDto(
             message.Id,
             message.CommunityId,
             message.ChannelId,
-            new MessageAuthorDto(message.AuthorAccountId, message.AuthorAccount.Username, message.AuthorAccount.DisplayName),
+            new MessageAuthorDto(message.AuthorAccountId, message.AuthorAccount.Username,
+                message.AuthorDisplayNameSnapshot ?? message.AuthorAccount.DisplayName,
+                AvatarRevision: message.AuthorAvatarRevisionSnapshot ?? message.AuthorAccount.AvatarRevision,
+                AvatarSnapshotMessageId: message.AuthorAvatarObjectKeySnapshot is null ? null : message.Id,
+                HasHistoricalSnapshot: message.AuthorDisplayNameSnapshot is not null),
             message.IsDeleted ? string.Empty : message.Content,
             message.CreatedAt,
             message.EditedAt,
@@ -87,4 +94,22 @@ internal static class ChannelMessageMapper
             }).ToArray()
         }).ToArray();
     }
+
+    // Message presentation is already canonical here: snapshots are immutable and
+    // null snapshots deliberately retain the account-default identity from ToDto.
+    internal static Task<IReadOnlyList<ChannelMessageDto>> ResolveCommunityProfilesAsync(
+        IReadOnlyList<ChannelMessageDto> messages, IridiumDbContext _) => Task.FromResult(messages);
+
+    internal static async Task<ChannelMessageDto> ResolveCommunityProfileAsync(
+        ChannelMessageDto message, IridiumDbContext db) =>
+        (await ResolveCommunityProfilesAsync([message], db))[0];
+
+    internal static string ResolveDisplayName(CommunityMember member) =>
+        !string.IsNullOrWhiteSpace(member.Nickname) ? member.Nickname :
+        !string.IsNullOrWhiteSpace(ValidPreset(member)?.DisplayName) ? ValidPreset(member)!.DisplayName! :
+        member.Account.DisplayName;
+
+    internal static UserProfilePreset? ValidPreset(CommunityMember member) =>
+        member.ProfilePreset is { } preset && preset.AccountId == member.AccountId &&
+        preset.CommunityId == member.CommunityId ? preset : null;
 }

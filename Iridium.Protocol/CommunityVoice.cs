@@ -97,7 +97,9 @@ public sealed record VoiceParticipantDto(
     bool Deafened,
     bool Speaking,
     CommunityVoiceMediaStatus MediaStatus,
-    string? Username = null);
+    string? Username = null,
+    Guid? AvatarPresetId = null,
+    long AvatarRevision = 0);
 
 public sealed record ActiveVoiceRoomDto(
     Guid CommunityId,

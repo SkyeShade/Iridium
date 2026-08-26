@@ -56,6 +56,119 @@ public static class DatabaseCompatibility
             CREATE UNIQUE INDEX IF NOT EXISTS IX_AccountAvatarPresets_AccountId_SlotIndex
                 ON AccountAvatarPresets (AccountId, SlotIndex);
             """);
+        await EnsureColumnAsync(db, "AccountAvatarPresets", "DisplayName", "TEXT NULL");
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS UserProfilePresets (
+                Id TEXT NOT NULL CONSTRAINT PK_UserProfilePresets PRIMARY KEY,
+                AccountId TEXT NOT NULL,
+                CommunityId TEXT NOT NULL,
+                DisplayName TEXT NOT NULL,
+                AvatarPresetId TEXT NULL,
+                Position INTEGER NOT NULL,
+                CreatedAt INTEGER NOT NULL,
+                UpdatedAt INTEGER NOT NULL,
+                CONSTRAINT FK_UserProfilePresets_Accounts_AccountId FOREIGN KEY (AccountId) REFERENCES Accounts (Id) ON DELETE CASCADE,
+                CONSTRAINT FK_UserProfilePresets_Communities_CommunityId FOREIGN KEY (CommunityId) REFERENCES Communities (Id) ON DELETE CASCADE,
+                CONSTRAINT FK_UserProfilePresets_AccountAvatarPresets_AvatarPresetId FOREIGN KEY (AvatarPresetId) REFERENCES AccountAvatarPresets (Id) ON DELETE SET NULL
+            );
+            CREATE INDEX IF NOT EXISTS IX_UserProfilePresets_AvatarPresetId
+                ON UserProfilePresets (AvatarPresetId);
+            """);
+        await EnsureColumnAsync(db, "UserProfilePresets", "CommunityId", "TEXT NULL");
+        await db.Database.ExecuteSqlRawAsync("DROP INDEX IF EXISTS IX_UserProfilePresets_AccountId_Position;");
+        await MigrateGlobalProfilePresetsAsync(db);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE UNIQUE INDEX IF NOT EXISTS IX_UserProfilePresets_AccountId_CommunityId_Position
+                ON UserProfilePresets (AccountId, CommunityId, Position);
+            CREATE INDEX IF NOT EXISTS IX_UserProfilePresets_CommunityId
+                ON UserProfilePresets (CommunityId);
+            CREATE TRIGGER IF NOT EXISTS TR_UserProfilePresets_CommunityRequired_Insert
+                BEFORE INSERT ON UserProfilePresets WHEN NEW.CommunityId IS NULL OR trim(NEW.CommunityId) = ''
+                BEGIN SELECT RAISE(ABORT, 'CommunityId is required for Community Avatars'); END;
+            CREATE TRIGGER IF NOT EXISTS TR_UserProfilePresets_CommunityRequired_Update
+                BEFORE UPDATE OF CommunityId ON UserProfilePresets WHEN NEW.CommunityId IS NULL OR trim(NEW.CommunityId) = ''
+                BEGIN SELECT RAISE(ABORT, 'CommunityId is required for Community Avatars'); END;
+            """);
+        if (await TableExistsAsync(db, "Communities"))
+            await db.Database.ExecuteSqlRawAsync("""
+                CREATE TRIGGER IF NOT EXISTS TR_UserProfilePresets_CommunityDelete
+                    AFTER DELETE ON Communities
+                    BEGIN DELETE FROM UserProfilePresets WHERE CommunityId = OLD.Id; END;
+                """);
+    }
+
+    private static async Task MigrateGlobalProfilePresetsAsync(IridiumDbContext db)
+    {
+        var connection = db.Database.GetDbConnection();
+        if (connection.State != ConnectionState.Open) await connection.OpenAsync();
+        if (!await TableExistsAsync(db, "CommunityMembers"))
+            return;
+        await using var transaction = await connection.BeginTransactionAsync();
+        var rows = new List<(Guid PresetId, Guid AccountId, Guid? CommunityId)>();
+        await using (var command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText = """
+                SELECT p.Id, p.AccountId, m.CommunityId
+                FROM UserProfilePresets p
+                LEFT JOIN CommunityMembers m ON m.ProfilePresetId = p.Id AND m.AccountId = p.AccountId
+                WHERE p.CommunityId IS NULL OR trim(p.CommunityId) = ''
+                ORDER BY p.Id, m.CommunityId;
+                """;
+            await using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+                rows.Add((Guid.Parse(reader.GetString(0)), Guid.Parse(reader.GetString(1)),
+                    reader.IsDBNull(2) ? null : Guid.Parse(reader.GetString(2))));
+        }
+
+        foreach (var group in rows.GroupBy(value => (value.PresetId, value.AccountId)))
+        {
+            var communities = group.Where(value => value.CommunityId.HasValue)
+                .Select(value => value.CommunityId!.Value).Distinct().Order().ToArray();
+            if (communities.Length == 0)
+            {
+                await ExecuteAsync(connection, transaction, "DELETE FROM UserProfilePresets WHERE Id = $presetId;",
+                    ("$presetId", group.Key.PresetId));
+                continue;
+            }
+
+            await ExecuteAsync(connection, transaction, "UPDATE UserProfilePresets SET CommunityId = $communityId WHERE Id = $presetId;",
+                ("$communityId", communities[0]), ("$presetId", group.Key.PresetId));
+            for (var index = 1; index < communities.Length; index++)
+            {
+                var cloneId = Guid.NewGuid();
+                await ExecuteAsync(connection, transaction, """
+                    INSERT INTO UserProfilePresets
+                        (Id, AccountId, CommunityId, DisplayName, AvatarPresetId, Position, CreatedAt, UpdatedAt)
+                    SELECT $cloneId, AccountId, $communityId, DisplayName, AvatarPresetId, Position, CreatedAt, UpdatedAt
+                    FROM UserProfilePresets WHERE Id = $presetId;
+                    """, ("$cloneId", cloneId), ("$communityId", communities[index]),
+                    ("$presetId", group.Key.PresetId));
+                await ExecuteAsync(connection, transaction, """
+                    UPDATE CommunityMembers SET ProfilePresetId = $cloneId
+                    WHERE CommunityId = $communityId AND AccountId = $accountId AND ProfilePresetId = $presetId;
+                    """, ("$cloneId", cloneId), ("$communityId", communities[index]),
+                    ("$accountId", group.Key.AccountId), ("$presetId", group.Key.PresetId));
+            }
+        }
+        await transaction.CommitAsync();
+    }
+
+    private static async Task ExecuteAsync(System.Data.Common.DbConnection connection,
+        System.Data.Common.DbTransaction transaction, string sql,
+        params (string Name, object Value)[] parameters)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = sql;
+        foreach (var (name, value) in parameters)
+        {
+            var parameter = command.CreateParameter();
+            parameter.ParameterName = name;
+            parameter.Value = value;
+            command.Parameters.Add(parameter);
+        }
+        await command.ExecuteNonQueryAsync();
     }
 
     public static async Task EnsureBannerPresetSchemaAsync(IridiumDbContext db)
@@ -143,12 +256,15 @@ public static class DatabaseCompatibility
     public static async Task EnsureCommunityManagementSchemaAsync(IridiumDbContext db)
     {
         await EnsureColumnAsync(db, "Accounts", "Description", "TEXT NULL");
+        await EnsureColumnAsync(db, "CommunityMembers", "ProfilePresetId", "TEXT NULL");
         await EnsureColumnAsync(db, "CommunityRoles", "Position", "INTEGER NOT NULL DEFAULT 0");
         await EnsureColumnAsync(db, "CommunityRoles", "IsDefault", "INTEGER NOT NULL DEFAULT 0");
         await EnsureColumnAsync(db, "CommunityRoles", "Color", "TEXT NULL");
         await EnsureColumnAsync(db, "CommunityRoles", "DisplaySeparately", "INTEGER NOT NULL DEFAULT 0");
         await EnsureColumnAsync(db, "CommunityRoles", "IsMentionable", "INTEGER NOT NULL DEFAULT 0");
         await db.Database.ExecuteSqlRawAsync("""
+            CREATE INDEX IF NOT EXISTS IX_CommunityMembers_ProfilePresetId
+                ON CommunityMembers (ProfilePresetId);
             CREATE INDEX IF NOT EXISTS IX_CommunityRoles_CommunityId_Position
                 ON CommunityRoles (CommunityId, Position);
             CREATE UNIQUE INDEX IF NOT EXISTS IX_CommunityRoles_CommunityId_IsDefault
@@ -710,6 +826,15 @@ public static class DatabaseCompatibility
             CREATE INDEX IF NOT EXISTS IX_ChannelMessages_ReplyToMessageId ON ChannelMessages (ReplyToMessageId);
             """);
         await EnsureColumnAsync(db, "ChannelMessages", "MentionsJson", "TEXT NULL");
+        await EnsureColumnAsync(db, "ChannelMessages", "AuthorDisplayNameSnapshot", "TEXT NULL");
+        await EnsureColumnAsync(db, "ChannelMessages", "AuthorAvatarObjectKeySnapshot", "TEXT NULL");
+        await EnsureColumnAsync(db, "ChannelMessages", "AuthorAvatarContentTypeSnapshot", "TEXT NULL");
+        await EnsureColumnAsync(db, "ChannelMessages", "AuthorAvatarWidthSnapshot", "INTEGER NULL");
+        await EnsureColumnAsync(db, "ChannelMessages", "AuthorAvatarHeightSnapshot", "INTEGER NULL");
+        await EnsureColumnAsync(db, "ChannelMessages", "AuthorAvatarCropXSnapshot", "REAL NULL");
+        await EnsureColumnAsync(db, "ChannelMessages", "AuthorAvatarCropYSnapshot", "REAL NULL");
+        await EnsureColumnAsync(db, "ChannelMessages", "AuthorAvatarZoomSnapshot", "REAL NULL");
+        await EnsureColumnAsync(db, "ChannelMessages", "AuthorAvatarRevisionSnapshot", "INTEGER NULL");
     }
 
     public static async Task EnsureAttachmentsTableAsync(IridiumDbContext db)

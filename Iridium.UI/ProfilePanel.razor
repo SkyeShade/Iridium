@@ -4,7 +4,7 @@
 @inject ActiveVoiceSessionCoordinator Voice
 
 <div class="profile-panel @(ShowVoiceControls ? "has-voice-controls" : null)" role="button" tabindex="0" @onclick="OnProfile" @onkeydown="HandleKey">
-    <ProfileAvatar AccountId="AccountId" AvatarRevision="AvatarRevision" DisplayName="@DisplayName" Presence="Presence" Surface="raised" />
+    <ProfileAvatar AccountId="AccountId" AvatarRevision="AvatarRevision" AvatarPresetId="AvatarPresetId" DisplayName="@DisplayName" Presence="Presence" Surface="raised" />
     <div class="profile-copy">
         <span class="display-name">@DisplayName</span>
         <span>@PublicIdentity</span>
@@ -28,6 +28,7 @@
     [Parameter, EditorRequired] public required string DisplayName { get; set; }
     [Parameter] public Guid? AccountId { get; set; }
     [Parameter] public long AvatarRevision { get; set; }
+    [Parameter] public Guid? AvatarPresetId { get; set; }
     [Parameter, EditorRequired] public required string PublicIdentity { get; set; }
     [Parameter] public PublicPresence Presence { get; set; }
     [Parameter] public EventCallback OnProfile { get; set; }
