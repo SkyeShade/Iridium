@@ -29,7 +29,7 @@
             else
             {
                 <MessageRow @key="(message.ClientMessageId ?? message.Id)" Message="message"
-                        StartsGroup="MessageGrouping.StartsNewGroup(previous, message)"
+                        StartsGroup="OptimisticMessageGrouping.StartsNewGroup(previous, message)"
                         CanEdit="@(message.Kind == MessageKind.User && message.DeliveryState == MessageDeliveryState.Confirmed && !message.IsDeleted && message.Author.AccountId == CurrentAccountId)"
                         CanDelete="@(message.Id != RootMessageId && message.Kind == MessageKind.User && message.DeliveryState == MessageDeliveryState.Confirmed && !message.IsDeleted && (message.Author.AccountId == CurrentAccountId || CanManage))"
                         CurrentAccountId="CurrentAccountId" NodeAuthority="@NodeAuthority" CommunityManagement="CommunityManagement"
