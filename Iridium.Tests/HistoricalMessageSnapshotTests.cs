@@ -75,7 +75,7 @@ public sealed class HistoricalMessageSnapshotTests
         Assert.Contains("=> MessageTimeline.Visible(Messages);", list);
         Assert.DoesNotContain("author.DisplayName", list);
         Assert.DoesNotContain("ResolveSearchProfilesAsync", search);
-        Assert.Contains("const schemaVersion = 2;", cache);
+        Assert.Contains("const schemaVersion = 3;", cache);
         Assert.Contains("event.oldVersion > 0 && event.oldVersion < 2", cache);
     }
 

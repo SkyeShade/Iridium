@@ -28,6 +28,9 @@ public sealed class ComposerActionModePreferencesService(IComposerActionModeStor
 {
     public const string StorageNamespace = "iridium.composerActionMode.v1";
 
+    public static ComposerActionMode EffectiveMode(ComposerActionMode savedMode, bool isDirectMessage) =>
+        isDirectMessage ? ComposerActionMode.Attachment : savedMode;
+
     public async Task<ComposerActionMode> GetAsync(ComposerActionModeScope scope,
         CancellationToken cancellationToken = default)
     {

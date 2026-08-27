@@ -50,10 +50,10 @@
             @if (CanAttachFiles)
             {
                 <InputFile @key="_inputRevision" id="@FileInputId" style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;pointer-events:none" tabindex="-1" OnChange="FilesSelectedAsync" multiple />
-                <button @ref="_actionButton" type="button" class="attachment-button @(_actionMode == ComposerActionMode.Avatar ? "avatar-mode" : null)"
+                <button @ref="_actionButton" type="button" class="attachment-button @(EffectiveActionMode == ComposerActionMode.Avatar ? "avatar-mode" : null)"
                         title="@ActionButtonTitle" aria-label="@ActionButtonLabel" @onclick="PerformComposerActionAsync"
                         @oncontextmenu="OpenActionModeMenu" @oncontextmenu:preventDefault @oncontextmenu:stopPropagation>
-                    @if (_actionMode == ComposerActionMode.Avatar)
+                    @if (EffectiveActionMode == ComposerActionMode.Avatar)
                     {
                         <ProfileAvatar @key="(AccountId, EffectiveComposerAvatarPresetId, EffectiveComposerAvatarRevision)"
                                        AccountId="AccountId" AvatarPresetId="EffectiveComposerAvatarPresetId"
@@ -102,7 +102,12 @@
         {
             <div class="composer-action-popup avatar-picker" role="dialog" aria-label="Quick avatar swap"
                  tabindex="-1" @onpointerdown:stopPropagation @onkeydown="HandleActionPopupKeyAsync">
-                <header><strong>Choose avatar</strong><button type="button" aria-label="Close avatar picker" @onclick="CloseActionPopups"><Icon Name="close" /></button></header>
+                <header><span class="avatar-picker-section-label">Attachments</span><button type="button" aria-label="Close avatar picker" @onclick="CloseActionPopups"><Icon Name="close" /></button></header>
+                <button type="button" class="avatar-picker-add-file" aria-label="Add files" @onclick="AddFileFromAvatarPickerAsync">
+                    <span><Icon Name="plus" /></span><strong>Add file</strong>
+                </button>
+                <div class="avatar-picker-section-divider" aria-hidden="true"></div>
+                <div class="avatar-picker-section-label avatar-picker-avatar-label">Choose avatar</div>
                 <div class="avatar-picker-strip">
                         <div class="default-avatar-entry">
                             <button type="button" class="avatar-preset default-avatar @(DefaultAvatarSelected ? "selected" : null)"
@@ -121,7 +126,6 @@
                                                    DisplayName="@ActiveDisplayName" BadgeMode="AvatarBadgeMode.None"
                                                    Size="fill" Surface="deep" />
                                 }
-                                @if (DefaultAvatarSelected) { <span class="selected-check"><Icon Name="check" /></span> }
                             </button>
                             <small>Default</small>
                         </div>
@@ -146,7 +150,6 @@
                                         <ProfileAvatar AccountId="AccountId" AvatarPresetId="entry.MediaPresetId"
                                                        AvatarRevision="entry.MediaRevision" DisplayName="entry.DisplayName"
                                                        BadgeMode="AvatarBadgeMode.None" Size="fill" Surface="deep" />
-                                        @if (selected) { <span class="selected-check"><Icon Name="check" /></span> }
                                     </button>
                                 }
                             }
@@ -283,8 +286,13 @@
     private string ActiveDisplayName => Session.Account?.Id == AccountId ? Session.Account.DisplayName : string.Empty;
     private long ActiveAvatarRevision => Math.Max(_activeAvatarRevision,
         Session.Account?.Id == AccountId ? Session.Account.AvatarRevision : 0);
-    private string ActionButtonTitle => _actionMode == ComposerActionMode.Attachment ? "Add files" : "Change avatar";
-    private string ActionButtonLabel => $"{ActionButtonTitle}. Hold or right-click to change action.";
+    private bool IsDirectMessage => string.Equals(ConversationKind, "direct", StringComparison.OrdinalIgnoreCase);
+    private ComposerActionMode EffectiveActionMode =>
+        ComposerActionModePreferencesService.EffectiveMode(_actionMode, IsDirectMessage);
+    private string ActionButtonTitle => EffectiveActionMode == ComposerActionMode.Attachment ? "Add files" : "Change avatar";
+    private string ActionButtonLabel => IsDirectMessage
+        ? "Add files"
+        : $"{ActionButtonTitle}. Hold or right-click to change action.";
     private bool UsesCommunityAvatarSelection => Community is not null;
     private CommunityMemberDto? CurrentCommunityMember => CommunityManagement?.Members
         .FirstOrDefault(value => value.AccountId == AccountId);
@@ -417,7 +425,7 @@
         _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/chat.js");
         _selfReference ??= DotNetObjectReference.Create(this);
         await _module.InvokeVoidAsync("wireComposer", _textarea, _selfReference, _composerShell);
-        await _module.InvokeVoidAsync("wireComposerActionButton", _actionButton, _selfReference);
+        await _module.InvokeVoidAsync("wireComposerActionButton", _actionButton, _selfReference, !IsDirectMessage);
         await EnsureDraftLoadedAsync();
         await SendableContentChanged.InvokeAsync(HasSendableContent);
         _resizeAfterRender = false;
@@ -531,12 +539,19 @@
         await _module.InvokeVoidAsync("openComposerFilePicker", _composerShell);
     }
 
-    private Task PerformComposerActionAsync() => _actionMode == ComposerActionMode.Attachment
+    private Task PerformComposerActionAsync() => EffectiveActionMode == ComposerActionMode.Attachment
         ? OpenFilePickerAsync()
         : OpenAvatarPickerAsync();
 
+    private async Task AddFileFromAvatarPickerAsync()
+    {
+        CloseActionPopups();
+        await OpenFilePickerAsync();
+    }
+
     private void OpenActionModeMenu()
     {
+        if (IsDirectMessage) return;
         _avatarPickerOpen = false;
         _actionModeMenuOpen = true;
         _focusActionPopupAfterRender = true;
@@ -545,13 +560,14 @@
     [JSInvokable]
     public Task OpenComposerActionModeMenuFromLongPressAsync()
     {
+        if (IsDirectMessage) return Task.CompletedTask;
         OpenActionModeMenu();
         return InvokeAsync(StateHasChanged);
     }
 
     private async Task SelectActionModeAsync(ComposerActionMode mode)
     {
-        if (_actionModeScope is not { } scope) return;
+        if (IsDirectMessage || _actionModeScope is not { } scope) return;
         _actionMode = mode;
         CloseActionPopups();
         try { await ActionModePreferences.SetAsync(scope, mode); }
@@ -563,6 +579,7 @@
 
     private async Task OpenAvatarPickerAsync()
     {
+        if (IsDirectMessage) return;
         _actionModeMenuOpen = false;
         _avatarPickerOpen = true;
         _avatarPickerLoading = true;

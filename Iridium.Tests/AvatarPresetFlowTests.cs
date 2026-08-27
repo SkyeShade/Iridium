@@ -186,6 +186,7 @@ public sealed class AvatarPresetFlowTests
             Assert.Null(state.ActiveAvatarPresetId);
             Assert.Equal(selected.Id, state.BaseAvatarPresetId);
             var alternate = state.Presets.Single(value => value.SlotIndex == 7);
+            var secondAlternate = state.Presets.Single(value => value.SlotIndex == 8);
             var presetCount = state.Presets.Count;
             var mediaBeforeSwap = state.Presets.OrderBy(value => value.Id).ToArray();
             var alternateRealtime = new TaskCompletionSource<ProfileUpdatedEvent>(
@@ -209,6 +210,19 @@ public sealed class AvatarPresetFlowTests
             state = await owner.GetAvatarPresetsAsync();
             Assert.Null(state.ActiveAvatarPresetId);
             Assert.Equal(selected.Id, state.BaseAvatarPresetId);
+
+            await owner.SetActiveAvatarPresetAsync(alternate.Id);
+            Assert.Equal(alternate.Id, (await owner.GetAvatarPresetsAsync()).ActiveAvatarPresetId);
+            await owner.SetActiveAvatarPresetAsync(secondAlternate.Id);
+            Assert.Equal(secondAlternate.Id, (await owner.GetAvatarPresetsAsync()).ActiveAvatarPresetId);
+            await owner.SetActiveAvatarPresetAsync(null);
+            Assert.Null((await owner.GetAvatarPresetsAsync()).ActiveAvatarPresetId);
+            await owner.SetActiveAvatarPresetAsync(alternate.Id);
+            Assert.Equal(alternate.Id, (await owner.GetAvatarPresetsAsync()).ActiveAvatarPresetId);
+            await owner.SetActiveAvatarPresetAsync(secondAlternate.Id);
+            Assert.Equal(secondAlternate.Id, (await owner.GetAvatarPresetsAsync()).ActiveAvatarPresetId);
+            await owner.SetActiveAvatarPresetAsync(null);
+            state = await owner.GetAvatarPresetsAsync();
             Assert.Equal(presetCount, state.Presets.Count);
             Assert.Equal(mediaBeforeSwap, state.Presets.OrderBy(value => value.Id).ToArray());
             Assert.True((await owner.GetProfileAvatarAsync(authentication.Account.Id)).HasAvatar);

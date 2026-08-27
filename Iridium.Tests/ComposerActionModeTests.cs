@@ -44,6 +44,22 @@ public sealed class ComposerActionModeTests
     }
 
     [Fact]
+    public async Task DirectMessagesForceAttachmentsWithoutOverwritingSavedAvatarMode()
+    {
+        var store = new MemoryStore();
+        var service = new ComposerActionModePreferencesService(store);
+        var scope = new ComposerActionModeScope("https://alpha.example", Guid.NewGuid());
+        await service.SetAsync(scope, ComposerActionMode.Avatar);
+
+        var saved = await service.GetAsync(scope);
+        Assert.Equal(ComposerActionMode.Avatar,
+            ComposerActionModePreferencesService.EffectiveMode(saved, isDirectMessage: false));
+        Assert.Equal(ComposerActionMode.Attachment,
+            ComposerActionModePreferencesService.EffectiveMode(saved, isDirectMessage: true));
+        Assert.Equal(ComposerActionMode.Avatar, await service.GetAsync(scope));
+    }
+
+    [Fact]
     public void ComposerWiresModeActionsWithoutReplacingAttachmentFlow()
     {
         var razor = Source("Iridium.Web", "Components", "MessageComposer.razor");
@@ -53,6 +69,18 @@ public sealed class ComposerActionModeTests
         Assert.Contains("PerformComposerActionAsync", razor);
         Assert.Contains("? OpenFilePickerAsync()", razor);
         Assert.Contains("openComposerFilePicker", razor);
+        Assert.Contains("class=\"avatar-picker-add-file\" aria-label=\"Add files\"", razor);
+        Assert.Contains("AddFileFromAvatarPickerAsync", razor);
+        Assert.Contains("await OpenFilePickerAsync()", razor);
+        Assert.Contains("avatar-picker-section-divider", razor);
+        Assert.True(razor.IndexOf(">Attachments</span>", StringComparison.Ordinal) <
+                    razor.IndexOf("class=\"avatar-picker-add-file\"", StringComparison.Ordinal));
+        Assert.True(razor.IndexOf("class=\"avatar-picker-add-file\"", StringComparison.Ordinal) <
+                    razor.IndexOf("class=\"avatar-picker-section-divider\"", StringComparison.Ordinal));
+        Assert.True(razor.IndexOf("class=\"avatar-picker-section-divider\"", StringComparison.Ordinal) <
+                    razor.IndexOf(">Choose avatar</div>", StringComparison.Ordinal));
+        Assert.True(razor.IndexOf(">Choose avatar</div>", StringComparison.Ordinal) <
+                    razor.IndexOf("class=\"avatar-picker-strip\"", StringComparison.Ordinal));
         Assert.Contains("Session.SetCommunityProfileAsync(communityId, presetId)", razor);
         Assert.Contains("Session.GetProfilePresetsAsync(communityId)", razor);
         Assert.Contains("await OnCommunityProfileChanged.InvokeAsync()", razor);
@@ -71,6 +99,13 @@ public sealed class ComposerActionModeTests
         Assert.Contains("Session.SetCommunityProfileAsync(communityId, null)", razor);
         Assert.Contains("BaseAvatarPreset", razor);
         Assert.Contains("wireHorizontalWheel", javascript);
+        Assert.DoesNotContain("selected-check", razor);
+        Assert.DoesNotContain("selected-check", Source("Iridium.Web", "Components", "MessageComposer.razor.css"));
+        Assert.Contains("EffectiveActionMode", razor);
+        Assert.Contains("if (IsDirectMessage) return;", razor);
+        Assert.Contains("if (IsDirectMessage) return Task.CompletedTask;", razor);
+        Assert.Contains("wireComposerActionButton\", _actionButton, _selfReference, !IsDirectMessage", razor);
+        Assert.Contains("!enableModeSwitch", javascript);
     }
 
     [Fact]

@@ -906,8 +906,8 @@ export function openComposerFilePicker(composerRoot) {
 export const composerActionLongPressMilliseconds = 2000;
 const composerActionMoveTolerance = 14;
 
-export function wireComposerActionButton(button, dotNetReference) {
-    if (!button || composerActionButtonHandlers.has(button)) return;
+export function wireComposerActionButton(button, dotNetReference, enableModeSwitch = true) {
+    if (!button || !enableModeSwitch || composerActionButtonHandlers.has(button)) return;
     let timer = 0, pointerId = null, startX = 0, startY = 0, longPressTriggered = false, lastPointerType = "mouse";
     const cancel = () => {
         if (timer) window.clearTimeout(timer);

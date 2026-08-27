@@ -1,5 +1,5 @@
 const databaseName = "IridiumClientCache";
-const schemaVersion = 2;
+const schemaVersion = 3;
 const recentMessageLimit = 300;
 const initialWindowLimit = 50;
 const globalMessageLimit = 10000;
