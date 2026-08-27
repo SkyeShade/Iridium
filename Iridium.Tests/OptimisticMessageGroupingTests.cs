@@ -6,6 +6,26 @@ namespace Iridium.Tests;
 public sealed class OptimisticMessageGroupingTests
 {
     [Fact]
+    public void DefaultAndFallbackPresentationsUseSelectedPfpImageRevisionInsteadOfAccountRevision()
+    {
+        var accountId = Guid.NewGuid();
+        var selectedPfp = AccountPfp(Guid.NewGuid(), revision: 4);
+        var defaultMember = Member(accountId, profilePresetId: null, displayName: "Skye", accountRevision: 21);
+        var fallbackMember = Member(accountId, profilePresetId: Guid.NewGuid(), displayName: "Character Skye",
+            accountRevision: 21);
+
+        var defaultPresentation = OptimisticMessageGrouping.PresentationFor(defaultMember, selectedPfp);
+        var fallbackPresentation = OptimisticMessageGrouping.PresentationFor(fallbackMember, selectedPfp);
+
+        Assert.Null(defaultPresentation.ProfilePresetId);
+        Assert.Equal(selectedPfp.Id, defaultPresentation.AvatarPresetId);
+        Assert.Equal(4, defaultPresentation.AvatarRevision);
+        Assert.Equal(fallbackMember.ProfilePresetId, fallbackPresentation.ProfilePresetId);
+        Assert.Equal(selectedPfp.Id, fallbackPresentation.AvatarPresetId);
+        Assert.Equal(4, fallbackPresentation.AvatarRevision);
+    }
+
+    [Fact]
     public void MatchingConfirmedPresentationGroupsPendingCommunityMessageImmediately()
     {
         var authorId = Guid.NewGuid();
@@ -44,7 +64,7 @@ public sealed class OptimisticMessageGroupingTests
     public void ConfirmedRowAfterPendingSiblingUsesTransientIdentityDuringHandoff()
     {
         var authorId = Guid.NewGuid();
-        var presentation = Presentation(null, "Skye", null, 19);
+        var presentation = Presentation(null, "Skye", Guid.NewGuid(), 2);
         var pending = Message(authorId, At.AddSeconds(2), "Skye", 19, pending: true);
         var confirmed = Confirm(Message(authorId, At.AddSeconds(1), "Skye", 2, pending: true), At.AddSeconds(3));
         var presentations = Presentations((pending, presentation), (confirmed, presentation));
@@ -56,7 +76,7 @@ public sealed class OptimisticMessageGroupingTests
     public void RapidConfirmationsNeverExposeConfirmedGroupStartForSamePresentation()
     {
         var authorId = Guid.NewGuid();
-        var presentation = Presentation(null, "Skye", null, 19);
+        var presentation = Presentation(null, "Skye", Guid.NewGuid(), 2);
         var first = Message(authorId, At, "Skye", 2, historical: true);
         var second = Message(authorId, At.AddSeconds(1), "Skye", 19, pending: true);
         var third = Message(authorId, At.AddSeconds(2), "Skye", 19, pending: true);
@@ -92,10 +112,51 @@ public sealed class OptimisticMessageGroupingTests
         var accountAvatarId = Guid.NewGuid();
         var confirmed = Message(authorId, At, "Skye", 2, historical: true);
         var pending = Message(authorId, At.AddSeconds(5), "Skye", 19, pending: true);
-        var defaultProfile = Presentation(null, "Skye", accountAvatarId, 19);
+        var defaultProfile = Presentation(null, "Skye", accountAvatarId, 2);
 
         Assert.False(OptimisticMessageGrouping.StartsNewGroup(confirmed, pending,
-            Presentations((confirmed, defaultProfile), (pending, defaultProfile))));
+            Presentations((pending, defaultProfile))));
+    }
+
+    [Fact]
+    public void CommunityAvatarAccountPfpFallbackUsesSelectedImageRevision()
+    {
+        var authorId = Guid.NewGuid();
+        var communityProfileId = Guid.NewGuid();
+        var selectedAccountPfpId = Guid.NewGuid();
+        var confirmed = Message(authorId, At, "Character Skye", 4, historical: true);
+        var pending = Message(authorId, At.AddSeconds(5), "Character Skye", 21, pending: true);
+        var fallbackPresentation = Presentation(communityProfileId, "Character Skye", selectedAccountPfpId, 4);
+
+        Assert.False(OptimisticMessageGrouping.StartsNewGroup(confirmed, pending,
+            Presentations((pending, fallbackPresentation))));
+    }
+
+    [Fact]
+    public void DefaultProfileWithNonOriginalSelectedPfpGroupsThroughAcknowledgement()
+    {
+        var authorId = Guid.NewGuid();
+        var selectedSavedPfpId = Guid.NewGuid();
+        var confirmed = Message(authorId, At, "Skye", 44, historical: true);
+        var pending = Message(authorId, At.AddSeconds(5), "Skye", 103, pending: true);
+        var presentation = Presentation(null, "Skye", selectedSavedPfpId, 44);
+        var presentations = Presentations((pending, presentation));
+
+        Assert.False(OptimisticMessageGrouping.StartsNewGroup(confirmed, pending, presentations));
+        var acknowledged = ConfirmWithRevision(pending, At.AddSeconds(6), 44);
+        Assert.False(OptimisticMessageGrouping.StartsNewGroup(confirmed, acknowledged, presentations));
+    }
+
+    [Fact]
+    public void GenuineDefaultPfpRevisionChangeStartsPendingGroup()
+    {
+        var authorId = Guid.NewGuid();
+        var confirmed = Message(authorId, At, "Skye", 4, historical: true);
+        var pending = Message(authorId, At.AddSeconds(5), "Skye", 22, pending: true);
+        var changedPresentation = Presentation(null, "Skye", Guid.NewGuid(), 5);
+
+        Assert.True(OptimisticMessageGrouping.StartsNewGroup(confirmed, pending,
+            Presentations((pending, changedPresentation))));
     }
 
     [Fact]
@@ -183,6 +244,13 @@ public sealed class OptimisticMessageGroupingTests
 
     private static readonly DateTimeOffset At = DateTimeOffset.Parse("2026-08-27T12:00:00Z");
 
+    private static CommunityMemberDto Member(Guid accountId, Guid? profilePresetId, string displayName,
+        long accountRevision) => new(accountId, "user", displayName, null, null, null, At, false,
+        PublicPresence.Online, [], ProfilePresetId: profilePresetId, AvatarRevision: accountRevision);
+
+    private static AccountAvatarPresetDto AccountPfp(Guid id, long revision) => new(id, 1, "avatar", revision,
+        "image/webp", 512, 512, 0, 0, 1, At, At);
+
     private static OptimisticCommunityAuthorPresentation Presentation(Guid? profilePresetId, string displayName,
         Guid? avatarPresetId, long avatarRevision) =>
         new(profilePresetId, displayName, avatarPresetId, avatarRevision);
@@ -191,14 +259,18 @@ public sealed class OptimisticMessageGroupingTests
         params (ChannelMessageDto Message, OptimisticCommunityAuthorPresentation Presentation)[] values) =>
         values.ToDictionary(value => value.Message.ClientMessageId!.Value, value => value.Presentation);
 
-    private static ChannelMessageDto Confirm(ChannelMessageDto message, DateTimeOffset createdAt) => message with
+    private static ChannelMessageDto Confirm(ChannelMessageDto message, DateTimeOffset createdAt) =>
+        ConfirmWithRevision(message, createdAt, 2);
+
+    private static ChannelMessageDto ConfirmWithRevision(ChannelMessageDto message, DateTimeOffset createdAt,
+        long avatarRevision) => message with
     {
         Id = Guid.NewGuid(),
         CreatedAt = createdAt,
         DeliveryState = MessageDeliveryState.Confirmed,
         Author = message.Author with
         {
-            AvatarRevision = 2,
+            AvatarRevision = avatarRevision,
             AvatarSnapshotMessageId = Guid.NewGuid(),
             HasHistoricalSnapshot = true
         }

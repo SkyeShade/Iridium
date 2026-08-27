@@ -3,6 +3,7 @@
 @using Iridium.Web.Models
 @implements IDisposable
 @inject ChannelMessagingSession Messaging
+@inject NodeSession Session
 @inject ILogger<ChannelView> Logger
 @inject IWebAssemblyHostEnvironment HostEnvironment
 
@@ -77,6 +78,10 @@
     private ChannelMessageDto? _replyTo;
     private readonly Dictionary<Guid, OptimisticCommunityAuthorPresentation> _optimisticCommunityPresentations = [];
     private readonly Queue<Guid> _optimisticPresentationOrder = [];
+    private AccountAvatarPresetDto? _activeDefaultPfp;
+    private Guid? _defaultPfpAccountId;
+    private long _defaultPfpAccountRevision = -1;
+    private Task? _defaultPfpLoad;
     private MessageComposer? _composer;
     private MessageList? _messageList;
     private Guid? _loadedTargetMessageId;
@@ -114,6 +119,7 @@
         _loadedTargetMessageId = TargetMessageId;
         _isPinnedToLatest = TargetMessageId is null;
         _shouldShowJumpToLatest = TargetMessageId is not null;
+        _ = EnsureDefaultPfpIdentityAsync();
         var generation = ++_historyLoadGeneration;
         _ = HydrateHistoryAsync(Community.Id, Channel.Id, TargetMessageId, generation);
     }
@@ -201,13 +207,17 @@
             var smooth = ShowJumpToLatest;
             _messageList?.PrepareUserLatestTransition(smooth);
             var currentMember = CommunityManagement?.Members.FirstOrDefault(value => value.AccountId == CurrentAccountId);
+            var presentation = currentMember is null ? null : await ResolveOptimisticPresentationAsync(currentMember);
             var clientMessageId = Messaging.QueueMessage(submission.Content, _replyTo?.Id, submission.Mentions, submission.Attachments,
                 submission.UploadAttachments, currentMember is null ? null : new MessageAuthorDto(
                     currentMember.AccountId, currentMember.Username, currentMember.DisplayName,
                     currentMember.AvatarPresetId, currentMember.AvatarRevision));
-            if (currentMember is not null)
-                RememberOptimisticPresentation(clientMessageId, new(currentMember.ProfilePresetId,
-                    currentMember.DisplayName, currentMember.AvatarPresetId, currentMember.AvatarRevision));
+            if (presentation is not null)
+            {
+                RememberOptimisticPresentation(clientMessageId, presentation);
+                LogPresentation("pending-created", clientMessageId, clientMessageId, currentMember!, presentation,
+                    hasHistoricalSnapshot: false, avatarSnapshotMessageId: null);
+            }
             _replyTo = null;
             await RenderAsync();
             if (_composer is not null) await _composer.FocusAsync();
@@ -262,6 +272,75 @@
         while (_optimisticPresentationOrder.Count > 128)
             _optimisticCommunityPresentations.Remove(_optimisticPresentationOrder.Dequeue());
     }
+
+    private async Task<OptimisticCommunityAuthorPresentation> ResolveOptimisticPresentationAsync(
+        CommunityMemberDto member)
+    {
+        if (member.AvatarPresetId is null) await EnsureDefaultPfpIdentityAsync();
+        return OptimisticMessageGrouping.PresentationFor(member, _activeDefaultPfp);
+    }
+
+    private Task EnsureDefaultPfpIdentityAsync()
+    {
+        var account = Session.Account;
+        if (account is null) return Task.CompletedTask;
+        if (_defaultPfpAccountId == account.Id && _defaultPfpAccountRevision == account.AvatarRevision &&
+            _defaultPfpLoad is not null) return _defaultPfpLoad;
+        _defaultPfpAccountId = account.Id;
+        _defaultPfpAccountRevision = account.AvatarRevision;
+        return _defaultPfpLoad = LoadDefaultPfpIdentityAsync(account.Id, account.AvatarRevision);
+    }
+
+    private async Task LoadDefaultPfpIdentityAsync(Guid accountId, long accountRevision)
+    {
+        try
+        {
+            var presets = await Session.GetAvatarPresetsAsync();
+            if (Session.Account?.Id != accountId || Session.Account.AvatarRevision != accountRevision) return;
+            _activeDefaultPfp = presets.ActiveAvatarPresetId is { } id
+                ? presets.Presets.FirstOrDefault(value => value.Id == id)
+                : null;
+        }
+        catch (Exception exception)
+        {
+            _activeDefaultPfp = null;
+            Logger.LogDebug(exception, "Could not resolve the selected account PFP revision for optimistic Community presentation.");
+        }
+    }
+
+    private void LogPresentation(string stage, Guid messageId, Guid clientMessageId, CommunityMemberDto member,
+        OptimisticCommunityAuthorPresentation presentation, bool hasHistoricalSnapshot,
+        Guid? avatarSnapshotMessageId)
+    {
+        if (!HostEnvironment.IsDevelopment()) return;
+        Logger.LogDebug(
+            "Community optimistic identity stage={Stage} message={MessageId} client={ClientMessageId} account={AccountId} " +
+            "default={IsDefault} profilePreset={ProfilePresetId} displayName={DisplayName} pfpPreset={AvatarPresetId} " +
+            "pfpRevision={AvatarRevision} dtoPfpPreset={DtoAvatarPresetId} dtoPfpRevision={DtoAvatarRevision} " +
+            "historical={Historical} snapshotMessage={SnapshotMessageId}",
+            stage, messageId, clientMessageId, member.AccountId, presentation.ProfilePresetId is null,
+            presentation.ProfilePresetId, presentation.DisplayName, presentation.AvatarPresetId,
+            presentation.AvatarRevision, member.AvatarPresetId, member.AvatarRevision,
+            hasHistoricalSnapshot, avatarSnapshotMessageId);
+    }
+
+    private void LogMessagePresentation(string stage, ChannelMessageDto message,
+        OptimisticCommunityAuthorPresentation presentation)
+    {
+        if (!HostEnvironment.IsDevelopment() || message.ClientMessageId is not { } clientMessageId) return;
+        Logger.LogDebug(
+            "Community optimistic identity stage={Stage} message={MessageId} client={ClientMessageId} account={AccountId} " +
+            "delivery={Delivery} default={IsDefault} transientProfilePreset={ProfilePresetId} " +
+            "transientDisplayName={TransientDisplayName} transientPfpPreset={TransientAvatarPresetId} " +
+            "transientPfpRevision={TransientAvatarRevision} dtoDisplayName={DtoDisplayName} " +
+            "dtoPfpPreset={DtoAvatarPresetId} dtoPfpRevision={DtoAvatarRevision} historical={Historical} " +
+            "snapshotMessage={SnapshotMessageId}",
+            stage, message.Id, clientMessageId, message.Author.AccountId, message.DeliveryState,
+            presentation.ProfilePresetId is null, presentation.ProfilePresetId, presentation.DisplayName,
+            presentation.AvatarPresetId, presentation.AvatarRevision, message.Author.DisplayName,
+            message.Author.AvatarPresetId, message.Author.AvatarRevision, message.Author.HasHistoricalSnapshot,
+            message.Author.AvatarSnapshotMessageId);
+    }
     private Task EditLastOwnMessageAsync() => _messageList?.BeginEditLatestOwnAsync() ?? Task.CompletedTask;
 
     private bool ShowJumpToLatest => _shouldShowJumpToLatest || Messaging.WindowMode == MessageWindowMode.SearchTarget;
@@ -298,8 +377,16 @@
         if (_optimisticCommunityPresentations.Count == 0) return;
         var tracked = VisibleMessages.Where(message => message.ClientMessageId is { } clientMessageId &&
             _optimisticCommunityPresentations.ContainsKey(clientMessageId)).ToArray();
+        foreach (var message in tracked)
+            if (message.ClientMessageId is { } clientMessageId &&
+                _optimisticCommunityPresentations.TryGetValue(clientMessageId, out var presentation))
+                LogMessagePresentation("reconciliation-observed", message, presentation);
         if (tracked.Length == 0 || tracked.Any(message => message.DeliveryState != MessageDeliveryState.Confirmed ||
                 !message.Author.HasHistoricalSnapshot)) return;
+        foreach (var message in tracked)
+            if (message.ClientMessageId is { } clientMessageId &&
+                _optimisticCommunityPresentations.TryGetValue(clientMessageId, out var presentation))
+                LogMessagePresentation("canonical-ready", message, presentation);
         _optimisticCommunityPresentations.Clear();
         _optimisticPresentationOrder.Clear();
     }

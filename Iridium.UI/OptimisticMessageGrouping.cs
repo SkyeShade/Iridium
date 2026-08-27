@@ -15,6 +15,16 @@ public sealed record OptimisticCommunityAuthorPresentation(
 /// </summary>
 public static class OptimisticMessageGrouping
 {
+    public static OptimisticCommunityAuthorPresentation PresentationFor(CommunityMemberDto member,
+        AccountAvatarPresetDto? selectedAccountPfp)
+    {
+        if (member.AvatarPresetId is not null)
+            return new(member.ProfilePresetId, member.DisplayName, member.AvatarPresetId, member.AvatarRevision);
+        return selectedAccountPfp is { } pfp
+            ? new(member.ProfilePresetId, member.DisplayName, pfp.Id, pfp.Revision)
+            : new(member.ProfilePresetId, member.DisplayName, null, member.AvatarRevision);
+    }
+
     public static bool StartsNewGroup(ChannelMessageDto? previous, ChannelMessageDto current,
         IReadOnlyDictionary<Guid, OptimisticCommunityAuthorPresentation>? localPresentations = null)
     {
@@ -34,11 +44,15 @@ public static class OptimisticMessageGrouping
         }
         else
         {
-            // A server-loaded predecessor has no client-only assignment identity. Retain the safe
-            // visual comparison used before local send-time presentation tracking is available.
-            if (!string.Equals(previous.Author.DisplayName, current.Author.DisplayName, StringComparison.Ordinal))
+            // A server-loaded predecessor has no client-only assignment identity. Compare its
+            // historical visual fields with the normalized transient visual fields that are known.
+            var previousDisplayName = previousPresentation?.DisplayName ?? previous.Author.DisplayName;
+            var currentDisplayName = currentPresentation?.DisplayName ?? current.Author.DisplayName;
+            var previousAvatarRevision = previousPresentation?.AvatarRevision ?? previous.Author.AvatarRevision;
+            var currentAvatarRevision = currentPresentation?.AvatarRevision ?? current.Author.AvatarRevision;
+            if (!string.Equals(previousDisplayName, currentDisplayName, StringComparison.Ordinal))
                 return true;
-            if (previous.Author.AvatarRevision != current.Author.AvatarRevision) return true;
+            if (previousAvatarRevision != currentAvatarRevision) return true;
         }
 
         if (previous.IsDeleted || current.IsDeleted) return true;
