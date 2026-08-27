@@ -55,7 +55,7 @@
                         @oncontextmenu="OpenActionModeMenu" @oncontextmenu:preventDefault @oncontextmenu:stopPropagation>
                     @if (EffectiveActionMode == ComposerActionMode.Avatar)
                     {
-                        <ProfileAvatar @key="(AccountId, EffectiveComposerAvatarPresetId, EffectiveComposerAvatarRevision)"
+                        <ProfileAvatar @key="AccountId"
                                        AccountId="AccountId" AvatarPresetId="EffectiveComposerAvatarPresetId"
                                        AvatarRevision="@EffectiveComposerAvatarRevision" DisplayName="@EffectiveComposerDisplayName"
                                        BadgeMode="AvatarBadgeMode.None" Size="fill" Surface="raised" />
@@ -642,6 +642,9 @@
             {
                 var assignment = await Session.SetCommunityProfileAsync(communityId, presetId);
                 if (AccountId != expectedAccount || Community?.Id != expectedCommunity) return;
+                await EnsureComposerAvatarMediaAsync(expectedAccount, assignment.AvatarPresetId,
+                    assignment.AvatarRevision);
+                if (AccountId != expectedAccount || Community?.Id != expectedCommunity) return;
                 _localCommunityAssignment = assignment;
                 await OnCommunityProfileChanged.InvokeAsync();
             }
@@ -650,11 +653,13 @@
                 await Session.SetActiveAvatarPresetAsync(presetId);
                 var state = await Session.GetAvatarPresetsAsync();
                 if (AccountId != expectedAccount || state.AccountId != expectedAccount || Community is not null) return;
+                ProfileMedia.Invalidate(expectedAccount, state.AvatarRevision);
+                await EnsureComposerAvatarMediaAsync(expectedAccount, null, state.AvatarRevision);
+                if (AccountId != expectedAccount || Community is not null) return;
                 _avatarPresets = state.Presets;
                 _activeAvatarPresetId = state.ActiveAvatarPresetId;
                 _baseAvatarPresetId = state.BaseAvatarPresetId;
                 _activeAvatarRevision = state.AvatarRevision;
-                ProfileMedia.Invalidate(expectedAccount, state.AvatarRevision);
             }
             if (_actionModeScope is { } scope)
             {
@@ -689,6 +694,9 @@
             {
                 var assignment = await Session.SetCommunityProfileAsync(communityId, null);
                 if (AccountId != expectedAccount || Community?.Id != expectedCommunity) return;
+                await EnsureComposerAvatarMediaAsync(expectedAccount, assignment.AvatarPresetId,
+                    assignment.AvatarRevision);
+                if (AccountId != expectedAccount || Community?.Id != expectedCommunity) return;
                 _localCommunityAssignment = assignment;
                 await OnCommunityProfileChanged.InvokeAsync();
             }
@@ -697,11 +705,13 @@
                 await Session.SetActiveAvatarPresetAsync(null);
                 var state = await Session.GetAvatarPresetsAsync();
                 if (AccountId != expectedAccount || state.AccountId != expectedAccount || Community is not null) return;
+                ProfileMedia.Invalidate(expectedAccount, state.AvatarRevision);
+                await EnsureComposerAvatarMediaAsync(expectedAccount, null, state.AvatarRevision);
+                if (AccountId != expectedAccount || Community is not null) return;
                 _avatarPresets = state.Presets;
                 _activeAvatarPresetId = state.ActiveAvatarPresetId;
                 _baseAvatarPresetId = state.BaseAvatarPresetId;
                 _activeAvatarRevision = state.AvatarRevision;
-                ProfileMedia.Invalidate(expectedAccount, state.AvatarRevision);
             }
             _attachmentError = null;
             CloseActionPopups();
@@ -714,6 +724,14 @@
             await LoadAvatarPresetsAsync();
         }
         finally { _avatarSwapBusy = false; }
+    }
+
+    private async Task EnsureComposerAvatarMediaAsync(Guid accountId, Guid? avatarPresetId, long revision)
+    {
+        if (avatarPresetId is { } presetId)
+            await ProfileMedia.GetAvatarPresetAsync(accountId, presetId, revision);
+        else
+            await ProfileMedia.GetAvatarAsync(accountId, revision);
     }
 
     private void CloseActionPopups()

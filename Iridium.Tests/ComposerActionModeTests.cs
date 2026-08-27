@@ -141,6 +141,38 @@ public sealed class ComposerActionModeTests
     }
 
     [Fact]
+    public void ComposerAvatarSwapWarmsSharedMediaAndKeepsTheExistingAvatarComponentAlive()
+    {
+        var composer = Source("Iridium.Web", "Components", "MessageComposer.razor");
+        var profileAvatar = Source("Iridium.UI", "ProfileAvatar.razor");
+        var selectionStart = composer.IndexOf("private async Task SelectQuickAvatarAsync", StringComparison.Ordinal);
+        var selectionEnd = composer.IndexOf("private async Task ActivateDefaultAvatarAsync", selectionStart,
+            StringComparison.Ordinal);
+        var selection = composer[selectionStart..selectionEnd];
+        var defaultEnd = composer.IndexOf("private async Task EnsureComposerAvatarMediaAsync", selectionEnd,
+            StringComparison.Ordinal);
+        var restoreDefault = composer[selectionEnd..defaultEnd];
+
+        Assert.Contains("<ProfileAvatar @key=\"AccountId\"", composer);
+        Assert.DoesNotContain("@key=\"(AccountId, EffectiveComposerAvatarPresetId, EffectiveComposerAvatarRevision)\"",
+            composer);
+        Assert.True(selection.IndexOf("await EnsureComposerAvatarMediaAsync", StringComparison.Ordinal) <
+                    selection.IndexOf("_localCommunityAssignment = assignment", StringComparison.Ordinal));
+        Assert.True(restoreDefault.IndexOf("await EnsureComposerAvatarMediaAsync", StringComparison.Ordinal) <
+                    restoreDefault.IndexOf("_localCommunityAssignment = assignment", StringComparison.Ordinal));
+        Assert.Contains("ProfileMedia.GetAvatarPresetAsync(accountId, presetId, revision)", composer);
+        Assert.Contains("ProfileMedia.GetAvatarAsync(accountId, revision)", composer);
+        Assert.DoesNotContain("ComposerAvatarCache", composer);
+        Assert.Contains("_avatar = AvatarSnapshotMessageId", profileAvatar);
+        Assert.DoesNotContain("_avatar = null", profileAvatar[profileAvatar.IndexOf(
+            "protected override async Task OnParametersSetAsync", StringComparison.Ordinal)..]);
+        var success = selection.IndexOf("_attachmentError = null;", StringComparison.Ordinal);
+        var close = selection.IndexOf("CloseActionPopups();", success, StringComparison.Ordinal);
+        Assert.True(success < close);
+        Assert.True(close < selection.IndexOf("catch (Exception exception)", close, StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task RecentAvatarUsageOrdersPresetsPerNodeAndAccount()
     {
         var store = new MemoryUsageStore();
