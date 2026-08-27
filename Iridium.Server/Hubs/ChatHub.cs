@@ -36,6 +36,9 @@ public sealed class ChatHub(
 {
     private const string CountedKey = "iridium.connection-counted";
     private const string AccountKey = "iridium.account-id";
+    private const string LastTypingSignalKey = "iridium.last-typing-signal";
+    private const string TypingSessionKey = "iridium.typing-session";
+    private static readonly TimeSpan MinimumTypingSignalInterval = TimeSpan.FromMilliseconds(500);
 
     public override async Task OnConnectedAsync()
     {
@@ -107,6 +110,39 @@ public sealed class ChatHub(
 
     public Task LeaveChannel(Guid communityId, Guid channelId) =>
         Groups.RemoveFromGroupAsync(Context.ConnectionId, GroupName(communityId, channelId));
+
+    public async Task SetTypingActivity(SetTypingActivityRequest request)
+    {
+        if (request.SessionId == Guid.Empty) throw new HubException("The typing session is invalid.");
+        var session = await RequireSessionAsync();
+        var conversation = request.Conversation;
+        string group;
+        switch (conversation.Kind)
+        {
+            case TypingConversationKind.CommunityChannel when conversation.CommunityId is { } communityId:
+                await RequireChannelAsync(communityId, conversation.ConversationId, session.AccountId,
+                    CommunityPermission.ViewChannels | CommunityPermission.SendMessages);
+                group = GroupName(communityId, conversation.ConversationId);
+                break;
+            case TypingConversationKind.DirectConversation when conversation.CommunityId is null:
+                _ = await RequireDirectConversationAsync(conversation.ConversationId, session.AccountId);
+                group = DirectGroup(conversation.ConversationId);
+                break;
+            default:
+                throw new HubException("That typing destination is invalid.");
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        if (request.IsTyping && Context.Items.TryGetValue(LastTypingSignalKey, out var previousValue) &&
+            previousValue is DateTimeOffset previous && now - previous < MinimumTypingSignalInterval)
+            return;
+        if (request.IsTyping) Context.Items[LastTypingSignalKey] = now;
+        else Context.Items.Remove(LastTypingSignalKey);
+        Context.Items[TypingSessionKey] = request.SessionId;
+        await Clients.OthersInGroup(group).SendAsync(TypingHubContract.Changed,
+            new TypingActivityEvent(conversation, session.AccountId, request.SessionId, session.Account.DisplayName,
+                request.IsTyping, now));
+    }
 
     public async Task<IReadOnlyList<ActiveVoiceRoomDto>> GetCommunityVoiceRooms(Guid communityId)
     {
@@ -386,6 +422,9 @@ public sealed class ChatHub(
         }
         await db.SaveChangesAsync();
         var result = await ChannelMessageMapper.ResolveCommunityProfileAsync(ChannelMessageMapper.ToDto(message), db);
+        await BroadcastTypingStoppedAsync(new(TypingConversationKind.CommunityChannel, channelId, communityId),
+            CurrentTypingSessionId,
+            session.AccountId, session.Account.DisplayName);
         await Clients.Group(GroupName(communityId, channelId)).SendAsync(ChatHubContract.MessageCreated, result);
         var communityRecipients = await db.CommunityMembers
             .Where(value => value.CommunityId == communityId && value.AccountId != session.AccountId)
@@ -932,6 +971,9 @@ public sealed class ChatHub(
         db.DirectMessages.Add(message);
         await db.SaveChangesAsync();
         var result = DirectMessageMapper.ToDto(message);
+        await BroadcastTypingStoppedAsync(new(TypingConversationKind.DirectConversation, conversationId),
+            CurrentTypingSessionId,
+            session.AccountId, session.Account.DisplayName);
         await DirectParticipants(conversation).SendAsync(DirectMessageHubContract.MessageCreated, result);
         return result;
     }
@@ -1006,6 +1048,20 @@ public sealed class ChatHub(
     private IClientProxy DirectParticipants(DirectConversation conversation) => Clients.Groups(
         AccountGroup(conversation.ParticipantAAccountId),
         AccountGroup(conversation.ParticipantBAccountId));
+
+    private Task BroadcastTypingStoppedAsync(TypingConversationDto conversation, Guid sessionId,
+        Guid accountId, string displayName)
+    {
+        var group = conversation.Kind == TypingConversationKind.CommunityChannel
+            ? GroupName(conversation.CommunityId!.Value, conversation.ConversationId)
+            : DirectGroup(conversation.ConversationId);
+        return Clients.OthersInGroup(group).SendAsync(TypingHubContract.Changed,
+            new TypingActivityEvent(conversation, accountId, sessionId, displayName, false, DateTimeOffset.UtcNow));
+    }
+
+    private Guid CurrentTypingSessionId => Context.Items.TryGetValue(TypingSessionKey, out var value) && value is Guid id
+        ? id
+        : Guid.Empty;
 
     private IClientProxy OtherCallParticipant(CallSessionDto call, Guid accountId) => Clients.Group(
         AccountGroup(call.Participants.Single(value => value.AccountId != accountId).AccountId));

@@ -103,7 +103,7 @@
             @if (CanDelete) { <button class="shift-action destructive" title="Delete Message" @onclick="DeleteAsync" @onclick:stopPropagation="true"><Icon Name="trash" /></button> }
             <button title="More actions" @onclick="ToggleMenu" @onclick:stopPropagation="true"><Icon Name="more" /></button>
         </div>
-        @if (_menuOpen)
+        @if (_menuOpen && !IsMobileLayout)
         {
             <div class="message-menu" @onpointerenter="MenuEntered" @onpointerleave="MenuLeft" @onclick:stopPropagation="true">
                 <button @onclick="ReplyFromMenuAsync"><Icon Name="reply" /> Reply</button>
@@ -114,6 +114,12 @@
         }
     }
 </article>
+@if (_menuOpen && IsMobileLayout)
+{
+    <MobileMessageActionSheet MessageId="Message.Id" CanEdit="CanEdit" CanDelete="CanDelete"
+                              OnReply="ReplyFromMenuAsync" OnForward="ForwardFromMenu"
+                              OnEdit="EditFromMenu" OnDelete="DeleteAsync" OnClose="CloseMessageMenu" />
+}
 @if (_forwardOpen)
 {
     <ForwardMessageModal Source="ForwardSource" OnClose="CloseForward" />
@@ -145,6 +151,7 @@
     [Parameter] public bool StartsGroup { get; set; }
     [Parameter] public bool CanEdit { get; set; }
     [Parameter] public bool CanDelete { get; set; }
+    [Parameter] public bool IsMobileLayout { get; set; }
     [Parameter, EditorRequired] public required Guid CurrentAccountId { get; set; }
     [Parameter, EditorRequired] public required string NodeAuthority { get; set; }
     [Parameter] public CommunityManagementDto? CommunityManagement { get; set; }
@@ -223,6 +230,7 @@
         ? new(MessageLocationKind.DirectConversation, Message.Id, ConversationId: Message.ChannelId)
         : new(MessageLocationKind.CommunityChannel, Message.Id, Message.CommunityId, Message.ChannelId);
     private void ToggleMenu() { CancelMenuClose(); MessageMenus.Toggle(Message.Id); }
+    private void CloseMessageMenu() => MessageMenus.Close(Message.Id);
     private readonly List<CommunityEmojiDraftReference> _editEmojiReferences = [];
     private readonly List<StandardEmojiDraftReference> _editStandardEmojiReferences = [];
     private readonly List<ComposerEmojiToken> _editEmojiTokens = [];
@@ -319,7 +327,7 @@
     private void MenuChanged() => _ = InvokeAsync(StateHasChanged);
     private void ModifierChanged() => _ = InvokeAsync(StateHasChanged);
     private void MessageEntered() { _messageHovered = true; CancelMenuClose(); }
-    private void MessageLeft() { _messageHovered = false; ScheduleMenuClose(); }
+    private void MessageLeft() { _messageHovered = false; if (!IsMobileLayout) ScheduleMenuClose(); }
     private void MenuEntered() { _menuHovered = true; CancelMenuClose(); }
     private void MenuLeft() { _menuHovered = false; ScheduleMenuClose(); }
     private void CancelMenuClose() { _menuClose?.Cancel(); _menuClose?.Dispose(); _menuClose = null; }

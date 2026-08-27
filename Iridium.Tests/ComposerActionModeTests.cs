@@ -87,7 +87,9 @@ public sealed class ComposerActionModeTests
         Assert.Contains("new QuickAvatarEntry(value.Id, value.Avatar?.Id", razor);
         Assert.Contains("Session.SetActiveAvatarPresetAsync(presetId)", razor);
         Assert.Contains("ProfileMedia.Invalidate(expectedAccount, state.AvatarRevision)", razor);
-        Assert.Contains("composerActionLongPressMilliseconds = 2000", javascript);
+        Assert.Contains("composerActionLongPressMilliseconds = 500", javascript);
+        Assert.Contains("mobileLongPressMoveTolerance = 10", javascript);
+        Assert.Contains("wireTouchLongPress(button", javascript);
         Assert.Contains("Math.hypot", javascript);
         Assert.Contains("pointercancel", javascript);
         Assert.Contains("event.stopImmediatePropagation()", javascript);

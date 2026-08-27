@@ -212,6 +212,7 @@
     [Parameter] public Func<MessageSubmission, Task<bool>>? SendRich { get; set; }
     [Parameter] public EventCallback OnSubmitted { get; set; }
     [Parameter] public EventCallback<bool> SendableContentChanged { get; set; }
+    [Parameter] public EventCallback<bool> TypingActivityChanged { get; set; }
     [Parameter] public CommunityManagementDto? CommunityManagement { get; set; }
     [Parameter] public CommunityDto? Community { get; set; }
     [Parameter] public EventCallback OnCommunityProfileChanged { get; set; }
@@ -468,6 +469,7 @@
                 CancelDraftDebounce();
                 _draftVersion++;
                 _content = string.Empty;
+                await TypingActivityChanged.InvokeAsync(false);
                 _mentions.Clear();
                 _emojiReferences.Clear();
                 _standardEmojiReferences.Clear();
@@ -770,6 +772,7 @@
     public async Task ComposerDocumentChangedAsync(ComposerDocumentSnapshot snapshot)
     {
         ApplySnapshot(snapshot);
+        await TypingActivityChanged.InvokeAsync(_content.Length > 0);
         if (RemainingCharacters >= 0 && _attachmentError?.StartsWith("Shorten the message by ", StringComparison.Ordinal) == true)
             _attachmentError = null;
         _mentions.RemoveAll(value => value.Start < 0 || value.Start + value.Length > _content.Length || _content[value.Start] != '@');
@@ -941,6 +944,7 @@
                 selection.InsertText + " ");
         }
         ApplySnapshot(snapshot);
+        await TypingActivityChanged.InvokeAsync(_content.Length > 0);
         await RecordEmojiUsageAsync(selection);
         _emojiPickerOpen = false; _resizeAfterRender = true;
     }
@@ -963,6 +967,7 @@
                 StandardToken(suggestion.Standard!.Glyph, suggestion.Standard.Name, suggestion.Standard.ArtworkKey),
                 _emojiStart, _emojiEnd, false);
         ApplySnapshot(snapshot);
+        await TypingActivityChanged.InvokeAsync(_content.Length > 0);
         await RecordEmojiUsageAsync(suggestion.Source is { } customSource
             ? new($":{customSource.Emoji.Name}:", customSource.Emoji.Name, customSource.Emoji.Id,
                 customSource.Community.Id)
@@ -1060,6 +1065,7 @@
         var snapshot = await _module.InvokeAsync<ComposerDocumentSnapshot>("replaceComposerText", _textarea,
             _mentionStart, _mentionEnd + removedSpaces, display + " ");
         ApplySnapshot(snapshot);
+        await TypingActivityChanged.InvokeAsync(_content.Length > 0);
         _mentions.Add(new(suggestion.Kind, suggestion.TargetId, _mentionStart, display.Length));
         CloseSuggestions();
         _resizeAfterRender = true;
@@ -1092,6 +1098,7 @@
         var snapshot = await _module.InvokeAsync<ComposerDocumentSnapshot>("replaceComposerText", _textarea,
             _content.Length, _content.Length, prefix + display + " ");
         ApplySnapshot(snapshot);
+        await TypingActivityChanged.InvokeAsync(_content.Length > 0);
         _mentions.Add(new(CommunityMentionKind.Account, member.AccountId, start, display.Length));
         CloseSuggestions();
         _resizeAfterRender = true;

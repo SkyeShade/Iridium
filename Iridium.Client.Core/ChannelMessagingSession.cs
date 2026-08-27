@@ -19,6 +19,17 @@ public sealed class ChannelMessagingSession(
     private readonly object _messageSync = new();
     private readonly Dictionary<Guid, Func<CancellationToken, Task<IReadOnlyList<AttachmentDto>>>> _channelAttachmentUploads = [];
     private readonly Dictionary<Guid, Func<CancellationToken, Task<IReadOnlyList<AttachmentDto>>>> _directAttachmentUploads = [];
+    private readonly TypingIndicatorState _typingIndicators = new();
+    private readonly object _typingSync = new();
+    private readonly Guid _typingSessionId = Guid.NewGuid();
+    private readonly CancellationTokenSource _typingLifetime = new();
+    private CancellationTokenSource? _typingInactivity;
+    private CancellationTokenSource? _typingHeartbeat;
+    private Task? _typingExpiryTask;
+    private TypingConversationDto? _localTypingConversation;
+    private DateTimeOffset _lastLocalTypingActivity;
+    private DateTimeOffset _lastTypingSignal;
+    private bool _localTypingBroadcast;
     private HubConnection? _connection;
     private readonly List<IDisposable> _handlerRegistrations = [];
     private IDisposable? _recoveryRegistration;
@@ -54,6 +65,7 @@ public sealed class ChannelMessagingSession(
     public long RecentReconciliationRevision { get; private set; }
     public bool IsConnected => _connection?.State == HubConnectionState.Connected;
     public event Action? Changed;
+    public string? TypingIndicatorText => _typingIndicators.TextFor(CurrentTypingConversation);
 
     public IReadOnlyList<ChannelMessageDto> MessagesFor(Guid communityId, Guid channelId) =>
         CommunityId == communityId && ChannelId == channelId &&
@@ -88,6 +100,7 @@ public sealed class ChannelMessagingSession(
             var previousCommunityId = CommunityId;
             var previousChannelId = ChannelId;
             var previousConversationId = DirectConversationId;
+            await StopLocalTypingAsync(cancellationToken: cancellationToken);
             ClearDirectState();
 
             var scope = ChannelScope(channelId);
@@ -177,6 +190,7 @@ public sealed class ChannelMessagingSession(
             var previousCommunityId = CommunityId;
             var previousChannelId = ChannelId;
             var previousConversationId = DirectConversationId;
+            await StopLocalTypingAsync(cancellationToken: cancellationToken);
             ClearChannelState();
             var scope = DirectScope(conversationId);
             var hot = AttachDirectState(conversationId, scope);
@@ -239,6 +253,79 @@ public sealed class ChannelMessagingSession(
 
     public Task LoadOlderAsync(CancellationToken cancellationToken = default) =>
         CommunityId is not null ? LoadOlderChannelAsync(cancellationToken) : LoadOlderDirectAsync(cancellationToken);
+
+    public async Task ReportTypingActivityAsync(bool hasText)
+    {
+        ThrowIfDisposed();
+        var target = CurrentTypingConversation;
+        if (!hasText || target is null)
+        {
+            await StopLocalTypingAsync();
+            return;
+        }
+
+        TypingConversationDto? previous = null;
+        var now = DateTimeOffset.UtcNow;
+        var sendNow = false;
+        CancellationToken inactivityToken;
+        CancellationToken? heartbeatToken = null;
+        TimeSpan heartbeatDelay = default;
+        lock (_typingSync)
+        {
+            if (_localTypingConversation is not null && _localTypingConversation != target && _localTypingBroadcast)
+                previous = _localTypingConversation;
+            if (_localTypingConversation != target)
+            {
+                CancelTypingTimersLocked();
+                _localTypingConversation = target;
+                _localTypingBroadcast = false;
+                _lastTypingSignal = default;
+            }
+            _lastLocalTypingActivity = now;
+            sendNow = TypingActivityTiming.ShouldBroadcast(_localTypingBroadcast, _lastTypingSignal, now);
+            if (sendNow)
+            {
+                _localTypingBroadcast = true;
+                _lastTypingSignal = now;
+                _typingHeartbeat?.Cancel();
+                _typingHeartbeat?.Dispose();
+                _typingHeartbeat = null;
+            }
+            else
+            {
+                _typingHeartbeat?.Cancel();
+                _typingHeartbeat?.Dispose();
+                _typingHeartbeat = CancellationTokenSource.CreateLinkedTokenSource(_typingLifetime.Token);
+                heartbeatToken = _typingHeartbeat.Token;
+                heartbeatDelay = TypingActivityTiming.HeartbeatInterval - (now - _lastTypingSignal);
+            }
+            _typingInactivity?.Cancel();
+            _typingInactivity?.Dispose();
+            _typingInactivity = CancellationTokenSource.CreateLinkedTokenSource(_typingLifetime.Token);
+            inactivityToken = _typingInactivity.Token;
+        }
+
+        if (previous is not null) await EmitTypingAsync(previous, false);
+        if (sendNow) await EmitTypingAsync(target, true);
+        if (heartbeatToken is { } refreshToken)
+            _ = RefreshTypingAfterThrottleAsync(target, heartbeatDelay, refreshToken);
+        _ = StopTypingAfterInactivityAsync(target, now, inactivityToken);
+    }
+
+    public async Task StopLocalTypingAsync(TypingConversationDto? expected = null,
+        CancellationToken cancellationToken = default)
+    {
+        TypingConversationDto? target = null;
+        lock (_typingSync)
+        {
+            if (expected is not null && _localTypingConversation != expected) return;
+            if (_localTypingBroadcast) target = _localTypingConversation;
+            _localTypingConversation = null;
+            _localTypingBroadcast = false;
+            CancelTypingTimersLocked();
+        }
+        if (target is not null) await EmitTypingAsync(target, false, cancellationToken);
+    }
 
     public async Task ResetToLatestAsync(CancellationToken cancellationToken = default)
     {
@@ -669,6 +756,7 @@ public sealed class ChannelMessagingSession(
         try
         {
             SaveActiveHotStates();
+            await StopLocalTypingAsync(cancellationToken: cancellationToken);
             await LeaveActiveChannelAsync(cancellationToken);
             await LeaveActiveDirectConversationAsync(cancellationToken);
             ClearChannelState();
@@ -690,6 +778,7 @@ public sealed class ChannelMessagingSession(
         try
         {
             SaveActiveHotStates();
+            await StopLocalTypingAsync(cancellationToken: cancellationToken);
             await LeaveActiveChannelAsync(cancellationToken);
             await LeaveActiveDirectConversationAsync(cancellationToken);
             ClearChannelState();
@@ -743,6 +832,8 @@ public sealed class ChannelMessagingSession(
             message => ReceiveSafely(DirectMessageHubContract.MessageUpdated, () => ReceiveDirectUpdated(message))));
         _handlerRegistrations.Add(connection.On<DirectMessageDeletedEvent>(DirectMessageHubContract.MessageDeleted,
             deleted => ReceiveSafely(DirectMessageHubContract.MessageDeleted, () => ReceiveDirectDeleted(deleted))));
+        _handlerRegistrations.Add(connection.On<TypingActivityEvent>(TypingHubContract.Changed,
+            activity => ReceiveSafely(TypingHubContract.Changed, () => ReceiveTypingActivity(activity))));
         _handlerRegistrations.Add(connection.On<FriendshipChangedEvent>(FriendshipHubContract.RequestReceived,
             _event => _ = RefreshFriendsSafelyAsync(FriendshipHubContract.RequestReceived)));
         _handlerRegistrations.Add(connection.On<FriendshipChangedEvent>(FriendshipHubContract.RequestAccepted,
@@ -914,6 +1005,94 @@ public sealed class ChannelMessagingSession(
         {
             logger.LogWarning(exception, "Could not leave direct conversation {ConversationId} cleanly.", conversationId);
         }
+    }
+
+    private TypingConversationDto? CurrentTypingConversation =>
+        CommunityId is { } communityId && ChannelId is { } channelId
+            ? new(TypingConversationKind.CommunityChannel, channelId, communityId)
+            : DirectConversationId is { } conversationId
+                ? new(TypingConversationKind.DirectConversation, conversationId)
+                : null;
+
+    private async Task EmitTypingAsync(TypingConversationDto conversation, bool isTyping,
+        CancellationToken cancellationToken = default)
+    {
+        if (!IsConnected) return;
+        try
+        {
+            await _connection!.InvokeAsync(TypingHubContract.SetActivity,
+                new SetTypingActivityRequest(conversation, _typingSessionId, isTyping), cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception exception)
+        {
+            logger.LogDebug(exception, "Could not publish typing state for {Kind} {ConversationId}.",
+                conversation.Kind, conversation.ConversationId);
+        }
+    }
+
+    private async Task RefreshTypingAfterThrottleAsync(TypingConversationDto conversation, TimeSpan delay,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Task.Delay(delay, cancellationToken);
+            lock (_typingSync)
+            {
+                if (!_localTypingBroadcast || _localTypingConversation != conversation ||
+                    _lastLocalTypingActivity <= _lastTypingSignal) return;
+                _lastTypingSignal = DateTimeOffset.UtcNow;
+            }
+            await EmitTypingAsync(conversation, true, cancellationToken);
+        }
+        catch (OperationCanceledException) { }
+    }
+
+    private async Task StopTypingAfterInactivityAsync(TypingConversationDto conversation,
+        DateTimeOffset activityAt, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Task.Delay(TypingIndicatorState.InactivityTimeout, cancellationToken);
+            var shouldStop = false;
+            lock (_typingSync)
+            {
+                if (_localTypingConversation != conversation || _lastLocalTypingActivity != activityAt) return;
+                shouldStop = _localTypingBroadcast;
+                _localTypingConversation = null;
+                _localTypingBroadcast = false;
+                _typingHeartbeat?.Cancel();
+            }
+            if (shouldStop) await EmitTypingAsync(conversation, false, cancellationToken);
+        }
+        catch (OperationCanceledException) { }
+    }
+
+    private void CancelTypingTimersLocked()
+    {
+        _typingInactivity?.Cancel();
+        _typingInactivity?.Dispose();
+        _typingInactivity = null;
+        _typingHeartbeat?.Cancel();
+        _typingHeartbeat?.Dispose();
+        _typingHeartbeat = null;
+    }
+
+    private void ReceiveTypingActivity(TypingActivityEvent activity)
+    {
+        if (_typingIndicators.Apply(activity, _connectedAccountId, DateTimeOffset.UtcNow)) NotifyChanged();
+        _typingExpiryTask ??= ExpireTypingIndicatorsAsync();
+    }
+
+    private async Task ExpireTypingIndicatorsAsync()
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+            while (await timer.WaitForNextTickAsync(_typingLifetime.Token))
+                if (_typingIndicators.Prune(DateTimeOffset.UtcNow)) NotifyChanged();
+        }
+        catch (OperationCanceledException) { }
     }
 
     private async Task LoadOlderChannelAsync(CancellationToken cancellationToken)
@@ -1344,6 +1523,8 @@ public sealed class ChannelMessagingSession(
 
     private void ClearChannelState()
     {
+        if (CommunityId is { } communityId && ChannelId is { } channelId)
+            _typingIndicators.Clear(new(TypingConversationKind.CommunityChannel, channelId, communityId));
         CommunityId = null;
         ChannelId = null;
         _channelStateScope = null;
@@ -1355,6 +1536,8 @@ public sealed class ChannelMessagingSession(
 
     private void ClearDirectState()
     {
+        if (DirectConversationId is { } conversationId)
+            _typingIndicators.Clear(new(TypingConversationKind.DirectConversation, conversationId));
         DirectConversationId = null;
         _directStateScope = null;
         _directReady = false;
@@ -1636,7 +1819,11 @@ public sealed class ChannelMessagingSession(
     public async ValueTask DisposeAsync()
     {
         if (_disposed) return;
+        await StopLocalTypingAsync();
         _disposed = true;
+        _typingLifetime.Cancel();
+        if (_typingExpiryTask is not null) await _typingExpiryTask;
+        _typingIndicators.Clear();
         _recoveryRegistration?.Dispose();
         _recoveryRegistration = null;
         if (_lifecycleRegistered)
@@ -1660,6 +1847,7 @@ public sealed class ChannelMessagingSession(
         {
             _lifecycleGate.Release();
             _lifecycleGate.Dispose();
+            _typingLifetime.Dispose();
         }
     }
 }

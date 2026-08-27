@@ -1,0 +1,102 @@
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+
+<div class="mobile-message-action-backdrop" @ref="_backdrop" @onclick="DismissAsync">
+    <section class="mobile-message-action-sheet" @ref="_sheet" role="dialog" aria-modal="true"
+             aria-label="Message actions" tabindex="-1" @onclick:stopPropagation="true">
+        <div class="sheet-drag-region" @ref="_dragHandle" aria-hidden="true">
+            <span class="sheet-drag-handle"></span>
+        </div>
+        <div class="sheet-content">
+            <div class="sheet-action-group">
+                <button type="button" @onclick="() => ExecuteAsync(OnReply)"><Icon Name="reply" /><span>Reply</span></button>
+                <button type="button" @onclick="() => ExecuteAsync(OnForward)"><Icon Name="forward" /><span>Forward</span></button>
+            </div>
+            @if (CanEdit || CanDelete)
+            {
+                <div class="sheet-separator" role="separator"></div>
+                <div class="sheet-action-group">
+                    @if (CanEdit)
+                    {
+                        <button type="button" @onclick="() => ExecuteAsync(OnEdit)"><Icon Name="edit" /><span>Edit</span></button>
+                    }
+                    @if (CanDelete)
+                    {
+                        <button type="button" class="destructive" @onclick="() => ExecuteAsync(OnDelete)"><Icon Name="trash" /><span>Delete Message</span></button>
+                    }
+                </div>
+            }
+        </div>
+    </section>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public Guid MessageId { get; set; }
+    [Parameter] public bool CanEdit { get; set; }
+    [Parameter] public bool CanDelete { get; set; }
+    [Parameter] public EventCallback OnReply { get; set; }
+    [Parameter] public EventCallback OnForward { get; set; }
+    [Parameter] public EventCallback OnEdit { get; set; }
+    [Parameter] public EventCallback OnDelete { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private ElementReference _backdrop;
+    private ElementReference _sheet;
+    private ElementReference _dragHandle;
+    private IJSObjectReference? _module;
+    private DotNetObjectReference<MobileMessageActionSheet>? _selfReference;
+    private bool _closing;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        _module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/chat.js");
+        _selfReference = DotNetObjectReference.Create(this);
+        await _module.InvokeVoidAsync("wireMobileMessageActionSheet", _backdrop, _sheet, _dragHandle, _selfReference);
+    }
+
+    private async Task ExecuteAsync(EventCallback action)
+    {
+        if (_closing) return;
+        _closing = true;
+        await AnimateCloseAsync();
+        await OnClose.InvokeAsync();
+        await action.InvokeAsync();
+    }
+
+    private async Task DismissAsync()
+    {
+        if (_closing) return;
+        _closing = true;
+        await AnimateCloseAsync();
+        await OnClose.InvokeAsync();
+    }
+
+    [JSInvokable]
+    public async Task DismissFromGestureAsync()
+    {
+        if (_closing) return;
+        _closing = true;
+        await OnClose.InvokeAsync();
+    }
+
+    private async Task AnimateCloseAsync()
+    {
+        if (_module is null) return;
+        await _module.InvokeVoidAsync("animateMobileMessageActionSheetClose", _backdrop, _sheet);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_module is not null)
+        {
+            try
+            {
+                await _module.InvokeVoidAsync("unwireMobileMessageActionSheet", _backdrop);
+                await _module.DisposeAsync();
+            }
+            catch (JSDisconnectedException) { }
+        }
+        _selfReference?.Dispose();
+    }
+}

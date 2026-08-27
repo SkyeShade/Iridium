@@ -1,0 +1,10 @@
+<div class="typing-indicator-line" role="status" aria-live="polite" aria-atomic="true">
+    @if (!string.IsNullOrWhiteSpace(Text))
+    {
+        <span title="@Text">@Text</span>
+    }
+</div>
+
+@code {
+    [Parameter] public string? Text { get; set; }
+}

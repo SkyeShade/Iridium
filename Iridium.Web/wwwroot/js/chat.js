@@ -1,5 +1,7 @@
 const composerHandlers = new WeakMap();
 const composerActionButtonHandlers = new WeakMap();
+const messageLongPressHandlers = new WeakMap();
+const mobileMessageActionSheets = new WeakMap();
 const horizontalWheelElements = new WeakSet();
 const markdownSourceEditorHandlers = new WeakMap();
 const channelSorters = new WeakMap();
@@ -903,79 +905,329 @@ export function openComposerFilePicker(composerRoot) {
     composerRoot?.querySelector('input[type="file"]')?.click();
 }
 
-export const composerActionLongPressMilliseconds = 2000;
-const composerActionMoveTolerance = 14;
+export const composerActionLongPressMilliseconds = 500;
+export const messageActionLongPressMilliseconds = 550;
+export const mobileLongPressMoveTolerance = 10;
 
-export function wireComposerActionButton(button, dotNetReference, enableModeSwitch = true) {
-    if (!button || !enableModeSwitch || composerActionButtonHandlers.has(button)) return;
-    let timer = 0, pointerId = null, startX = 0, startY = 0, longPressTriggered = false, lastPointerType = "mouse";
-    const cancel = () => {
+export function longPressMovementExceeded(startX, startY, currentX, currentY,
+    tolerance = mobileLongPressMoveTolerance) {
+    return Math.hypot(currentX - startX, currentY - startY) > tolerance;
+}
+
+function wireTouchLongPress(root, { threshold, targetSelector, activeClass, invoke }) {
+    let timer = 0;
+    let candidate = null;
+    let suppressTarget = null;
+    let suppressPoint = null;
+    let suppressUntil = 0;
+
+    const targetFor = event => targetSelector ? event.target?.closest?.(targetSelector) : root;
+    const clearCandidate = () => {
         if (timer) window.clearTimeout(timer);
         timer = 0;
-        pointerId = null;
-        button.classList.remove("long-pressing");
+        candidate?.target?.classList.remove(activeClass);
+        candidate = null;
     };
     const down = event => {
-        lastPointerType = event.pointerType;
-        if (event.pointerType === "mouse" || event.button !== 0 ||
+        if ((event.pointerType !== "touch" && event.pointerType !== "pen") || event.button !== 0 ||
             !window.matchMedia("(max-width: 860px)").matches) return;
-        cancel();
-        pointerId = event.pointerId;
-        startX = event.clientX;
-        startY = event.clientY;
-        longPressTriggered = false;
-        button.classList.add("long-pressing");
+        const target = targetFor(event);
+        if (!target) return;
+        clearCandidate();
+        candidate = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, target };
+        target.classList.add(activeClass);
         timer = window.setTimeout(async () => {
+            if (!candidate) return;
             timer = 0;
-            longPressTriggered = true;
-            button.classList.remove("long-pressing");
-            try { await dotNetReference.invokeMethodAsync("OpenComposerActionModeMenuFromLongPressAsync"); }
-            catch (error) { console.error("Could not open the composer action menu.", error); }
-        }, composerActionLongPressMilliseconds);
+            const activated = candidate;
+            activated.target.classList.remove(activeClass);
+            suppressTarget = activated.target;
+            suppressPoint = { x: activated.startX, y: activated.startY };
+            suppressUntil = Date.now() + 1000;
+            candidate = null;
+            try { await invoke(activated.target, activated.startX, activated.startY); }
+            catch (error) { console.error("Could not complete the long-press action.", error); }
+        }, threshold);
     };
     const move = event => {
-        if (event.pointerId !== pointerId) return;
-        if (Math.hypot(event.clientX - startX, event.clientY - startY) > composerActionMoveTolerance) cancel();
+        if (!candidate || event.pointerId !== candidate.pointerId) return;
+        if (longPressMovementExceeded(candidate.startX, candidate.startY, event.clientX, event.clientY))
+            clearCandidate();
     };
     const up = event => {
-        if (event.pointerId !== pointerId) return;
-        const awaitingSuppressedClick = longPressTriggered;
-        cancel();
-        if (awaitingSuppressedClick) window.setTimeout(() => { longPressTriggered = false; }, 0);
+        if (candidate && event.pointerId === candidate.pointerId) clearCandidate();
     };
-    const pointercancel = () => { cancel(); longPressTriggered = false; };
+    const pointercancel = () => clearCandidate();
     const click = event => {
-        if (!longPressTriggered) return;
-        longPressTriggered = false;
+        if (!suppressTarget || !suppressPoint || Date.now() > suppressUntil ||
+            !suppressTarget.contains(event.target) ||
+            longPressMovementExceeded(suppressPoint.x, suppressPoint.y, event.clientX, event.clientY, 24)) return;
+        suppressTarget = null;
+        suppressPoint = null;
+        suppressUntil = 0;
         event.preventDefault();
         event.stopImmediatePropagation();
     };
     const contextmenu = event => {
-        if (lastPointerType === "mouse" || !window.matchMedia("(max-width: 860px)").matches) return;
+        const target = targetFor(event);
+        const recognized = candidate?.target === target ||
+            (suppressTarget === target && Date.now() <= suppressUntil);
+        if (!recognized) return;
         event.preventDefault();
         event.stopImmediatePropagation();
     };
-    const handlers = { down, move, up, cancel, pointercancel, click, contextmenu };
-    composerActionButtonHandlers.set(button, handlers);
-    button.addEventListener("pointerdown", down);
-    button.addEventListener("pointermove", move, { passive: true });
-    button.addEventListener("pointerup", up);
-    button.addEventListener("pointercancel", pointercancel);
-    button.addEventListener("click", click, true);
-    button.addEventListener("contextmenu", contextmenu);
+    root.addEventListener("pointerdown", down);
+    window.addEventListener("pointermove", move, { passive: true });
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", pointercancel);
+    root.addEventListener("click", click, true);
+    root.addEventListener("contextmenu", contextmenu);
+    return {
+        dispose() {
+            clearCandidate();
+            root.removeEventListener("pointerdown", down);
+            window.removeEventListener("pointermove", move);
+            window.removeEventListener("pointerup", up);
+            window.removeEventListener("pointercancel", pointercancel);
+            root.removeEventListener("click", click, true);
+            root.removeEventListener("contextmenu", contextmenu);
+        }
+    };
+}
+
+export function wireComposerActionButton(button, dotNetReference, enableModeSwitch = true) {
+    if (!button || !enableModeSwitch || composerActionButtonHandlers.has(button)) return;
+    composerActionButtonHandlers.set(button, wireTouchLongPress(button, {
+        threshold: composerActionLongPressMilliseconds,
+        activeClass: "long-pressing",
+        invoke: () => dotNetReference.invokeMethodAsync("OpenComposerActionModeMenuFromLongPressAsync")
+    }));
 }
 
 export function unwireComposerActionButton(button) {
     const handlers = button ? composerActionButtonHandlers.get(button) : null;
     if (!handlers) return;
-    handlers.cancel();
-    button.removeEventListener("pointerdown", handlers.down);
-    button.removeEventListener("pointermove", handlers.move);
-    button.removeEventListener("pointerup", handlers.up);
-    button.removeEventListener("pointercancel", handlers.pointercancel);
-    button.removeEventListener("click", handlers.click, true);
-    button.removeEventListener("contextmenu", handlers.contextmenu);
+    handlers.dispose();
     composerActionButtonHandlers.delete(button);
+}
+
+export function wireMessageLongPress(container, dotNetReference) {
+    if (!container || messageLongPressHandlers.has(container)) return;
+    let menuOpened = false;
+    const gesture = wireTouchLongPress(container, {
+        threshold: messageActionLongPressMilliseconds,
+        targetSelector: "article.message-row[data-message-id]",
+        activeClass: "message-long-pressing",
+        invoke: async target => {
+            await dotNetReference.invokeMethodAsync(
+                "OpenMessageActionsFromLongPressAsync", target.dataset.messageId);
+            menuOpened = true;
+        }
+    });
+    const keydown = event => {
+        if (!menuOpened || event.key !== "Escape") return;
+        menuOpened = false;
+        dotNetReference.invokeMethodAsync("CloseMessageActionsFromLongPressAsync");
+    };
+    window.addEventListener("keydown", keydown);
+    messageLongPressHandlers.set(container, {
+        dispose() {
+            gesture.dispose();
+            window.removeEventListener("keydown", keydown);
+        }
+    });
+}
+
+export function unwireMessageLongPress(container) {
+    const handlers = container ? messageLongPressHandlers.get(container) : null;
+    if (!handlers) return;
+    handlers.dispose();
+    messageLongPressHandlers.delete(container);
+}
+
+export function animateMobileMessageActionSheetClose(backdrop, sheet) {
+    if (!backdrop || !sheet) return Promise.resolve();
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return Promise.resolve();
+    return new Promise(resolve => {
+        let finished = false;
+        const finish = () => {
+            if (finished) return;
+            finished = true;
+            sheet.removeEventListener("transitionend", finish);
+            resolve();
+        };
+        sheet.style.transition = "transform 180ms cubic-bezier(.4,0,1,1)";
+        backdrop.style.transition = "background 180ms ease";
+        requestAnimationFrame(() => {
+            sheet.style.transform = "translate3d(0,100%,0)";
+            backdrop.style.background = "transparent";
+        });
+        sheet.addEventListener("transitionend", finish, { once: true });
+        window.setTimeout(finish, 230);
+    });
+}
+
+export const mobileMessageSheetVelocityThreshold = .85;
+export const mobileMessageSheetSnapMilliseconds = 190;
+
+export function mobileMessageSheetDragOffset(startY, currentY) {
+    return Math.max(0, currentY - startY);
+}
+
+export function mobileMessageSheetDismissDistance(sheetHeight) {
+    return Math.max(90, Math.min(140, sheetHeight * .3));
+}
+
+export function mobileMessageSheetBackdropOpacity(distance, dismissDistance, baseOpacity = .62) {
+    const progress = Math.max(0, Math.min(1, distance / Math.max(1, dismissDistance)));
+    return baseOpacity * (1 - progress * .6);
+}
+
+export function shouldDismissMobileMessageActionSheet(distance, sheetHeight, velocity) {
+    return distance >= mobileMessageSheetDismissDistance(sheetHeight) ||
+        (distance >= 36 && velocity >= mobileMessageSheetVelocityThreshold);
+}
+
+export function wireMobileMessageActionSheet(backdrop, sheet, dragHandle, dotNetReference) {
+    if (!backdrop || !sheet || !dragHandle || mobileMessageActionSheets.has(backdrop)) return;
+    const scrollContainer = backdrop.closest(".message-list");
+    let drag = null;
+    let dismissing = false;
+    let visualFrame = 0;
+    let suppressClick = null;
+    scrollContainer?.classList.add("message-action-sheet-open");
+
+    const releasePointer = pointerId => {
+        try {
+            if (dragHandle.hasPointerCapture?.(pointerId)) dragHandle.releasePointerCapture(pointerId);
+        } catch { }
+    };
+    const writeDragVisual = () => {
+        visualFrame = 0;
+        if (!drag) return;
+        drag.renderedY = drag.desiredY;
+        sheet.style.transform = `translate3d(0,${drag.renderedY}px,0)`;
+        const opacity = mobileMessageSheetBackdropOpacity(drag.renderedY, drag.dismissDistance);
+        backdrop.style.background = `rgba(3,5,9,${opacity})`;
+    };
+    const scheduleDragVisual = () => {
+        if (!visualFrame) visualFrame = requestAnimationFrame(writeDragVisual);
+    };
+    const flushDragVisual = () => {
+        if (visualFrame) cancelAnimationFrame(visualFrame);
+        visualFrame = 0;
+        writeDragVisual();
+    };
+    const releaseTransition = () => {
+        const duration = window.matchMedia("(prefers-reduced-motion: reduce)").matches
+            ? 1 : mobileMessageSheetSnapMilliseconds;
+        sheet.style.transition = `transform ${duration}ms cubic-bezier(.2,.75,.25,1)`;
+        backdrop.style.transition = `background ${duration}ms ease`;
+    };
+    const snapBack = () => {
+        releaseTransition();
+        visualFrame = requestAnimationFrame(() => {
+            visualFrame = 0;
+            sheet.style.transform = "translate3d(0,0,0)";
+            backdrop.style.background = "rgba(3,5,9,.62)";
+        });
+    };
+
+    const dismiss = async () => {
+        if (dismissing) return;
+        dismissing = true;
+        await animateMobileMessageActionSheetClose(backdrop, sheet);
+        await dotNetReference.invokeMethodAsync("DismissFromGestureAsync");
+    };
+    const down = event => {
+        if (event.button !== 0) return;
+        const sheetHeight = sheet.getBoundingClientRect().height;
+        drag = { pointerId: event.pointerId, startY: event.clientY, lastY: event.clientY,
+            lastAt: performance.now(), velocity: 0, desiredY: 0, renderedY: 0, maxY: 0,
+            sheetHeight, dismissDistance: mobileMessageSheetDismissDistance(sheetHeight) };
+        try { dragHandle.setPointerCapture?.(event.pointerId); } catch { }
+        sheet.style.animation = "none";
+        backdrop.style.animation = "none";
+        sheet.style.transition = "none";
+        backdrop.style.transition = "none";
+    };
+    const move = event => {
+        if (!drag || event.pointerId !== drag.pointerId) return;
+        const now = performance.now();
+        const elapsed = Math.max(1, now - drag.lastAt);
+        drag.velocity = (event.clientY - drag.lastY) / elapsed;
+        drag.lastY = event.clientY;
+        drag.lastAt = now;
+        drag.desiredY = mobileMessageSheetDragOffset(drag.startY, event.clientY);
+        drag.maxY = Math.max(drag.maxY, drag.desiredY);
+        scheduleDragVisual();
+        event.preventDefault();
+    };
+    const end = event => {
+        if (!drag || event.pointerId !== drag.pointerId) return;
+        const now = performance.now();
+        drag.velocity = (event.clientY - drag.lastY) / Math.max(1, now - drag.lastAt);
+        drag.desiredY = mobileMessageSheetDragOffset(drag.startY, event.clientY);
+        drag.maxY = Math.max(drag.maxY, drag.desiredY);
+        flushDragVisual();
+        const completed = drag;
+        releasePointer(completed.pointerId);
+        if (completed.maxY > mobileLongPressMoveTolerance)
+            suppressClick = { x: event.clientX, y: event.clientY, until: Date.now() + 600 };
+        const shouldDismiss = shouldDismissMobileMessageActionSheet(
+            completed.desiredY, completed.sheetHeight, completed.velocity);
+        drag = null;
+        if (shouldDismiss) { void dismiss(); return; }
+        snapBack();
+    };
+    const cancel = event => {
+        if (!drag || (event.pointerId !== undefined && event.pointerId !== drag.pointerId)) return;
+        flushDragVisual();
+        releasePointer(drag.pointerId);
+        drag = null;
+        snapBack();
+    };
+    const click = event => {
+        if (!suppressClick || Date.now() > suppressClick.until ||
+            longPressMovementExceeded(suppressClick.x, suppressClick.y, event.clientX, event.clientY, 24)) return;
+        suppressClick = null;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+    };
+    const keydown = event => {
+        if (event.key === "Escape") { event.preventDefault(); void dismiss(); return; }
+        if (event.key !== "Tab") return;
+        const focusable = Array.from(sheet.querySelectorAll("button:not(:disabled),[tabindex]:not([tabindex='-1'])"));
+        if (!focusable.length) { event.preventDefault(); sheet.focus(); return; }
+        const first = focusable[0], last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    dragHandle.addEventListener("pointerdown", down);
+    window.addEventListener("pointermove", move, { passive: false });
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", cancel);
+    window.addEventListener("keydown", keydown);
+    sheet.addEventListener("click", click, true);
+    sheet.querySelector("button")?.focus({ preventScroll: true });
+    mobileMessageActionSheets.set(backdrop, {
+        scrollContainer, dragHandle, sheet, down, move, end, cancel, keydown, click,
+        cancelVisualFrame: () => { if (visualFrame) cancelAnimationFrame(visualFrame); }
+    });
+}
+
+export function unwireMobileMessageActionSheet(backdrop) {
+    const wired = backdrop ? mobileMessageActionSheets.get(backdrop) : null;
+    if (!wired) return;
+    wired.dragHandle.removeEventListener("pointerdown", wired.down);
+    window.removeEventListener("pointermove", wired.move);
+    window.removeEventListener("pointerup", wired.end);
+    window.removeEventListener("pointercancel", wired.cancel);
+    window.removeEventListener("keydown", wired.keydown);
+    wired.sheet.removeEventListener("click", wired.click, true);
+    wired.cancelVisualFrame();
+    wired.scrollContainer?.classList.remove("message-action-sheet-open");
+    mobileMessageActionSheets.delete(backdrop);
 }
 
 export function focusComposerActionPopup(root, selector) {

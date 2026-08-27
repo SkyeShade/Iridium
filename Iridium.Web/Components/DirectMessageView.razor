@@ -23,6 +23,7 @@
                               OnMobileMinimize="OnMobileCallMinimize" />
         <div class="dm-message-history">
         <MessageList @key="Conversation.Id" @ref="_messageList" Messages="ProjectedMessages" CurrentAccountId="CurrentAccountId" CanManage="false"
+                     IsMobileLayout="IsMobileLayout"
                      DirectParticipant="Conversation.OtherParticipant"
                      NodeAuthority="@NodeAuthority" OnEditProfile="OnEditProfile" OnEditAvatars="OnEditAvatars" OnMessage="OnMessage"
                      EmptyIcon="message" EmptyTitle="No messages yet" EmptyDescription="Send the first Direct Message."
@@ -37,10 +38,12 @@
         </div>
     </div>
     <div class="dm-composer-region">
+        <TypingIndicatorLine Text="@Messaging.TypingIndicatorText" />
         <MessageComposer @ref="_composer" ChannelName="@Conversation.OtherParticipant.DisplayName"
                          PlaceholderText="@($"Message {Conversation.OtherParticipant.DisplayName}")"
                          ReplyToDisplayName="@(_replyTo?.Author.DisplayName)" Busy="@_sending"
                          SendRich="SendMessageAsync" OnCancelReply="CancelReplyAsync"
+                         TypingActivityChanged="Messaging.ReportTypingActivityAsync"
                          OnEditLastMessage="EditLastOwnMessageAsync"
                          NodeAuthority="@NodeAuthority" AccountId="@CurrentAccountId" ConversationKind="direct" ConversationId="@Conversation.Id" />
     </div>
@@ -226,5 +229,11 @@
         _shouldShowJumpToLatest = true;
         await InvokeAsync(StateHasChanged);
     }
-    public void Dispose() { _disposed = true; Messaging.Changed -= MessagesChanged; Calls.Changed -= CallsChanged; }
+    public void Dispose()
+    {
+        _disposed = true;
+        _ = Messaging.StopLocalTypingAsync(new(TypingConversationKind.DirectConversation, Conversation.Id));
+        Messaging.Changed -= MessagesChanged;
+        Calls.Changed -= CallsChanged;
+    }
 }

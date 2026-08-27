@@ -11,6 +11,13 @@ public sealed class MessageMenuCoordinator
         Changed?.Invoke();
     }
 
+    public void Open(Guid messageId)
+    {
+        if (OpenMessageId == messageId) return;
+        OpenMessageId = messageId;
+        Changed?.Invoke();
+    }
+
     public void Close(Guid? messageId = null)
     {
         if (OpenMessageId is null || messageId is not null && OpenMessageId != messageId) return;

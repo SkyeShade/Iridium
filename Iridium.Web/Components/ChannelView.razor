@@ -18,6 +18,7 @@
     }
     <div class="message-region">
         <MessageList @key="Channel.Id" @ref="_messageList" Messages="VisibleMessages" CurrentAccountId="CurrentAccountId" CanManage="CanManageMessages"
+                     IsMobileLayout="IsMobileLayout"
                      NodeAuthority="@NodeAuthority" CommunityManagement="CommunityManagement"
                      OptimisticCommunityPresentations="_optimisticCommunityPresentations"
                      OnEditProfile="OnEditProfile" OnEditAvatars="OnEditAvatars"
@@ -39,11 +40,13 @@
     @if (CanSend)
     {
         <div class="composer-region">
+            <TypingIndicatorLine Text="@Messaging.TypingIndicatorText" />
             <MessageComposer @ref="_composer" ChannelName="@Channel.Name" ReplyToDisplayName="@(_replyTo?.Author.DisplayName)" Busy="@_sending"
                              Community="Community" CommunityManagement="CommunityManagement" SendRich="SendMessageAsync" OnCancelReply="CancelReplyAsync"
                              OnCommunityProfileChanged="OnCommunityProfileChanged"
                              OnAvatarSelectionSucceeded="FocusComposerAfterEditAsync"
                              CanAttachFiles="CanAttachFiles" CanMentionEveryone="CanMentionEveryone"
+                             TypingActivityChanged="Messaging.ReportTypingActivityAsync"
                              OnEditLastMessage="EditLastOwnMessageAsync"
                              NodeAuthority="@NodeAuthority" AccountId="@CurrentAccountId" ConversationKind="@DraftConversationKind" ConversationId="@(DraftConversationId ?? Channel.Id)" />
         </div>
@@ -406,6 +409,7 @@
     public void Dispose()
     {
         _disposed = true;
+        _ = Messaging.StopLocalTypingAsync(new(TypingConversationKind.CommunityChannel, Channel.Id, Community.Id));
         Messaging.Changed -= MessagesChanged;
     }
 }
