@@ -22,7 +22,8 @@ public static class ChannelMessageMapper
                 original.IsDeleted ? null : AttachmentSummary(original.Attachments),
                 AvatarRevision: original.AuthorAvatarRevisionSnapshot ?? original.AuthorAccount.AvatarRevision,
                 AvatarSnapshotMessageId: original.AuthorAvatarObjectKeySnapshot is null ? null : original.Id,
-                HasHistoricalSnapshot: original.AuthorDisplayNameSnapshot is not null);
+                HasHistoricalSnapshot: original.AuthorDisplayNameSnapshot is not null,
+                AvatarSnapshot: AvatarSnapshot(original));
         }
 
         return new ChannelMessageDto(
@@ -33,7 +34,8 @@ public static class ChannelMessageMapper
                 message.AuthorDisplayNameSnapshot ?? message.AuthorAccount.DisplayName,
                 AvatarRevision: message.AuthorAvatarRevisionSnapshot ?? message.AuthorAccount.AvatarRevision,
                 AvatarSnapshotMessageId: message.AuthorAvatarObjectKeySnapshot is null ? null : message.Id,
-                HasHistoricalSnapshot: message.AuthorDisplayNameSnapshot is not null),
+                HasHistoricalSnapshot: message.AuthorDisplayNameSnapshot is not null,
+                AvatarSnapshot: AvatarSnapshot(message)),
             message.IsDeleted ? string.Empty : message.Content,
             message.CreatedAt,
             message.EditedAt,
@@ -49,6 +51,15 @@ public static class ChannelMessageMapper
         $"api/attachments/{value.Id}", value.Width, value.Height, value.AverageColor, IsSpoiler: value.IsSpoiler,
         PreviewDownloadUrl: value.PreviewObjectKey is null ? null : $"api/attachments/{value.Id}/preview",
         PreviewContentType: value.PreviewContentType, PreviewSizeBytes: value.PreviewSizeBytes);
+
+    private static MessageAvatarSnapshotDto? AvatarSnapshot(ChannelMessage message) =>
+        message.AuthorAvatarObjectKeySnapshot is null ? null : new(
+            message.AuthorAvatarRevisionSnapshot ?? 0,
+            message.AuthorAvatarCropXSnapshot ?? 0,
+            message.AuthorAvatarCropYSnapshot ?? 0,
+            message.AuthorAvatarZoomSnapshot ?? 1,
+            message.AuthorAvatarWidthSnapshot ?? 0,
+            message.AuthorAvatarHeightSnapshot ?? 0);
 
     private static string Excerpt(string content)
         => content;

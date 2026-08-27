@@ -9,7 +9,8 @@ public sealed class ChannelMessagingSession(
     NodeSession nodeSession,
     RealtimeConnectionService realtime,
     ILogger<ChannelMessagingSession> logger,
-    IMessageHistoryCache? historyCache = null) : IAsyncDisposable
+    IMessageHistoryCache? historyCache = null,
+    ProfileMediaService? profileMedia = null) : IAsyncDisposable
 {
     private readonly IMessageHistoryCache _historyCache = historyCache ?? NullMessageHistoryCache.Instance;
     private readonly List<ChannelMessageDto> _messages = [];
@@ -1452,6 +1453,7 @@ public sealed class ChannelMessagingSession(
 
     private void Upsert(ChannelMessageDto message, bool notify = true)
     {
+        PrimeMessageSnapshots(message);
         lock (_messageSync)
         {
             var index = _messages.FindIndex(value => value.Id == message.Id);
@@ -1478,6 +1480,7 @@ public sealed class ChannelMessagingSession(
                         AvatarRevision = message.Author.AvatarRevision,
                         AvatarSnapshotMessageId = message.Author.AvatarSnapshotMessageId,
                         HasHistoricalSnapshot = message.Author.HasHistoricalSnapshot,
+                        AvatarSnapshot = message.Author.AvatarSnapshot,
                         Excerpt = excerpt,
                         IsDeleted = message.IsDeleted
                     }
@@ -1486,6 +1489,16 @@ public sealed class ChannelMessagingSession(
             SortMessages(_messages);
         }
         if (notify) NotifyChanged();
+    }
+
+    private void PrimeMessageSnapshots(ChannelMessageDto message)
+    {
+        if (message.Author.AvatarSnapshotMessageId is { } authorSnapshotId &&
+            message.Author.AvatarSnapshot is { } authorSnapshot)
+            profileMedia?.PrimeMessageSnapshot(authorSnapshotId, authorSnapshot);
+        if (message.ReplyTo?.AvatarSnapshotMessageId is { } replySnapshotId &&
+            message.ReplyTo.AvatarSnapshot is { } replySnapshot)
+            profileMedia?.PrimeMessageSnapshot(replySnapshotId, replySnapshot);
     }
 
     private void UpsertDirect(DirectMessageDto message, bool notify = true)

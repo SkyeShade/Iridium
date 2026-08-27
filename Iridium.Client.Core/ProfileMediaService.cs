@@ -87,6 +87,15 @@ public sealed class ProfileMediaService : IDisposable
         catch { return null; }
     }
 
+    public void PrimeMessageSnapshot(Guid messageId, MessageAvatarSnapshotDto snapshot)
+    {
+        if (_messageSnapshots.ContainsKey(messageId)) return;
+        var url = new Uri(_session.AuthorizedClient.NodeAddress,
+            $"api/messages/{messageId}/author-avatar?v={snapshot.Revision}").ToString();
+        _messageSnapshots[messageId] = new ProfileAvatarDto(true, url, snapshot.Revision,
+            snapshot.CropX, snapshot.CropY, snapshot.Zoom, snapshot.Width, snapshot.Height);
+    }
+
     public void ObserveBanner(Guid accountId, long revision)
     {
         if (revision > _bannerRevisions.GetValueOrDefault(accountId)) _bannerRevisions[accountId] = revision;

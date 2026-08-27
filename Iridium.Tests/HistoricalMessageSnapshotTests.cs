@@ -23,9 +23,13 @@ public sealed class HistoricalMessageSnapshotTests
         Assert.Equal("GM Skye", mapped.Author.DisplayName);
         Assert.True(mapped.Author.HasHistoricalSnapshot);
         Assert.Equal(reply.Id, mapped.Author.AvatarSnapshotMessageId);
+        Assert.Equal(42, mapped.Author.AvatarSnapshot?.Revision);
+        Assert.Equal(.1, mapped.Author.AvatarSnapshot?.CropX);
+        Assert.Equal(128, mapped.Author.AvatarSnapshot?.Width);
         Assert.Equal("Aria", mapped.ReplyTo?.AuthorDisplayName);
         Assert.True(mapped.ReplyTo?.HasHistoricalSnapshot);
         Assert.Equal(original.Id, mapped.ReplyTo?.AvatarSnapshotMessageId);
+        Assert.Equal(42, mapped.ReplyTo?.AvatarSnapshot?.Revision);
 
         var legacy = ChannelMessageMapper.ToDto(Message(account, "legacy"));
         Assert.Equal("Current Name", legacy.Author.DisplayName);
@@ -62,6 +66,44 @@ public sealed class HistoricalMessageSnapshotTests
         Assert.Equal("Aria", roundTrip.Author.DisplayName);
         Assert.True(roundTrip.Author.HasHistoricalSnapshot);
         Assert.Equal(message.Id, roundTrip.Author.AvatarSnapshotMessageId);
+        Assert.Equal(42, roundTrip.Author.AvatarSnapshot?.Revision);
+        Assert.Equal(1.25, roundTrip.Author.AvatarSnapshot?.Zoom);
+        var json = JsonSerializer.Serialize(message);
+        Assert.DoesNotContain("object-key", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("base64", json, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("data:", json, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void DirectMessagesContinueUsingAccountAvatarResolutionWithoutMessageSnapshots()
+    {
+        var account = Account("Direct Author");
+        var direct = new DirectMessage
+        {
+            Id = Guid.NewGuid(), ConversationId = Guid.NewGuid(), AuthorAccountId = account.Id,
+            AuthorAccount = account, Conversation = null!, Content = "hello", CreatedAt = DateTimeOffset.UtcNow
+        };
+
+        var mapped = DirectMessageMapper.ToDto(direct);
+
+        Assert.Null(mapped.Author.AvatarSnapshotMessageId);
+        Assert.Null(mapped.Author.AvatarSnapshot);
+    }
+
+    [Fact]
+    public void ClientPrimesRealtimeSnapshotMetadataBeforePublishingVisibleMessages()
+    {
+        var root = FindWorkspaceRoot();
+        var session = File.ReadAllText(Path.Combine(root, "Iridium.Client.Core", "ChannelMessagingSession.cs"));
+        var profileMedia = File.ReadAllText(Path.Combine(root, "Iridium.Client.Core", "ProfileMediaService.cs"));
+        var upsertStart = session.IndexOf("private void Upsert(ChannelMessageDto message", StringComparison.Ordinal);
+        var prime = session.IndexOf("PrimeMessageSnapshots(message);", upsertStart, StringComparison.Ordinal);
+        var add = session.IndexOf("_messages.Add(authoritative)", upsertStart, StringComparison.Ordinal);
+        var notify = session.IndexOf("if (notify) NotifyChanged();", upsertStart, StringComparison.Ordinal);
+
+        Assert.True(upsertStart >= 0 && prime > upsertStart && prime < add && add < notify);
+        Assert.Contains("_messageSnapshots[messageId] = new ProfileAvatarDto", profileMedia);
+        Assert.DoesNotContain("PrimeAvatarPreset", profileMedia);
     }
 
     [Fact]

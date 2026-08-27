@@ -153,9 +153,13 @@ public sealed class AvatarPresetFlowTests
             Assert.Equal("Aria", ariaMessage.Author.DisplayName);
             Assert.True(ariaMessage.Author.HasHistoricalSnapshot);
             Assert.Equal(ariaMessage.Id, ariaMessage.Author.AvatarSnapshotMessageId);
+            Assert.NotNull(ariaMessage.Author.AvatarSnapshot);
+            Assert.Equal(ariaMessage.Author.AvatarRevision, ariaMessage.Author.AvatarSnapshot!.Revision);
             var ariaAvatar = await owner.GetMessageAuthorAvatarSnapshotAsync(ariaMessage.Id);
             Assert.True(ariaAvatar.HasAvatar);
             Assert.Equal(0, ariaAvatar.CropX);
+            Assert.Equal(ariaAvatar.CropX, ariaMessage.Author.AvatarSnapshot.CropX);
+            Assert.Equal(ariaAvatar.Zoom, ariaMessage.Author.AvatarSnapshot.Zoom);
 
             var activeBeforeCustomCrop = (await owner.GetAvatarPresetsAsync()).ActiveAvatarPresetId;
             communityAvatarMedia = await owner.UpdateAvatarCropAsync(communityAvatarMedia.Id,

@@ -22,6 +22,14 @@ public static class FriendshipHubContract
 
 public sealed record FriendshipChangedEvent(Guid FriendshipId);
 
+public sealed record MessageAvatarSnapshotDto(
+    long Revision,
+    double CropX,
+    double CropY,
+    double Zoom,
+    int Width,
+    int Height);
+
 public sealed record MessageAuthorDto(
     Guid AccountId,
     string Username,
@@ -29,7 +37,8 @@ public sealed record MessageAuthorDto(
     Guid? AvatarPresetId = null,
     long AvatarRevision = 0,
     Guid? AvatarSnapshotMessageId = null,
-    bool HasHistoricalSnapshot = false);
+    bool HasHistoricalSnapshot = false,
+    MessageAvatarSnapshotDto? AvatarSnapshot = null);
 
 public enum MessageDeliveryState
 {
@@ -48,7 +57,8 @@ public sealed record MessageReplyDto(
     Guid? AvatarPresetId = null,
     long AvatarRevision = 0,
     Guid? AvatarSnapshotMessageId = null,
-    bool HasHistoricalSnapshot = false);
+    bool HasHistoricalSnapshot = false,
+    MessageAvatarSnapshotDto? AvatarSnapshot = null);
 
 public sealed record ChannelMessageDto(
     Guid Id,
