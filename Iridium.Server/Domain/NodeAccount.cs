@@ -10,6 +10,7 @@ public sealed class NodeAccount
     public string? Pronouns { get; set; }
     public string? Description { get; set; }
     public Guid? ActiveAvatarPresetId { get; set; }
+    public Guid? BaseAvatarPresetId { get; set; }
     public long AvatarRevision { get; set; }
     public Guid? ActiveBannerPresetId { get; set; }
     public long BannerRevision { get; set; }

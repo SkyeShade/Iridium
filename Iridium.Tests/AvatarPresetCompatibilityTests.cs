@@ -33,12 +33,13 @@ public sealed class AvatarPresetCompatibilityTests
         await DatabaseCompatibility.EnsureAvatarPresetSchemaAsync(db);
 
         await using var inspect = connection.CreateCommand();
-        inspect.CommandText = "SELECT Username, ActiveAvatarPresetId, AvatarRevision FROM Accounts;";
+        inspect.CommandText = "SELECT Username, ActiveAvatarPresetId, BaseAvatarPresetId, AvatarRevision FROM Accounts;";
         await using var reader = await inspect.ExecuteReaderAsync();
         Assert.True(await reader.ReadAsync());
         Assert.Equal("legacy", reader.GetString(0));
         Assert.True(reader.IsDBNull(1));
-        Assert.Equal(0, reader.GetInt64(2));
+        Assert.True(reader.IsDBNull(2));
+        Assert.Equal(0, reader.GetInt64(3));
         await reader.DisposeAsync();
         inspect.CommandText = "SELECT COUNT(*) FROM AccountAvatarPresets;";
         Assert.Equal(0L, await inspect.ExecuteScalarAsync());

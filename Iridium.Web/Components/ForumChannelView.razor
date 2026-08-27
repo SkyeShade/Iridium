@@ -29,6 +29,7 @@
                     <MessageComposer @ref="_newPostComposer" Class="forum-create-composer" ChannelName="@Channel.Name"
                                      PlaceholderText="Enter a message..." Busy="_creating" Community="Community"
                                      CommunityManagement="CommunityManagement" SendRich="CreatePostAsync"
+                                     OnCommunityProfileChanged="OnCommunityProfileChanged"
                                      OnSubmitted="FinishCreatedPostAsync" SendableContentChanged="BodySendableChanged"
                                      CanAttachFiles="CanAttachFiles"
                                      CanMentionEveryone="CanMentionEveryone" NodeAuthority="@NodeAuthority"

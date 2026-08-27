@@ -28,7 +28,7 @@
                     var preset = PresetAt(slotIndex);
                     if (preset is not null)
                     {
-                        <button type="button" class="preset-slot @(preset.Id == _selectedPreset?.Id ? "selected" : null) @(preset.Id == _presets?.ActiveAvatarPresetId ? "active" : null)"
+                        <button type="button" class="preset-slot @(preset.Id == _selectedPreset?.Id ? "selected" : null) @(preset.Id == (_presets?.ActiveAvatarPresetId ?? _presets?.BaseAvatarPresetId) ? "active" : null)"
                                 title="Avatar preset @(slotIndex + 1)" @onclick="() => SelectPreset(preset)">
                             <AvatarCroppedPreview State="PresetState(preset)" />
                         </button>
@@ -147,7 +147,8 @@
             _presets = IsCommunity ? await Session.GetCommunityAvatarPresetsAsync(Community!.Id) : await Session.GetAvatarPresetsAsync();
             if (!IsCommunity) ProfileMedia.Observe(Account!.Id, _presets.AvatarRevision);
             var initial = _presets.Presets.FirstOrDefault(value => value.Id == InitialAvatarPresetId)
-                          ?? (SinglePictureMode ? null : _presets.Presets.FirstOrDefault(value => value.Id == _presets.ActiveAvatarPresetId)
+                          ?? (SinglePictureMode ? null : _presets.Presets.FirstOrDefault(value =>
+                                  value.Id == (_presets.ActiveAvatarPresetId ?? _presets.BaseAvatarPresetId))
                               ?? _presets.Presets.FirstOrDefault());
             if (initial is not null) SelectPreset(initial);
             else if (SinglePictureMode) _selectedSlot = (_presets.Presets.Select(value => value.SlotIndex).DefaultIfEmpty(-1).Max() + 1);
@@ -261,7 +262,8 @@
             _presets = IsCommunity ? await Session.GetCommunityAvatarPresetsAsync(Community!.Id) : await Session.GetAvatarPresetsAsync();
             if (!IsCommunity) ProfileMedia.Invalidate(Account!.Id, _presets.AvatarRevision);
             await OnSaved.InvokeAsync();
-            var next = _presets.Presets.FirstOrDefault(value => value.Id == _presets.ActiveAvatarPresetId)
+            var next = _presets.Presets.FirstOrDefault(value =>
+                           value.Id == (_presets.ActiveAvatarPresetId ?? _presets.BaseAvatarPresetId))
                        ?? _presets.Presets.FirstOrDefault();
             _selectedPreset = null; _pendingPreview = null; _pendingBytes = null; _editState = null; _dirty = false;
             if (next is not null) SelectPreset(next);

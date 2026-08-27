@@ -33,6 +33,7 @@ public static class DatabaseCompatibility
     public static async Task EnsureAvatarPresetSchemaAsync(IridiumDbContext db)
     {
         await EnsureColumnAsync(db, "Accounts", "ActiveAvatarPresetId", "TEXT NULL");
+        await EnsureColumnAsync(db, "Accounts", "BaseAvatarPresetId", "TEXT NULL");
         await EnsureColumnAsync(db, "Accounts", "AvatarRevision", "INTEGER NOT NULL DEFAULT 0");
         await db.Database.ExecuteSqlRawAsync("""
             CREATE TABLE IF NOT EXISTS AccountAvatarPresets (
@@ -57,6 +58,29 @@ public static class DatabaseCompatibility
                 ON AccountAvatarPresets (AccountId, SlotIndex);
             """);
         await EnsureColumnAsync(db, "AccountAvatarPresets", "DisplayName", "TEXT NULL");
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS IridiumCompatibilityMigrations (
+                Id TEXT NOT NULL CONSTRAINT PK_IridiumCompatibilityMigrations PRIMARY KEY,
+                AppliedAt INTEGER NOT NULL
+            );
+            """);
+        const string defaultAvatarMigration = "account-base-avatar-selection-v1";
+        if (await db.Database.SqlQueryRaw<int>(
+                "SELECT COUNT(*) AS Value FROM IridiumCompatibilityMigrations WHERE Id = {0}", defaultAvatarMigration)
+            .SingleAsync() == 0)
+        {
+            await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
+            await db.Database.ExecuteSqlRawAsync("""
+                UPDATE Accounts
+                SET BaseAvatarPresetId = ActiveAvatarPresetId,
+                    ActiveAvatarPresetId = NULL
+                WHERE BaseAvatarPresetId IS NULL AND ActiveAvatarPresetId IS NOT NULL;
+                """);
+            await db.Database.ExecuteSqlRawAsync(
+                "INSERT INTO IridiumCompatibilityMigrations (Id, AppliedAt) VALUES ({0}, {1})",
+                defaultAvatarMigration, DateTimeOffset.UtcNow.UtcTicks);
+            await transaction.CommitAsync();
+        }
         await db.Database.ExecuteSqlRawAsync("""
             CREATE TABLE IF NOT EXISTS UserProfilePresets (
                 Id TEXT NOT NULL CONSTRAINT PK_UserProfilePresets PRIMARY KEY,

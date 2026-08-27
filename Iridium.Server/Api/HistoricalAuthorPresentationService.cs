@@ -16,7 +16,7 @@ public sealed class HistoricalAuthorPresentationService(IridiumDbContext db)
                 cancellationToken);
         var profile = ChannelMessageMapper.ValidPreset(member);
         var avatar = profile?.AvatarPreset;
-        if (avatar is null && member.Account.ActiveAvatarPresetId is { } activeAvatarId)
+        if (avatar is null && (member.Account.ActiveAvatarPresetId ?? member.Account.BaseAvatarPresetId) is { } activeAvatarId)
             avatar = await db.AccountAvatarPresets.SingleOrDefaultAsync(value =>
                 value.Id == activeAvatarId && value.AccountId == accountId, cancellationToken);
 

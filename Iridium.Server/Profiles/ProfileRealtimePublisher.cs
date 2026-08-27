@@ -20,7 +20,8 @@ public sealed class ProfileRealtimePublisher(
                 .Where(value => value.Id == accountId)
                 .Select(value => new
                 {
-                    value.DisplayName, value.Pronouns, value.Description, value.BannerRevision
+                    value.DisplayName, value.Pronouns, value.Description, value.BannerRevision,
+                    value.ActiveAvatarPresetId, value.BaseAvatarPresetId
                 })
                 .SingleOrDefaultAsync(cancellationToken);
             if (profile is null) return;
@@ -46,7 +47,7 @@ public sealed class ProfileRealtimePublisher(
             await hub.Clients.Groups(recipients.Select(ChatHub.AccountGroup).ToArray()).SendAsync(
                 ProfileHubContract.Updated,
                 new ProfileUpdatedEvent(accountId, avatarRevision, profile.BannerRevision, profile.DisplayName, profile.Pronouns,
-                    profile.Description), cancellationToken);
+                    profile.Description, profile.ActiveAvatarPresetId, profile.BaseAvatarPresetId), cancellationToken);
         }
         catch (Exception exception)
         {

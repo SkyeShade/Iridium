@@ -55,8 +55,10 @@
                         @oncontextmenu="OpenActionModeMenu" @oncontextmenu:preventDefault @oncontextmenu:stopPropagation>
                     @if (_actionMode == ComposerActionMode.Avatar)
                     {
-                        <ProfileAvatar @key="AccountId" AccountId="AccountId" AvatarRevision="@ActiveAvatarRevision"
-                                       DisplayName="@ActiveDisplayName" BadgeMode="AvatarBadgeMode.None" Size="fill" Surface="raised" />
+                        <ProfileAvatar @key="(AccountId, EffectiveComposerAvatarPresetId, EffectiveComposerAvatarRevision)"
+                                       AccountId="AccountId" AvatarPresetId="EffectiveComposerAvatarPresetId"
+                                       AvatarRevision="@EffectiveComposerAvatarRevision" DisplayName="@EffectiveComposerDisplayName"
+                                       BadgeMode="AvatarBadgeMode.None" Size="fill" Surface="raised" />
                     }
                     else { <Icon Name="plus" /> }
                 </button>
@@ -89,7 +91,8 @@
                 <button type="button" role="menuitemradio" aria-checked="@(_actionMode == ComposerActionMode.Avatar)"
                         @onclick="() => SelectActionModeAsync(ComposerActionMode.Avatar)">
                     <span class="action-option-icon avatar-option-icon"><ProfileAvatar AccountId="AccountId"
-                        AvatarRevision="@ActiveAvatarRevision" DisplayName="@ActiveDisplayName"
+                        AvatarPresetId="EffectiveComposerAvatarPresetId" AvatarRevision="@EffectiveComposerAvatarRevision"
+                        DisplayName="@EffectiveComposerDisplayName"
                         BadgeMode="AvatarBadgeMode.None" Size="fill" Surface="deep" /></span><span>Avatar</span>
                     @if (_actionMode == ComposerActionMode.Avatar) { <Icon Name="check" /> }
                 </button>
@@ -102,13 +105,23 @@
                 <header><strong>Choose avatar</strong><button type="button" aria-label="Close avatar picker" @onclick="CloseActionPopups"><Icon Name="close" /></button></header>
                 <div class="avatar-picker-strip">
                         <div class="default-avatar-entry">
-                            <button type="button" class="avatar-preset default-avatar @(_activeAvatarPresetId is null ? "selected" : null)"
-                                    aria-label="@(_activeAvatarPresetId is null ? "Default avatar, current avatar" : "Default avatar")"
-                                    aria-pressed="@(_activeAvatarPresetId is null)" disabled="@_avatarSwapBusy"
+                            <button type="button" class="avatar-preset default-avatar @(DefaultAvatarSelected ? "selected" : null)"
+                                    aria-label="@(DefaultAvatarSelected ? "Default avatar, current avatar" : "Default avatar")"
+                                    aria-pressed="@DefaultAvatarSelected" disabled="@_avatarSwapBusy"
                                     @onclick="ActivateDefaultAvatarAsync">
-                                <ProfileAvatar DisplayName="@ActiveDisplayName" BadgeMode="AvatarBadgeMode.None"
-                                               Size="fill" Surface="deep" />
-                                @if (_activeAvatarPresetId is null) { <span class="selected-check"><Icon Name="check" /></span> }
+                                @if (!UsesCommunityAvatarSelection && BaseAvatarPreset is { } defaultAvatar)
+                                {
+                                    <ProfileAvatar AccountId="AccountId" AvatarPresetId="defaultAvatar.Id"
+                                                   AvatarRevision="defaultAvatar.Revision" DisplayName="@ActiveDisplayName"
+                                                   BadgeMode="AvatarBadgeMode.None" Size="fill" Surface="deep" />
+                                }
+                                else
+                                {
+                                    <ProfileAvatar AccountId="AccountId" AvatarRevision="@ActiveAvatarRevision"
+                                                   DisplayName="@ActiveDisplayName" BadgeMode="AvatarBadgeMode.None"
+                                                   Size="fill" Surface="deep" />
+                                }
+                                @if (DefaultAvatarSelected) { <span class="selected-check"><Icon Name="check" /></span> }
                             </button>
                             <small>Default</small>
                         </div>
@@ -118,20 +131,20 @@
                             {
                                 <span class="avatar-picker-empty">Loading avatars…</span>
                             }
-                            else if (_avatarPresets.Count == 0)
+                            else if (OrderedQuickAvatarEntries.Count == 0)
                             {
                                 <span class="avatar-picker-empty">No saved avatars</span>
                             }
                             else
                             {
-                                @foreach (var preset in OrderedAvatarPresets)
+                                @foreach (var entry in OrderedQuickAvatarEntries)
                                 {
-                                    var selected = preset.Id == _activeAvatarPresetId;
+                                    var selected = entry.SelectionId == ActiveQuickAvatarSelectionId;
                                     <button type="button" class="avatar-preset @(selected ? "selected" : null)"
-                                            aria-label="@AvatarPresetLabel(preset, selected)" aria-pressed="@selected"
-                                            disabled="@_avatarSwapBusy" @onclick="() => ActivateAvatarPresetAsync(preset.Id)">
-                                        <ProfileAvatar AccountId="AccountId" AvatarPresetId="preset.Id" AvatarRevision="preset.Revision"
-                                                       DisplayName="@(preset.DisplayName ?? ActiveDisplayName)"
+                                            aria-label="@AvatarPresetLabel(entry, selected)" aria-pressed="@selected"
+                                            disabled="@_avatarSwapBusy" @onclick="() => SelectQuickAvatarAsync(entry.SelectionId)">
+                                        <ProfileAvatar AccountId="AccountId" AvatarPresetId="entry.MediaPresetId"
+                                                       AvatarRevision="entry.MediaRevision" DisplayName="entry.DisplayName"
                                                        BadgeMode="AvatarBadgeMode.None" Size="fill" Surface="deep" />
                                         @if (selected) { <span class="selected-check"><Icon Name="check" /></span> }
                                     </button>
@@ -198,6 +211,7 @@
     [Parameter] public EventCallback<bool> SendableContentChanged { get; set; }
     [Parameter] public CommunityManagementDto? CommunityManagement { get; set; }
     [Parameter] public CommunityDto? Community { get; set; }
+    [Parameter] public EventCallback OnCommunityProfileChanged { get; set; }
     [Parameter] public EventCallback OnCancelReply { get; set; }
     [Parameter] public EventCallback OnEditLastMessage { get; set; }
     [Parameter] public bool CanAttachFiles { get; set; } = true;
@@ -253,8 +267,12 @@
     private bool _focusActionPopupAfterRender;
     private long _actionModeLoadVersion;
     private IReadOnlyList<AccountAvatarPresetDto> _avatarPresets = [];
+    private IReadOnlyList<UserProfilePresetDto> _communityAvatarPresets = [];
     private ComposerAvatarUsageData _avatarUsage = new();
     private Guid? _activeAvatarPresetId;
+    private Guid? _baseAvatarPresetId;
+    private Guid? _loadedAvatarCommunityId;
+    private CommunityProfileAssignmentDto? _localCommunityAssignment;
     private long _activeAvatarRevision;
     private string ComposerPlaceholder => PlaceholderText ?? $"Message #{ChannelName}";
     private string FileInputId => $"attachment-{ConversationKind}-{ConversationId:N}-{_inputRevision}";
@@ -267,9 +285,36 @@
         Session.Account?.Id == AccountId ? Session.Account.AvatarRevision : 0);
     private string ActionButtonTitle => _actionMode == ComposerActionMode.Attachment ? "Add files" : "Change avatar";
     private string ActionButtonLabel => $"{ActionButtonTitle}. Hold or right-click to change action.";
-    private IReadOnlyList<AccountAvatarPresetDto> OrderedAvatarPresets =>
-        ComposerAvatarUsageService.MostRecentlyUsedFirst(_avatarPresets, _avatarUsage,
-            value => value.Id, value => value.UpdatedAt);
+    private bool UsesCommunityAvatarSelection => Community is not null;
+    private CommunityMemberDto? CurrentCommunityMember => CommunityManagement?.Members
+        .FirstOrDefault(value => value.AccountId == AccountId);
+    private Guid? ActiveCommunityProfilePresetId =>
+        _localCommunityAssignment?.ProfilePresetId ?? CurrentCommunityMember?.ProfilePresetId;
+    private Guid? EffectiveComposerAvatarPresetId => UsesCommunityAvatarSelection
+        ? _localCommunityAssignment?.AvatarPresetId ?? CurrentCommunityMember?.AvatarPresetId
+        : null;
+    private long EffectiveComposerAvatarRevision => UsesCommunityAvatarSelection
+        ? _localCommunityAssignment?.AvatarRevision ?? CurrentCommunityMember?.AvatarRevision ?? ActiveAvatarRevision
+        : ActiveAvatarRevision;
+    private string EffectiveComposerDisplayName => UsesCommunityAvatarSelection
+        ? _localCommunityAssignment?.DisplayName ?? CurrentCommunityMember?.DisplayName ?? ActiveDisplayName
+        : ActiveDisplayName;
+    private Guid? ActiveQuickAvatarSelectionId => UsesCommunityAvatarSelection
+        ? ActiveCommunityProfilePresetId
+        : _activeAvatarPresetId;
+    private IReadOnlyList<QuickAvatarEntry> OrderedQuickAvatarEntries =>
+        ComposerAvatarUsageService.MostRecentlyUsedFirst(
+            QuickAvatarEntries, _avatarUsage, value => value.SelectionId, value => value.UpdatedAt);
+    private IEnumerable<QuickAvatarEntry> QuickAvatarEntries => UsesCommunityAvatarSelection
+        ? _communityAvatarPresets.Select(value => new QuickAvatarEntry(value.Id, value.Avatar?.Id,
+            value.Avatar?.Revision ?? ActiveAvatarRevision, value.DisplayName, value.UpdatedAt))
+        : _avatarPresets.Where(value => value.Id != _baseAvatarPresetId).Select(value =>
+            new QuickAvatarEntry(value.Id, value.Id, value.Revision,
+                value.DisplayName ?? ActiveDisplayName, value.UpdatedAt));
+    private AccountAvatarPresetDto? BaseAvatarPreset => _baseAvatarPresetId is { } id
+        ? _avatarPresets.FirstOrDefault(value => value.Id == id)
+        : null;
+    private bool DefaultAvatarSelected => ActiveQuickAvatarSelectionId is null;
 
     protected override void OnInitialized()
     {
@@ -286,12 +331,25 @@
             _actionModeScope = actionScope;
             _actionMode = ComposerActionMode.Attachment;
             _activeAvatarPresetId = null;
+            _baseAvatarPresetId = null;
             _activeAvatarRevision = 0;
             _avatarPresets = [];
+            _communityAvatarPresets = [];
             _avatarUsage = new();
             CloseActionPopups();
             _actionModeLoadVersion++;
         }
+        var communityId = Community?.Id;
+        if (_loadedAvatarCommunityId != communityId)
+        {
+            _loadedAvatarCommunityId = communityId;
+            _communityAvatarPresets = [];
+            _localCommunityAssignment = null;
+            if (_avatarPickerOpen) CloseActionPopups();
+        }
+        if (_localCommunityAssignment is { } local &&
+            (local.CommunityId != communityId || CurrentCommunityMember?.ProfilePresetId == local.ProfilePresetId))
+            _localCommunityAssignment = null;
         if (string.Equals(_renderedChannelName, ChannelName, StringComparison.Ordinal)) return;
         _renderedChannelName = ChannelName;
         _resizeAfterRender = true;
@@ -515,13 +573,24 @@
     private async Task LoadAvatarPresetsAsync()
     {
         var expectedAccount = AccountId;
+        var expectedCommunity = Community?.Id;
         try
         {
-            var state = await Session.GetAvatarPresetsAsync();
-            if (_disposed || AccountId != expectedAccount || state.AccountId != expectedAccount) return;
-            _avatarPresets = state.Presets;
-            _activeAvatarPresetId = state.ActiveAvatarPresetId;
-            _activeAvatarRevision = state.AvatarRevision;
+            if (expectedCommunity is { } communityId)
+            {
+                var presets = await Session.GetProfilePresetsAsync(communityId);
+                if (_disposed || AccountId != expectedAccount || Community?.Id != expectedCommunity) return;
+                _communityAvatarPresets = presets;
+            }
+            else
+            {
+                var state = await Session.GetAvatarPresetsAsync();
+                if (_disposed || AccountId != expectedAccount || state.AccountId != expectedAccount || Community is not null) return;
+                _avatarPresets = state.Presets;
+                _activeAvatarPresetId = state.ActiveAvatarPresetId;
+                _baseAvatarPresetId = state.BaseAvatarPresetId;
+                _activeAvatarRevision = state.AvatarRevision;
+            }
             try
             {
                 _avatarUsage = _actionModeScope is { } scope ? await AvatarUsage.GetAsync(scope) : new();
@@ -543,16 +612,32 @@
         }
     }
 
-    private async Task ActivateAvatarPresetAsync(Guid presetId)
+    private async Task SelectQuickAvatarAsync(Guid presetId)
     {
-        if (_avatarSwapBusy || presetId == _activeAvatarPresetId) { CloseActionPopups(); return; }
+        if (_avatarSwapBusy || presetId == ActiveQuickAvatarSelectionId) { CloseActionPopups(); return; }
         var expectedAccount = AccountId;
+        var expectedCommunity = Community?.Id;
         _avatarSwapBusy = true;
         try
         {
-            await Session.ActivateAvatarPresetAsync(presetId);
-            var state = await Session.GetAvatarPresetsAsync();
-            if (AccountId != expectedAccount || state.AccountId != expectedAccount) return;
+            if (expectedCommunity is { } communityId)
+            {
+                var assignment = await Session.SetCommunityProfileAsync(communityId, presetId);
+                if (AccountId != expectedAccount || Community?.Id != expectedCommunity) return;
+                _localCommunityAssignment = assignment;
+                await OnCommunityProfileChanged.InvokeAsync();
+            }
+            else
+            {
+                await Session.SetActiveAvatarPresetAsync(presetId);
+                var state = await Session.GetAvatarPresetsAsync();
+                if (AccountId != expectedAccount || state.AccountId != expectedAccount || Community is not null) return;
+                _avatarPresets = state.Presets;
+                _activeAvatarPresetId = state.ActiveAvatarPresetId;
+                _baseAvatarPresetId = state.BaseAvatarPresetId;
+                _activeAvatarRevision = state.AvatarRevision;
+                ProfileMedia.Invalidate(expectedAccount, state.AvatarRevision);
+            }
             if (_actionModeScope is { } scope)
             {
                 try { _avatarUsage = await AvatarUsage.RecordAsync(scope, presetId); }
@@ -561,10 +646,6 @@
                     Logger.LogWarning(exception, "Could not record recent avatar preset {PresetId}.", presetId);
                 }
             }
-            _avatarPresets = state.Presets;
-            _activeAvatarPresetId = state.ActiveAvatarPresetId;
-            _activeAvatarRevision = state.AvatarRevision;
-            ProfileMedia.Invalidate(expectedAccount, state.AvatarRevision);
             _attachmentError = null;
             CloseActionPopups();
         }
@@ -579,18 +660,30 @@
 
     private async Task ActivateDefaultAvatarAsync()
     {
-        if (_avatarSwapBusy || _activeAvatarPresetId is null) { CloseActionPopups(); return; }
+        if (_avatarSwapBusy || ActiveQuickAvatarSelectionId is null) { CloseActionPopups(); return; }
         var expectedAccount = AccountId;
+        var expectedCommunity = Community?.Id;
         _avatarSwapBusy = true;
         try
         {
-            await Session.ClearActiveAvatarAsync();
-            var state = await Session.GetAvatarPresetsAsync();
-            if (AccountId != expectedAccount || state.AccountId != expectedAccount) return;
-            _avatarPresets = state.Presets;
-            _activeAvatarPresetId = state.ActiveAvatarPresetId;
-            _activeAvatarRevision = state.AvatarRevision;
-            ProfileMedia.Invalidate(expectedAccount, state.AvatarRevision);
+            if (expectedCommunity is { } communityId)
+            {
+                var assignment = await Session.SetCommunityProfileAsync(communityId, null);
+                if (AccountId != expectedAccount || Community?.Id != expectedCommunity) return;
+                _localCommunityAssignment = assignment;
+                await OnCommunityProfileChanged.InvokeAsync();
+            }
+            else
+            {
+                await Session.SetActiveAvatarPresetAsync(null);
+                var state = await Session.GetAvatarPresetsAsync();
+                if (AccountId != expectedAccount || state.AccountId != expectedAccount || Community is not null) return;
+                _avatarPresets = state.Presets;
+                _activeAvatarPresetId = state.ActiveAvatarPresetId;
+                _baseAvatarPresetId = state.BaseAvatarPresetId;
+                _activeAvatarRevision = state.AvatarRevision;
+                ProfileMedia.Invalidate(expectedAccount, state.AvatarRevision);
+            }
             _attachmentError = null;
             CloseActionPopups();
         }
@@ -619,11 +712,14 @@
             _actionModeMenuOpen ? ".mode-popup button" : ".avatar-picker button:not(:disabled)", delta);
     }
 
-    private static string AvatarPresetLabel(AccountAvatarPresetDto preset, bool selected)
+    private static string AvatarPresetLabel(QuickAvatarEntry preset, bool selected)
     {
-        var name = string.IsNullOrWhiteSpace(preset.DisplayName) ? $"Avatar preset {preset.SlotIndex + 1}" : preset.DisplayName;
+        var name = string.IsNullOrWhiteSpace(preset.DisplayName) ? "Avatar preset" : preset.DisplayName;
         return selected ? $"{name}, current avatar" : name;
     }
+
+    private sealed record QuickAvatarEntry(Guid SelectionId, Guid? MediaPresetId, long MediaRevision,
+        string DisplayName, DateTimeOffset UpdatedAt);
 
     [JSInvokable]
     public Task PrepareAttachmentPasteAsync(int caret)

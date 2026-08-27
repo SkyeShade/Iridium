@@ -110,11 +110,8 @@ public sealed class NodeSession(
         CancellationToken cancellationToken = default) =>
         AuthorizedClient.SetCommunityProfileAsync(communityId, presetId, cancellationToken);
 
-    public Task ActivateAvatarPresetAsync(Guid presetId, CancellationToken cancellationToken = default) =>
-        AuthorizedClient.ActivateAvatarPresetAsync(presetId, cancellationToken);
-
-    public Task ClearActiveAvatarAsync(CancellationToken cancellationToken = default) =>
-        AuthorizedClient.ClearActiveAvatarAsync(cancellationToken);
+    public Task SetActiveAvatarPresetAsync(Guid? presetId, CancellationToken cancellationToken = default) =>
+        AuthorizedClient.SetActiveAvatarPresetAsync(presetId, cancellationToken);
 
     public Task DeleteAvatarPresetAsync(Guid presetId, CancellationToken cancellationToken = default) =>
         AuthorizedClient.DeleteAvatarPresetAsync(presetId, cancellationToken);
@@ -420,6 +417,8 @@ public sealed class NodeSession(
                 Pronouns = change.Pronouns,
                 Description = change.Description,
                 AvatarRevision = change.AvatarRevision,
+                ActiveAvatarPresetId = change.ActiveAvatarPresetId,
+                BaseAvatarPresetId = change.BaseAvatarPresetId,
                 BannerRevision = change.BannerRevision
             };
         for (var index = 0; index < _friends.Count; index++)

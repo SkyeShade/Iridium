@@ -136,11 +136,9 @@ public sealed class NodeClient(Uri nodeAddress)
     public Task DeleteProfilePresetAsync(Guid communityId, Guid presetId, CancellationToken cancellationToken = default) =>
         SendNoContentAsync(HttpMethod.Delete, $"api/communities/{communityId}/profile-presets/{presetId}", null, cancellationToken);
 
-    public Task ActivateAvatarPresetAsync(Guid presetId, CancellationToken cancellationToken = default) =>
-        SendNoContentAsync(HttpMethod.Put, $"api/account/avatar-presets/{presetId}/active", null, cancellationToken);
-
-    public Task ClearActiveAvatarAsync(CancellationToken cancellationToken = default) =>
-        SendNoContentAsync(HttpMethod.Delete, "api/account/avatar-presets/active", null, cancellationToken);
+    public Task SetActiveAvatarPresetAsync(Guid? presetId, CancellationToken cancellationToken = default) =>
+        SendNoContentAsync(HttpMethod.Put, "api/account/avatar-presets/active",
+            new SetActiveAvatarPresetRequest(presetId), cancellationToken);
 
     public Task DeleteAvatarPresetAsync(Guid presetId, CancellationToken cancellationToken = default) =>
         SendNoContentAsync(HttpMethod.Delete, $"api/account/avatar-presets/{presetId}", null, cancellationToken);

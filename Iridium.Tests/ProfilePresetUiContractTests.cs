@@ -41,6 +41,11 @@ public sealed class ProfilePresetUiContractTests
         Assert.Contains("Default Profile", profile);
         Assert.Contains("SetCommunityProfileAsync", profile);
         Assert.Contains("GetProfilePresetsAsync(CommunityContext!.Community.Id)", profile);
+        var composer = File.ReadAllText(Path.Combine(root, "Iridium.Web", "Components", "MessageComposer.razor"));
+        Assert.Contains("Session.SetCommunityProfileAsync(communityId, presetId)", composer);
+        Assert.Contains("Session.GetProfilePresetsAsync(communityId)", composer);
+        Assert.Contains("new QuickAvatarEntry(value.Id, value.Avatar?.Id", composer);
+        Assert.Contains("await OnCommunityProfileChanged.InvokeAsync()", composer);
         Assert.Contains("OnEditAvatars", profile);
         Assert.DoesNotContain("Community Profile", home);
         Assert.Contains("ResolveDisplayName", channelMapper);

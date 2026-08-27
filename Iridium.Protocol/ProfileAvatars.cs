@@ -64,7 +64,9 @@ public sealed record ProfileUpdatedEvent(
     long BannerRevision,
     string DisplayName,
     string? Pronouns,
-    string? Description);
+    string? Description,
+    Guid? ActiveAvatarPresetId = null,
+    Guid? BaseAvatarPresetId = null);
 
 public sealed record ProfileAvatarDto(bool HasAvatar, string? AvatarUrl, long Revision,
     double CropX = 0, double CropY = 0, double Zoom = 1, int Width = 0, int Height = 0);
@@ -88,7 +90,10 @@ public sealed record AccountAvatarPresetsDto(
     Guid AccountId,
     Guid? ActiveAvatarPresetId,
     long AvatarRevision,
-    IReadOnlyList<AccountAvatarPresetDto> Presets);
+    IReadOnlyList<AccountAvatarPresetDto> Presets,
+    Guid? BaseAvatarPresetId = null);
+
+public sealed record SetActiveAvatarPresetRequest(Guid? PresetId);
 
 public sealed record UpdateAvatarCropRequest(double CropX, double CropY, double Zoom, bool SetActive = false);
 public sealed record UpdateProfilePresetRequest(string DisplayName);

@@ -29,8 +29,7 @@ public static class AvatarPresetEndpoints
                 MultipartBodyLengthLimit = ProfileAvatarLimits.MaximumMultipartBytes
             });
         presets.MapPatch("/{presetId:guid}", UpdateCropAsync);
-        presets.MapPut("/{presetId:guid}/active", ActivateAsync);
-        presets.MapDelete("/active", ClearActiveAsync);
+        presets.MapPut("/active", SetActiveAsync);
         presets.MapDelete("/{presetId:guid}", DeleteAsync);
         endpoints.MapGet("/api/profiles/{accountId:guid}/avatar", DownloadActiveAsync);
         endpoints.MapGet("/api/profiles/{accountId:guid}/avatar/{presetId:guid}", DownloadPresetAsync);
@@ -136,7 +135,8 @@ public static class AvatarPresetEndpoints
         if (existing is null) db.AccountAvatarPresets.Add(preset);
         if (setActive)
         {
-            session.Account.ActiveAvatarPresetId = preset.Id;
+            session.Account.BaseAvatarPresetId = preset.Id;
+            session.Account.ActiveAvatarPresetId = null;
             session.Account.AvatarRevision = NextRevision(session.Account.AvatarRevision);
         }
         try { await db.SaveChangesAsync(cancellationToken); }
@@ -169,7 +169,11 @@ public static class AvatarPresetEndpoints
         preset.Revision = NextRevision(preset.Revision); preset.UpdatedAt = DateTimeOffset.UtcNow;
         if (request.SetActive || session.Account.ActiveAvatarPresetId == preset.Id)
         {
-            session.Account.ActiveAvatarPresetId = preset.Id;
+            if (request.SetActive)
+            {
+                session.Account.BaseAvatarPresetId = preset.Id;
+                session.Account.ActiveAvatarPresetId = null;
+            }
             session.Account.AvatarRevision = NextRevision(session.Account.AvatarRevision);
         }
         await db.SaveChangesAsync(cancellationToken);
@@ -178,28 +182,18 @@ public static class AvatarPresetEndpoints
         return Results.Ok(ToDto(preset, context));
     }
 
-    private static async Task<IResult> ActivateAsync(Guid presetId, HttpContext context, IridiumDbContext db,
+    private static async Task<IResult> SetActiveAsync(SetActiveAvatarPresetRequest request, HttpContext context,
+        IridiumDbContext db,
         SessionService sessions, ProfileRealtimePublisher realtime, CancellationToken cancellationToken)
     {
         var session = await sessions.GetAsync(context, db);
         if (session is null) return Results.Unauthorized();
-        var preset = await db.AccountAvatarPresets.AsNoTracking().SingleOrDefaultAsync(value =>
-            value.Id == presetId && value.AccountId == session.AccountId, cancellationToken);
-        if (preset is null) return Results.NotFound();
-        session.Account.ActiveAvatarPresetId = preset.Id;
-        session.Account.AvatarRevision = NextRevision(session.Account.AvatarRevision);
-        await db.SaveChangesAsync(cancellationToken);
-        await realtime.PublishAsync(session.AccountId, session.Account.AvatarRevision, db, cancellationToken);
-        return Results.Ok(new { session.Account.ActiveAvatarPresetId, session.Account.AvatarRevision });
-    }
-
-    private static async Task<IResult> ClearActiveAsync(HttpContext context, IridiumDbContext db,
-        SessionService sessions, ProfileRealtimePublisher realtime, CancellationToken cancellationToken)
-    {
-        var session = await sessions.GetAsync(context, db);
-        if (session is null) return Results.Unauthorized();
-        if (session.Account.ActiveAvatarPresetId is null) return Results.NoContent();
-        session.Account.ActiveAvatarPresetId = null;
+        var presetId = request.PresetId == session.Account.BaseAvatarPresetId ? null : request.PresetId;
+        if (presetId is not null && !await db.AccountAvatarPresets.AsNoTracking().AnyAsync(value =>
+                value.Id == presetId && value.AccountId == session.AccountId, cancellationToken))
+            return Results.NotFound();
+        if (session.Account.ActiveAvatarPresetId == presetId) return Results.NoContent();
+        session.Account.ActiveAvatarPresetId = presetId;
         session.Account.AvatarRevision = NextRevision(session.Account.AvatarRevision);
         await db.SaveChangesAsync(cancellationToken);
         await realtime.PublishAsync(session.AccountId, session.Account.AvatarRevision, db, cancellationToken);
@@ -219,6 +213,7 @@ public static class AvatarPresetEndpoints
         if (preset is null) return Results.NotFound();
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         var wasActive = session.Account.ActiveAvatarPresetId == preset.Id;
+        var wasBase = session.Account.BaseAvatarPresetId == preset.Id;
         var profilePresetIds = await db.UserProfilePresets.Where(value => value.AvatarPresetId == preset.Id)
             .Select(value => value.Id).ToArrayAsync(cancellationToken);
         var assignedCommunityIds = await db.CommunityMembers.Where(value =>
@@ -227,12 +222,16 @@ public static class AvatarPresetEndpoints
         await db.UserProfilePresets.Where(value => value.AvatarPresetId == preset.Id)
             .ExecuteUpdateAsync(setters => setters.SetProperty(value => value.AvatarPresetId, (Guid?)null), cancellationToken);
         db.AccountAvatarPresets.Remove(preset);
-        if (wasActive)
-        {
-            session.Account.ActiveAvatarPresetId = await db.AccountAvatarPresets.AsNoTracking()
+        var fallback = wasBase
+            ? await db.AccountAvatarPresets.AsNoTracking()
                 .Where(value => value.AccountId == session.AccountId && value.Id != preset.Id)
                 .OrderBy(value => value.SlotIndex).Select(value => (Guid?)value.Id)
-                .FirstOrDefaultAsync(cancellationToken);
+                .FirstOrDefaultAsync(cancellationToken)
+            : null;
+        if (wasBase) session.Account.BaseAvatarPresetId = fallback;
+        if (wasActive) session.Account.ActiveAvatarPresetId = null;
+        if (wasActive || wasBase)
+        {
             session.Account.AvatarRevision = NextRevision(session.Account.AvatarRevision);
         }
         await db.SaveChangesAsync(cancellationToken);
@@ -268,7 +267,7 @@ public static class AvatarPresetEndpoints
         IridiumDbContext db, IAttachmentStorage storage, CancellationToken cancellationToken)
     {
         var activeId = await db.Accounts.AsNoTracking().Where(value => value.Id == accountId)
-            .Select(value => value.ActiveAvatarPresetId).SingleOrDefaultAsync(cancellationToken);
+            .Select(value => value.ActiveAvatarPresetId ?? value.BaseAvatarPresetId).SingleOrDefaultAsync(cancellationToken);
         if (activeId is null) return Results.NotFound();
         return await DownloadPresetCoreAsync(accountId, activeId.Value, context, db, storage, cancellationToken);
     }
@@ -277,10 +276,11 @@ public static class AvatarPresetEndpoints
         CancellationToken cancellationToken)
     {
         var account = await db.Accounts.AsNoTracking().Where(value => value.Id == accountId)
-            .Select(value => new { value.ActiveAvatarPresetId, value.AvatarRevision })
+            .Select(value => new { EffectiveAvatarPresetId = value.ActiveAvatarPresetId ?? value.BaseAvatarPresetId,
+                value.AvatarRevision })
             .SingleOrDefaultAsync(cancellationToken);
         if (account is null) return Results.NotFound();
-        if (account.ActiveAvatarPresetId is not { } activeId)
+        if (account.EffectiveAvatarPresetId is not { } activeId)
             return Results.Ok(new ProfileAvatarDto(false, null, account.AvatarRevision));
         var preset = await db.AccountAvatarPresets.AsNoTracking().SingleOrDefaultAsync(value =>
             value.Id == activeId && value.AccountId == accountId, cancellationToken);
@@ -322,7 +322,7 @@ public static class AvatarPresetEndpoints
     private static AccountAvatarPresetsDto ToCollection(NodeAccount account,
         IEnumerable<AccountAvatarPreset> presets, HttpContext context) =>
         new(account.Id, account.ActiveAvatarPresetId, account.AvatarRevision,
-            presets.Select(value => ToDto(value, context)).ToArray());
+            presets.Select(value => ToDto(value, context)).ToArray(), account.BaseAvatarPresetId);
 
     internal static AccountAvatarPresetDto ToDto(AccountAvatarPreset value, HttpContext context) =>
         new(value.Id, value.SlotIndex,
