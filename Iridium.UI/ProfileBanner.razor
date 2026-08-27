@@ -11,7 +11,11 @@
     }
     else if (_banner is { HasBanner: true, BannerUrl: not null } banner && !_failed)
     {
-        @if (banner.IsProcessed)
+        @if (!string.IsNullOrWhiteSpace(banner.SourceUrl) && banner.Width > 0 && banner.Height > 0)
+        {
+            <AvatarCroppedPreview State="BannerState(banner, banner.SourceUrl)" Shape="banner" OnError="Failed" />
+        }
+        else if (banner.IsProcessed)
         {
             <img src="@banner.BannerUrl" alt="" draggable="false" @onerror="Failed" />
         }
@@ -64,7 +68,7 @@
     private Task HandleKeyAsync(KeyboardEventArgs args) => Editable && args.Key is "Enter" or " "
         ? OnEdit.InvokeAsync() : Task.CompletedTask;
     private void Failed() { _failed = true; StateHasChanged(); }
-    private static ProfileMediaEditState BannerState(ProfileBannerDto banner) => new(banner.BannerUrl!,
+    private static ProfileMediaEditState BannerState(ProfileBannerDto banner, string? sourceUrl = null) => new(sourceUrl ?? banner.BannerUrl!,
         Math.Max(1, banner.Width), Math.Max(1, banner.Height), ProfileBannerLimits.CropWidth,
         ProfileBannerLimits.CropHeight, ProfileBannerLimits.CropWidth, ProfileBannerLimits.CropHeight,
         banner.Zoom, banner.CropX, banner.CropY);

@@ -89,7 +89,8 @@
                             <ProfileIdentityCard AccountId="Account!.Id" AvatarRevision="Account.AvatarRevision"
                                                  BannerRevision="Account.BannerRevision" BannerEditState="_editState"
                                                  DisplayName="@DisplayName" Identity="@PublicIdentity" Pronouns="@Pronouns"
-                                                 Description="@Description" Presence="PresenceVisibility.ToPublic(Account.PreferredPresence)" />
+                                                 Description="@Description" Presence="PresenceVisibility.ToPublic(Account.PreferredPresence)"
+                                                 Class="edit-preview-card" />
                         }
                         @if (IsGif) { <small>Animated GIF banners remain animated.</small> }
                     </aside>

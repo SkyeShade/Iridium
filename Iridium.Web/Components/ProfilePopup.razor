@@ -3,10 +3,13 @@
 
 <div class="popup-backdrop" @onclick="OnCancel">
     <section class="profile-popup" @onclick:stopPropagation="true">
+        <button type="button" class="mobile-profile-close" aria-label="Close profile menu" @onclick="OnCancel">
+            <Icon Name="close" Size="16" />
+        </button>
         <ProfileIdentityCard AccountId="Account.Id" AvatarRevision="Account.AvatarRevision"
                              BannerRevision="Account.BannerRevision"
                              DisplayName="@Account.DisplayName" Identity="@PublicIdentity" Presence="Presence"
-                             Pronouns="@Account.Pronouns" Description="@Account.Description">
+                             Pronouns="@Account.Pronouns" Description="@Account.Description" Class="account-menu-card">
           <button class="edit-profile" @onclick="OnEditProfile">Edit Profile</button>
           <div class="presence-selector">
             <button class="presence-current" @onclick="() => _presenceOpen = !_presenceOpen">

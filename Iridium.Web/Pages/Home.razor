@@ -284,9 +284,9 @@ else
 
     @if (_showProfile)
     {
-        <ProfilePopup Account="Session.Account!" PublicIdentity="@PublicIdentity" Busy="_busy"
+        <ProfilePopup Account="@(Session.Account!)" PublicIdentity="@PublicIdentity" Busy="_busy"
                       Presence="@CurrentPresence" OnPresenceChanged="SetPresenceAsync"
-                      Accounts="Session.SavedAccounts" ActiveAccount="Session.ActiveSavedAccount"
+                      Accounts="@Session.SavedAccounts" ActiveAccount="@Session.ActiveSavedAccount"
                       OnEditProfile="OpenProfileEditor" OnSwitchAccount="SwitchAccountAsync"
                       OnAddAccount="AddAccount" OnLogout="LogoutAsync" OnRemoveAccount="RemoveAccountAsync"
                       OnCancel="CloseProfile" />
@@ -298,39 +298,39 @@ else
     }
     @if (_showSettings)
     {
-        <SettingsView Account="Session.Account!" CurrentNode="Session.SelectedNode!" Nodes="_nodeAvailability"
+        <SettingsView Account="@(Session.Account!)" CurrentNode="@(Session.SelectedNode!)" Nodes="@_nodeAvailability"
                       Busy="_busy" Error="@_error" OnEditProfile="OpenProfileEditor"
                       OnAddNode="AddNodeAsync" OnRemoveNode="RemoveNodeAsync"
                       OnLogout="LogoutAsync" OnClose="CloseSettings" />
     }
     @if (_showAddFriend)
     {
-        <AddFriendView Resolve="ProfileResolver.ResolveAsync" Search="Session.SearchAccountsAsync"
-                       NodeAuthority="@(Session.SelectedNode!.PublicAuthority)" Friends="Session.Friends"
+        <AddFriendView Resolve="ProfileResolver.ResolveAsync" Search="@Session.SearchAccountsAsync"
+                       NodeAuthority="@(Session.SelectedNode!.PublicAuthority)" Friends="@Session.Friends"
                        OnRequest="SendFriendRequestAsync"
                        OnAccept="AcceptFriendRequestAsync" OnMessage="OpenDirectMessageAsync"
                        OnClose="CloseAddFriend" />
     }
     @if (_showEditProfile)
     {
-        <EditProfileModal Account="Session.Account!" PublicIdentity="@PublicIdentity"
+        <EditProfileModal Account="@(Session.Account!)" PublicIdentity="@PublicIdentity"
                           Save="SaveProfileAsync" OnClosed="CloseProfileEditor" />
     }
     @if (_showAvatarManager && _selectedCommunity is not null)
     {
-        <AvatarManagerModal Account="Session.Account!" PublicIdentity="@PublicIdentity"
-                            CommunityId="_selectedCommunity.Id" CommunityName="_selectedCommunity.Name"
+        <AvatarManagerModal Account="@(Session.Account!)" PublicIdentity="@PublicIdentity"
+                            CommunityId="@_selectedCommunity.Id" CommunityName="@_selectedCommunity.Name"
                             OnChanged="RefreshCommunityProfileAsync" OnClose="CloseAvatarManager" />
     }
     @if (_showCommunitySettings && _selectedCommunity is not null)
     {
-        <CommunitySettingsModal Community="_selectedCommunity" State="CommunityState"
-                                NodeAuthority="@(Session.SelectedNode!.PublicAuthority)" CurrentAccountId="Session.Account!.Id"
+        <CommunitySettingsModal Community="@_selectedCommunity" State="@CommunityState"
+                                NodeAuthority="@(Session.SelectedNode!.PublicAuthority)" CurrentAccountId="@Session.Account!.Id"
                                 OnCommunityUpdated="CommunityUpdatedAsync" OnClose="CloseCommunitySettings" />
     }
     @if (_showQuickInvite && _quickInviteUrl is not null)
     {
-        <InvitePeopleModal Friends="Session.Friends" NodeAuthority="@(Session.SelectedNode!.PublicAuthority)" InviteUrl="@_quickInviteUrl"
+        <InvitePeopleModal Friends="@Session.Friends" NodeAuthority="@(Session.SelectedNode!.PublicAuthority)" InviteUrl="@_quickInviteUrl"
                            Error="@_quickInviteError" Send="SendQuickInviteAsync" OnClose="CloseQuickInvite" />
     }
     @if (!string.IsNullOrWhiteSpace(InviteToken))

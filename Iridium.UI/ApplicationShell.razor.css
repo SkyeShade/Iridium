@@ -1,5 +1,5 @@
-.app-shell { width: 100vw; height: 100dvh; display: grid; grid-template-columns: 4.75rem 15.5rem minmax(0, 1fr); grid-template-rows:minmax(0,1fr) auto; overflow: hidden; color: var(--text); background: var(--bg-base); }
-.app-shell.has-context-sidebar { grid-template-columns: 4.75rem 15.5rem minmax(24rem, 1fr) 16.2rem; }
+.app-shell { width: 100vw; height: 100dvh; display: grid; grid-template-columns: var(--desktop-community-rail-width) var(--desktop-secondary-sidebar-width) minmax(0, 1fr); grid-template-rows:minmax(0,1fr) auto; overflow: hidden; color: var(--text); background: var(--bg-base); }
+.app-shell.has-context-sidebar { grid-template-columns: var(--desktop-community-rail-width) var(--desktop-secondary-sidebar-width) minmax(24rem, 1fr) 16.2rem; }
 .app-shell ::deep .community-rail { grid-column:1;grid-row:1; }
 .mobile-navigation-panel{display:contents}
 .secondary-sidebar { grid-column:2;grid-row:1;min-width: 0; display: flex; flex-direction: column; background: var(--bg-sidebar); border-right: 1px solid var(--border-subtle); }
@@ -14,13 +14,13 @@
 .placeholder-note { padding: .5rem; color: var(--text-faint); font-size: .75rem; }
 .main-content { grid-column:3;grid-row:1 / 3;min-width: 0; min-height: 0; overflow: auto; background: var(--bg-base); }
 .context-sidebar { grid-column:4;grid-row:1 / 3;position:relative; z-index:20; min-width:0; min-height:0; overflow:visible; border-left:1px solid var(--border-subtle); background:var(--bg-sidebar); }
-.desktop-player-panel-slot{grid-column:1 / 3;grid-row:2;min-width:0;background:linear-gradient(90deg,var(--bg-deep) 0 4.75rem,var(--bg-sidebar) 4.75rem);border-right:1px solid var(--border-subtle)}
+.desktop-player-panel-slot{grid-column:1 / 3;grid-row:2;min-width:0;background:linear-gradient(90deg,var(--bg-deep) 0 var(--desktop-community-rail-width),var(--bg-sidebar) var(--desktop-community-rail-width));border-right:1px solid var(--border-subtle)}
 .mobile-profile-panel-slot{display:none}
 .mobile-conversation-header,.mobile-context-header,.mobile-context-backdrop,.mobile-call-bar-slot { display:none; }
 .main-content-slot { display:contents; }
 .voice-connection-slot { display:contents; }
 @media (max-width: 1180px) {
-    .app-shell.has-context-sidebar { grid-template-columns: 4.75rem 15.5rem minmax(0,1fr); }
+    .app-shell.has-context-sidebar { grid-template-columns: var(--desktop-community-rail-width) var(--desktop-secondary-sidebar-width) minmax(0,1fr); }
     .context-sidebar { display:none; }
 }
 @media (max-width: 860px) {

@@ -70,7 +70,7 @@ public sealed class NotificationResponsiveUiTests
         Assert.Contains("count > 9 ? '9+'", favicon);
         Assert.Contains("link.href = originalHref", favicon);
         Assert.Contains("@media (max-width: 860px)", shell);
-        Assert.Contains("grid-template-columns: 4.75rem 15.5rem minmax(0, 1fr)", shell);
+        Assert.Contains("grid-template-columns: var(--desktop-community-rail-width) var(--desktop-secondary-sidebar-width) minmax(0, 1fr)", shell);
         Assert.Contains("Session.Communities.Sum", home);
     }
 

@@ -66,7 +66,7 @@ public sealed class AvatarEditStateTests
     }
 
     [Fact]
-    public void BannerTransformUsesFiveToOneCropAndPansAtMinimumZoom()
+    public void ProfileBannerTransformUsesFiveToTwoCropAndPansAtMinimumZoom()
     {
         var wide = new ProfileMediaEditState("banner", 3600, 600, ProfileBannerLimits.CropWidth,
             ProfileBannerLimits.CropHeight, 1200, 600);
@@ -76,10 +76,25 @@ public sealed class AvatarEditStateTests
             ProfileBannerLimits.CropHeight, 1200, 600);
         Assert.Equal(0, tall.MaximumOffsetX);
         Assert.True(tall.MaximumOffsetY > 0);
+        Assert.Equal(2.5, ProfileBannerLimits.AspectRatio);
     }
 
     [Fact]
-    public void StaticBannerProcessorProducesExactTwelveHundredByTwoFortyWebpDerivative()
+    public void PersistedProfileBannerTransformRecreatesTheEditorCrop()
+    {
+        var editor = new ProfileMediaEditState("banner", 1800, 1200, ProfileBannerLimits.CropWidth,
+            ProfileBannerLimits.CropHeight, 1200, 600, 1.8, .55, -.4);
+        var renderer = new ProfileMediaEditState("banner", 1800, 1200, ProfileBannerLimits.CropWidth,
+            ProfileBannerLimits.CropHeight, ProfileBannerLimits.CropWidth, ProfileBannerLimits.CropHeight,
+            editor.Zoom, editor.NormalizedOffsetX, editor.NormalizedOffsetY);
+
+        Assert.Equal(editor.SourceCrop, renderer.SourceCrop);
+        Assert.Equal(editor.NormalizedOffsetX, renderer.NormalizedOffsetX, 8);
+        Assert.Equal(editor.NormalizedOffsetY, renderer.NormalizedOffsetY, 8);
+    }
+
+    [Fact]
+    public void StaticProfileBannerProcessorProducesFiveToTwoWebpDerivative()
     {
         using var bitmap = new SKBitmap(1600, 800);
         bitmap.Erase(SKColors.CornflowerBlue);
@@ -94,10 +109,11 @@ public sealed class AvatarEditStateTests
         Assert.Equal(SKEncodedImageFormat.Webp, codec.EncodedFormat);
         Assert.Equal(ProfileBannerLimits.ProcessedWidth, codec.Info.Width);
         Assert.Equal(ProfileBannerLimits.ProcessedHeight, codec.Info.Height);
+        Assert.Equal(ProfileBannerLimits.AspectRatio, codec.Info.Width / (double)codec.Info.Height);
     }
 
     [Fact]
-    public void CommunityBannerUsesTheSameTwoToOneGeometryForTransformAndDerivative()
+    public void CommunityBannerUsesSeparateSixteenToNineGeometryForTransformAndDerivative()
     {
         var editor = new ProfileMediaEditState("community-banner", 1800, 1200,
             CommunityBannerLimits.CropWidth, CommunityBannerLimits.CropHeight, 1200, 900, 1.8, .6, -.35);

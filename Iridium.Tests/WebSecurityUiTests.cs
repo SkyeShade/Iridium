@@ -17,6 +17,23 @@ public sealed class WebSecurityUiTests
     }
 
     [Fact]
+    public void UserAndCommunityBannersUseSeparateResponsiveAspectRules()
+    {
+        var appStyles = File.ReadAllText(Path.Combine(Root, "Iridium.Web", "wwwroot", "css", "app.css"));
+        var profileBannerStyles = File.ReadAllText(Path.Combine(Root, "Iridium.UI", "ProfileBanner.razor.css"));
+        var anchoredStyles = File.ReadAllText(Path.Combine(Root, "Iridium.Web", "Components", "AnchoredProfileCard.razor.css"));
+        var identityStyles = File.ReadAllText(Path.Combine(Root, "Iridium.Web", "Components", "ProfileIdentityCard.razor.css"));
+
+        Assert.Contains("--user-profile-banner-aspect: 5 / 2", appStyles);
+        Assert.Contains("--community-banner-aspect: 16 / 9", appStyles);
+        Assert.Contains("object-fit:cover", profileBannerStyles);
+        Assert.Contains("aspect-ratio:var(--user-profile-banner-aspect)", anchoredStyles);
+        Assert.Contains("aspect-ratio:var(--user-profile-banner-aspect)", identityStyles);
+        Assert.DoesNotContain("height:5.8rem", anchoredStyles);
+        Assert.DoesNotContain("aspect-ratio:5/1", identityStyles);
+    }
+
+    [Fact]
     public void EmojiPickerHasAccessibleLabelWithoutVisibleTitleAndCleansUpOutsideHandlers()
     {
         var picker = File.ReadAllText(Path.Combine(Root, "Iridium.Web", "Components", "EmojiPicker.razor"));

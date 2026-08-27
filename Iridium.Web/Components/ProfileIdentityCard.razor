@@ -4,19 +4,19 @@
     <div class="profile-card-banner">
         <ProfileBanner AccountId="AccountId" BannerRevision="BannerRevision" EditState="BannerEditState"
                        Editable="EditableBanner" OnEdit="OnEditBanner" />
-        <div class="profile-card-avatar-position">
-            @if (Editable)
-            {
-                <EditableAvatar AccountId="AccountId" AvatarRevision="AvatarRevision" DisplayName="@DisplayName"
-                                Presence="Presence" BadgeMode="AvatarBadgeMode.Presence" Size="profile-card"
-                                Surface="sidebar" OnEdit="OnEditAvatar" />
-            }
-            else
-            {
-                <ProfileAvatar AccountId="AccountId" AvatarRevision="AvatarRevision" DisplayName="@DisplayName"
-                               Presence="Presence" BadgeMode="AvatarBadgeMode.Presence" Size="profile-card" Surface="sidebar" />
-            }
-        </div>
+    </div>
+    <div class="profile-card-avatar-position">
+        @if (Editable)
+        {
+            <EditableAvatar AccountId="AccountId" AvatarRevision="AvatarRevision" DisplayName="@DisplayName"
+                            Presence="Presence" BadgeMode="AvatarBadgeMode.Presence" Size="profile-card"
+                            Surface="sidebar" OnEdit="OnEditAvatar" />
+        }
+        else
+        {
+            <ProfileAvatar AccountId="AccountId" AvatarRevision="AvatarRevision" DisplayName="@DisplayName"
+                           Presence="Presence" BadgeMode="AvatarBadgeMode.Presence" Size="profile-card" Surface="sidebar" />
+        }
     </div>
     <div class="profile-card-body">
         <div class="profile-card-identity">

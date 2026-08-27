@@ -1,5 +1,6 @@
 :root {
-    --community-banner-aspect: 2 / 1;
+    --user-profile-banner-aspect: 5 / 2;
+    --community-banner-aspect: 16 / 9;
     --font-sans: "Inter", "Segoe UI Variable Text", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", sans-serif;
     --chat-text-font: var(--font-sans);
     --chat-text-size: 1rem;
@@ -43,6 +44,9 @@
     --radius-lg: .9rem;
     --bottom-control-height: calc(3.7rem + 2px);
     --bottom-control-inset: .55rem;
+    --desktop-community-rail-width: 4.75rem;
+    --desktop-secondary-sidebar-width: 15.5rem;
+    --desktop-profile-region-width: calc(var(--desktop-community-rail-width) + var(--desktop-secondary-sidebar-width));
     --layer-context-menu: 92;
     --layer-floating-media: 95;
     --layer-modal: 100;
