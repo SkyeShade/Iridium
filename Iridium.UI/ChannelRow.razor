@@ -45,8 +45,9 @@
         {
             var participantStream = PublishedStreams.FirstOrDefault(value =>
                 value.OwnerParticipantId == participant.ParticipantId);
+            var member = Members.FirstOrDefault(value => value.AccountId == participant.AccountId);
             <div class="voice-participant @(participant.Speaking ? "speaking" : null)" title="@(participant.MediaStatus == CommunityVoiceMediaStatus.MediaUnavailable ? "Voice control connected; media backend unavailable" : participant.MediaStatus.ToString())"
-                 @oncontextmenu="() => OpenParticipantMenu(participant)" @oncontextmenu:preventDefault="true" @oncontextmenu:stopPropagation="true">
+                 @oncontextmenu="args => OpenParticipantMenu(participant, args)" @oncontextmenu:preventDefault="true" @oncontextmenu:stopPropagation="true">
                 <span class="participant-avatar"><ProfileAvatar AccountId="participant.AccountId" DisplayName="participant.DisplayName" Presence="participant.Presence"
                     AvatarPresetId="participant.AvatarPresetId" AvatarRevision="participant.AvatarRevision" Size="tiny" Surface="sidebar" /></span>
                 <span class="display-name">@participant.DisplayName</span>
@@ -57,8 +58,12 @@
                                         OnWatch="OnWatchStream" />
                 @if (_menuParticipant?.ParticipantId == participant.ParticipantId)
                 {
-                    <VoiceParticipantMenu AccountId="participant.AccountId" DisplayName="participant.DisplayName"
-                                          Username="participant.Username" />
+                    <VoiceParticipantMenu AccountId="@participant.AccountId"
+                                          DisplayName="@(member?.DisplayName ?? participant.DisplayName)"
+                                          Username="@(member?.Username ?? participant.Username)"
+                                          Presence="@(member?.Presence ?? participant.Presence)"
+                                          AvatarRevision="@(member?.AvatarRevision ?? participant.AvatarRevision)"
+                                          X="@_menuX" Y="@_menuY" OnClose="CloseParticipantMenu" />
                 }
             </div>
         }
@@ -74,6 +79,7 @@
     [Parameter] public ActiveVoiceRoomDto? Room { get; set; }
     [Parameter] public Guid CurrentAccountId { get; set; }
     [Parameter] public IReadOnlyList<PublishedVoiceStreamDto> PublishedStreams { get; set; } = [];
+    [Parameter] public IReadOnlyList<CommunityMemberDto> Members { get; set; } = [];
     [Parameter] public IReadOnlyDictionary<Guid, string> StreamThumbnails { get; set; } = new Dictionary<Guid, string>();
     [Parameter] public int Depth { get; set; } = 1;
     [Parameter] public EventCallback<CommunityChannelDto> OnSelect { get; set; }
@@ -83,11 +89,19 @@
     [Parameter] public EventCallback<Guid> OnWatchStream { get; set; }
     private bool _menuOpen;
     private VoiceParticipantDto? _menuParticipant;
+    private double _menuX;
+    private double _menuY;
 
     private Task SelectAsync() { _menuOpen = false; return OnSelect.InvokeAsync(Channel); }
     private void OpenMenu() { if (CanManage || CanManagePermissions) _menuOpen = true; }
-    private void OpenParticipantMenu(VoiceParticipantDto participant) =>
-        _menuParticipant = participant.AccountId == CurrentAccountId ? null : participant;
+    private void OpenParticipantMenu(VoiceParticipantDto participant, MouseEventArgs args)
+    {
+        if (participant.AccountId == CurrentAccountId) { CloseParticipantMenu(); return; }
+        _menuParticipant = participant;
+        _menuX = args.ClientX;
+        _menuY = args.ClientY;
+    }
+    private void CloseParticipantMenu() => _menuParticipant = null;
     private Task EditAsync() { _menuOpen = false; return OnEdit.InvokeAsync(Channel); }
     private Task EditFromMenuAsync() => EditAsync();
     private Task PermissionsAsync() { _menuOpen = false; return OnPermissions.InvokeAsync(Channel); }

@@ -122,8 +122,24 @@ function statsSummary(report, direction) {
         framesPerSecond: Math.max(0, ...rows.map(row => Number(row.framesPerSecond) || 0)),
         frameWidth: Math.max(0, ...rows.map(row => Number(row.frameWidth) || 0)),
         frameHeight: Math.max(0, ...rows.map(row => Number(row.frameHeight) || 0)),
+        framesEncoded: rows.reduce((sum, row) => sum + Number(row.framesEncoded || 0), 0),
+        framesSent: rows.reduce((sum, row) => sum + Number(row.framesSent || 0), 0),
+        framesDecoded: rows.reduce((sum, row) => sum + Number(row.framesDecoded || 0), 0),
+        framesDropped: rows.reduce((sum, row) => sum + Number(row.framesDropped || 0), 0),
+        freezeCount: rows.reduce((sum, row) => sum + Number(row.freezeCount || 0), 0),
+        totalFreezesDuration: rows.reduce((sum, row) => sum + Number(row.totalFreezesDuration || 0), 0),
+        totalEncodeTime: rows.reduce((sum, row) => sum + Number(row.totalEncodeTime || 0), 0),
+        retransmittedPacketsSent: rows.reduce((sum, row) => sum + Number(row.retransmittedPacketsSent || 0), 0),
+        retransmittedBytesSent: rows.reduce((sum, row) => sum + Number(row.retransmittedBytesSent || 0), 0),
         qualityLimitationReasons: [...new Set(rows.map(row => row.qualityLimitationReason).filter(Boolean))],
+        qualityLimitationDurations: rows.reduce((combined, row) => {
+            for (const [reason, duration] of Object.entries(row.qualityLimitationDurations ?? {}))
+                combined[reason] = (combined[reason] ?? 0) + Number(duration || 0);
+            return combined;
+        }, {}),
         packetsLost: lossRows.reduce((sum, row) => sum + Number(row.packetsLost || 0), 0),
+        jitterMs: Math.round(Math.max(0, ...lossRows.map(row => Number(row.jitter) || 0)) * 1000 * 10) / 10,
+        decoderImplementations: [...new Set(rows.map(row => row.decoderImplementation).filter(Boolean))],
         rttMs: Number.isFinite(rttSeconds) ? Math.round(rttSeconds * 1000 * 10) / 10 : null
     };
 }
@@ -151,17 +167,37 @@ async function diagnoseVideoBitrate(session, track, direction, details) {
         const second = statsSummary(await track.getRTCStatsReport(), direction);
         const elapsed = second && first ? second.timestamp - first.timestamp : 0;
         const bitrate = elapsed > 0 ? Math.max(0, Math.round((second.bytes - first.bytes) * 8000 / elapsed)) : null;
+        const encodedFrames = Math.max(0, (second?.framesEncoded ?? 0) - (first?.framesEncoded ?? 0));
+        const encodeSeconds = Math.max(0, (second?.totalEncodeTime ?? 0) - (first?.totalEncodeTime ?? 0));
         console.debug(`LiveKit screen share ${direction}`, {
             ...details, codec: second?.codec || "unknown", activeLayers: second?.layers ?? 0,
             bitrateBps: bitrate, framesPerSecond: second?.framesPerSecond ?? 0,
             frameWidth: second?.frameWidth ?? 0, frameHeight: second?.frameHeight ?? 0,
             qualityLimitationReasons: second?.qualityLimitationReasons ?? [],
-            packetsLost: second?.packetsLost ?? 0, rttMs: second?.rttMs ?? null,
+            qualityLimitationDurations: second?.qualityLimitationDurations ?? {},
+            framesEncoded: second?.framesEncoded ?? 0, framesSent: second?.framesSent ?? 0,
+            framesDecoded: second?.framesDecoded ?? 0, framesDropped: second?.framesDropped ?? 0,
+            freezeCount: second?.freezeCount ?? 0, totalFreezesDuration: second?.totalFreezesDuration ?? 0,
+            encodeTimePerFrameMs: encodedFrames > 0 ? Math.round(encodeSeconds * 100000 / encodedFrames) / 100 : null,
+            retransmittedPacketsSent: second?.retransmittedPacketsSent ?? 0,
+            retransmittedBytesSent: second?.retransmittedBytesSent ?? 0,
+            packetsLost: second?.packetsLost ?? 0, jitterMs: second?.jitterMs ?? null,
+            rttMs: second?.rttMs ?? null, decoderImplementations: second?.decoderImplementations ?? [],
+            documentVisibility: document.visibilityState,
             senderEncodings: direction === "outbound" ? senderEncodingSummary(track) : undefined
         });
     } catch (error) {
         console.debug("LiveKit screen share stats unavailable", { direction, error: error?.name });
     }
+}
+
+function scheduleVideoDiagnostics(session, track, direction, details) {
+    if (!session.diagnostics) return;
+    diagnoseVideoBitrate(session, track, direction, { ...details, sample: "initial" });
+    globalThis.setTimeout(() => {
+        if (!sessions.has(session.id) || track?.mediaStreamTrack?.readyState === "ended") return;
+        diagnoseVideoBitrate(session, track, direction, { ...details, sample: "10s" });
+    }, 9000);
 }
 
 function audioStatsSummary(report, direction) {
@@ -195,7 +231,7 @@ function audioStatsSummary(report, direction) {
     };
 }
 
-async function diagnoseAudioTransport(session, track, direction) {
+async function diagnoseAudioTransport(session, track, direction, label = "microphone") {
     if (!session.diagnostics || typeof track?.getRTCStatsReport !== "function") return;
     try {
         const first = audioStatsSummary(await track.getRTCStatsReport(), direction);
@@ -206,7 +242,7 @@ async function diagnoseAudioTransport(session, track, direction) {
         const bytes = second && first ? Math.max(0, second.bytes - first.bytes) : 0;
         const packets = second && first ? Math.max(0, second.packets - first.packets) : 0;
         const packetsLost = second && first ? Math.max(0, second.packetsLost - first.packetsLost) : 0;
-        console.debug(`LiveKit microphone ${direction}`, {
+        console.debug(`LiveKit ${label} ${direction}`, {
             codec: second?.codec || "unknown", targetBitrateBps: session.voiceBitrate,
             actualBitrateBps: elapsed > 0 ? Math.round(bytes * 8000 / elapsed) : null,
             packetsLost, packetLossPercent: packets + packetsLost > 0
@@ -227,6 +263,14 @@ function setScreenSubscription(session, publication, subscribed) {
         publication.setVideoQuality(VideoQuality.HIGH);
         if (session.diagnostics) console.debug("LiveKit screen share subscription", { selectedQuality: "HIGH" });
     }
+}
+
+function selectedVideoQuality(publication) {
+    const { VideoQuality } = sdk();
+    if (publication?.videoQuality === VideoQuality.HIGH) return "HIGH";
+    if (publication?.videoQuality === VideoQuality.MEDIUM) return "MEDIUM";
+    if (publication?.videoQuality === VideoQuality.LOW) return "LOW";
+    return publication?.videoQuality ?? "unknown";
 }
 
 async function callback(session, method, ...args) {
@@ -265,7 +309,11 @@ function wireRoom(session) {
     room.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
         if (publication.source === Track.Source.Microphone) makeAudioPlayback(session, participant, track);
         if (publication.source === Track.Source.ScreenShare)
-            diagnoseVideoBitrate(session, track, "inbound", { selectedQuality: "HIGH" });
+            scheduleVideoDiagnostics(session, track, "inbound", {
+                requestedQuality: "HIGH", selectedQuality: selectedVideoQuality(publication)
+            });
+        if (publication.source === Track.Source.ScreenShareAudio)
+            diagnoseAudioTransport(session, track, "inbound", "screen share audio");
         refreshViewers(session, publicationName(publication));
     });
     room.on(RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
@@ -327,12 +375,38 @@ function matchingTracks(session, mediaStreamId) {
     return publications.map(p => p.track.mediaStreamTrack);
 }
 
+function configureLiveVideoElement(session, viewer, element) {
+    if (viewer.videoElement === element) return;
+    if (viewer.videoElement) {
+        viewer.videoElement.removeEventListener("click", viewer.preventVideoToggle);
+        viewer.videoElement.removeEventListener("pause", viewer.resumeLiveVideo);
+    }
+    viewer.videoElement = element;
+    element.controls = false;
+    element.disablePictureInPicture = true;
+    element.removeAttribute("controls");
+    viewer.preventVideoToggle = event => event.preventDefault();
+    viewer.resumeLiveVideo = async () => {
+        if (viewer.resumePending || !session.viewers.has(viewer.elementId) ||
+            !element.srcObject?.getVideoTracks?.().some(track => track.readyState === "live")) return;
+        viewer.resumePending = true;
+        try { await element.play(); }
+        catch (error) {
+            if (session.diagnostics) console.debug("LiveKit live stream resume blocked", { name: error?.name });
+        }
+        finally { viewer.resumePending = false; }
+    };
+    element.addEventListener("click", viewer.preventVideoToggle);
+    element.addEventListener("pause", viewer.resumeLiveVideo);
+}
+
 async function refreshViewers(session, mediaStreamId) {
     for (const viewer of session.viewers.values()) {
         if (viewer.mediaStreamId !== mediaStreamId) continue;
         const refreshGeneration = ++viewer.refreshGeneration;
         const element = document.getElementById(viewer.elementId);
         if (!element) continue;
+        configureLiveVideoElement(session, viewer, element);
         const tracks = matchingTracks(session, mediaStreamId);
         const videoTracks = tracks.filter(track => track.kind === "video");
         const audioTrack = tracks.find(track => track.kind === "audio");
@@ -490,7 +564,7 @@ export function screenShareCaptureOptions(supported = {}, safari = false) {
     return captureOptions;
 }
 
-async function captureScreenTracks() {
+async function captureScreenTracks(session) {
     const { LocalVideoTrack, LocalAudioTrack, Track } = sdk();
     const supported = navigator.mediaDevices?.getSupportedConstraints?.() ?? {};
     const media = await navigator.mediaDevices.getDisplayMedia(
@@ -503,6 +577,14 @@ async function captureScreenTracks() {
     const videoTrack = new LocalVideoTrack(video, undefined, false);
     videoTrack.source = Track.Source.ScreenShare;
     const tracks = [videoTrack], audio = media.getAudioTracks()[0];
+    const videoSettings = video.getSettings();
+    if (session.diagnostics) console.debug("LiveKit display capture result", {
+            width: videoSettings.width ?? null, height: videoSettings.height ?? null,
+            frameRate: videoSettings.frameRate ?? null, displaySurface: videoSettings.displaySurface ?? null,
+            displayAudioTrackPresent: !!audio,
+            systemAudioHintRequested: true,
+            suppressLocalAudioPlaybackSupported: supported.suppressLocalAudioPlayback === true
+        });
     if (audio) {
         const audioTrack = new LocalAudioTrack(audio, undefined, false);
         audioTrack.source = Track.Source.ScreenShareAudio;
@@ -527,7 +609,7 @@ async function publishScreenTracks(session, tracks, mediaStreamId) {
                 degradationPreference: profile.options.degradationPreference,
                 senderEncodings: senderEncodingSummary(track)
             });
-            diagnoseVideoBitrate(session, track, "outbound", {
+            scheduleVideoDiagnostics(session, track, "outbound", {
                 capturedWidth: profile.settings.width, capturedHeight: profile.settings.height,
                 capturedFrameRate: profile.settings.frameRate, targetMaxBitrateBps: profile.maxBitrate,
                 configuredSimulcastLayers: profile.options.screenShareSimulcastLayers.length + 1
@@ -536,6 +618,14 @@ async function publishScreenTracks(session, tracks, mediaStreamId) {
             await session.room.localParticipant.publishTrack(track, {
                 name: mediaStreamId, stream: mediaStreamId, source: track.source
             });
+            if (session.diagnostics) {
+                const settings = track.mediaStreamTrack.getSettings();
+                console.debug("LiveKit screen share audio published", {
+                    mediaStreamId, sampleRate: settings.sampleRate ?? null,
+                    channelCount: settings.channelCount ?? null, muted: track.mediaStreamTrack.muted
+                });
+                diagnoseAudioTransport(session, track, "outbound", "screen share audio");
+            }
         }
     }
 }
@@ -554,7 +644,7 @@ export async function startScreenShare(id) {
         throw new DOMException("Display capture is unavailable on this browser or device.", "NotSupportedError");
     if (session.screenTracks.length) return switchScreenShare(id);
     const streamId = crypto.randomUUID(), mediaStreamId = `iridium-screen-${streamId.replaceAll("-", "")}`;
-    const tracks = await captureScreenTracks();
+    const tracks = await captureScreenTracks(session);
     try { await publishScreenTracks(session, tracks, mediaStreamId); }
     catch (error) {
         for (const track of tracks) {
@@ -574,7 +664,7 @@ export async function switchScreenShare(id) {
     if (!navigator.mediaDevices?.getDisplayMedia)
         throw new DOMException("Display capture is unavailable on this browser or device.", "NotSupportedError");
     // Capture first. Picker cancellation or capture failure therefore cannot disturb the old share.
-    const replacement = await captureScreenTracks();
+    const replacement = await captureScreenTracks(session);
     const previous = await replacePublishedScreenTracks(session, replacement);
     session.screenTracks = replacement;
     wireScreenEnded(session, replacement, ++session.screenGeneration);
@@ -629,16 +719,21 @@ export function attachStreamViewer(id, mediaStreamId, elementId, audioMuted, vol
     const session = sessions.get(id); if (!session) return;
     session.viewers.set(elementId, { mediaStreamId, elementId, audioMuted,
         volumePercent: Math.min(300, Math.max(0, Number(volumePercent) || 0)),
-        audioTrackId: null, audioPlayback: null, refreshGeneration: 0 });
+        audioTrackId: null, audioPlayback: null, refreshGeneration: 0,
+        videoElement: null, preventVideoToggle: null, resumeLiveVideo: null, resumePending: false });
     setStreamSubscription(id, mediaStreamId, true); refreshViewers(session, mediaStreamId);
 }
 
 export function detachStreamViewer(id, elementId) {
     const session = sessions.get(id); if (!session) return;
     const viewer = session.viewers.get(elementId), element = document.getElementById(elementId);
+    session.viewers.delete(elementId);
+    if (viewer?.videoElement) {
+        viewer.videoElement.removeEventListener("click", viewer.preventVideoToggle);
+        viewer.videoElement.removeEventListener("pause", viewer.resumeLiveVideo);
+    }
     if (element) { element.pause?.(); element.srcObject = null; }
     if (viewer?.audioPlayback) destroyRemoteVoicePlayback(viewer.audioPlayback);
-    session.viewers.delete(elementId);
     if (viewer && !Array.from(session.viewers.values()).some(v => v.mediaStreamId === viewer.mediaStreamId))
         setStreamSubscription(id, viewer.mediaStreamId, session.watched.has(viewer.mediaStreamId));
 }

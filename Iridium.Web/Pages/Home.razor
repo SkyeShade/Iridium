@@ -181,7 +181,8 @@ else
         <ChildContent>
             @if (VoiceSessions.WatchedStream is not null && VoiceSessions.ViewerMode == StreamViewerMode.Full)
             {
-                <VoiceStreamViewer @key="VoiceSessions.WatchedStream.StreamId" OnMinimize="MinimizeFullStreamAsync"/>
+                <VoiceStreamViewer @key="VoiceSessions.WatchedStream.StreamId" OnMinimize="MinimizeFullStreamAsync"
+                                   CommunityManagement="CommunityState.Management" CurrentPresence="CurrentPresence"/>
             }
             else if (_selectedCommunity is null)
             {
@@ -281,6 +282,7 @@ else
     @if (!_isMobileLayout && VoiceSessions.WatchedStream is not null && VoiceSessions.ViewerMode == StreamViewerMode.Floating)
     {
         <VoiceStreamViewer @key="@($"floating-{VoiceSessions.WatchedStream.StreamId}")" Floating="true"
+                           CommunityManagement="CommunityState.Management" CurrentPresence="CurrentPresence"
                            OnExpand="ExpandFloatingStreamAsync" />
     }
 

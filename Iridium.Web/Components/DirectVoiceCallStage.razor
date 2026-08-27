@@ -61,7 +61,7 @@ else if (CallForConversation is { } call)
                 {
                     var participantStream = Calls.PublishedStreams.FirstOrDefault(value =>
                         value.OwnerAccountId == callParticipant.AccountId);
-                    <div class="call-participant" @oncontextmenu="() => OpenParticipantMenu(callParticipant)"
+                    <div class="call-participant" @oncontextmenu="args => OpenParticipantMenu(callParticipant, args)"
                          @oncontextmenu:preventDefault="true" @oncontextmenu:stopPropagation="true">
                         @if (participantStream is not null)
                         {
@@ -97,8 +97,10 @@ else if (CallForConversation is { } call)
                         @if (MobileExpanded && callParticipant.IsDeafened) { <span>Deafened</span> }
                         @if (_menuRemoteAccountId == callParticipant.AccountId)
                         {
-                            <VoiceParticipantMenu AccountId="callParticipant.AccountId" DisplayName="callParticipant.DisplayName"
-                                                  Username="Participant.Username" />
+                            <VoiceParticipantMenu AccountId="@callParticipant.AccountId"
+                                                  DisplayName="@Participant.DisplayName" Username="@Participant.Username"
+                                                  Presence="@Participant.Presence" X="@_menuX" Y="@_menuY"
+                                                  OnClose="CloseParticipantMenu" />
                         }
                     </div>
                 }
@@ -171,6 +173,8 @@ else if (CallForConversation is { } call)
         _ => "Connecting media…"
     };
     private Guid? _menuRemoteAccountId;
+    private double _menuX;
+    private double _menuY;
     private string? _shareError;
     private string CurrentParticipantName => CallForConversation?.Participants
         .FirstOrDefault(value => value.AccountId == CurrentAccountId)?.DisplayName ?? "You";
@@ -188,8 +192,14 @@ else if (CallForConversation is { } call)
         await ScreenShareCapability.DetectAsync();
         await InvokeAsync(StateHasChanged);
     }
-    private void OpenParticipantMenu(CallParticipantDto participant) =>
-        _menuRemoteAccountId = participant.AccountId == CurrentAccountId ? null : participant.AccountId;
+    private void OpenParticipantMenu(CallParticipantDto participant, MouseEventArgs args)
+    {
+        if (participant.AccountId == CurrentAccountId) { CloseParticipantMenu(); return; }
+        _menuRemoteAccountId = participant.AccountId;
+        _menuX = args.ClientX;
+        _menuY = args.ClientY;
+    }
+    private void CloseParticipantMenu() => _menuRemoteAccountId = null;
     private Task AcceptAsync() => VoiceSessions.AcceptIncomingDirectAsync();
     private Task DeclineAsync() => VoiceSessions.DeclineIncomingDirectAsync();
     private Task HangUpAsync() => VoiceSessions.LeaveCurrentVoiceSessionAsync("Direct Call UI leave");

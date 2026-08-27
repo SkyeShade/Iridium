@@ -3,32 +3,101 @@
 @inject VoiceParticipantPreferencesService Preferences
 @inject NodeSession Session
 
-<div class="voice-user-popup" role="dialog" aria-label="Local voice settings for @DisplayName"
-     @onclick:stopPropagation="true" @oncontextmenu:preventDefault="true" @oncontextmenu:stopPropagation="true">
-    <header><ProfileAvatar AccountId="AccountId" DisplayName="DisplayName" Size="small" Surface="panel" /><div><strong>@DisplayName</strong><small>@Identity</small></div></header>
-    <div class="voice-popup-divider"></div>
-    @if (_preference is not null)
-    {
-        <label class="mute-row"><span>Mute locally</span><input type="checkbox" checked="@_preference.LocallyMuted" @onchange="SetMutedAsync" /></label>
-        <label class="volume-row"><span>User Volume</span><output>@_preference.VolumePercent%</output></label>
-        <input class="volume-slider" type="range" min="10" max="300" step="5" value="@_preference.VolumePercent" @oninput="SetVolumeAsync" />
-    }
+<div class="voice-user-popup-layer" @onclick="CloseAsync">
+    <section @ref="_popup" class="voice-user-popup" role="dialog" tabindex="-1"
+             aria-label="Local voice settings for @DisplayName" style="@PopupPosition"
+             @onclick:stopPropagation="true" @onkeydown="PopupKeyDown"
+             @oncontextmenu:preventDefault="true" @oncontextmenu:stopPropagation="true">
+        <button type="button" class="voice-popup-close" aria-label="Close participant controls"
+                @onclick="CloseAsync"><Icon Name="close" /></button>
+        <header>
+            <ProfileAvatar AccountId="@AccountId" AvatarRevision="@AvatarRevision" DisplayName="@DisplayName"
+                           Presence="@Presence" Size="small" Surface="panel" />
+            <div class="voice-participant-identity">
+                <strong class="display-name">@DisplayName</strong>
+                <small>@Identity</small>
+                <span class="voice-participant-presence">
+                    <ProfileAvatar Presence="@Presence" BadgeMode="AvatarBadgeMode.PresenceGlyph"
+                                   Size="tiny" Surface="panel" />
+                    <span>@PresenceLabel</span>
+                </span>
+            </div>
+        </header>
+        <div class="voice-popup-divider"></div>
+        @if (_preference is not null)
+        {
+            <label class="mute-row">
+                <span>Mute locally</span>
+                <span class="iridium-switch">
+                    <input type="checkbox" checked="@_preference.LocallyMuted"
+                           aria-label="Mute @DisplayName locally" @onchange="SetMutedAsync" />
+                    <span aria-hidden="true"></span>
+                </span>
+            </label>
+            <label class="volume-row" for="@_volumeInputId">
+                <span>User Volume</span><output>@_preference.VolumePercent%</output>
+            </label>
+            <input id="@_volumeInputId" class="volume-slider" type="range"
+                   min="@VoiceParticipantPreference.MinimumVolumePercent"
+                   max="@VoiceParticipantPreference.MaximumVolumePercent" step="5"
+                   value="@_preference.VolumePercent" style="@VolumeStyle"
+                   aria-label="Volume for @DisplayName" @oninput="SetVolumeAsync" />
+        }
+    </section>
 </div>
 
 @code {
     [Parameter, EditorRequired] public required Guid AccountId { get; set; }
     [Parameter, EditorRequired] public required string DisplayName { get; set; }
     [Parameter] public string? Username { get; set; }
+    [Parameter] public PublicPresence Presence { get; set; }
+    [Parameter] public long AvatarRevision { get; set; }
+    [Parameter] public double X { get; set; }
+    [Parameter] public double Y { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private readonly string _volumeInputId = $"voice-volume-{Guid.NewGuid():N}";
+    private ElementReference _popup;
+    private VoiceParticipantPreference? _preference;
+    private bool _focusPending;
     private string Identity => Username is not null && Session.SelectedNode?.PublicAuthority is { } authority
         ? IridiumIdentity.Format(Username, authority) : "Local voice settings";
-    private VoiceParticipantPreference? _preference;
-    protected override async Task OnParametersSetAsync() => _preference = await Preferences.GetAsync(AccountId);
+    private string PresenceLabel => Presence switch
+    {
+        PublicPresence.Online => "Online",
+        PublicPresence.Idle => "Idle",
+        PublicPresence.DoNotDisturb => "Do Not Disturb",
+        _ => "Offline"
+    };
+    private string PopupPosition => FormattableString.Invariant($"--voice-popup-x:{X}px;--voice-popup-y:{Y}px");
+    private string VolumeStyle => FormattableString.Invariant($"--volume-fill:{VolumeFill:0.###}%");
+    private double VolumeFill => _preference is null ? 0 :
+        (_preference.VolumePercent - VoiceParticipantPreference.MinimumVolumePercent) * 100d /
+        (VoiceParticipantPreference.MaximumVolumePercent - VoiceParticipantPreference.MinimumVolumePercent);
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _preference = await Preferences.GetAsync(AccountId);
+        _focusPending = true;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_focusPending) return;
+        _focusPending = false;
+        await _popup.FocusAsync();
+    }
+
+    private Task CloseAsync() => OnClose.InvokeAsync();
+    private Task PopupKeyDown(KeyboardEventArgs args) => args.Key == "Escape" ? CloseAsync() : Task.CompletedTask;
+
     private async Task SetMutedAsync(ChangeEventArgs args)
     {
         var muted = args.Value is bool value && value;
         await Preferences.SetLocallyMutedAsync(AccountId, muted);
         _preference = await Preferences.GetAsync(AccountId);
     }
+
     private async Task SetVolumeAsync(ChangeEventArgs args)
     {
         if (!int.TryParse(args.Value?.ToString(), out var value)) return;

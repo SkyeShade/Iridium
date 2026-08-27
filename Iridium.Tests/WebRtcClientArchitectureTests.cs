@@ -79,7 +79,7 @@ public sealed class WebRtcClientArchitectureTests
         Assert.Contains("qualityLimitationReasons", sfu);
         Assert.Contains("framesPerSecond", sfu);
         Assert.Contains("systemAudio = \"include\"", sfu);
-        Assert.Contains("replacement = await captureScreenTracks()", sfu);
+        Assert.Contains("replacement = await captureScreenTracks(session)", sfu);
         Assert.Contains("streamId: session.screenStreamId", sfu);
         Assert.Contains("minimumVolumePercent: 0", sfu);
         Assert.Contains("element.muted = true", sfu);

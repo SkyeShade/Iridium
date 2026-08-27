@@ -17,6 +17,7 @@
                             Room="@VoiceRooms.FirstOrDefault(value => value.ChannelId == channel.Id)"
                             Connected="@(ConnectedVoiceChannelId == channel.Id)"
                             CurrentAccountId="CurrentAccountId"
+                            Members="Members"
                             PublishedStreams="PublishedStreams" OnWatchStream="OnWatchStream"
                             StreamThumbnails="StreamThumbnails"
                             OnEdit="OnEditChannel" OnDelete="OnDeleteChannel"
@@ -28,6 +29,7 @@
                                            Depth="@(Depth + 1)" CanManage="CanManage" CanManagePermissions="CanManagePermissions" Collapsed="Collapsed"
                                            VoiceRooms="VoiceRooms" ConnectedVoiceChannelId="ConnectedVoiceChannelId"
                                            CurrentAccountId="CurrentAccountId"
+                                           Members="Members"
                                            PublishedStreams="PublishedStreams" OnWatchStream="OnWatchStream"
                                            StreamThumbnails="StreamThumbnails"
                                            SelectedChannelId="SelectedChannelId" OnToggle="OnToggle" OnEdit="OnEdit"
@@ -53,6 +55,7 @@
     [Parameter] public IReadOnlyCollection<ActiveVoiceRoomDto> VoiceRooms { get; set; } = [];
     [Parameter] public Guid? ConnectedVoiceChannelId { get; set; }
     [Parameter] public Guid CurrentAccountId { get; set; }
+    [Parameter] public IReadOnlyList<CommunityMemberDto> Members { get; set; } = [];
     [Parameter] public IReadOnlyList<PublishedVoiceStreamDto> PublishedStreams { get; set; } = [];
     [Parameter] public IReadOnlyDictionary<Guid, string> StreamThumbnails { get; set; } = new Dictionary<Guid, string>();
     [Parameter] public EventCallback<Guid> OnWatchStream { get; set; }

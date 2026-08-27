@@ -55,7 +55,7 @@ public sealed class VoiceStreamViewerShareControlTests
         var liveKit = Source("Iridium.Web", "wwwroot", "js", "liveKitMedia.js");
         var method = Method(liveKit, "export async function switchScreenShare", "export async function replacePublishedScreenTracks");
 
-        Assert.True(method.IndexOf("const replacement = await captureScreenTracks()", StringComparison.Ordinal) <
+        Assert.True(method.IndexOf("const replacement = await captureScreenTracks(session)", StringComparison.Ordinal) <
                     method.IndexOf("replacePublishedScreenTracks(session, replacement)", StringComparison.Ordinal));
         Assert.DoesNotContain("stopScreenShare", method);
     }

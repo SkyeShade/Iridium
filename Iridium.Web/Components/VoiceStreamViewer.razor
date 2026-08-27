@@ -3,6 +3,7 @@
 @implements IAsyncDisposable
 @inject ActiveVoiceSessionCoordinator Voice
 @inject VoiceParticipantPreferencesService Preferences
+@inject NodeSession Session
 @inject IJSRuntime JS
 @inject ILogger<VoiceStreamViewer> Logger
 
@@ -11,7 +12,8 @@
     <section id="@_containerId" class="voice-stream-viewer @(Floating ? "floating" : null)" aria-label="Watching @stream.OwnerDisplayName's stream"
              @onclick="CloseShareMenu" @onkeydown="ViewerKeyDown">
         <div class="stream-stage">
-            <video id="@_elementId" autoplay playsinline></video>
+            <video id="@_elementId" autoplay playsinline disablepictureinpicture
+                   controlslist="nodownload noplaybackrate noremoteplayback" aria-label="Live shared stream"></video>
             <div class="stream-toolbar floating-drag-handle">
                 <div><strong>@stream.OwnerDisplayName</strong><span class="live-badge">LIVE</span><small>@KindLabel(stream.Kind)</small></div>
                 <div class="toolbar-actions">
@@ -25,9 +27,9 @@
                         <details>
                         <summary aria-label="Adjust shared stream volume">@_audioVolume%</summary>
                         <label title="Shared stream volume is local to this device">
-                            <span class="sr-only">Shared stream volume</span>
+                            <span class="stream-volume-label">Stream Volume</span>
                             <input type="range" min="0" max="300" step="5" value="@_audioVolume"
-                                   aria-label="Shared stream volume" @oninput="SetStreamVolumeAsync" />
+                                   style="@StreamVolumeStyle" aria-label="Shared stream volume" @oninput="SetStreamVolumeAsync" />
                             <output>@_audioVolume%</output>
                         </label>
                         </details>
@@ -68,11 +70,15 @@
             {
                 @foreach (var participant in Voice.DirectCalls.CurrentCall?.Participants ?? [])
                 {
+                    var presentation = ResolveBaseParticipant(participant.AccountId, participant.DisplayName,
+                        participant.AccountId == Voice.LocalAccountId ? CurrentPresence : DirectParticipantPresence);
                     <div class="viewer-participant">
                         <span class="participant-avatar @(participant.IsSpeaking ? "speaking" : null)">
-                            <ProfileAvatar AccountId="participant.AccountId" DisplayName="participant.DisplayName" Size="medium" Surface="base" />
+                            <ProfileAvatar AccountId="@presentation.AccountId" DisplayName="@presentation.DisplayName"
+                                           AvatarRevision="@presentation.AvatarRevision" Presence="@presentation.Presence"
+                                           Size="medium" Surface="base" />
                         </span>
-                        <span>@participant.DisplayName</span>
+                        <span>@presentation.DisplayName</span>
                     </div>
                 }
             }
@@ -80,13 +86,15 @@
             {
                 @foreach (var participant in Voice.CommunityVoice.CurrentRoom?.Participants ?? [])
                 {
+                    var presentation = ResolveBaseParticipant(participant.AccountId, participant.DisplayName,
+                        participant.Presence, participant.AvatarRevision);
                     <div class="viewer-participant">
                         <span class="participant-avatar @(participant.Speaking ? "speaking" : null)">
-                            <ProfileAvatar AccountId="participant.AccountId" DisplayName="participant.DisplayName"
-                                           AvatarPresetId="participant.AvatarPresetId" AvatarRevision="participant.AvatarRevision"
-                                           Presence="participant.Presence" Size="medium" Surface="base" />
+                            <ProfileAvatar AccountId="@presentation.AccountId" DisplayName="@presentation.DisplayName"
+                                           AvatarRevision="@presentation.AvatarRevision" Presence="@presentation.Presence"
+                                           Size="medium" Surface="base" />
                         </span>
-                        <span>@participant.DisplayName</span>
+                        <span>@presentation.DisplayName</span>
                     </div>
                 }
             }
@@ -138,8 +146,21 @@
     private IJSObjectReference? _floatingModule;
     private IJSObjectReference? _floatingHandle;
     [Parameter] public bool Floating { get; set; }
+    [Parameter] public CommunityManagementDto? CommunityManagement { get; set; }
+    [Parameter] public PublicPresence CurrentPresence { get; set; } = PublicPresence.Offline;
     [Parameter] public EventCallback OnExpand { get; set; }
     [Parameter] public EventCallback OnMinimize { get; set; }
+
+    private PublicPresence DirectParticipantPresence => Session.DirectConversations
+        .Select(value => value.OtherParticipant)
+        .FirstOrDefault(value => Voice.DirectCalls.CurrentCall?.Participants.Any(participant =>
+            participant.AccountId == value.AccountId) == true)?.Presence ?? PublicPresence.Offline;
+    private string StreamVolumeStyle => FormattableString.Invariant($"--stream-volume-fill:{_audioVolume / 3d:0.###}%");
+
+    private VoiceParticipantPresentation ResolveBaseParticipant(Guid accountId, string displayName,
+        PublicPresence presence, long avatarRevision = 0) => VoiceParticipantPresentationResolver.ResolveBase(
+        accountId, displayName, presence, avatarRevision, Session.Account, CurrentPresence,
+        CommunityManagement?.Members ?? [], Session.DirectConversations, Session.Friends);
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
