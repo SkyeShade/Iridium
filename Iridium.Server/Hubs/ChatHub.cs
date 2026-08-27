@@ -319,6 +319,7 @@ public sealed class ChatHub(
                 .Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
                 .Include(value => value.ReplyToMessage).ThenInclude(value => value!.Attachments)
                 .Include(value => value.Attachments)
+                .IncludeForwardedSnapshot()
                 .SingleOrDefaultAsync(value => value.AuthorAccountId == session.AccountId &&
                     value.CommunityId == communityId && value.ChannelId == channelId &&
                     value.ClientMessageId == existingClientId);
@@ -406,6 +407,161 @@ public sealed class ChatHub(
         return result;
     }
 
+    public async Task<ForwardMessagesResultDto> ForwardMessage(ForwardMessageRequest request)
+    {
+        var session = await RequireSessionAsync();
+        if (request.Destinations is null || request.Destinations.Count == 0)
+            throw new HubException("Select at least one forwarding destination.");
+        if (request.Destinations.Count > MessageForwardingLimits.MaximumDestinations)
+            throw new HubException($"Messages can be forwarded to at most {MessageForwardingLimits.MaximumDestinations} destinations.");
+        if (request.Destinations.Distinct().Count() != request.Destinations.Count)
+            throw new HubException("A forwarding destination was selected more than once.");
+
+        var source = await LoadForwardSourceAsync(request.Source, session.AccountId);
+        var snapshot = source.ExistingSnapshot ?? new ForwardedMessageSnapshot
+        {
+            Id = Guid.NewGuid(),
+            Content = source.Content,
+            MentionsJson = source.MentionsJson,
+            SourceCommunityId = source.SourceCommunityId,
+            SourceChannelId = source.SourceChannelId,
+            SourceMessageId = source.SourceMessageId,
+            CreatedAt = DateTimeOffset.UtcNow
+        };
+        if (source.ExistingSnapshot is null)
+            foreach (var attachment in source.Attachments)
+                snapshot.Attachments.Add(new ForwardedMessageAttachment
+                {
+                    ForwardedMessageSnapshotId = snapshot.Id,
+                    AttachmentId = attachment.Id,
+                    Snapshot = snapshot,
+                    Attachment = attachment
+                });
+
+        var note = string.IsNullOrWhiteSpace(request.Note) ? string.Empty : request.Note.TrimEnd();
+        var channelDestinations = new List<(ForwardDestinationSelectionDto Selection, CommunityChannel Channel)>();
+        var directDestinations = new List<(ForwardDestinationSelectionDto Selection, DirectConversation Conversation)>();
+        foreach (var destination in request.Destinations)
+        {
+            if (destination.Kind == MessageLocationKind.CommunityChannel)
+            {
+                if (destination.CommunityId is not { } communityId || destination.ChannelId is not { } channelId)
+                    throw new HubException("That Server channel destination is invalid.");
+                var channel = await db.CommunityChannels.SingleOrDefaultAsync(value =>
+                    value.CommunityId == communityId && value.Id == channelId && value.Kind == CommunityChannelKind.Text);
+                if (channel is null) throw new HubException("That text channel is unavailable.");
+                await RequireChannelAsync(communityId, channelId, session.AccountId,
+                    CommunityPermission.ViewChannels | CommunityPermission.SendMessages);
+                if (snapshot.Attachments.Count > 0)
+                    await RequireChannelAsync(communityId, channelId, session.AccountId, CommunityPermission.AttachFiles);
+                _ = ValidContent(note, allowEmpty: true, communityId);
+                channelDestinations.Add((destination, channel));
+            }
+            else if (destination.Kind == MessageLocationKind.DirectConversation)
+            {
+                if (destination.ConversationId is not { } conversationId)
+                    throw new HubException("That Direct Message destination is invalid.");
+                var conversation = await RequireDirectConversationAsync(conversationId, session.AccountId);
+                _ = ValidContent(note, allowEmpty: true);
+                directDestinations.Add((destination, conversation));
+            }
+            else throw new HubException("That forwarding destination is not supported.");
+        }
+
+        if (source.ExistingSnapshot is null) db.ForwardedMessageSnapshots.Add(snapshot);
+        var now = DateTimeOffset.UtcNow;
+        var channelMessages = new List<ChannelMessage>();
+        foreach (var (_, channel) in channelDestinations)
+        {
+            var message = new ChannelMessage
+            {
+                Id = Guid.NewGuid(), CommunityId = channel.CommunityId, ChannelId = channel.Id,
+                AuthorAccountId = session.AccountId, AuthorAccount = session.Account, Channel = channel,
+                Content = note, CreatedAt = now, ForwardedMessageSnapshotId = snapshot.Id,
+                ForwardedMessageSnapshot = snapshot
+            };
+            await historicalAuthors.CaptureAsync(message, channel.CommunityId, session.AccountId);
+            channelMessages.Add(message);
+            db.ChannelMessages.Add(message);
+        }
+        var directMessages = directDestinations.Select(value => new DirectMessage
+        {
+            Id = Guid.NewGuid(), ConversationId = value.Conversation.Id, Conversation = value.Conversation,
+            AuthorAccountId = session.AccountId, AuthorAccount = session.Account, Content = note, CreatedAt = now,
+            ForwardedMessageSnapshotId = snapshot.Id, ForwardedMessageSnapshot = snapshot
+        }).ToList();
+        db.DirectMessages.AddRange(directMessages);
+        await db.SaveChangesAsync();
+
+        var channelResults = new List<ChannelMessageDto>();
+        foreach (var message in channelMessages)
+        {
+            var result = await ChannelMessageMapper.ResolveCommunityProfileAsync(ChannelMessageMapper.ToDto(message), db);
+            channelResults.Add(result);
+            await Clients.Group(GroupName(message.CommunityId, message.ChannelId))
+                .SendAsync(ChatHubContract.MessageCreated, result);
+            var recipients = await db.CommunityMembers.AsNoTracking()
+                .Where(value => value.CommunityId == message.CommunityId && value.AccountId != session.AccountId)
+                .Select(value => value.AccountId).ToListAsync();
+            foreach (var recipient in recipients.ToArray())
+                if (!await authorization.HasChannelPermissionAsync(message.CommunityId, message.ChannelId, recipient,
+                        CommunityPermission.ViewChannels, db)) recipients.Remove(recipient);
+            if (recipients.Count > 0)
+                await Clients.Groups(recipients.Select(AccountGroup).ToArray()).SendAsync(
+                    CommunityHubContract.ChannelActivity,
+                    new CommunityChannelActivityEvent(message.CommunityId, message.ChannelId, session.AccountId));
+        }
+        var directResults = new List<DirectMessageDto>();
+        foreach (var message in directMessages)
+        {
+            var result = DirectMessageMapper.ToDto(message);
+            directResults.Add(result);
+            await DirectParticipants(message.Conversation).SendAsync(DirectMessageHubContract.MessageCreated, result);
+        }
+        return new(channelResults, directResults);
+    }
+
+    private async Task<ForwardSource> LoadForwardSourceAsync(ForwardMessageSourceDto source, Guid accountId)
+    {
+        if (source.Kind == MessageLocationKind.CommunityChannel)
+        {
+            if (source.CommunityId is not { } communityId || source.ChannelId is not { } channelId)
+                throw new HubException("The source message location is invalid.");
+            await RequireChannelAsync(communityId, channelId, accountId,
+                CommunityPermission.ViewChannels | CommunityPermission.ReadMessageHistory);
+            var message = await db.ChannelMessages.Include(value => value.Attachments).IncludeForwardedSnapshot()
+                .SingleOrDefaultAsync(value => value.Id == source.MessageId && value.CommunityId == communityId &&
+                    value.ChannelId == channelId && !value.IsDeleted);
+            if (message is null) throw new HubException("The source message is no longer available.");
+            return message.ForwardedMessageSnapshot is { } forwarded
+                ? ForwardSource.FromExisting(forwarded)
+                : new(message.Content, message.MentionsJson, message.Attachments.ToArray(), null,
+                    communityId, channelId, message.Id);
+        }
+
+        if (source.Kind == MessageLocationKind.DirectConversation && source.ConversationId is { } conversationId)
+        {
+            _ = await RequireDirectConversationAsync(conversationId, accountId);
+            var message = await db.DirectMessages.Include(value => value.Attachments).IncludeForwardedSnapshot()
+                .SingleOrDefaultAsync(value => value.Id == source.MessageId && value.ConversationId == conversationId &&
+                    !value.IsDeleted && value.Kind == MessageKind.User);
+            if (message is null) throw new HubException("The source message is no longer available.");
+            return message.ForwardedMessageSnapshot is { } forwarded
+                ? ForwardSource.FromExisting(forwarded)
+                : new(message.Content, null, message.Attachments.ToArray(), null, null, null, null);
+        }
+        throw new HubException("The source message location is invalid.");
+    }
+
+    private sealed record ForwardSource(string Content, string? MentionsJson, IReadOnlyList<Attachment> Attachments,
+        ForwardedMessageSnapshot? ExistingSnapshot, Guid? SourceCommunityId, Guid? SourceChannelId,
+        Guid? SourceMessageId)
+    {
+        public static ForwardSource FromExisting(ForwardedMessageSnapshot snapshot) =>
+            new(snapshot.Content, snapshot.MentionsJson, [], snapshot, snapshot.SourceCommunityId,
+                snapshot.SourceChannelId, snapshot.SourceMessageId);
+    }
+
     public async Task<ChannelMessageDto> EditMessage(
         Guid communityId,
         Guid channelId,
@@ -421,7 +577,8 @@ public sealed class ChatHub(
         if (message.AuthorAccountId != accountId) throw new HubException("You can only edit your own messages.");
         if (message.IsDeleted) throw new HubException("Deleted messages cannot be edited.");
 
-        message.Content = ValidContent(request.Content, communityId: communityId);
+        message.Content = ValidContent(request.Content, allowEmpty: message.ForwardedMessageSnapshotId is not null,
+            communityId: communityId);
         message.MentionsJson = null;
         message.EditedAt = DateTimeOffset.UtcNow;
         if (rootForumPost is not null) rootForumPost.UpdatedAt = message.EditedAt.Value;
@@ -738,6 +895,7 @@ public sealed class ChatHub(
                 .Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
                 .Include(value => value.ReplyToMessage).ThenInclude(value => value!.Attachments)
                 .Include(value => value.Attachments)
+                .IncludeForwardedSnapshot()
                 .SingleOrDefaultAsync(value => value.AuthorAccountId == session.AccountId &&
                     value.ConversationId == conversationId && value.ClientMessageId == existingClientId);
             if (existing is not null) return DirectMessageMapper.ToDto(existing);
@@ -789,7 +947,7 @@ public sealed class ChatHub(
         if (message.Kind != MessageKind.User) throw new HubException("System messages cannot be edited.");
         if (message.AuthorAccountId != accountId) throw new HubException("You can only edit your own messages.");
         if (message.IsDeleted) throw new HubException("Deleted messages cannot be edited.");
-        message.Content = ValidContent(request.Content);
+        message.Content = ValidContent(request.Content, allowEmpty: message.ForwardedMessageSnapshotId is not null);
         message.EditedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync();
         var result = DirectMessageMapper.ToDto(message);
@@ -821,6 +979,7 @@ public sealed class ChatHub(
             .Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
             .Include(value => value.ReplyToMessage).ThenInclude(value => value!.Attachments)
             .Include(value => value.Attachments)
+            .IncludeForwardedSnapshot()
             .SingleOrDefaultAsync(value => value.Id == messageId && value.CommunityId == communityId && value.ChannelId == channelId);
         return message ?? throw new HubException("Message not found in this Server channel.");
     }
@@ -839,6 +998,7 @@ public sealed class ChatHub(
             .Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
             .Include(value => value.ReplyToMessage).ThenInclude(value => value!.Attachments)
             .Include(value => value.Attachments)
+            .IncludeForwardedSnapshot()
             .SingleOrDefaultAsync(value => value.Id == messageId && value.ConversationId == conversationId);
         return message ?? throw new HubException("Direct message not found in this conversation.");
     }

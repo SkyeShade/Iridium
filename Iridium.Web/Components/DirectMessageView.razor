@@ -28,6 +28,7 @@
                      EmptyIcon="message" EmptyTitle="No messages yet" EmptyDescription="Send the first Direct Message."
                      OnReply="BeginReply" Edit="EditMessageAsync" OnDelete="DeleteMessageAsync"
                      OnRetryLocal="RetryMessageAsync" OnRemoveLocal="RemoveLocalMessage"
+                     OnOpenForwardSource="OnOpenForwardSource"
                      OnEditCompleted="FocusComposerAfterEditAsync"
                      WindowRevision="Messaging.WindowRevision" ReconciliationRevision="Messaging.RecentReconciliationRevision" FollowLatest="_isPinnedToLatest"
                      TargetMessageId="@(Messaging.WindowMode == MessageWindowMode.SearchTarget ? _loadedTargetMessageId : null)"
@@ -52,6 +53,7 @@
     [Parameter] public EventCallback OnEditProfile { get; set; }
     [Parameter] public EventCallback OnEditAvatars { get; set; }
     [Parameter] public EventCallback<Guid> OnMessage { get; set; }
+    [Parameter] public EventCallback<ForwardSourceReferenceDto> OnOpenForwardSource { get; set; }
     [Parameter] public EventCallback OnStartVoiceCall { get; set; }
     [Parameter] public bool IsMobileLayout { get; set; }
     [Parameter] public bool MobileCallExpanded { get; set; }
@@ -79,7 +81,7 @@
         new ChannelMessageDto(message.Id, Guid.Empty, message.ConversationId, message.Author, message.Content,
             message.CreatedAt, message.EditedAt, message.IsDeleted, message.ReplyTo, null,
             message.ClientMessageId, message.DeliveryState, message.DeliveryError, message.CanRetry,
-            message.Attachments, message.Kind)).ToArray();
+            message.Attachments, message.Kind, message.Forwarded)).ToArray();
 
     protected override void OnInitialized() { Messaging.Changed += MessagesChanged; Calls.Changed += CallsChanged; }
     protected override void OnParametersSet()

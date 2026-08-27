@@ -7,6 +7,38 @@ namespace Iridium.Server.Persistence;
 
 public static class DatabaseCompatibility
 {
+    public static async Task EnsureMessageForwardingSchemaAsync(IridiumDbContext db)
+    {
+        await EnsureColumnAsync(db, "ChannelMessages", "ForwardedMessageSnapshotId", "TEXT NULL");
+        await EnsureColumnAsync(db, "DirectMessages", "ForwardedMessageSnapshotId", "TEXT NULL");
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS ForwardedMessageSnapshots (
+                Id TEXT NOT NULL CONSTRAINT PK_ForwardedMessageSnapshots PRIMARY KEY,
+                Content TEXT NOT NULL,
+                MentionsJson TEXT NULL,
+                SourceCommunityId TEXT NULL,
+                SourceChannelId TEXT NULL,
+                SourceMessageId TEXT NULL,
+                CreatedAt INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS ForwardedMessageAttachments (
+                ForwardedMessageSnapshotId TEXT NOT NULL,
+                AttachmentId TEXT NOT NULL,
+                CONSTRAINT PK_ForwardedMessageAttachments PRIMARY KEY (ForwardedMessageSnapshotId, AttachmentId),
+                CONSTRAINT FK_ForwardedMessageAttachments_ForwardedMessageSnapshots_ForwardedMessageSnapshotId
+                    FOREIGN KEY (ForwardedMessageSnapshotId) REFERENCES ForwardedMessageSnapshots (Id) ON DELETE CASCADE,
+                CONSTRAINT FK_ForwardedMessageAttachments_Attachments_AttachmentId
+                    FOREIGN KEY (AttachmentId) REFERENCES Attachments (Id) ON DELETE RESTRICT
+            );
+            CREATE INDEX IF NOT EXISTS IX_ChannelMessages_ForwardedMessageSnapshotId
+                ON ChannelMessages (ForwardedMessageSnapshotId);
+            CREATE INDEX IF NOT EXISTS IX_DirectMessages_ForwardedMessageSnapshotId
+                ON DirectMessages (ForwardedMessageSnapshotId);
+            CREATE INDEX IF NOT EXISTS IX_ForwardedMessageAttachments_AttachmentId
+                ON ForwardedMessageAttachments (AttachmentId);
+            """);
+    }
+
     public static async Task EnsureAccountSecuritySchemaAsync(IridiumDbContext db)
     {
         await EnsureColumnAsync(db, "Accounts", "RecoveryEmail", "TEXT NULL");
@@ -459,6 +491,7 @@ public static class DatabaseCompatibility
                 IsDeleted INTEGER NOT NULL DEFAULT 0,
                 DeletedAt INTEGER NULL,
                 ReplyToMessageId TEXT NULL,
+                ForwardedMessageSnapshotId TEXT NULL,
                 CONSTRAINT FK_DirectMessages_DirectConversations_ConversationId FOREIGN KEY (ConversationId) REFERENCES DirectConversations (Id) ON DELETE CASCADE,
                 CONSTRAINT FK_DirectMessages_Accounts_AuthorAccountId FOREIGN KEY (AuthorAccountId) REFERENCES Accounts (Id) ON DELETE RESTRICT,
                 CONSTRAINT FK_DirectMessages_DirectMessages_ReplyToMessageId FOREIGN KEY (ReplyToMessageId) REFERENCES DirectMessages (Id) ON DELETE SET NULL
@@ -467,6 +500,7 @@ public static class DatabaseCompatibility
             CREATE INDEX IF NOT EXISTS IX_DirectMessages_AuthorAccountId ON DirectMessages (AuthorAccountId);
             CREATE INDEX IF NOT EXISTS IX_DirectMessages_ReplyToMessageId ON DirectMessages (ReplyToMessageId);
             """);
+        await EnsureColumnAsync(db, "DirectMessages", "ForwardedMessageSnapshotId", "TEXT NULL");
         await EnsureColumnAsync(db, "DirectConversationStates", "LastReadAt", "INTEGER NULL");
         await EnsureColumnAsync(db, "DirectMessages", "Kind", "INTEGER NOT NULL DEFAULT 0");
         await EnsureColumnAsync(db, "DirectMessages", "RelatedCallId", "TEXT NULL");
@@ -837,6 +871,7 @@ public static class DatabaseCompatibility
                 IsDeleted INTEGER NOT NULL DEFAULT 0,
                 DeletedAt INTEGER NULL,
                 ReplyToMessageId TEXT NULL,
+                ForwardedMessageSnapshotId TEXT NULL,
                 CONSTRAINT FK_ChannelMessages_CommunityChannels_CommunityId_ChannelId
                     FOREIGN KEY (CommunityId, ChannelId) REFERENCES CommunityChannels (CommunityId, Id) ON DELETE CASCADE,
                 CONSTRAINT FK_ChannelMessages_Accounts_AuthorAccountId
@@ -849,6 +884,7 @@ public static class DatabaseCompatibility
             CREATE INDEX IF NOT EXISTS IX_ChannelMessages_AuthorAccountId ON ChannelMessages (AuthorAccountId);
             CREATE INDEX IF NOT EXISTS IX_ChannelMessages_ReplyToMessageId ON ChannelMessages (ReplyToMessageId);
             """);
+        await EnsureColumnAsync(db, "ChannelMessages", "ForwardedMessageSnapshotId", "TEXT NULL");
         await EnsureColumnAsync(db, "ChannelMessages", "MentionsJson", "TEXT NULL");
         await EnsureColumnAsync(db, "ChannelMessages", "AuthorDisplayNameSnapshot", "TEXT NULL");
         await EnsureColumnAsync(db, "ChannelMessages", "AuthorAvatarObjectKeySnapshot", "TEXT NULL");

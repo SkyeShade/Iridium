@@ -7,6 +7,7 @@ public static class ChatHubContract
     public const string SendMessage = "SendMessage";
     public const string EditMessage = "EditMessage";
     public const string DeleteMessage = "DeleteMessage";
+    public const string ForwardMessage = "ForwardMessage";
     public const string MessageCreated = "MessageCreated";
     public const string MessageUpdated = "MessageUpdated";
     public const string MessageDeleted = "MessageDeleted";
@@ -76,7 +77,8 @@ public sealed record ChannelMessageDto(
     string? DeliveryError = null,
     bool CanRetry = false,
     IReadOnlyList<AttachmentDto>? Attachments = null,
-    MessageKind Kind = MessageKind.User);
+    MessageKind Kind = MessageKind.User,
+    ForwardedMessageSnapshotDto? Forwarded = null);
 
 public sealed record SendChannelMessageRequest(
     string Content,

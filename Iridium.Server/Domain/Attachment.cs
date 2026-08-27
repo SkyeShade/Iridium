@@ -21,4 +21,5 @@ public sealed class Attachment
     public required NodeAccount UploaderAccount { get; set; }
     public ChannelMessage? ChannelMessage { get; set; }
     public DirectMessage? DirectMessage { get; set; }
+    public ICollection<ForwardedMessageAttachment> ForwardedMessageReferences { get; set; } = [];
 }

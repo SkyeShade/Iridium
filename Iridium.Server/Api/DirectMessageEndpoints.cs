@@ -127,6 +127,7 @@ public static class DirectMessageEndpoints
             .Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
             .Include(value => value.ReplyToMessage).ThenInclude(value => value!.Attachments)
             .Include(value => value.Attachments)
+            .IncludeForwardedSnapshot()
             .OrderByDescending(value => value.CreatedAt)
             .ThenByDescending(value => value.Id)
             .Take(take + 1)
@@ -145,6 +146,7 @@ public static class DirectMessageEndpoints
             .Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
             .Include(value => value.ReplyToMessage).ThenInclude(value => value!.Attachments)
             .Include(value => value.Attachments)
+            .IncludeForwardedSnapshot()
             .SingleOrDefaultAsync(value => value.Id == targetId && value.ConversationId == conversationId && !value.IsDeleted);
         if (target is null) return Results.NotFound(new { message = "Message not found in this conversation." });
         var half = Math.Min(MessageHistoryDefaults.AroundHalfWindow, Math.Max(1, take / 2));
@@ -155,6 +157,7 @@ public static class DirectMessageEndpoints
             .Include(value => value.AuthorAccount).Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
             .Include(value => value.ReplyToMessage).ThenInclude(value => value!.Attachments)
             .Include(value => value.Attachments)
+            .IncludeForwardedSnapshot()
             .OrderByDescending(value => value.CreatedAt).ThenByDescending(value => value.Id).Take(half + 1).ToListAsync();
         var hasOlder = older.Count > half;
         if (hasOlder) older.RemoveAt(older.Count - 1);
@@ -165,6 +168,7 @@ public static class DirectMessageEndpoints
             .Include(value => value.AuthorAccount).Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
             .Include(value => value.ReplyToMessage).ThenInclude(value => value!.Attachments)
             .Include(value => value.Attachments)
+            .IncludeForwardedSnapshot()
             .OrderBy(value => value.CreatedAt).ThenBy(value => value.Id).Take(half).ToListAsync();
         var result = older.OrderBy(value => value.CreatedAt).ThenBy(value => value.Id).Append(target).Concat(newer)
             .Select(DirectMessageMapper.ToDto).ToArray();
@@ -183,11 +187,12 @@ public static class DirectMessageEndpoints
         var take = Math.Clamp(limit ?? MessageHistoryDefaults.SearchPageSize, 1, MessageHistoryDefaults.MaximumPageSize);
         var query = db.DirectMessages.AsNoTracking().Where(value => value.ConversationId == conversationId &&
                 !value.IsDeleted && value.Kind == MessageKind.User)
-            .Include(value => value.AuthorAccount).AsQueryable();
+            .Include(value => value.AuthorAccount).IncludeForwardedSnapshot().AsQueryable();
         if (!string.IsNullOrWhiteSpace(q))
         {
             var text = q.ToLower();
-            query = query.Where(value => value.Content.ToLower().Contains(text));
+            query = query.Where(value => value.Content.ToLower().Contains(text) ||
+                value.ForwardedMessageSnapshot != null && value.ForwardedMessageSnapshot.Content.ToLower().Contains(text));
         }
         if (!string.IsNullOrWhiteSpace(from))
         {
@@ -206,7 +211,8 @@ public static class DirectMessageEndpoints
         var hasMore = found.Count > take;
         if (hasMore) found.RemoveAt(found.Count - 1);
         var results = found.Select(value => new MessageSearchResultDto(value.Id, null, null, value.ConversationId, null,
-            new(value.AuthorAccountId, value.AuthorAccount.Username, value.AuthorAccount.DisplayName), value.Content, value.CreatedAt)).ToArray();
+            new(value.AuthorAccountId, value.AuthorAccount.Username, value.AuthorAccount.DisplayName),
+            SearchContent(value.Content, value.ForwardedMessageSnapshot?.Content), value.CreatedAt)).ToArray();
         var next = results.Length == 0 ? null : MessageHistoryCursor.Encode(results[^1].CreatedAt, results[^1].MessageId);
         return Results.Ok(new MessageSearchPageDto(results, next, hasMore));
     }
@@ -224,11 +230,12 @@ public static class DirectMessageEndpoints
         var query = db.DirectMessages.AsNoTracking()
             .Where(value => value.ConversationId == conversationId && !value.IsDeleted &&
                             value.Kind == MessageKind.User)
-            .Include(value => value.AuthorAccount).AsQueryable();
+            .Include(value => value.AuthorAccount).IncludeForwardedSnapshot().AsQueryable();
         if (!string.IsNullOrWhiteSpace(criteria.Text))
         {
             var text = criteria.Text.ToLower();
-            query = query.Where(value => value.Content.ToLower().Contains(text));
+            query = query.Where(value => value.Content.ToLower().Contains(text) ||
+                value.ForwardedMessageSnapshot != null && value.ForwardedMessageSnapshot.Content.ToLower().Contains(text));
         }
         if (criteria.FromAccountId is { } authorId) query = query.Where(value => value.AuthorAccountId == authorId);
         if (criteria.MentionedAccountId is not null || criteria.ChannelId is not null || criteria.AuthorType != MessageAuthorType.User)
@@ -257,10 +264,15 @@ public static class DirectMessageEndpoints
         var hasMore = found.Count > take;
         if (hasMore) found.RemoveAt(found.Count - 1);
         var results = found.Select(value => new MessageSearchResultDto(value.Id, null, null, value.ConversationId, null,
-            new(value.AuthorAccountId, value.AuthorAccount.Username, value.AuthorAccount.DisplayName), value.Content, value.CreatedAt)).ToArray();
+            new(value.AuthorAccountId, value.AuthorAccount.Username, value.AuthorAccount.DisplayName),
+            SearchContent(value.Content, value.ForwardedMessageSnapshot?.Content), value.CreatedAt)).ToArray();
         var next = results.Length == 0 ? null : MessageHistoryCursor.Encode(results[^1].CreatedAt, results[^1].MessageId);
         return Results.Ok(new MessageSearchPageDto(results, next, hasMore));
     }
+
+    private static string SearchContent(string note, string? forwarded) => string.IsNullOrWhiteSpace(forwarded)
+        ? note
+        : string.IsNullOrWhiteSpace(note) ? forwarded : $"{note}\n{forwarded}";
 
     private static async Task<IResult> HideAsync(
         Guid conversationId,

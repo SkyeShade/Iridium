@@ -79,7 +79,9 @@ function cacheable(message) {
 }
 
 function attachmentRecords(scope, message, now) {
-    return (message.attachments || []).map(attachment => ({
+    const attachments = [...(message.attachments || []), ...(message.forwarded?.attachments || [])]
+        .filter((attachment, index, values) => values.findIndex(value => value.id === attachment.id) === index);
+    return attachments.map(attachment => ({
         key: `${scope.conversationKey}|media:${String(attachment.id).toLowerCase()}`,
         conversationKey: scope.conversationKey,
         accountKey: accountKey(scope),

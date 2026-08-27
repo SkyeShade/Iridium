@@ -16,9 +16,11 @@ public sealed class DirectMessage
     public bool IsDeleted { get; set; }
     public DateTimeOffset? DeletedAt { get; set; }
     public Guid? ReplyToMessageId { get; set; }
+    public Guid? ForwardedMessageSnapshotId { get; set; }
     public required DirectConversation Conversation { get; set; }
     public required NodeAccount AuthorAccount { get; set; }
     public DirectMessage? ReplyToMessage { get; set; }
+    public ForwardedMessageSnapshot? ForwardedMessageSnapshot { get; set; }
     public ICollection<DirectMessage> Replies { get; set; } = [];
     public ICollection<Attachment> Attachments { get; set; } = [];
 }

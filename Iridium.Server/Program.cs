@@ -120,6 +120,7 @@ await using (var scope = app.Services.CreateAsyncScope())
 await DatabaseCompatibility.EnsureCommunityMediaSchemaAsync(db);
 await DatabaseCompatibility.EnsureCommunityEmojiSchemaAsync(db);
     await DatabaseCompatibility.EnsureAttachmentsTableAsync(db);
+    await DatabaseCompatibility.EnsureMessageForwardingSchemaAsync(db);
 }
 
 if (app.Environment.IsDevelopment())

@@ -51,7 +51,8 @@ public sealed record DirectMessageDto(
     bool CanRetry = false,
     IReadOnlyList<AttachmentDto>? Attachments = null,
     MessageKind Kind = MessageKind.User,
-    Guid? RelatedCallId = null);
+    Guid? RelatedCallId = null,
+    ForwardedMessageSnapshotDto? Forwarded = null);
 
 public sealed record SendDirectMessageRequest(string Content, Guid? ReplyToMessageId, Guid? ClientMessageId = null,
     IReadOnlyList<Guid>? AttachmentIds = null);

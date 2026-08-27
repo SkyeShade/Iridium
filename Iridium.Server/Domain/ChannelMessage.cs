@@ -22,10 +22,12 @@ public sealed class ChannelMessage
     public bool IsDeleted { get; set; }
     public DateTimeOffset? DeletedAt { get; set; }
     public Guid? ReplyToMessageId { get; set; }
+    public Guid? ForwardedMessageSnapshotId { get; set; }
     public string? MentionsJson { get; set; }
     public required CommunityChannel Channel { get; set; }
     public required NodeAccount AuthorAccount { get; set; }
     public ChannelMessage? ReplyToMessage { get; set; }
+    public ForwardedMessageSnapshot? ForwardedMessageSnapshot { get; set; }
     public ICollection<ChannelMessage> Replies { get; set; } = [];
     public ICollection<Attachment> Attachments { get; set; } = [];
 }

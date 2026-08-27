@@ -471,6 +471,34 @@ public sealed class ChannelMessagingSession(
         IReadOnlyList<CommunityMentionInput>? mentions = null, CancellationToken cancellationToken = default) =>
         BeginMessage(content, replyToMessageId, mentions, cancellationToken: cancellationToken).Completion;
 
+    public async Task<ForwardMessagesResultDto> ForwardAsync(ForwardMessageRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        await _lifecycleGate.WaitAsync(cancellationToken);
+        try
+        {
+            var result = await RequireConnection().InvokeAsync<ForwardMessagesResultDto>(
+                ChatHubContract.ForwardMessage, request, cancellationToken);
+            foreach (var message in result.ChannelMessages)
+            {
+                if (CommunityId == message.CommunityId && ChannelId == message.ChannelId) Upsert(message);
+                CacheSafely(_historyCache.UpsertChannelAsync(ChannelScope(message.ChannelId), [message]),
+                    "cache forwarded channel message");
+            }
+            foreach (var message in result.DirectMessages)
+            {
+                if (DirectConversationId == message.ConversationId) UpsertDirect(message);
+                CacheSafely(_historyCache.UpsertDirectAsync(DirectScope(message.ConversationId), [message]),
+                    "cache forwarded Direct Message");
+            }
+            await nodeSession.RefreshDirectConversationsAsync(cancellationToken);
+            NotifyChanged();
+            return result;
+        }
+        finally { _lifecycleGate.Release(); }
+    }
+
     private OutgoingOperation BeginMessage(
         string content, Guid? replyToMessageId, IReadOnlyList<CommunityMentionInput>? mentions,
         IReadOnlyList<AttachmentDto>? attachments = null,

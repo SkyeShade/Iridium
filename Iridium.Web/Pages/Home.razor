@@ -194,7 +194,8 @@ else
                                        FocusRequest="@(_composerFocusConversationId == _selectedDirectConversation.Id ? _composerFocusRequest : 0)"
                                        OnFocusConsumed="ComposerFocusConsumed"
                                        CurrentAccountId="Session.Account!.Id" NodeAuthority="@(Session.SelectedNode!.PublicAuthority)"
-                                       OnEditProfile="OpenProfileEditor" OnEditAvatars="OpenAvatarManager" OnMessage="OpenDirectMessageAsync"/>
+                                       OnEditProfile="OpenProfileEditor" OnEditAvatars="OpenAvatarManager" OnMessage="OpenDirectMessageAsync"
+                                       OnOpenForwardSource="OpenForwardSourceAsync"/>
                 }
                 else if (_homeView == "requests")
                 {
@@ -248,6 +249,7 @@ else
                                  NodeAuthority="@(Session.SelectedNode!.PublicAuthority)" CommunityManagement="CommunityState.Management"
                                  OnEditProfile="OpenProfileEditor" OnEditAvatars="OpenAvatarManager"
                                  OnCommunityProfileChanged="RefreshCommunityProfileAsync" OnMessage="OpenDirectMessageAsync"
+                                 OnOpenForwardSource="OpenForwardSourceAsync"
                                  OnMemberRolesChanged="SetCommunityMemberRolesAsync"
                                  CanManageMessages="@HasSelectedChannelPermission(CommunityPermission.ManageMessages)"
                                  CanSend="@HasSelectedChannelPermission(CommunityPermission.SendMessages)"
@@ -888,6 +890,15 @@ else
         var channel = CommunityState.Channels.FirstOrDefault(value => value.Id == channelId);
         if (channel is null) return;
         await SelectChannelAsync(channel, searchTargetMessageId: result.MessageId);
+    }
+    private async Task OpenForwardSourceAsync(ForwardSourceReferenceDto source)
+    {
+        var community = Session.Communities.FirstOrDefault(value => value.Id == source.CommunityId);
+        if (community is null) return;
+        if (_selectedCommunity?.Id != community.Id) await SelectCommunity(community);
+        var channel = CommunityState.Channels.FirstOrDefault(value => value.Id == source.ChannelId);
+        if (channel is null) return;
+        await SelectChannelAsync(channel, searchTargetMessageId: source.MessageId);
     }
     private Task OpenDirectSearchResultAsync(MessageSearchResultDto result) =>
         _directMessageView?.OpenSearchResultAsync(result) ?? Task.CompletedTask;

@@ -43,7 +43,8 @@ public static class ChannelMessageMapper
             reply,
             DeserializeMentions(message.MentionsJson),
             message.ClientMessageId,
-            Attachments: message.IsDeleted ? [] : message.Attachments.Select(ToAttachment).ToArray());
+            Attachments: message.IsDeleted ? [] : message.Attachments.Select(ToAttachment).ToArray(),
+            Forwarded: message.IsDeleted ? null : ToForwarded(message.ForwardedMessageSnapshot));
     }
 
     internal static AttachmentDto ToAttachment(Attachment value) => new(
@@ -51,6 +52,15 @@ public static class ChannelMessageMapper
         $"api/attachments/{value.Id}", value.Width, value.Height, value.AverageColor, IsSpoiler: value.IsSpoiler,
         PreviewDownloadUrl: value.PreviewObjectKey is null ? null : $"api/attachments/{value.Id}/preview",
         PreviewContentType: value.PreviewContentType, PreviewSizeBytes: value.PreviewSizeBytes);
+
+    internal static ForwardedMessageSnapshotDto? ToForwarded(ForwardedMessageSnapshot? snapshot) => snapshot is null
+        ? null
+        : new(snapshot.Id, snapshot.Content, DeserializeMentions(snapshot.MentionsJson),
+            snapshot.Attachments.Select(value => ToAttachment(value.Attachment)).ToArray(),
+            snapshot.SourceCommunityId is { } communityId && snapshot.SourceChannelId is { } channelId &&
+            snapshot.SourceMessageId is { } messageId
+                ? new ForwardSourceReferenceDto(communityId, channelId, messageId)
+                : null);
 
     private static MessageAvatarSnapshotDto? AvatarSnapshot(ChannelMessage message) =>
         message.AuthorAvatarObjectKeySnapshot is null ? null : new(

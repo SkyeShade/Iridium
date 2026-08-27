@@ -40,6 +40,7 @@
                         OnMemberRolesChanged="OnMemberRolesChanged"
                         OnMention="OnMention"
                         OnReply="OnReply" Edit="Edit" OnDelete="OnDelete" OnFocusReply="FocusMessageAsync"
+                        OnOpenForwardSource="OnOpenForwardSource"
                         EditRequest="@(_editRequestedMessageId == message.Id ? _editRequest : 0)"
                         OnEditingChanged="@(editing => EditingChanged(message.Id, editing))"
                         OnEditCompleted="OnEditCompleted"
@@ -75,6 +76,7 @@
     [Parameter] public EventCallback<Guid> OnDelete { get; set; }
     [Parameter] public EventCallback<Guid> OnRetryLocal { get; set; }
     [Parameter] public EventCallback<Guid> OnRemoveLocal { get; set; }
+    [Parameter] public EventCallback<ForwardSourceReferenceDto> OnOpenForwardSource { get; set; }
     [Parameter] public EventCallback OnLoadOlder { get; set; }
     [Parameter] public EventCallback<MessageViewportState> OnViewportStateChanged { get; set; }
     [Parameter] public EventCallback OnEditCompleted { get; set; }

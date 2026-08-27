@@ -28,6 +28,8 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
     public DbSet<DirectConversationState> DirectConversationStates => Set<DirectConversationState>();
     public DbSet<DirectMessage> DirectMessages => Set<DirectMessage>();
     public DbSet<Attachment> Attachments => Set<Attachment>();
+    public DbSet<ForwardedMessageSnapshot> ForwardedMessageSnapshots => Set<ForwardedMessageSnapshot>();
+    public DbSet<ForwardedMessageAttachment> ForwardedMessageAttachments => Set<ForwardedMessageAttachment>();
     public DbSet<AccountAvatarPreset> AccountAvatarPresets => Set<AccountAvatarPreset>();
     public DbSet<UserProfilePreset> UserProfilePresets => Set<UserProfilePreset>();
     public DbSet<AccountBannerPreset> AccountBannerPresets => Set<AccountBannerPreset>();
@@ -300,6 +302,8 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
         message.HasOne(value => value.ReplyToMessage).WithMany(value => value.Replies)
             .HasForeignKey(value => value.ReplyToMessageId)
             .OnDelete(DeleteBehavior.SetNull);
+        message.HasOne(value => value.ForwardedMessageSnapshot).WithMany(value => value.ChannelMessages)
+            .HasForeignKey(value => value.ForwardedMessageSnapshotId).OnDelete(DeleteBehavior.Restrict);
 
         var mentionNotification = modelBuilder.Entity<CommunityMentionNotification>();
         mentionNotification.HasKey(value => new { value.MessageId, value.AccountId });
@@ -360,6 +364,22 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
             .HasForeignKey(value => value.AuthorAccountId).OnDelete(DeleteBehavior.Restrict);
         directMessage.HasOne(value => value.ReplyToMessage).WithMany(value => value.Replies)
             .HasForeignKey(value => value.ReplyToMessageId).OnDelete(DeleteBehavior.SetNull);
+        directMessage.HasOne(value => value.ForwardedMessageSnapshot).WithMany(value => value.DirectMessages)
+            .HasForeignKey(value => value.ForwardedMessageSnapshotId).OnDelete(DeleteBehavior.Restrict);
+
+        var forwardedSnapshot = modelBuilder.Entity<ForwardedMessageSnapshot>();
+        forwardedSnapshot.HasKey(value => value.Id);
+        forwardedSnapshot.Property(value => value.Content);
+        forwardedSnapshot.Property(value => value.MentionsJson).HasMaxLength(8000);
+        forwardedSnapshot.Property(value => value.CreatedAt)
+            .HasConversion(value => value.UtcTicks, value => new DateTimeOffset(value, TimeSpan.Zero));
+
+        var forwardedAttachment = modelBuilder.Entity<ForwardedMessageAttachment>();
+        forwardedAttachment.HasKey(value => new { value.ForwardedMessageSnapshotId, value.AttachmentId });
+        forwardedAttachment.HasOne(value => value.Snapshot).WithMany(value => value.Attachments)
+            .HasForeignKey(value => value.ForwardedMessageSnapshotId).OnDelete(DeleteBehavior.Cascade);
+        forwardedAttachment.HasOne(value => value.Attachment).WithMany(value => value.ForwardedMessageReferences)
+            .HasForeignKey(value => value.AttachmentId).OnDelete(DeleteBehavior.Restrict);
 
         var attachment = modelBuilder.Entity<Attachment>();
         attachment.HasKey(value => value.Id);

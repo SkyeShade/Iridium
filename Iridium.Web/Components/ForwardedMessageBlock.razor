@@ -1,0 +1,55 @@
+@using Iridium.Client.Core
+@using Iridium.Protocol
+@inject NodeSession Session
+
+<section class="forwarded-block" aria-label="Forwarded message">
+    <div class="forwarded-label"><Icon Name="forward" /><em>Forwarded</em></div>
+    <div class="forwarded-content">
+        @if (!string.IsNullOrWhiteSpace(Snapshot.Content))
+        {
+            <MentionedMessageContent Content="@Snapshot.Content" Mentions="Snapshot.Mentions"
+                                     CommunityId="Snapshot.Source?.CommunityId" />
+            <InviteEmbed Content="@Snapshot.Content" />
+            <MessageExternalEmbeds Content="@Snapshot.Content" />
+        }
+        <MessageAttachments Attachments="Snapshot.Attachments" DeliveryState="MessageDeliveryState.Confirmed" />
+    </div>
+    @if (_sourceLabel is not null && Snapshot.Source is { } source)
+    {
+        <button type="button" class="forward-source" @onclick="() => OnOpenSource.InvokeAsync(source)">
+            @_sourceLabel <span aria-hidden="true">›</span>
+        </button>
+    }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public required ForwardedMessageSnapshotDto Snapshot { get; set; }
+    [Parameter] public EventCallback<ForwardSourceReferenceDto> OnOpenSource { get; set; }
+    private Guid _resolvedSnapshotId;
+    private string? _sourceLabel;
+
+    protected override void OnParametersSet()
+    {
+        if (_resolvedSnapshotId == Snapshot.Id) return;
+        _resolvedSnapshotId = Snapshot.Id;
+        _sourceLabel = null;
+        _ = ResolveSourceAsync(Snapshot.Id, Snapshot.Source);
+    }
+
+    private async Task ResolveSourceAsync(Guid snapshotId, ForwardSourceReferenceDto? source)
+    {
+        if (source is null || Session.Communities.FirstOrDefault(value => value.Id == source.CommunityId) is not { } community)
+            return;
+        try
+        {
+            var structure = await Session.GetCommunityStructureAsync(source.CommunityId);
+            if (_resolvedSnapshotId != snapshotId) return;
+            var channel = structure.Channels.FirstOrDefault(value => value.Id == source.ChannelId &&
+                (value.EffectivePermissions & CommunityPermission.ViewChannels) != 0);
+            if (channel is null) return;
+            _sourceLabel = $"#{channel.Name} · {community.Name}";
+            await InvokeAsync(StateHasChanged);
+        }
+        catch { }
+    }
+}

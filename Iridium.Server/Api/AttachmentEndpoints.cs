@@ -176,13 +176,32 @@ public static class AttachmentEndpoints
         .SingleOrDefaultAsync(value => value.Id == attachmentId, cancellationToken);
 
     private static async Task<bool> CanAccessAsync(Attachment attachment, Guid accountId,
-        CommunityAuthorizationService authorization, IridiumDbContext db) =>
-        attachment.ChannelMessage is { } channelMessage
-            ? await authorization.HasChannelPermissionAsync(channelMessage.CommunityId, channelMessage.ChannelId,
-                accountId, CommunityPermission.ViewChannels, db)
-            : attachment.DirectMessage?.Conversation is { } conversation
-                ? conversation.ParticipantAAccountId == accountId || conversation.ParticipantBAccountId == accountId
-                : attachment.UploaderAccountId == accountId;
+        CommunityAuthorizationService authorization, IridiumDbContext db)
+    {
+        if (attachment.ChannelMessage is { } channelMessage &&
+            await authorization.HasChannelPermissionAsync(channelMessage.CommunityId, channelMessage.ChannelId,
+                accountId, CommunityPermission.ViewChannels, db)) return true;
+        if (attachment.DirectMessage?.Conversation is { } conversation &&
+            (conversation.ParticipantAAccountId == accountId || conversation.ParticipantBAccountId == accountId))
+            return true;
+
+        var forwardedDirectAccess = await db.ForwardedMessageAttachments.AsNoTracking()
+            .Where(value => value.AttachmentId == attachment.Id)
+            .AnyAsync(value => value.Snapshot.DirectMessages.Any(message => !message.IsDeleted &&
+                (message.Conversation.ParticipantAAccountId == accountId ||
+                 message.Conversation.ParticipantBAccountId == accountId)));
+        if (forwardedDirectAccess) return true;
+        var forwardedChannels = await db.ForwardedMessageAttachments.AsNoTracking()
+            .Where(value => value.AttachmentId == attachment.Id)
+            .SelectMany(value => value.Snapshot.ChannelMessages)
+            .Where(value => !value.IsDeleted)
+            .Select(value => new { value.CommunityId, value.ChannelId }).Distinct().ToListAsync();
+        foreach (var destination in forwardedChannels)
+            if (await authorization.HasChannelPermissionAsync(destination.CommunityId, destination.ChannelId,
+                    accountId, CommunityPermission.ViewChannels, db)) return true;
+        return attachment.UploaderAccountId == accountId && attachment.ChannelMessageId is null &&
+               attachment.DirectMessageId is null;
+    }
 
     private static int? ValidDimension(string value) =>
         int.TryParse(value, out var dimension) && dimension is > 0 and <= 100_000 ? dimension : null;

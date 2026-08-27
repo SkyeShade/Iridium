@@ -71,6 +71,10 @@ public sealed class NodeSession(
         CancellationToken cancellationToken = default) =>
         AuthorizedClient.GetAttachmentPlaybackAccessAsync(attachmentId, cancellationToken);
 
+    public Task<CommunityStructureDto> GetCommunityStructureAsync(Guid communityId,
+        CancellationToken cancellationToken = default) =>
+        AuthorizedClient.GetCommunityStructureAsync(communityId, cancellationToken);
+
     public Task<AccountAvatarPresetsDto> GetAvatarPresetsAsync(CancellationToken cancellationToken = default) =>
         AuthorizedClient.GetAvatarPresetsAsync(cancellationToken);
 

@@ -1,0 +1,172 @@
+@using Iridium.Client.Core
+@using Iridium.Protocol
+@inject NodeSession Session
+@inject ChannelMessagingSession Messaging
+
+<ModalShell Title="Forward To" Size="compact" OnClose="CloseAsync">
+    <div class="forward-dialog">
+        <header><h2>Forward To</h2><p>Select where you want to share this message.</p></header>
+        <label class="forward-search">
+            <span class="sr-only">Search destinations</span>
+            <Icon Name="search" />
+            <input @ref="_searchInput" type="search" placeholder="Search DMs and channels" autocomplete="off"
+                   @bind="_search" @bind:event="oninput" />
+        </label>
+        <div class="selection-count" aria-live="polite">@_selected.Count/@MessageForwardingLimits.MaximumDestinations selected</div>
+        <div class="destination-list" role="group" aria-label="Forwarding destinations">
+            @if (_loading)
+            {
+                <p class="destination-status">Loading destinations…</p>
+            }
+            else if (FilteredDestinations.Count == 0)
+            {
+                <p class="destination-status">No matching destinations.</p>
+            }
+            else
+            {
+                @foreach (var destination in FilteredDestinations)
+                {
+                    var selected = _selected.Contains(destination.Key);
+                    var disabled = !selected && _selected.Count >= MessageForwardingLimits.MaximumDestinations;
+                    <label class="destination-row @(selected ? "selected" : null) @(disabled ? "disabled" : null)">
+                        @if (destination.Kind == MessageLocationKind.DirectConversation)
+                        {
+                            <ProfileAvatar AccountId="destination.AccountId!.Value" DisplayName="@destination.DisplayName"
+                                           Size="small" BadgeMode="AvatarBadgeMode.None" Surface="base" />
+                        }
+                        else
+                        {
+                            <span class="destination-icon"><Icon Name="channel" /></span>
+                        }
+                        <span class="destination-copy"><strong>@destination.DisplayName</strong>
+                            <small>@destination.ContextName</small></span>
+                        <span class="destination-selection">
+                            <input class="destination-checkbox" type="checkbox" checked="@selected" disabled="@disabled"
+                                   aria-label="@DestinationLabel(destination)"
+                                   @onchange="args => Toggle(destination, args.Value is true)" />
+                            <span class="destination-check" aria-hidden="true"><Icon Name="check" /></span>
+                        </span>
+                    </label>
+                }
+            }
+        </div>
+        <label class="forward-note"><span>Add an optional message…</span>
+            <textarea rows="2" maxlength="4000" placeholder="Add an optional message…" @bind="_note"></textarea>
+        </label>
+        @if (!string.IsNullOrWhiteSpace(_error)) { <p class="forward-error" role="alert">@_error</p> }
+        <footer><button type="button" class="secondary" @onclick="CloseAsync" disabled="@_sending">Cancel</button>
+            <button type="button" class="primary" @onclick="SendAsync" disabled="@(_sending || _selected.Count == 0)">
+                @(_sending ? "Sending…" : "Send")
+            </button></footer>
+    </div>
+</ModalShell>
+
+@code {
+    [Parameter, EditorRequired] public required ForwardMessageSourceDto Source { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    private readonly List<Destination> _destinations = [];
+    private readonly HashSet<string> _selected = [];
+    private ElementReference _searchInput;
+    private string _search = string.Empty;
+    private string _note = string.Empty;
+    private string? _error;
+    private bool _loading = true;
+    private bool _sending;
+
+    private IReadOnlyList<Destination> FilteredDestinations
+    {
+        get
+        {
+            var query = _search.Trim();
+            if (query.Length == 0) return _destinations;
+            return _destinations.Select((value, order) => new
+                {
+                    Value = value, Order = order,
+                    Rank = MatchRank(value, query)
+                }).Where(value => value.Rank < 2)
+                .OrderBy(value => value.Rank).ThenBy(value => value.Order)
+                .Select(value => value.Value).ToArray();
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            foreach (var conversation in Session.DirectConversations.OrderByDescending(value => value.LastMessageAt))
+                _destinations.Add(new(MessageLocationKind.DirectConversation, conversation.Id,
+                    conversation.OtherParticipant.DisplayName,
+                    IridiumIdentity.Format(conversation.OtherParticipant.Username,
+                        Session.SelectedNode?.PublicAuthority ?? string.Empty),
+                    conversation.OtherParticipant.AccountId, conversation.OtherParticipant.Username,
+                    null, null, conversation.Id));
+            foreach (var community in Session.Communities)
+            {
+                try
+                {
+                    var structure = await Session.GetCommunityStructureAsync(community.Id);
+                    foreach (var channel in structure.Channels.Where(value => value.Kind == CommunityChannelKind.Text &&
+                                 Has(value.EffectivePermissions, CommunityPermission.ViewChannels) &&
+                                 Has(value.EffectivePermissions, CommunityPermission.SendMessages))
+                             .OrderBy(value => value.Position).ThenBy(value => value.Name))
+                        _destinations.Add(new(MessageLocationKind.CommunityChannel, channel.Id, $"# {channel.Name}",
+                            community.Name, null, null, community.Id, channel.Id, null));
+                }
+                catch { }
+            }
+        }
+        catch (Exception exception) { _error = exception.GetBaseException().Message; }
+        finally { _loading = false; }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender) await _searchInput.FocusAsync();
+    }
+
+    private static int MatchRank(Destination destination, string query)
+    {
+        var values = new[] { destination.DisplayName, destination.ContextName, destination.Username };
+        if (values.Any(value => value?.StartsWith(query, StringComparison.OrdinalIgnoreCase) == true)) return 0;
+        return values.Any(value => value?.Contains(query, StringComparison.OrdinalIgnoreCase) == true) ? 1 : 2;
+    }
+
+    private static bool Has(CommunityPermission available, CommunityPermission required) =>
+        (available & CommunityPermission.Administrator) != 0 || (available & required) == required;
+
+    private void Toggle(Destination destination, bool selected)
+    {
+        if (selected)
+        {
+            if (_selected.Count < MessageForwardingLimits.MaximumDestinations) _selected.Add(destination.Key);
+        }
+        else _selected.Remove(destination.Key);
+    }
+
+    private async Task SendAsync()
+    {
+        if (_sending || _selected.Count == 0) return;
+        _sending = true;
+        _error = null;
+        try
+        {
+            var destinations = _destinations.Where(value => _selected.Contains(value.Key))
+                .Select(value => new ForwardDestinationSelectionDto(value.Kind, value.CommunityId,
+                    value.ChannelId, value.ConversationId)).ToArray();
+            await Messaging.ForwardAsync(new(Source, destinations, _note));
+            await CloseAsync();
+        }
+        catch (Exception exception) { _error = exception.GetBaseException().Message; }
+        finally { _sending = false; }
+    }
+
+    private static string DestinationLabel(Destination value) =>
+        string.IsNullOrWhiteSpace(value.ContextName) ? value.DisplayName : $"{value.DisplayName}, {value.ContextName}";
+    private Task CloseAsync() => OnClose.InvokeAsync();
+
+    private sealed record Destination(MessageLocationKind Kind, Guid Id, string DisplayName, string? ContextName,
+        Guid? AccountId, string? Username, Guid? CommunityId, Guid? ChannelId, Guid? ConversationId)
+    {
+        public string Key => $"{Kind}:{Id:N}";
+    }
+}

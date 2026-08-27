@@ -134,6 +134,7 @@ public static class MessageEndpoints
             .Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
             .Include(value => value.ReplyToMessage).ThenInclude(value => value!.Attachments)
             .Include(value => value.Attachments)
+            .IncludeForwardedSnapshot()
             .OrderByDescending(value => value.CreatedAt)
             .ThenByDescending(value => value.Id)
             .Take(take + 1)
@@ -156,6 +157,7 @@ public static class MessageEndpoints
             .Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
             .Include(value => value.ReplyToMessage).ThenInclude(value => value!.Attachments)
             .Include(value => value.Attachments)
+            .IncludeForwardedSnapshot()
             .SingleOrDefaultAsync(value => value.Id == targetId && value.CommunityId == communityId &&
                                            value.ChannelId == channelId && !value.IsDeleted);
         if (target is null) return Results.NotFound(new { message = "Message not found in this channel." });
@@ -167,6 +169,7 @@ public static class MessageEndpoints
             .Include(value => value.AuthorAccount).Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
             .Include(value => value.ReplyToMessage).ThenInclude(value => value!.Attachments)
             .Include(value => value.Attachments)
+            .IncludeForwardedSnapshot()
             .OrderByDescending(value => value.CreatedAt).ThenByDescending(value => value.Id).Take(half + 1).ToListAsync();
         var hasOlder = before.Count > half;
         if (hasOlder) before.RemoveAt(before.Count - 1);
@@ -177,6 +180,7 @@ public static class MessageEndpoints
             .Include(value => value.AuthorAccount).Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
             .Include(value => value.ReplyToMessage).ThenInclude(value => value!.Attachments)
             .Include(value => value.Attachments)
+            .IncludeForwardedSnapshot()
             .OrderBy(value => value.CreatedAt).ThenBy(value => value.Id).Take(half).ToListAsync();
         var entities = before.OrderBy(value => value.CreatedAt).ThenBy(value => value.Id).Append(target).Concat(after);
         var messages = entities.Select(ChannelMessageMapper.ToDto).ToList();
@@ -202,11 +206,13 @@ public static class MessageEndpoints
         var take = Math.Clamp(limit ?? MessageHistoryDefaults.SearchPageSize, 1, MessageHistoryDefaults.MaximumPageSize);
         var query = db.ChannelMessages.AsNoTracking()
             .Where(value => value.CommunityId == communityId && accessibleChannelIds.Contains(value.ChannelId) && !value.IsDeleted)
-            .Include(value => value.AuthorAccount).Include(value => value.Channel).AsQueryable();
+            .Include(value => value.AuthorAccount).Include(value => value.Channel)
+            .IncludeForwardedSnapshot().AsQueryable();
         if (!string.IsNullOrWhiteSpace(q))
         {
             var text = q.ToLower();
-            query = query.Where(value => value.Content.ToLower().Contains(text));
+            query = query.Where(value => value.Content.ToLower().Contains(text) ||
+                value.ForwardedMessageSnapshot != null && value.ForwardedMessageSnapshot.Content.ToLower().Contains(text));
         }
         if (!string.IsNullOrWhiteSpace(from))
         {
@@ -235,7 +241,7 @@ public static class MessageEndpoints
                 AvatarRevision: value.AuthorAvatarRevisionSnapshot ?? value.AuthorAccount.AvatarRevision,
                 AvatarSnapshotMessageId: value.AuthorAvatarObjectKeySnapshot is null ? null : value.Id,
                 HasHistoricalSnapshot: value.AuthorDisplayNameSnapshot is not null),
-            value.Content, value.CreatedAt)).ToArray();
+            SearchContent(value.Content, value.ForwardedMessageSnapshot?.Content), value.CreatedAt)).ToArray();
         var next = results.Length == 0 ? null : MessageHistoryCursor.Encode(results[^1].CreatedAt, results[^1].MessageId);
         return Results.Ok(new MessageSearchPageDto(results, next, hasMore));
     }
@@ -255,11 +261,13 @@ public static class MessageEndpoints
         var take = Math.Clamp(request.Limit, 1, MessageHistoryDefaults.MaximumPageSize);
         var query = db.ChannelMessages.AsNoTracking()
             .Where(value => value.CommunityId == communityId && accessibleChannelIds.Contains(value.ChannelId) && !value.IsDeleted)
-            .Include(value => value.AuthorAccount).Include(value => value.Channel).AsQueryable();
+            .Include(value => value.AuthorAccount).Include(value => value.Channel)
+            .IncludeForwardedSnapshot().AsQueryable();
         if (!string.IsNullOrWhiteSpace(criteria.Text))
         {
             var text = criteria.Text.ToLower();
-            query = query.Where(value => value.Content.ToLower().Contains(text));
+            query = query.Where(value => value.Content.ToLower().Contains(text) ||
+                value.ForwardedMessageSnapshot != null && value.ForwardedMessageSnapshot.Content.ToLower().Contains(text));
         }
         if (criteria.FromAccountId is { } authorId) query = query.Where(value => value.AuthorAccountId == authorId);
         if (criteria.ChannelId is { } channelId) query = query.Where(value => value.ChannelId == channelId);
@@ -298,10 +306,14 @@ public static class MessageEndpoints
                 AvatarRevision: value.AuthorAvatarRevisionSnapshot ?? value.AuthorAccount.AvatarRevision,
                 AvatarSnapshotMessageId: value.AuthorAvatarObjectKeySnapshot is null ? null : value.Id,
                 HasHistoricalSnapshot: value.AuthorDisplayNameSnapshot is not null),
-            value.Content, value.CreatedAt)).ToArray();
+            SearchContent(value.Content, value.ForwardedMessageSnapshot?.Content), value.CreatedAt)).ToArray();
         var next = results.Length == 0 ? null : MessageHistoryCursor.Encode(results[^1].CreatedAt, results[^1].MessageId);
         return Results.Ok(new MessageSearchPageDto(results, next, hasMore));
     }
+
+    private static string SearchContent(string note, string? forwarded) => string.IsNullOrWhiteSpace(forwarded)
+        ? note
+        : string.IsNullOrWhiteSpace(note) ? forwarded : $"{note}\n{forwarded}";
 
     private static async Task<List<Guid>> AccessibleTextChannelIdsAsync(Guid communityId, Guid accountId,
         IridiumDbContext db, CommunityAuthorizationService authorization)

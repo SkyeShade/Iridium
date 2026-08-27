@@ -63,7 +63,7 @@
                 <div class="edit-help">
                     <span>escape to </span><button type="button" @onclick="CancelEdit">cancel</button>
                     <span class="separator">•</span><span>enter to </span>
-                    <button type="button" disabled="@(_savingEdit || string.IsNullOrWhiteSpace(_editContent))" @onclick="SaveEditAsync">save</button>
+                    <button type="button" disabled="@(_savingEdit || (Message.Forwarded is null && string.IsNullOrWhiteSpace(_editContent)))" @onclick="SaveEditAsync">save</button>
                 </div>
             }
             else
@@ -73,6 +73,10 @@
                 @if (Message.EditedAt is not null) { <span class="edited" title="Edited @Message.EditedAt.Value.ToLocalTime().ToString("g")">(edited)</span> }
                 <InviteEmbed Content="@Message.Content" />
                 <MessageExternalEmbeds Content="@Message.Content" />
+                @if (Message.Forwarded is { } forwarded)
+                {
+                    <ForwardedMessageBlock Snapshot="forwarded" OnOpenSource="OnOpenForwardSource" />
+                }
                 <MessageAttachments Attachments="Message.Attachments" DeliveryState="Message.DeliveryState" />
             }
             @if (Message.DeliveryState == MessageDeliveryState.Failed)
@@ -103,12 +107,17 @@
         {
             <div class="message-menu" @onpointerenter="MenuEntered" @onpointerleave="MenuLeft" @onclick:stopPropagation="true">
                 <button @onclick="ReplyFromMenuAsync"><Icon Name="reply" /> Reply</button>
+                <button @onclick="ForwardFromMenu"><Icon Name="forward" /> Forward</button>
                 @if (CanEdit) { <button @onclick="EditFromMenu"><Icon Name="edit" /> Edit</button> }
                 @if (CanDelete) { <button class="destructive" @onclick="DeleteAsync"><Icon Name="trash" /> Delete Message</button> }
             </div>
         }
     }
 </article>
+@if (_forwardOpen)
+{
+    <ForwardMessageModal Source="ForwardSource" OnClose="CloseForward" />
+}
 @if (_profile is { } profile)
 {
     <AnchoredProfileCard AccountId="profile.AccountId" CurrentAccountId="CurrentAccountId" Username="@profile.Username"
@@ -153,6 +162,7 @@
     [Parameter] public EventCallback<Guid> OnRetryLocal { get; set; }
     [Parameter] public EventCallback<Guid> OnRemoveLocal { get; set; }
     [Parameter] public EventCallback<Guid> OnFocusReply { get; set; }
+    [Parameter] public EventCallback<ForwardSourceReferenceDto> OnOpenForwardSource { get; set; }
     [Parameter] public long EditRequest { get; set; }
     [Parameter] public EventCallback<bool> OnEditingChanged { get; set; }
     [Parameter] public EventCallback OnEditCompleted { get; set; }
@@ -162,6 +172,7 @@
     private CancellationTokenSource? _menuClose;
     private bool _editing;
     private bool _savingEdit;
+    private bool _forwardOpen;
     private string _editContent = string.Empty;
     private IJSObjectReference? _module;
     private ResolvedProfileDto? _profile;
@@ -206,6 +217,11 @@
     }
     private Task ReplyAsync() => OnReply.InvokeAsync(Message);
     private Task ReplyFromMenuAsync() { MessageMenus.Close(Message.Id); return ReplyAsync(); }
+    private void ForwardFromMenu() { MessageMenus.Close(Message.Id); _forwardOpen = true; }
+    private void CloseForward() => _forwardOpen = false;
+    private ForwardMessageSourceDto ForwardSource => Message.CommunityId == Guid.Empty
+        ? new(MessageLocationKind.DirectConversation, Message.Id, ConversationId: Message.ChannelId)
+        : new(MessageLocationKind.CommunityChannel, Message.Id, Message.CommunityId, Message.ChannelId);
     private void ToggleMenu() { CancelMenuClose(); MessageMenus.Toggle(Message.Id); }
     private readonly List<CommunityEmojiDraftReference> _editEmojiReferences = [];
     private readonly List<StandardEmojiDraftReference> _editStandardEmojiReferences = [];
@@ -259,7 +275,7 @@
 
     private async Task SaveEditAsync()
     {
-        if (_savingEdit || string.IsNullOrWhiteSpace(_editContent)) return;
+        if (_savingEdit || (Message.Forwarded is null && string.IsNullOrWhiteSpace(_editContent))) return;
         var content = CommunityEmojiDraftCodec.SerializeDocument(_editContent.TrimEnd(), _editEmojiReferences,
             _editStandardEmojiReferences);
         if (string.Equals(content, Message.Content, StringComparison.Ordinal))
