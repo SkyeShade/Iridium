@@ -1,7 +1,7 @@
 @implements IAsyncDisposable
 @inject IJSRuntime JS
 
-<div class="mobile-message-action-backdrop" @ref="_backdrop" @onclick="DismissAsync">
+<div class="mobile-message-action-backdrop" data-swipe-nav-ignore @ref="_backdrop" @onclick="DismissAsync">
     <section class="mobile-message-action-sheet" @ref="_sheet" role="dialog" aria-modal="true"
              aria-label="Message actions" tabindex="-1" @onclick:stopPropagation="true">
         <div class="sheet-drag-region" @ref="_dragHandle" aria-hidden="true">

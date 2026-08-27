@@ -82,19 +82,19 @@ public sealed class NotificationResponsiveUiTests
         var shell = File.ReadAllText(Path.Combine(root, "Iridium.UI", "ApplicationShell.razor"));
         var css = File.ReadAllText(Path.Combine(root, "Iridium.UI", "ApplicationShell.razor.css"));
 
-        Assert.Contains("const completionRatio = 0.5", swipe);
-        Assert.Contains("const directionDeadZone = 14", swipe);
+        Assert.Contains("mobileConversationSwipeCompletionRatio = .33", swipe);
+        Assert.Contains("mobileConversationSwipeSlop = 10", swipe);
         Assert.Contains("const dominance = 1.2", swipe);
         Assert.Contains("return 'horizontal'", swipe);
         Assert.Contains("return 'vertical'", swipe);
         Assert.Contains("classifyMobileSwipeDirection(dx, dy)", swipe);
         Assert.Contains("setPointerCapture(event.pointerId)", swipe);
-        Assert.Contains("releasePointerCapture(event.pointerId)", swipe);
+        Assert.Contains("releasePointerCapture(pointerId)", swipe);
         Assert.Contains("pointerType !== 'touch'", swipe);
         Assert.Contains("textarea", swipe);
         Assert.Contains("video", swipe);
-        Assert.Contains("dx > width * completionRatio", swipe);
-        Assert.Contains("Math.min(width, Math.max(0, dx))", swipe);
+        Assert.Contains("mobileConversationSwipeDistance(width)", swipe);
+        Assert.Contains("Math.min(width, Math.max(0, currentX - startX))", swipe);
         Assert.Contains("MobileConversationSwipeBackAsync", shell);
         Assert.Contains("? OnMobileBack.InvokeAsync()", shell);
         Assert.Contains("width:3rem; height:3rem", css);

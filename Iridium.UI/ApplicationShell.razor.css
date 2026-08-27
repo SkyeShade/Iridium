@@ -35,10 +35,12 @@
     .desktop-player-panel-slot{display:none}
     .mobile-profile-panel-slot{display:block;grid-column:1 / -1;grid-row:2;min-width:0;padding-bottom:var(--iridium-mobile-safe-bottom,env(safe-area-inset-bottom,0px));background:linear-gradient(90deg,var(--bg-deep) 0 4.25rem,var(--bg-sidebar) 4.25rem);border-right:1px solid var(--border-subtle)}
     .sidebar-body { overflow:hidden; }
-    .main-content { grid-column:1 / -1;grid-row:1 / -1;position:absolute; z-index:30; inset:0; width:100%;min-width:100%;max-width:none;box-sizing:border-box;display:flex; flex-direction:column; overflow:hidden; transform:translateX(100%); visibility:hidden; pointer-events:none; touch-action:pan-y; will-change:transform; background:var(--bg-base);transition:transform 170ms cubic-bezier(.2,.75,.25,1),visibility 0s linear 170ms; }
+    .main-content { grid-column:1 / -1;grid-row:1 / -1;position:absolute; z-index:30; inset:0; width:100%;min-width:100%;max-width:none;box-sizing:border-box;display:flex; flex-direction:column; overflow:hidden; transform:translateX(100%); visibility:hidden; pointer-events:none; touch-action:pan-y; background:var(--bg-base);transition:transform 170ms cubic-bezier(.2,.75,.25,1),visibility 0s linear 170ms; }
     .has-mobile-call-bar .main-content { top:3rem; }
     .main-content-slot { display:block; flex:1; min-height:0; overflow:hidden; }
     .mobile-conversation .main-content,.mobile-context .main-content { transform:translateX(0); visibility:visible; pointer-events:auto;transition:transform 170ms cubic-bezier(.2,.75,.25,1),visibility 0s; }
+    .mobile-swipe-revealing .mobile-navigation-panel{transform:translate3d(0,0,0);visibility:visible;pointer-events:none;transition:none}
+    .mobile-swipe-revealing .main-content{will-change:transform;box-shadow:-12px 0 28px #0007}
     .mobile-conversation-header { flex:0 0 3.25rem; display:grid; grid-template-columns:3.1rem minmax(0,1fr) 2.75rem; align-items:center; gap:.35rem; padding:0 .35rem; border-bottom:1px solid var(--border-subtle); background:var(--bg-base); box-shadow:0 1px 4px #0003; }
     .mobile-conversation-header.compact-dm { grid-template-columns:3.1rem minmax(0,1fr) 2.75rem 2.75rem; gap:.2rem; }
     .mobile-conversation-header strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }

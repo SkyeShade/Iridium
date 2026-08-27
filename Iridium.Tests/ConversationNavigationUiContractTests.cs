@@ -126,10 +126,40 @@ public sealed class ConversationNavigationUiContractTests
         Assert.Contains("state.presentationRevision++", swipe);
         Assert.Contains("state.cancelAnimation?.()", swipe);
         Assert.Contains("if (presentationRevision !== state.presentationRevision) return", swipe);
-        Assert.Contains("clearSwipeStyles(element)", swipe);
+        Assert.Contains("clearSwipeStyles(element, shell)", swipe);
+        Assert.Contains("MobileConversationSwipeBackAsync()", shell);
+        Assert.Contains("? OnMobileBack.InvokeAsync()", shell);
+        Assert.Contains("requestAnimationFrame(writeDragVisual)", swipe);
+        Assert.Contains("translate3d(${state.renderedX}px,0,0)", swipe);
+        Assert.Contains("mobile-swipe-revealing", styles);
+        Assert.Contains("data-swipe-nav-ignore", swipe);
         Assert.Contains("@inject MobilePanelNavigationState MobilePanels", home);
         Assert.Contains("private void ShowMobileConversation(string source)", home);
         Assert.Contains("MobilePanels.ShowConversation(source)", home);
+    }
+
+    [Fact]
+    public void ClaimedMobileSwipeOwnsItsPointerUntilARealTermination()
+    {
+        var shell = Source("Iridium.UI", "ApplicationShell.razor");
+        var styles = Source("Iridium.UI", "ApplicationShell.razor.css");
+        var swipe = Source("Iridium.UI", "wwwroot", "js", "mobileConversationSwipe.js");
+        var chat = Source("Iridium.Web", "wwwroot", "js", "chat.js");
+
+        Assert.Contains("EnableMobilePanelDiagnostics", shell);
+        Assert.Contains("touch-action:pan-y", styles);
+        Assert.Contains("MobileConversationSwipePhase", swipe);
+        Assert.Contains("state.phase = MobileConversationSwipePhase.draggingHorizontal", swipe);
+        Assert.Contains("hasPointerCapture: element.hasPointerCapture?.(event.pointerId) === true", swipe);
+        Assert.Contains("gotpointercapture", swipe);
+        Assert.Contains("lostpointercapture", swipe);
+        Assert.Contains("'bottom-sheet-cancel-event'", swipe);
+        Assert.Contains("reason: 'active-horizontal-capture'", swipe);
+        Assert.Contains("'iridium-mobile-navigation-swipe-claimed'", swipe);
+        Assert.Contains("gesture.cancelPointer(event.detail?.pointerId)", chat);
+        Assert.DoesNotContain("addEventListener('pointerleave'", swipe);
+        Assert.DoesNotContain("addEventListener('scroll'", Slice(swipe,
+            "export function wireMobileConversationSwipe", "function hasHorizontalScrollTarget"));
     }
 
     [Fact]

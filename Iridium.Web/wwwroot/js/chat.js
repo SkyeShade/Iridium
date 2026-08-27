@@ -983,6 +983,9 @@ function wireTouchLongPress(root, { threshold, targetSelector, activeClass, invo
     root.addEventListener("click", click, true);
     root.addEventListener("contextmenu", contextmenu);
     return {
+        cancelPointer(pointerId) {
+            if (candidate?.pointerId === pointerId) clearCandidate();
+        },
         dispose() {
             clearCandidate();
             root.removeEventListener("pointerdown", down);
@@ -1021,6 +1024,7 @@ export function wireMessageLongPress(container, dotNetReference) {
         invoke: async target => {
             await dotNetReference.invokeMethodAsync(
                 "OpenMessageActionsFromLongPressAsync", target.dataset.messageId);
+            window.dispatchEvent(new CustomEvent("iridium-mobile-message-actions-open"));
             menuOpened = true;
         }
     });
@@ -1029,11 +1033,14 @@ export function wireMessageLongPress(container, dotNetReference) {
         menuOpened = false;
         dotNetReference.invokeMethodAsync("CloseMessageActionsFromLongPressAsync");
     };
+    const navigationSwipeClaimed = event => gesture.cancelPointer(event.detail?.pointerId);
     window.addEventListener("keydown", keydown);
+    window.addEventListener("iridium-mobile-navigation-swipe-claimed", navigationSwipeClaimed);
     messageLongPressHandlers.set(container, {
         dispose() {
             gesture.dispose();
             window.removeEventListener("keydown", keydown);
+            window.removeEventListener("iridium-mobile-navigation-swipe-claimed", navigationSwipeClaimed);
         }
     });
 }
