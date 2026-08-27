@@ -31,7 +31,7 @@ public static class AvatarPresetEndpoints
         presets.MapPatch("/{presetId:guid}", UpdateCropAsync);
         presets.MapPut("/active", SetActiveAsync);
         presets.MapDelete("/{presetId:guid}", DeleteAsync);
-        endpoints.MapGet("/api/profiles/{accountId:guid}/avatar", DownloadActiveAsync);
+        endpoints.MapGet("/api/profiles/{accountId:guid}/avatar", DownloadBaseAsync);
         endpoints.MapGet("/api/profiles/{accountId:guid}/avatar/{presetId:guid}", DownloadPresetAsync);
         endpoints.MapGet("/api/profiles/{accountId:guid}/avatar/{presetId:guid}/metadata", GetPresetMetadataAsync);
         endpoints.MapGet("/api/profiles/{accountId:guid}/avatar-metadata", GetMetadataAsync);
@@ -184,7 +184,8 @@ public static class AvatarPresetEndpoints
 
     private static async Task<IResult> SetActiveAsync(SetActiveAvatarPresetRequest request, HttpContext context,
         IridiumDbContext db,
-        SessionService sessions, ProfileRealtimePublisher realtime, CancellationToken cancellationToken)
+        SessionService sessions, ProfileRealtimePublisher realtime, CommunityRealtimePublisher communityRealtime,
+        CancellationToken cancellationToken)
     {
         var session = await sessions.GetAsync(context, db);
         if (session is null) return Results.Unauthorized();
@@ -197,6 +198,10 @@ public static class AvatarPresetEndpoints
         session.Account.AvatarRevision = NextRevision(session.Account.AvatarRevision);
         await db.SaveChangesAsync(cancellationToken);
         await realtime.PublishAsync(session.AccountId, session.Account.AvatarRevision, db, cancellationToken);
+        var communityIds = await db.CommunityMembers.AsNoTracking().Where(value => value.AccountId == session.AccountId)
+            .Select(value => value.CommunityId).ToArrayAsync(cancellationToken);
+        foreach (var communityId in communityIds)
+            await communityRealtime.PublishAsync(communityId, "member-profile-updated", db, cancellationToken);
         return Results.NoContent();
     }
 
@@ -245,10 +250,8 @@ public static class AvatarPresetEndpoints
                 .Include(value => value.ProfilePreset).ThenInclude(value => value!.AvatarPreset)
                 .SingleAsync(value => value.CommunityId == communityId && value.AccountId == session.AccountId,
                     cancellationToken);
-            var profile = ChannelMessageMapper.ValidPreset(member);
             var voiceChanges = voiceRooms.UpdateDisplayProfile(communityId, session.AccountId,
-                ChannelMessageMapper.ResolveDisplayName(member), profile?.AvatarPresetId,
-                profile?.AvatarPreset?.Revision ?? member.Account.AvatarRevision);
+                member.Account.DisplayName, null, member.Account.AvatarRevision);
             if (voiceChanges.Count > 0)
             {
                 var recipients = await db.CommunityMembers.AsNoTracking()
@@ -263,27 +266,27 @@ public static class AvatarPresetEndpoints
         return Results.NoContent();
     }
 
-    private static async Task<IResult> DownloadActiveAsync(Guid accountId, HttpContext context,
+    private static async Task<IResult> DownloadBaseAsync(Guid accountId, HttpContext context,
         IridiumDbContext db, IAttachmentStorage storage, CancellationToken cancellationToken)
     {
-        var activeId = await db.Accounts.AsNoTracking().Where(value => value.Id == accountId)
-            .Select(value => value.ActiveAvatarPresetId ?? value.BaseAvatarPresetId).SingleOrDefaultAsync(cancellationToken);
-        if (activeId is null) return Results.NotFound();
-        return await DownloadPresetCoreAsync(accountId, activeId.Value, context, db, storage, cancellationToken);
+        var baseId = await db.Accounts.AsNoTracking().Where(value => value.Id == accountId)
+            .Select(value => value.BaseAvatarPresetId).SingleOrDefaultAsync(cancellationToken);
+        if (baseId is null) return Results.NotFound();
+        return await DownloadPresetCoreAsync(accountId, baseId.Value, context, db, storage, cancellationToken);
     }
 
     private static async Task<IResult> GetMetadataAsync(Guid accountId, HttpContext context, IridiumDbContext db,
         CancellationToken cancellationToken)
     {
         var account = await db.Accounts.AsNoTracking().Where(value => value.Id == accountId)
-            .Select(value => new { EffectiveAvatarPresetId = value.ActiveAvatarPresetId ?? value.BaseAvatarPresetId,
+            .Select(value => new { value.BaseAvatarPresetId,
                 value.AvatarRevision })
             .SingleOrDefaultAsync(cancellationToken);
         if (account is null) return Results.NotFound();
-        if (account.EffectiveAvatarPresetId is not { } activeId)
+        if (account.BaseAvatarPresetId is not { } baseId)
             return Results.Ok(new ProfileAvatarDto(false, null, account.AvatarRevision));
         var preset = await db.AccountAvatarPresets.AsNoTracking().SingleOrDefaultAsync(value =>
-            value.Id == activeId && value.AccountId == accountId, cancellationToken);
+            value.Id == baseId && value.AccountId == accountId, cancellationToken);
         if (preset is null) return Results.Ok(new ProfileAvatarDto(false, null, account.AvatarRevision));
         var url = $"{context.Request.Scheme}://{context.Request.Host}/api/profiles/{accountId}/avatar?v={account.AvatarRevision}";
         return Results.Ok(new ProfileAvatarDto(true, url, account.AvatarRevision,

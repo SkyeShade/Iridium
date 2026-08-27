@@ -102,12 +102,14 @@ public sealed class AvatarPresetFlowTests
             Assert.Null(communityPreset.Avatar);
             var assignment = await owner.SetCommunityProfileAsync(community.Id, communityPreset.Id);
             Assert.Equal("GM Skye", assignment.DisplayName);
-            Assert.Null(assignment.AvatarPresetId);
+            Assert.Equal(state.BaseAvatarPresetId, assignment.AvatarPresetId);
             var management = await owner.GetCommunityManagementAsync(community.Id);
             var ownerMember = Assert.Single(management.Members);
-            Assert.Equal("GM Skye", ownerMember.DisplayName);
+            Assert.Equal("Avatar Owner", ownerMember.DisplayName);
+            Assert.Equal("GM Skye", ownerMember.ActiveChatDisplayName);
             Assert.Equal(communityPreset.Id, ownerMember.ProfilePresetId);
             Assert.Null(ownerMember.AvatarPresetId);
+            Assert.Equal(state.BaseAvatarPresetId, ownerMember.ActiveChatAvatarPresetId);
             Assert.Equal(state.AvatarRevision, ownerMember.AvatarRevision);
             Assert.Equal(authentication.Account.DisplayName,
                 (await other.ResolveProfileAsync("avatar-owner")).DisplayName);
@@ -129,13 +131,14 @@ public sealed class AvatarPresetFlowTests
             Assert.Equal(alternateCommunityMedia.Id, composerEquivalentSelection.AvatarPresetId);
             var defaultSelection = await owner.SetCommunityProfileAsync(community.Id, null);
             Assert.Null(defaultSelection.ProfilePresetId);
-            Assert.Null(defaultSelection.AvatarPresetId);
+            Assert.Equal(state.BaseAvatarPresetId, defaultSelection.AvatarPresetId);
             await owner.SetCommunityProfileAsync(community.Id, communityPreset.Id);
 
             management = await owner.GetCommunityManagementAsync(community.Id);
             ownerMember = Assert.Single(management.Members);
             Assert.Equal(communityPreset.Id, ownerMember.ProfilePresetId);
-            Assert.Equal(communityAvatarMedia.Id, ownerMember.AvatarPresetId);
+            Assert.Null(ownerMember.AvatarPresetId);
+            Assert.Equal(communityAvatarMedia.Id, ownerMember.ActiveChatAvatarPresetId);
             await using var hub = new HubConnectionBuilder().WithUrl(new Uri(address, "hubs/chat"), options =>
                 options.AccessTokenProvider = () => Task.FromResult<string?>(authentication.AccessToken)).Build();
             var communityProfileChanged = new TaskCompletionSource<CommunityStateChangedEvent>(
@@ -167,7 +170,8 @@ public sealed class AvatarPresetFlowTests
             await communityProfileChanged.Task.WaitAsync(TimeSpan.FromSeconds(20));
             management = await owner.GetCommunityManagementAsync(community.Id);
             ownerMember = Assert.Single(management.Members);
-            Assert.Equal(communityAvatarMedia.Revision, ownerMember.AvatarRevision);
+            Assert.Equal(state.AvatarRevision, ownerMember.AvatarRevision);
+            Assert.Equal(communityAvatarMedia.Revision, ownerMember.ActiveChatAvatarRevision);
             Assert.Equal(activeBeforeCustomCrop, (await owner.GetAvatarPresetsAsync()).ActiveAvatarPresetId);
             communityPreset = await owner.UpdateProfilePresetAsync(community.Id, communityPreset.Id, new("GM Skye"));
             var gmMessage = await hub.InvokeAsync<ChannelMessageDto>(ChatHubContract.SendMessage,
@@ -209,6 +213,7 @@ public sealed class AvatarPresetFlowTests
             state = await owner.GetAvatarPresetsAsync();
             Assert.Equal(alternate.Id, state.ActiveAvatarPresetId);
             Assert.Equal(selected.Id, state.BaseAvatarPresetId);
+            Assert.Equal(1.2, (await owner.GetProfileAvatarAsync(authentication.Account.Id)).Zoom, 5);
             await owner.SetActiveAvatarPresetAsync(null);
             await defaultRealtime.Task.WaitAsync(TimeSpan.FromSeconds(10));
             state = await owner.GetAvatarPresetsAsync();
@@ -237,6 +242,7 @@ public sealed class AvatarPresetFlowTests
             ownerMember = Assert.Single(management.Members);
             Assert.Equal(communityPreset.Id, ownerMember.ProfilePresetId);
             Assert.Null(ownerMember.AvatarPresetId);
+            Assert.Equal(state.BaseAvatarPresetId, ownerMember.ActiveChatAvatarPresetId);
             Assert.Equal(state.AvatarRevision, ownerMember.AvatarRevision);
             var fallbackMessage = await hub.InvokeAsync<ChannelMessageDto>(ChatHubContract.SendMessage,
                 community.Id, historyChannel.Id, new SendChannelMessageRequest("account PFP fallback", null));
@@ -301,7 +307,9 @@ public sealed class AvatarPresetFlowTests
             ownerMember = Assert.Single(management.Members);
             Assert.Equal(communityPreset.Id, ownerMember.ProfilePresetId);
             Assert.Null(ownerMember.AvatarPresetId);
-            Assert.Equal("GM Skye", ownerMember.DisplayName);
+            Assert.Equal("Avatar Owner Updated", ownerMember.DisplayName);
+            Assert.Equal("GM Skye", ownerMember.ActiveChatDisplayName);
+            Assert.Equal(state.BaseAvatarPresetId, ownerMember.ActiveChatAvatarPresetId);
 
             await owner.DeleteProfilePresetAsync(community.Id, communityPreset.Id);
             Assert.Equal(secondPreset.Id, Assert.Single(await owner.GetProfilePresetsAsync(secondCommunity.Id)).Id);
@@ -309,6 +317,7 @@ public sealed class AvatarPresetFlowTests
             ownerMember = Assert.Single(management.Members);
             Assert.Null(ownerMember.ProfilePresetId);
             Assert.Equal("Avatar Owner Updated", ownerMember.DisplayName);
+            Assert.Equal("Avatar Owner Updated", ownerMember.ActiveChatDisplayName);
         }
         finally
         {

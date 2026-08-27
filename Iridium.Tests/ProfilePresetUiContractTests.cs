@@ -48,7 +48,7 @@ public sealed class ProfilePresetUiContractTests
         Assert.Contains("await OnCommunityProfileChanged.InvokeAsync()", composer);
         Assert.Contains("OnEditAvatars", profile);
         Assert.DoesNotContain("Community Profile", home);
-        Assert.Contains("ResolveDisplayName", channelMapper);
+        Assert.Contains("ResolveMessageAuthorDisplayName", channelMapper);
         Assert.Contains("member.Nickname", channelMapper);
         Assert.DoesNotContain("ProfilePreset", directMapper);
     }

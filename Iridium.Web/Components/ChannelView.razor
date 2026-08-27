@@ -212,8 +212,9 @@
             var presentation = currentMember is null ? null : await ResolveOptimisticPresentationAsync(currentMember);
             var clientMessageId = Messaging.QueueMessage(submission.Content, _replyTo?.Id, submission.Mentions, submission.Attachments,
                 submission.UploadAttachments, currentMember is null ? null : new MessageAuthorDto(
-                    currentMember.AccountId, currentMember.Username, currentMember.DisplayName,
-                    currentMember.AvatarPresetId, currentMember.AvatarRevision));
+                    currentMember.AccountId, currentMember.Username,
+                    currentMember.ActiveChatDisplayName ?? currentMember.DisplayName,
+                    currentMember.ActiveChatAvatarPresetId, currentMember.ActiveChatAvatarRevision));
             if (presentation is not null)
             {
                 RememberOptimisticPresentation(clientMessageId, presentation);
@@ -278,7 +279,7 @@
     private async Task<OptimisticCommunityAuthorPresentation> ResolveOptimisticPresentationAsync(
         CommunityMemberDto member)
     {
-        if (member.AvatarPresetId is null) await EnsureDefaultPfpIdentityAsync();
+        if (member.ActiveChatAvatarPresetId is null) await EnsureDefaultPfpIdentityAsync();
         return OptimisticMessageGrouping.PresentationFor(member, _activeDefaultPfp);
     }
 
@@ -322,7 +323,7 @@
             "historical={Historical} snapshotMessage={SnapshotMessageId}",
             stage, messageId, clientMessageId, member.AccountId, presentation.ProfilePresetId is null,
             presentation.ProfilePresetId, presentation.DisplayName, presentation.AvatarPresetId,
-            presentation.AvatarRevision, member.AvatarPresetId, member.AvatarRevision,
+            presentation.AvatarRevision, member.ActiveChatAvatarPresetId, member.ActiveChatAvatarRevision,
             hasHistoricalSnapshot, avatarSnapshotMessageId);
     }
 

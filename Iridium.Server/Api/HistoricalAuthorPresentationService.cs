@@ -10,17 +10,13 @@ public sealed class HistoricalAuthorPresentationService(IridiumDbContext db)
         CancellationToken cancellationToken = default)
     {
         var member = await db.CommunityMembers
-            .Include(value => value.Account)
+            .Include(value => value.Account).ThenInclude(value => value.AvatarPresets)
             .Include(value => value.ProfilePreset).ThenInclude(value => value!.AvatarPreset)
             .SingleAsync(value => value.CommunityId == communityId && value.AccountId == accountId,
                 cancellationToken);
-        var profile = ChannelMessageMapper.ValidPreset(member);
-        var avatar = profile?.AvatarPreset;
-        if (avatar is null && (member.Account.ActiveAvatarPresetId ?? member.Account.BaseAvatarPresetId) is { } activeAvatarId)
-            avatar = await db.AccountAvatarPresets.SingleOrDefaultAsync(value =>
-                value.Id == activeAvatarId && value.AccountId == accountId, cancellationToken);
+        var avatar = ChannelMessageMapper.ResolveMessageAuthorAvatarPreset(member);
 
-        message.AuthorDisplayNameSnapshot = ChannelMessageMapper.ResolveDisplayName(member);
+        message.AuthorDisplayNameSnapshot = ChannelMessageMapper.ResolveMessageAuthorDisplayName(member);
         if (avatar is null) return;
         message.AuthorAvatarObjectKeySnapshot = avatar.ProcessedObjectKey ?? avatar.OriginalObjectKey;
         message.AuthorAvatarContentTypeSnapshot = avatar.ContentType;

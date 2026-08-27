@@ -300,13 +300,13 @@
     private Guid? ActiveCommunityProfilePresetId =>
         _localCommunityAssignment?.ProfilePresetId ?? CurrentCommunityMember?.ProfilePresetId;
     private Guid? EffectiveComposerAvatarPresetId => UsesCommunityAvatarSelection
-        ? _localCommunityAssignment?.AvatarPresetId ?? CurrentCommunityMember?.AvatarPresetId
+        ? _localCommunityAssignment?.AvatarPresetId ?? CurrentCommunityMember?.ActiveChatAvatarPresetId
         : null;
     private long EffectiveComposerAvatarRevision => UsesCommunityAvatarSelection
-        ? _localCommunityAssignment?.AvatarRevision ?? CurrentCommunityMember?.AvatarRevision ?? ActiveAvatarRevision
+        ? _localCommunityAssignment?.AvatarRevision ?? CurrentCommunityMember?.ActiveChatAvatarRevision ?? ActiveAvatarRevision
         : ActiveAvatarRevision;
     private string EffectiveComposerDisplayName => UsesCommunityAvatarSelection
-        ? _localCommunityAssignment?.DisplayName ?? CurrentCommunityMember?.DisplayName ?? ActiveDisplayName
+        ? _localCommunityAssignment?.DisplayName ?? CurrentCommunityMember?.ActiveChatDisplayName ?? ActiveDisplayName
         : ActiveDisplayName;
     private Guid? ActiveQuickAvatarSelectionId => UsesCommunityAvatarSelection
         ? ActiveCommunityProfilePresetId

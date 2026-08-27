@@ -184,10 +184,8 @@ public static class ProfilePresetEndpoints
                 .SingleOrDefaultAsync(value => value.CommunityId == communityId && value.AccountId == accountId,
                     cancellationToken);
             if (member is null) continue;
-            var profile = ChannelMessageMapper.ValidPreset(member);
             var changes = rooms.UpdateDisplayProfile(communityId, accountId,
-                ChannelMessageMapper.ResolveDisplayName(member), profile?.AvatarPresetId,
-                profile?.AvatarPreset?.Revision ?? member.Account.AvatarRevision);
+                member.Account.DisplayName, null, member.Account.AvatarRevision);
             if (changes.Count == 0) continue;
             var recipients = await db.CommunityMembers.AsNoTracking().Where(value => value.CommunityId == communityId)
                 .Select(value => value.AccountId).Distinct().ToArrayAsync(cancellationToken);

@@ -140,9 +140,8 @@ public sealed class ChatHub(
             .ThenInclude(value => value!.AvatarPreset)
             .SingleAsync(value => value.CommunityId == communityId && value.AccountId == session.AccountId);
         var joined = await communityVoice.JoinAsync(communityId, channelId, session.AccountId, Context.ConnectionId,
-            ChannelMessageMapper.ResolveDisplayName(member), session.Account.Username, presence.GetPublic(session.AccountId),
-            names.CommunityName, names.ChannelName, ChannelMessageMapper.ValidPreset(member)?.AvatarPresetId,
-            ChannelMessageMapper.ValidPreset(member)?.AvatarPreset?.Revision ?? member.Account.AvatarRevision);
+            member.Account.DisplayName, session.Account.Username, presence.GetPublic(session.AccountId),
+            names.CommunityName, names.ChannelName, null, member.Account.AvatarRevision);
         var voiceAccess = await authorization.GetChannelAccessAsync(communityId, channelId, session.AccountId, db);
         if (!voiceAccess.Has(CommunityPermission.SpeakVoice) &&
             await communityVoice.SetStateAsync(Context.ConnectionId, true, false) is { } initialState)

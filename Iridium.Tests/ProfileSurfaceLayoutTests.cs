@@ -17,7 +17,7 @@ public sealed class ProfileSurfaceLayoutTests
         Assert.True(bannerStart >= 0 && bannerClose > bannerStart && avatarStart > bannerClose);
         Assert.Contains("isolation:isolate;display:grid", styles);
         Assert.Contains(".profile-card-banner{position:relative;z-index:0;grid-column:1;grid-row:1;width:100%;aspect-ratio:var(--user-profile-banner-aspect);overflow:hidden", styles);
-        Assert.Contains(".profile-card-avatar-position{z-index:2;grid-column:1;grid-row:1", styles);
+        Assert.Contains(".profile-card-avatar-position{position:relative;z-index:2;grid-column:1;grid-row:1", styles);
         Assert.Contains(".profile-card-body{position:relative;z-index:1", styles);
     }
 
@@ -89,6 +89,45 @@ public sealed class ProfileSurfaceLayoutTests
         Assert.Contains("margin:-2.6rem 0 0 .85rem", anchored);
         Assert.DoesNotContain("edit-preview-card", anchored);
         Assert.DoesNotContain("account-menu-card", anchored);
+    }
+
+    [Fact]
+    public void MessageAndMemberAnchoredCardsOverlayOnlyANonBaseActiveChatAvatar()
+    {
+        var identity = Source("Iridium.Web", "Components", "ProfileIdentityCard.razor");
+        var accountPopup = Source("Iridium.Web", "Components", "ProfilePopup.razor");
+        var anchored = Source("Iridium.Web", "Components", "AnchoredProfileCard.razor");
+        var styles = Source("Iridium.Web", "Components", "AnchoredProfileCard.razor.css");
+        var avatarStyles = Source("Iridium.UI", "ProfileAvatar.razor.css");
+        var memberSidebar = Source("Iridium.Web", "Components", "CommunityMemberSidebar.razor");
+        var messageRow = Source("Iridium.Web", "Components", "MessageRow.razor");
+        var friends = Source("Iridium.Web", "Components", "FriendsView.razor");
+        var direct = Source("Iridium.Web", "Components", "DirectParticipantSidebar.razor");
+
+        Assert.DoesNotContain("active-chat-avatar-badge", identity);
+        Assert.DoesNotContain("ActiveChatAvatarPresetId", accountPopup);
+        Assert.Contains("private string EffectiveDisplayName => DisplayName;", anchored);
+        Assert.Contains("private Guid? EffectiveAvatarPresetId => AvatarPresetId;", anchored);
+        Assert.Contains("SelectedChatAvatarPresetId", anchored);
+        Assert.Contains("@if (ShowActiveAvatarBadge)", anchored);
+        Assert.Contains("private bool ShowActiveAvatarBadge => OptimisticMessageGrouping.HasActivePersona(SelectedChatProfilePresetId);", anchored);
+        Assert.Contains("TargetMember?.ProfilePresetId", anchored);
+        Assert.Contains("<div class=\"profile-avatar-shell\">", anchored);
+        Assert.Contains("<span class=\"active-chat-avatar-badge\"", anchored);
+        Assert.DoesNotContain("RenderFragment ActiveAvatarBadge", anchored);
+        Assert.DoesNotContain("builder.OpenElement", anchored);
+        Assert.Contains(".active-chat-avatar-badge", styles);
+        Assert.Contains("--active-avatar-size:calc(var(--profile-avatar-size) / 2)", styles);
+        Assert.Contains(".profile-avatar-shell", styles);
+        Assert.Contains("overflow:visible", styles);
+        Assert.Contains("top:-.1rem", styles);
+        Assert.Contains("right:-.55rem", styles);
+        Assert.Contains("z-index:3", styles);
+        Assert.Contains(".presence { position:absolute; right:var(--badge-offset); bottom:var(--badge-offset)", avatarStyles);
+        Assert.Contains("ActiveChatAvatarPresetId=\"profile.ActiveChatAvatarPresetId\"", memberSidebar);
+        Assert.Contains("ActiveChatAvatarPresetId=\"CurrentCommunityAuthor?.ActiveChatAvatarPresetId\"", messageRow);
+        Assert.DoesNotContain("ActiveChatAvatarPresetId", friends);
+        Assert.DoesNotContain("ActiveChatAvatarPresetId", direct);
     }
 
     private static string Source(params string[] parts) => File.ReadAllText(Path.Combine([Root, .. parts]));

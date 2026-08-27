@@ -6,6 +6,40 @@ namespace Iridium.Tests;
 public sealed class OptimisticMessageGroupingTests
 {
     [Fact]
+    public void PopupPersonaIndicatorUsesTheSameCanonicalCommunitySelectionAsChat()
+    {
+        var avatarId = Guid.NewGuid();
+        var defaultMember = new CommunityMemberDto(Guid.NewGuid(), "default", "Default", null, null, null,
+            At, false, PublicPresence.Online, [], ActiveChatAvatarPresetId: avatarId);
+        var personaA = defaultMember with { ProfilePresetId = Guid.NewGuid(), ActiveChatDisplayName = "Persona A" };
+        var personaB = personaA with { ProfilePresetId = Guid.NewGuid(), ActiveChatDisplayName = "Persona B" };
+
+        Assert.False(OptimisticMessageGrouping.HasActivePersona(defaultMember.ProfilePresetId));
+        Assert.True(OptimisticMessageGrouping.HasActivePersona(personaA.ProfilePresetId));
+        Assert.True(OptimisticMessageGrouping.HasActivePersona(personaB.ProfilePresetId));
+        Assert.False(OptimisticMessageGrouping.HasActivePersona((Guid?)null));
+        Assert.Equal(avatarId, OptimisticMessageGrouping.PresentationFor(personaA, null).AvatarPresetId);
+    }
+
+    [Fact]
+    public void MessagePresentationUsesExplicitChatPersonaWithoutChangingBaseMemberIdentity()
+    {
+        var avatarId = Guid.NewGuid();
+        var member = new CommunityMemberDto(Guid.NewGuid(), "skye", "Base Skye", null, null, null,
+            At, false, PublicPresence.Online, [], ProfilePresetId: Guid.NewGuid(), AvatarRevision: 12,
+            ActiveChatDisplayName: "Aria", ActiveChatAvatarRevision: 7,
+            ActiveChatAvatarPresetId: avatarId);
+
+        var presentation = OptimisticMessageGrouping.PresentationFor(member, null);
+
+        Assert.Equal("Base Skye", member.DisplayName);
+        Assert.Null(member.AvatarPresetId);
+        Assert.Equal("Aria", presentation.DisplayName);
+        Assert.Equal(avatarId, presentation.AvatarPresetId);
+        Assert.Equal(7, presentation.AvatarRevision);
+    }
+
+    [Fact]
     public void DefaultAndFallbackPresentationsUseSelectedPfpImageRevisionInsteadOfAccountRevision()
     {
         var accountId = Guid.NewGuid();
@@ -246,7 +280,8 @@ public sealed class OptimisticMessageGroupingTests
 
     private static CommunityMemberDto Member(Guid accountId, Guid? profilePresetId, string displayName,
         long accountRevision) => new(accountId, "user", displayName, null, null, null, At, false,
-        PublicPresence.Online, [], ProfilePresetId: profilePresetId, AvatarRevision: accountRevision);
+        PublicPresence.Online, [], ProfilePresetId: profilePresetId, AvatarRevision: accountRevision,
+        ActiveChatDisplayName: displayName, ActiveChatAvatarRevision: accountRevision);
 
     private static AccountAvatarPresetDto AccountPfp(Guid id, long revision) => new(id, 1, "avatar", revision,
         "image/webp", 512, 512, 0, 0, 1, At, At);

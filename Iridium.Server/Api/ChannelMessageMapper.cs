@@ -115,10 +115,23 @@ public static class ChannelMessageMapper
         ChannelMessageDto message, IridiumDbContext db) =>
         (await ResolveCommunityProfilesAsync([message], db))[0];
 
-    internal static string ResolveDisplayName(CommunityMember member) =>
+    internal static string ResolveMessageAuthorDisplayName(CommunityMember member) =>
         !string.IsNullOrWhiteSpace(member.Nickname) ? member.Nickname :
         !string.IsNullOrWhiteSpace(ValidPreset(member)?.DisplayName) ? ValidPreset(member)!.DisplayName! :
+        !string.IsNullOrWhiteSpace(ActiveAccountAvatarPreset(member)?.DisplayName)
+            ? ActiveAccountAvatarPreset(member)!.DisplayName! :
         member.Account.DisplayName;
+
+    internal static AccountAvatarPreset? ActiveAccountAvatarPreset(CommunityMember member) =>
+        member.Account.ActiveAvatarPresetId is { } activeId
+            ? member.Account.AvatarPresets.FirstOrDefault(value => value.Id == activeId)
+            : null;
+
+    internal static AccountAvatarPreset? ResolveMessageAuthorAvatarPreset(CommunityMember member) =>
+        ValidPreset(member)?.AvatarPreset ?? ActiveAccountAvatarPreset(member) ??
+        (member.Account.BaseAvatarPresetId is { } baseId
+            ? member.Account.AvatarPresets.FirstOrDefault(value => value.Id == baseId)
+            : null);
 
     internal static UserProfilePreset? ValidPreset(CommunityMember member) =>
         member.ProfilePreset is { } preset && preset.AccountId == member.AccountId &&

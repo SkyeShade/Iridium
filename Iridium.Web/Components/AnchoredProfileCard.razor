@@ -1,4 +1,5 @@
 @using Iridium.Protocol
+@using Iridium.UI
 @using Iridium.Web.Models
 @using System.Globalization
 @inject NodeSession Session
@@ -20,19 +21,31 @@
             </div>
         }
         <div class="profile-banner"><ProfileBanner AccountId="AccountId" /></div>
-        @if (CanSwitchAvatar)
-        {
-            <button type="button" class="profile-avatar identity-switch" style="position:relative;z-index:1;padding:.3rem;box-shadow:0 0 0 1px var(--bg-sidebar)" aria-label="Choose Community Avatar"
-                    aria-expanded="@_avatarPickerOpen" @onclick="ToggleAvatarPickerAsync" @onclick:stopPropagation="true">
-                <ProfileAvatar AccountId="AccountId" DisplayName="@EffectiveDisplayName" Presence="@Presence"
-                               Size="large" Surface="sidebar" AvatarPresetId="EffectiveAvatarPresetId" AvatarRevision="EffectiveAvatarRevision" />
-            </button>
-        }
-        else
-        {
-            <div class="profile-avatar" style="position:relative;z-index:1;padding:.3rem;box-shadow:0 0 0 1px var(--bg-sidebar)"><ProfileAvatar AccountId="AccountId" DisplayName="@EffectiveDisplayName" Presence="@Presence"
-                 Size="large" Surface="sidebar" AvatarPresetId="EffectiveAvatarPresetId" AvatarRevision="EffectiveAvatarRevision" /></div>
-        }
+        <div class="profile-avatar-shell">
+            @if (CanSwitchAvatar)
+            {
+                <button type="button" class="profile-avatar identity-switch" aria-label="Choose Community Avatar"
+                        aria-expanded="@_avatarPickerOpen" @onclick="ToggleAvatarPickerAsync" @onclick:stopPropagation="true">
+                    <ProfileAvatar AccountId="AccountId" DisplayName="@EffectiveDisplayName" Presence="@Presence"
+                                   Size="large" Surface="sidebar" AvatarPresetId="EffectiveAvatarPresetId" AvatarRevision="EffectiveAvatarRevision" />
+                </button>
+            }
+            else
+            {
+                <div class="profile-avatar">
+                    <ProfileAvatar AccountId="AccountId" DisplayName="@EffectiveDisplayName" Presence="@Presence"
+                                   Size="large" Surface="sidebar" AvatarPresetId="EffectiveAvatarPresetId" AvatarRevision="EffectiveAvatarRevision" />
+                </div>
+            }
+            @if (ShowActiveAvatarBadge)
+            {
+                <span class="active-chat-avatar-badge" role="img" title="@ActiveAvatarLabel" aria-label="@ActiveAvatarLabel">
+                    <ProfileAvatar AccountId="AccountId" DisplayName="@(SelectedChatDisplayName ?? DisplayName)"
+                                   AvatarPresetId="SelectedChatAvatarPresetId" AvatarRevision="SelectedChatAvatarRevision"
+                                   BadgeMode="AvatarBadgeMode.None" Size="fill" Surface="sidebar" />
+                </span>
+            }
+        </div>
         @if (_avatarPickerOpen && CanSwitchAvatar)
         {
             <div class="avatar-switcher" role="menu" aria-label="Community Avatars" @onclick:stopPropagation="true">
@@ -123,6 +136,9 @@
     [Parameter, EditorRequired] public required Guid AccountId { get; set; }
     [Parameter] public Guid? AvatarPresetId { get; set; }
     [Parameter] public long AvatarRevision { get; set; }
+    [Parameter] public string? ActiveChatDisplayName { get; set; }
+    [Parameter] public Guid? ActiveChatAvatarPresetId { get; set; }
+    [Parameter] public long ActiveChatAvatarRevision { get; set; }
     [Parameter, EditorRequired] public required Guid CurrentAccountId { get; set; }
     [Parameter, EditorRequired] public required string Username { get; set; }
     [Parameter, EditorRequired] public required string DisplayName { get; set; }
@@ -161,9 +177,23 @@
     private Guid? ActiveProfilePresetId => _localAssignment?.ProfilePresetId ?? CurrentMember?.ProfilePresetId;
     private string AccountDisplayName => Session.Account?.DisplayName ?? DisplayName;
     private long AccountAvatarRevision => Session.Account?.AvatarRevision ?? AvatarRevision;
-    private string EffectiveDisplayName => _localAssignment?.DisplayName ?? DisplayName;
-    private Guid? EffectiveAvatarPresetId => _localAssignment?.AvatarPresetId ?? AvatarPresetId;
-    private long EffectiveAvatarRevision => _localAssignment?.AvatarRevision ?? AvatarRevision;
+    private string EffectiveDisplayName => DisplayName;
+    private Guid? EffectiveAvatarPresetId => AvatarPresetId;
+    private long EffectiveAvatarRevision => AvatarRevision;
+    private string? SelectedChatDisplayName => _localAssignment is { } local
+        ? local.DisplayName
+        : ActiveChatDisplayName ?? TargetMember?.ActiveChatDisplayName;
+    private Guid? SelectedChatProfilePresetId => _localAssignment is { } local
+        ? local.ProfilePresetId
+        : TargetMember?.ProfilePresetId;
+    private Guid? SelectedChatAvatarPresetId => _localAssignment is { } local
+        ? local.AvatarPresetId
+        : ActiveChatAvatarPresetId ?? TargetMember?.ActiveChatAvatarPresetId;
+    private long SelectedChatAvatarRevision => _localAssignment is { } local
+        ? local.AvatarRevision
+        : ActiveChatAvatarRevision > 0 ? ActiveChatAvatarRevision : TargetMember?.ActiveChatAvatarRevision ?? 0;
+    private bool ShowActiveAvatarBadge => OptimisticMessageGrouping.HasActivePersona(SelectedChatProfilePresetId);
+    private string ActiveAvatarLabel => $"Active avatar: {SelectedChatDisplayName ?? "Chat avatar"}";
     private static string CssPixel(double value) =>
         double.IsFinite(value) ? value.ToString(CultureInfo.InvariantCulture) + "px" : "0px";
     private string? NameStyle

@@ -103,7 +103,10 @@ public sealed record CommunityMemberDto(
     IReadOnlyList<Guid> RoleIds,
     Guid? ProfilePresetId = null,
     long AvatarRevision = 0,
-    Guid? AvatarPresetId = null);
+    Guid? AvatarPresetId = null,
+    string? ActiveChatDisplayName = null,
+    long ActiveChatAvatarRevision = 0,
+    Guid? ActiveChatAvatarPresetId = null);
 
 public sealed record SetCommunityProfileRequest(Guid? ProfilePresetId);
 public sealed record CommunityProfileAssignmentDto(

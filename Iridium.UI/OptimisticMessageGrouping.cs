@@ -15,14 +15,18 @@ public sealed record OptimisticCommunityAuthorPresentation(
 /// </summary>
 public static class OptimisticMessageGrouping
 {
+    public static bool HasActivePersona(Guid? profilePresetId) => profilePresetId.HasValue;
+
     public static OptimisticCommunityAuthorPresentation PresentationFor(CommunityMemberDto member,
         AccountAvatarPresetDto? selectedAccountPfp)
     {
-        if (member.AvatarPresetId is not null)
-            return new(member.ProfilePresetId, member.DisplayName, member.AvatarPresetId, member.AvatarRevision);
+        var chatDisplayName = member.ActiveChatDisplayName ?? member.DisplayName;
+        if (member.ActiveChatAvatarPresetId is not null)
+            return new(member.ProfilePresetId, chatDisplayName, member.ActiveChatAvatarPresetId,
+                member.ActiveChatAvatarRevision);
         return selectedAccountPfp is { } pfp
-            ? new(member.ProfilePresetId, member.DisplayName, pfp.Id, pfp.Revision)
-            : new(member.ProfilePresetId, member.DisplayName, null, member.AvatarRevision);
+            ? new(member.ProfilePresetId, chatDisplayName, pfp.Id, pfp.Revision)
+            : new(member.ProfilePresetId, chatDisplayName, null, member.ActiveChatAvatarRevision);
     }
 
     public static bool StartsNewGroup(ChannelMessageDto? previous, ChannelMessageDto current,
