@@ -9,21 +9,18 @@
         </div>
         <div class="sheet-content">
             <div class="sheet-action-group">
+                @if (CanEdit)
+                {
+                    <button type="button" @onclick="() => ExecuteAsync(OnEdit)"><Icon Name="edit" /><span>Edit</span></button>
+                }
                 <button type="button" @onclick="() => ExecuteAsync(OnReply)"><Icon Name="reply" /><span>Reply</span></button>
                 <button type="button" @onclick="() => ExecuteAsync(OnForward)"><Icon Name="forward" /><span>Forward</span></button>
             </div>
-            @if (CanEdit || CanDelete)
+            @if (CanDelete)
             {
                 <div class="sheet-separator" role="separator"></div>
                 <div class="sheet-action-group">
-                    @if (CanEdit)
-                    {
-                        <button type="button" @onclick="() => ExecuteAsync(OnEdit)"><Icon Name="edit" /><span>Edit</span></button>
-                    }
-                    @if (CanDelete)
-                    {
-                        <button type="button" class="destructive" @onclick="() => ExecuteAsync(OnDelete)"><Icon Name="trash" /><span>Delete Message</span></button>
-                    }
+                    <button type="button" class="destructive" @onclick="() => ExecuteAsync(OnDelete)"><Icon Name="trash" /><span>Delete Message</span></button>
                 </div>
             }
         </div>
