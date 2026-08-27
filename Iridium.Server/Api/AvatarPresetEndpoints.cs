@@ -30,6 +30,7 @@ public static class AvatarPresetEndpoints
             });
         presets.MapPatch("/{presetId:guid}", UpdateCropAsync);
         presets.MapPut("/{presetId:guid}/active", ActivateAsync);
+        presets.MapDelete("/active", ClearActiveAsync);
         presets.MapDelete("/{presetId:guid}", DeleteAsync);
         endpoints.MapGet("/api/profiles/{accountId:guid}/avatar", DownloadActiveAsync);
         endpoints.MapGet("/api/profiles/{accountId:guid}/avatar/{presetId:guid}", DownloadPresetAsync);
@@ -190,6 +191,19 @@ public static class AvatarPresetEndpoints
         await db.SaveChangesAsync(cancellationToken);
         await realtime.PublishAsync(session.AccountId, session.Account.AvatarRevision, db, cancellationToken);
         return Results.Ok(new { session.Account.ActiveAvatarPresetId, session.Account.AvatarRevision });
+    }
+
+    private static async Task<IResult> ClearActiveAsync(HttpContext context, IridiumDbContext db,
+        SessionService sessions, ProfileRealtimePublisher realtime, CancellationToken cancellationToken)
+    {
+        var session = await sessions.GetAsync(context, db);
+        if (session is null) return Results.Unauthorized();
+        if (session.Account.ActiveAvatarPresetId is null) return Results.NoContent();
+        session.Account.ActiveAvatarPresetId = null;
+        session.Account.AvatarRevision = NextRevision(session.Account.AvatarRevision);
+        await db.SaveChangesAsync(cancellationToken);
+        await realtime.PublishAsync(session.AccountId, session.Account.AvatarRevision, db, cancellationToken);
+        return Results.NoContent();
     }
 
     private static async Task<IResult> DeleteAsync(Guid presetId, HttpContext context, IridiumDbContext db,

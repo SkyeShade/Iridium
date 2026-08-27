@@ -38,9 +38,13 @@ builder.Services.AddScoped<ILocalVoicePreferenceStore>(sp => sp.GetRequiredServi
 builder.Services.AddScoped<LocalVoicePreferenceService>();
 builder.Services.AddScoped<IEmojiPickerPreferenceStore>(sp => sp.GetRequiredService<BrowserClientStorage>());
 builder.Services.AddScoped<IMessageDraftStore>(sp => sp.GetRequiredService<BrowserClientStorage>());
+builder.Services.AddScoped<IComposerActionModeStore>(sp => sp.GetRequiredService<BrowserClientStorage>());
+builder.Services.AddScoped<IComposerAvatarUsageStore>(sp => sp.GetRequiredService<BrowserClientStorage>());
 builder.Services.AddScoped<ICommunityForumPostCache>(sp => sp.GetRequiredService<BrowserClientStorage>());
 builder.Services.AddScoped<IMessageHistoryCache, IndexedDbMessageHistoryCache>();
 builder.Services.AddScoped<EmojiPickerPreferencesService>();
+builder.Services.AddScoped<ComposerActionModePreferencesService>();
+builder.Services.AddScoped<ComposerAvatarUsageService>();
 builder.Services.AddScoped<ProfileMediaService>();
 builder.Services.AddScoped<CommunityEmojiService>();
 builder.Services.AddScoped<SavedNodeState>();

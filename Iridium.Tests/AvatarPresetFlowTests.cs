@@ -159,6 +159,13 @@ public sealed class AvatarPresetFlowTests
             await owner.UpdateAvatarCropAsync(selected.Id, new(0, 0, 1.2, true));
             state = await owner.GetAvatarPresetsAsync();
             Assert.Equal(selected.Id, state.ActiveAvatarPresetId);
+            await owner.ClearActiveAvatarAsync();
+            state = await owner.GetAvatarPresetsAsync();
+            Assert.Null(state.ActiveAvatarPresetId);
+            Assert.False((await owner.GetProfileAvatarAsync(authentication.Account.Id)).HasAvatar);
+            await owner.ActivateAvatarPresetAsync(selected.Id);
+            state = await owner.GetAvatarPresetsAsync();
+            Assert.Equal(selected.Id, state.ActiveAvatarPresetId);
 
             communityPreset = await owner.ClearProfilePresetAvatarAsync(community.Id, communityPreset.Id);
             Assert.Null(communityPreset.Avatar);

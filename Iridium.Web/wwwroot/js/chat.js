@@ -1,4 +1,6 @@
 const composerHandlers = new WeakMap();
+const composerActionButtonHandlers = new WeakMap();
+const horizontalWheelElements = new WeakSet();
 const markdownSourceEditorHandlers = new WeakMap();
 const channelSorters = new WeakMap();
 const messageViewports = new WeakMap();
@@ -899,6 +901,102 @@ export function unwireComposer(textarea) {
 
 export function openComposerFilePicker(composerRoot) {
     composerRoot?.querySelector('input[type="file"]')?.click();
+}
+
+export const composerActionLongPressMilliseconds = 2000;
+const composerActionMoveTolerance = 14;
+
+export function wireComposerActionButton(button, dotNetReference) {
+    if (!button || composerActionButtonHandlers.has(button)) return;
+    let timer = 0, pointerId = null, startX = 0, startY = 0, longPressTriggered = false, lastPointerType = "mouse";
+    const cancel = () => {
+        if (timer) window.clearTimeout(timer);
+        timer = 0;
+        pointerId = null;
+        button.classList.remove("long-pressing");
+    };
+    const down = event => {
+        lastPointerType = event.pointerType;
+        if (event.pointerType === "mouse" || event.button !== 0 ||
+            !window.matchMedia("(max-width: 860px)").matches) return;
+        cancel();
+        pointerId = event.pointerId;
+        startX = event.clientX;
+        startY = event.clientY;
+        longPressTriggered = false;
+        button.classList.add("long-pressing");
+        timer = window.setTimeout(async () => {
+            timer = 0;
+            longPressTriggered = true;
+            button.classList.remove("long-pressing");
+            try { await dotNetReference.invokeMethodAsync("OpenComposerActionModeMenuFromLongPressAsync"); }
+            catch (error) { console.error("Could not open the composer action menu.", error); }
+        }, composerActionLongPressMilliseconds);
+    };
+    const move = event => {
+        if (event.pointerId !== pointerId) return;
+        if (Math.hypot(event.clientX - startX, event.clientY - startY) > composerActionMoveTolerance) cancel();
+    };
+    const up = event => {
+        if (event.pointerId !== pointerId) return;
+        const awaitingSuppressedClick = longPressTriggered;
+        cancel();
+        if (awaitingSuppressedClick) window.setTimeout(() => { longPressTriggered = false; }, 0);
+    };
+    const pointercancel = () => { cancel(); longPressTriggered = false; };
+    const click = event => {
+        if (!longPressTriggered) return;
+        longPressTriggered = false;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+    };
+    const contextmenu = event => {
+        if (lastPointerType === "mouse" || !window.matchMedia("(max-width: 860px)").matches) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+    };
+    const handlers = { down, move, up, cancel, pointercancel, click, contextmenu };
+    composerActionButtonHandlers.set(button, handlers);
+    button.addEventListener("pointerdown", down);
+    button.addEventListener("pointermove", move, { passive: true });
+    button.addEventListener("pointerup", up);
+    button.addEventListener("pointercancel", pointercancel);
+    button.addEventListener("click", click, true);
+    button.addEventListener("contextmenu", contextmenu);
+}
+
+export function unwireComposerActionButton(button) {
+    const handlers = button ? composerActionButtonHandlers.get(button) : null;
+    if (!handlers) return;
+    handlers.cancel();
+    button.removeEventListener("pointerdown", handlers.down);
+    button.removeEventListener("pointermove", handlers.move);
+    button.removeEventListener("pointerup", handlers.up);
+    button.removeEventListener("pointercancel", handlers.pointercancel);
+    button.removeEventListener("click", handlers.click, true);
+    button.removeEventListener("contextmenu", handlers.contextmenu);
+    composerActionButtonHandlers.delete(button);
+}
+
+export function focusComposerActionPopup(root, selector) {
+    root?.querySelector(selector)?.focus({ preventScroll: true });
+}
+
+export function moveComposerActionPopupFocus(root, selector, delta) {
+    const entries = Array.from(root?.querySelectorAll(selector) || []);
+    if (!entries.length) return;
+    const current = entries.indexOf(document.activeElement);
+    entries[(current + delta + entries.length) % entries.length].focus({ preventScroll: true });
+}
+
+export function wireHorizontalWheel(element) {
+    if (!element || horizontalWheelElements.has(element)) return;
+    horizontalWheelElements.add(element);
+    element.addEventListener("wheel", event => {
+        if (element.scrollWidth <= element.clientWidth || Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return;
+        event.preventDefault();
+        element.scrollLeft += event.deltaY;
+    }, { passive: false });
 }
 
 export async function analyzeComposerFiles(composerRoot) {

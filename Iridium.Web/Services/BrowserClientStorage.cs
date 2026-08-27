@@ -7,7 +7,8 @@ namespace Iridium.Web.Services;
 public sealed class BrowserClientStorage(IJSRuntime js) : ISavedNodeStore, INodeTokenStore, ISavedAccountStore,
     IActiveAccountSelectionStore, ICategoryCollapseStore, ILastCommunityChannelStore,
     IVoiceParticipantPreferenceStore, IEmojiPickerPreferenceStore, IMessageDraftStore,
-    ICommunityForumPostCache, ILocalVoicePreferenceStore, IAsyncDisposable
+    ICommunityForumPostCache, ILocalVoicePreferenceStore, IComposerActionModeStore,
+    IComposerAvatarUsageStore, IAsyncDisposable
 {
     private const string MessageDraftNamespace = "iridium.messageDrafts.v1";
     private const int MaximumMessageDrafts = 500;
@@ -136,6 +137,38 @@ public sealed class BrowserClientStorage(IJSRuntime js) : ISavedNodeStore, INode
 
     private static string VoicePreferenceKey(LocalVoicePreferenceScope scope) =>
         $"iridium.voicePreferences.v1:{Uri.EscapeDataString(scope.NodeAuthority)}:{scope.AccountId:N}";
+
+    async Task<ComposerActionMode?> IComposerActionModeStore.LoadAsync(ComposerActionModeScope scope,
+        CancellationToken cancellationToken)
+    {
+        var module = await ModuleAsync(cancellationToken);
+        return await module.InvokeAsync<ComposerActionMode?>("loadValue", cancellationToken, scope.StorageKey);
+    }
+
+    async Task IComposerActionModeStore.SaveAsync(ComposerActionModeScope scope, ComposerActionMode mode,
+        CancellationToken cancellationToken)
+    {
+        var module = await ModuleAsync(cancellationToken);
+        await module.InvokeVoidAsync("save", cancellationToken, scope.StorageKey, mode);
+    }
+
+    async Task<ComposerAvatarUsageData> IComposerAvatarUsageStore.LoadAsync(ComposerActionModeScope scope,
+        CancellationToken cancellationToken)
+    {
+        var module = await ModuleAsync(cancellationToken);
+        return await module.InvokeAsync<ComposerAvatarUsageData?>("loadValue", cancellationToken,
+                   ComposerAvatarUsageKey(scope)) ?? new();
+    }
+
+    async Task IComposerAvatarUsageStore.SaveAsync(ComposerActionModeScope scope, ComposerAvatarUsageData usage,
+        CancellationToken cancellationToken)
+    {
+        var module = await ModuleAsync(cancellationToken);
+        await module.InvokeVoidAsync("save", cancellationToken, ComposerAvatarUsageKey(scope), usage);
+    }
+
+    private static string ComposerAvatarUsageKey(ComposerActionModeScope scope) =>
+        ComposerAvatarUsageService.StorageKey(scope);
 
     async Task<EmojiPickerPreferenceData> IEmojiPickerPreferenceStore.LoadAsync(Guid accountId,
         CancellationToken cancellationToken)

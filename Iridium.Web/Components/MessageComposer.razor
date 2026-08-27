@@ -7,6 +7,10 @@
 @inject CommunityEmojiService Emojis
 @inject EmojiPickerPreferencesService EmojiPreferences
 @inject IMessageDraftStore Drafts
+@inject ComposerActionModePreferencesService ActionModePreferences
+@inject ComposerAvatarUsageService AvatarUsage
+@inject NodeSession Session
+@inject ProfileMediaService ProfileMedia
 
 <div class="composer-wrap @Class">
     <div class="composer-shell" @ref="_composerShell">
@@ -46,7 +50,16 @@
             @if (CanAttachFiles)
             {
                 <InputFile @key="_inputRevision" id="@FileInputId" style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;pointer-events:none" tabindex="-1" OnChange="FilesSelectedAsync" multiple />
-                <button type="button" class="attachment-button" title="Add files" aria-label="Add files" @onclick="OpenFilePickerAsync">+</button>
+                <button @ref="_actionButton" type="button" class="attachment-button @(_actionMode == ComposerActionMode.Avatar ? "avatar-mode" : null)"
+                        title="@ActionButtonTitle" aria-label="@ActionButtonLabel" @onclick="PerformComposerActionAsync"
+                        @oncontextmenu="OpenActionModeMenu" @oncontextmenu:preventDefault @oncontextmenu:stopPropagation>
+                    @if (_actionMode == ComposerActionMode.Avatar)
+                    {
+                        <ProfileAvatar @key="AccountId" AccountId="AccountId" AvatarRevision="@ActiveAvatarRevision"
+                                       DisplayName="@ActiveDisplayName" BadgeMode="AvatarBadgeMode.None" Size="fill" Surface="raised" />
+                    }
+                    else { <Icon Name="plus" /> }
+                </button>
             }
             <MarkdownSourceEditor Value="@_content" References="_emojiReferences" StandardReferences="_standardEmojiReferences"
                                   Available="_availableEmojis" Placeholder="@ComposerPlaceholder" AriaLabel="@ComposerPlaceholder"
@@ -60,6 +73,74 @@
             }
             <span class="character-counter @(RemainingCharacters < 0 ? "over-limit" : null)" aria-label="@($"{RemainingCharacters} characters remaining")">@RemainingCharacters</span>
         </div>
+        @if (_actionModeMenuOpen || _avatarPickerOpen)
+        {
+            <div class="composer-action-dismiss" aria-hidden="true" @onpointerdown="CloseActionPopups"></div>
+        }
+        @if (_actionModeMenuOpen)
+        {
+            <div class="composer-action-popup mode-popup" role="menu" aria-label="Composer action"
+                 tabindex="-1" @onpointerdown:stopPropagation @onkeydown="HandleActionPopupKeyAsync">
+                <button type="button" role="menuitemradio" aria-checked="@(_actionMode == ComposerActionMode.Attachment)"
+                        @onclick="() => SelectActionModeAsync(ComposerActionMode.Attachment)">
+                    <span class="action-option-icon"><Icon Name="file" /></span><span>Attachments</span>
+                    @if (_actionMode == ComposerActionMode.Attachment) { <Icon Name="check" /> }
+                </button>
+                <button type="button" role="menuitemradio" aria-checked="@(_actionMode == ComposerActionMode.Avatar)"
+                        @onclick="() => SelectActionModeAsync(ComposerActionMode.Avatar)">
+                    <span class="action-option-icon avatar-option-icon"><ProfileAvatar AccountId="AccountId"
+                        AvatarRevision="@ActiveAvatarRevision" DisplayName="@ActiveDisplayName"
+                        BadgeMode="AvatarBadgeMode.None" Size="fill" Surface="deep" /></span><span>Avatar</span>
+                    @if (_actionMode == ComposerActionMode.Avatar) { <Icon Name="check" /> }
+                </button>
+            </div>
+        }
+        @if (_avatarPickerOpen)
+        {
+            <div class="composer-action-popup avatar-picker" role="dialog" aria-label="Quick avatar swap"
+                 tabindex="-1" @onpointerdown:stopPropagation @onkeydown="HandleActionPopupKeyAsync">
+                <header><strong>Choose avatar</strong><button type="button" aria-label="Close avatar picker" @onclick="CloseActionPopups"><Icon Name="close" /></button></header>
+                <div class="avatar-picker-strip">
+                        <div class="default-avatar-entry">
+                            <button type="button" class="avatar-preset default-avatar @(_activeAvatarPresetId is null ? "selected" : null)"
+                                    aria-label="@(_activeAvatarPresetId is null ? "Default avatar, current avatar" : "Default avatar")"
+                                    aria-pressed="@(_activeAvatarPresetId is null)" disabled="@_avatarSwapBusy"
+                                    @onclick="ActivateDefaultAvatarAsync">
+                                <ProfileAvatar DisplayName="@ActiveDisplayName" BadgeMode="AvatarBadgeMode.None"
+                                               Size="fill" Surface="deep" />
+                                @if (_activeAvatarPresetId is null) { <span class="selected-check"><Icon Name="check" /></span> }
+                            </button>
+                            <small>Default</small>
+                        </div>
+                        <span class="avatar-strip-divider" aria-hidden="true"></span>
+                        <div @ref="_avatarPresetScroll" class="avatar-preset-scroll" aria-label="Saved avatars">
+                            @if (_avatarPickerLoading)
+                            {
+                                <span class="avatar-picker-empty">Loading avatars…</span>
+                            }
+                            else if (_avatarPresets.Count == 0)
+                            {
+                                <span class="avatar-picker-empty">No saved avatars</span>
+                            }
+                            else
+                            {
+                                @foreach (var preset in OrderedAvatarPresets)
+                                {
+                                    var selected = preset.Id == _activeAvatarPresetId;
+                                    <button type="button" class="avatar-preset @(selected ? "selected" : null)"
+                                            aria-label="@AvatarPresetLabel(preset, selected)" aria-pressed="@selected"
+                                            disabled="@_avatarSwapBusy" @onclick="() => ActivateAvatarPresetAsync(preset.Id)">
+                                        <ProfileAvatar AccountId="AccountId" AvatarPresetId="preset.Id" AvatarRevision="preset.Revision"
+                                                       DisplayName="@(preset.DisplayName ?? ActiveDisplayName)"
+                                                       BadgeMode="AvatarBadgeMode.None" Size="fill" Surface="deep" />
+                                        @if (selected) { <span class="selected-check"><Icon Name="check" /></span> }
+                                    </button>
+                                }
+                            }
+                        </div>
+                </div>
+            </div>
+        }
         @if (_emojiPickerOpen)
         {
             <EmojiPicker Community="Community" AccountId="AccountId" Anchor="_emojiButton" OnSelected="InsertEmojiAsync"
@@ -128,6 +209,8 @@
     private string _content = string.Empty;
     private ElementReference _textarea;
     private ElementReference _composerShell;
+    private ElementReference _actionButton;
+    private ElementReference _avatarPresetScroll;
     private ElementReference _emojiButton;
     private IJSObjectReference? _module;
     private DotNetObjectReference<MessageComposer>? _selfReference;
@@ -161,18 +244,54 @@
     private Task? _draftLoadTask;
     private long _draftVersion;
     private bool _disposed;
+    private ComposerActionMode _actionMode = ComposerActionMode.Attachment;
+    private ComposerActionModeScope? _actionModeScope;
+    private bool _actionModeMenuOpen;
+    private bool _avatarPickerOpen;
+    private bool _avatarPickerLoading;
+    private bool _avatarSwapBusy;
+    private bool _focusActionPopupAfterRender;
+    private long _actionModeLoadVersion;
+    private IReadOnlyList<AccountAvatarPresetDto> _avatarPresets = [];
+    private ComposerAvatarUsageData _avatarUsage = new();
+    private Guid? _activeAvatarPresetId;
+    private long _activeAvatarRevision;
     private string ComposerPlaceholder => PlaceholderText ?? $"Message #{ChannelName}";
     private string FileInputId => $"attachment-{ConversationKind}-{ConversationId:N}-{_inputRevision}";
     private IReadOnlyList<PendingAttachment> PendingAttachments => _attachmentKey is { } key ? Attachments.Get(key) : [];
     private int RemainingCharacters => _maxMessageCharacters - CommunityEmojiDraftCodec.CountCharacters(_content, _emojiReferences);
     private bool HasSendableText => !string.IsNullOrWhiteSpace(_content);
     private MessageDraftScope DraftScope => new(NodeAuthority, AccountId, ConversationKind, ConversationId);
+    private string ActiveDisplayName => Session.Account?.Id == AccountId ? Session.Account.DisplayName : string.Empty;
+    private long ActiveAvatarRevision => Math.Max(_activeAvatarRevision,
+        Session.Account?.Id == AccountId ? Session.Account.AvatarRevision : 0);
+    private string ActionButtonTitle => _actionMode == ComposerActionMode.Attachment ? "Add files" : "Change avatar";
+    private string ActionButtonLabel => $"{ActionButtonTitle}. Hold or right-click to change action.";
+    private IReadOnlyList<AccountAvatarPresetDto> OrderedAvatarPresets =>
+        ComposerAvatarUsageService.MostRecentlyUsedFirst(_avatarPresets, _avatarUsage,
+            value => value.Id, value => value.UpdatedAt);
 
-    protected override void OnInitialized() => Emojis.Changed += OnEmojiCollectionChanged;
+    protected override void OnInitialized()
+    {
+        Emojis.Changed += OnEmojiCollectionChanged;
+        ProfileMedia.Changed += OnProfileMediaChanged;
+    }
 
     protected override void OnParametersSet()
     {
         _attachmentKey = new(NodeAuthority, AccountId, ConversationKind, ConversationId);
+        var actionScope = new ComposerActionModeScope(NodeAuthority, AccountId);
+        if (_actionModeScope != actionScope)
+        {
+            _actionModeScope = actionScope;
+            _actionMode = ComposerActionMode.Attachment;
+            _activeAvatarPresetId = null;
+            _activeAvatarRevision = 0;
+            _avatarPresets = [];
+            _avatarUsage = new();
+            CloseActionPopups();
+            _actionModeLoadVersion++;
+        }
         if (string.Equals(_renderedChannelName, ChannelName, StringComparison.Ordinal)) return;
         _renderedChannelName = ChannelName;
         _resizeAfterRender = true;
@@ -182,6 +301,20 @@
     {
         _availableEmojis = await Emojis.GetAvailableAsync();
         _emojiIndex.UpdateCustom(_availableEmojis);
+        if (_actionModeScope is { } actionScope)
+        {
+            var version = _actionModeLoadVersion;
+            try
+            {
+                var mode = await ActionModePreferences.GetAsync(actionScope);
+                if (!_disposed && version == _actionModeLoadVersion && _actionModeScope == actionScope)
+                    _actionMode = mode;
+            }
+            catch (Exception exception)
+            {
+                Logger.LogWarning(exception, "Could not restore the composer action for Account {AccountId}.", AccountId);
+            }
+        }
         if (_attachmentKey is not { } key || _loadedLimitsKey == key) return;
         try
         {
@@ -211,6 +344,13 @@
             _focusCaretAfterRender = null;
             await _module.InvokeVoidAsync("focusComposerAt", _textarea, caret);
         }
+        if (_focusActionPopupAfterRender)
+        {
+            _focusActionPopupAfterRender = false;
+            await _module.InvokeVoidAsync("focusComposerActionPopup", _composerShell,
+                _actionModeMenuOpen ? ".mode-popup button[aria-checked='true']" : ".avatar-picker .avatar-preset.selected, .avatar-picker button");
+        }
+        if (_avatarPickerOpen) await _module.InvokeVoidAsync("wireHorizontalWheel", _avatarPresetScroll);
     }
 
     private async Task ComposerEditorReadyAsync(ElementReference editor)
@@ -219,6 +359,7 @@
         _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/chat.js");
         _selfReference ??= DotNetObjectReference.Create(this);
         await _module.InvokeVoidAsync("wireComposer", _textarea, _selfReference, _composerShell);
+        await _module.InvokeVoidAsync("wireComposerActionButton", _actionButton, _selfReference);
         await EnsureDraftLoadedAsync();
         await SendableContentChanged.InvokeAsync(HasSendableContent);
         _resizeAfterRender = false;
@@ -330,6 +471,158 @@
         _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/chat.js");
         _pickerCaret = await _module.InvokeAsync<int>("composerCaret", _textarea);
         await _module.InvokeVoidAsync("openComposerFilePicker", _composerShell);
+    }
+
+    private Task PerformComposerActionAsync() => _actionMode == ComposerActionMode.Attachment
+        ? OpenFilePickerAsync()
+        : OpenAvatarPickerAsync();
+
+    private void OpenActionModeMenu()
+    {
+        _avatarPickerOpen = false;
+        _actionModeMenuOpen = true;
+        _focusActionPopupAfterRender = true;
+    }
+
+    [JSInvokable]
+    public Task OpenComposerActionModeMenuFromLongPressAsync()
+    {
+        OpenActionModeMenu();
+        return InvokeAsync(StateHasChanged);
+    }
+
+    private async Task SelectActionModeAsync(ComposerActionMode mode)
+    {
+        if (_actionModeScope is not { } scope) return;
+        _actionMode = mode;
+        CloseActionPopups();
+        try { await ActionModePreferences.SetAsync(scope, mode); }
+        catch (Exception exception)
+        {
+            Logger.LogWarning(exception, "Could not save the composer action for Account {AccountId}.", AccountId);
+        }
+    }
+
+    private async Task OpenAvatarPickerAsync()
+    {
+        _actionModeMenuOpen = false;
+        _avatarPickerOpen = true;
+        _avatarPickerLoading = true;
+        _focusActionPopupAfterRender = true;
+        await LoadAvatarPresetsAsync();
+    }
+
+    private async Task LoadAvatarPresetsAsync()
+    {
+        var expectedAccount = AccountId;
+        try
+        {
+            var state = await Session.GetAvatarPresetsAsync();
+            if (_disposed || AccountId != expectedAccount || state.AccountId != expectedAccount) return;
+            _avatarPresets = state.Presets;
+            _activeAvatarPresetId = state.ActiveAvatarPresetId;
+            _activeAvatarRevision = state.AvatarRevision;
+            try
+            {
+                _avatarUsage = _actionModeScope is { } scope ? await AvatarUsage.GetAsync(scope) : new();
+            }
+            catch (Exception exception)
+            {
+                Logger.LogWarning(exception, "Could not load recent avatar usage for Account {AccountId}.", expectedAccount);
+                _avatarUsage = new();
+            }
+        }
+        catch (Exception exception)
+        {
+            Logger.LogWarning(exception, "Could not load avatar presets for Account {AccountId}.", expectedAccount);
+            _attachmentError = exception.GetBaseException().Message;
+        }
+        finally
+        {
+            if (AccountId == expectedAccount) _avatarPickerLoading = false;
+        }
+    }
+
+    private async Task ActivateAvatarPresetAsync(Guid presetId)
+    {
+        if (_avatarSwapBusy || presetId == _activeAvatarPresetId) { CloseActionPopups(); return; }
+        var expectedAccount = AccountId;
+        _avatarSwapBusy = true;
+        try
+        {
+            await Session.ActivateAvatarPresetAsync(presetId);
+            var state = await Session.GetAvatarPresetsAsync();
+            if (AccountId != expectedAccount || state.AccountId != expectedAccount) return;
+            if (_actionModeScope is { } scope)
+            {
+                try { _avatarUsage = await AvatarUsage.RecordAsync(scope, presetId); }
+                catch (Exception exception)
+                {
+                    Logger.LogWarning(exception, "Could not record recent avatar preset {PresetId}.", presetId);
+                }
+            }
+            _avatarPresets = state.Presets;
+            _activeAvatarPresetId = state.ActiveAvatarPresetId;
+            _activeAvatarRevision = state.AvatarRevision;
+            ProfileMedia.Invalidate(expectedAccount, state.AvatarRevision);
+            _attachmentError = null;
+            CloseActionPopups();
+        }
+        catch (Exception exception)
+        {
+            Logger.LogWarning(exception, "Could not activate avatar preset {PresetId} for Account {AccountId}.", presetId, expectedAccount);
+            _attachmentError = exception.GetBaseException().Message;
+            await LoadAvatarPresetsAsync();
+        }
+        finally { _avatarSwapBusy = false; }
+    }
+
+    private async Task ActivateDefaultAvatarAsync()
+    {
+        if (_avatarSwapBusy || _activeAvatarPresetId is null) { CloseActionPopups(); return; }
+        var expectedAccount = AccountId;
+        _avatarSwapBusy = true;
+        try
+        {
+            await Session.ClearActiveAvatarAsync();
+            var state = await Session.GetAvatarPresetsAsync();
+            if (AccountId != expectedAccount || state.AccountId != expectedAccount) return;
+            _avatarPresets = state.Presets;
+            _activeAvatarPresetId = state.ActiveAvatarPresetId;
+            _activeAvatarRevision = state.AvatarRevision;
+            ProfileMedia.Invalidate(expectedAccount, state.AvatarRevision);
+            _attachmentError = null;
+            CloseActionPopups();
+        }
+        catch (Exception exception)
+        {
+            Logger.LogWarning(exception, "Could not restore the default avatar for Account {AccountId}.", expectedAccount);
+            _attachmentError = exception.GetBaseException().Message;
+            await LoadAvatarPresetsAsync();
+        }
+        finally { _avatarSwapBusy = false; }
+    }
+
+    private void CloseActionPopups()
+    {
+        _actionModeMenuOpen = false;
+        _avatarPickerOpen = false;
+        _focusActionPopupAfterRender = false;
+    }
+
+    private async Task HandleActionPopupKeyAsync(KeyboardEventArgs args)
+    {
+        if (args.Key == "Escape") { CloseActionPopups(); return; }
+        var delta = args.Key is "ArrowRight" or "ArrowDown" ? 1 : args.Key is "ArrowLeft" or "ArrowUp" ? -1 : 0;
+        if (delta == 0 || _module is null) return;
+        await _module.InvokeVoidAsync("moveComposerActionPopupFocus", _composerShell,
+            _actionModeMenuOpen ? ".mode-popup button" : ".avatar-picker button:not(:disabled)", delta);
+    }
+
+    private static string AvatarPresetLabel(AccountAvatarPresetDto preset, bool selected)
+    {
+        var name = string.IsNullOrWhiteSpace(preset.DisplayName) ? $"Avatar preset {preset.SlotIndex + 1}" : preset.DisplayName;
+        return selected ? $"{name}, current avatar" : name;
     }
 
     [JSInvokable]
@@ -691,10 +984,12 @@
         }
         _disposed = true;
         Emojis.Changed -= OnEmojiCollectionChanged;
+        ProfileMedia.Changed -= OnProfileMediaChanged;
         if (_module is not null)
         {
             try
             {
+                await _module.InvokeVoidAsync("unwireComposerActionButton", _actionButton);
                 await _module.InvokeVoidAsync("unwireComposer", _textarea);
                 await _module.DisposeAsync();
             }
@@ -790,4 +1085,14 @@
         _emojiIndex.UpdateCustom(_availableEmojis);
         StateHasChanged();
     });
+
+    private void OnProfileMediaChanged(Guid accountId)
+    {
+        if (accountId != AccountId) return;
+        _ = InvokeAsync(async () =>
+        {
+            if (_avatarPickerOpen) await LoadAvatarPresetsAsync();
+            StateHasChanged();
+        });
+    }
 }

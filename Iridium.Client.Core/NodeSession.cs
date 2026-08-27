@@ -113,6 +113,9 @@ public sealed class NodeSession(
     public Task ActivateAvatarPresetAsync(Guid presetId, CancellationToken cancellationToken = default) =>
         AuthorizedClient.ActivateAvatarPresetAsync(presetId, cancellationToken);
 
+    public Task ClearActiveAvatarAsync(CancellationToken cancellationToken = default) =>
+        AuthorizedClient.ClearActiveAvatarAsync(cancellationToken);
+
     public Task DeleteAvatarPresetAsync(Guid presetId, CancellationToken cancellationToken = default) =>
         AuthorizedClient.DeleteAvatarPresetAsync(presetId, cancellationToken);
 

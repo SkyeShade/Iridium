@@ -139,6 +139,9 @@ public sealed class NodeClient(Uri nodeAddress)
     public Task ActivateAvatarPresetAsync(Guid presetId, CancellationToken cancellationToken = default) =>
         SendNoContentAsync(HttpMethod.Put, $"api/account/avatar-presets/{presetId}/active", null, cancellationToken);
 
+    public Task ClearActiveAvatarAsync(CancellationToken cancellationToken = default) =>
+        SendNoContentAsync(HttpMethod.Delete, "api/account/avatar-presets/active", null, cancellationToken);
+
     public Task DeleteAvatarPresetAsync(Guid presetId, CancellationToken cancellationToken = default) =>
         SendNoContentAsync(HttpMethod.Delete, $"api/account/avatar-presets/{presetId}", null, cancellationToken);
 
