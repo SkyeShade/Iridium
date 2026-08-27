@@ -11,8 +11,10 @@ public sealed class OptimisticMessageGroupingTests
         var authorId = Guid.NewGuid();
         var confirmed = Message(authorId, At, "Aria", 7, historical: true);
         var pending = Message(authorId, At.AddSeconds(5), "Aria", 7, pending: true);
+        var presentation = Presentation(Guid.NewGuid(), "Aria", Guid.NewGuid(), 7);
+        var presentations = Presentations((confirmed, presentation), (pending, presentation));
 
-        Assert.False(OptimisticMessageGrouping.StartsNewGroup(confirmed, pending));
+        Assert.False(OptimisticMessageGrouping.StartsNewGroup(confirmed, pending, presentations));
     }
 
     [Fact]
@@ -21,6 +23,8 @@ public sealed class OptimisticMessageGroupingTests
         var authorId = Guid.NewGuid();
         var confirmed = Message(authorId, At, "Aria", 7, historical: true);
         var pending = Message(authorId, At.AddSeconds(5), "Aria", 7, pending: true);
+        var presentation = Presentation(Guid.NewGuid(), "Aria", Guid.NewGuid(), 7);
+        var presentations = Presentations((confirmed, presentation), (pending, presentation));
         var canonical = pending with
         {
             Id = Guid.NewGuid(),
@@ -32,8 +36,41 @@ public sealed class OptimisticMessageGroupingTests
             }
         };
 
-        Assert.False(OptimisticMessageGrouping.StartsNewGroup(confirmed, pending));
-        Assert.False(OptimisticMessageGrouping.StartsNewGroup(confirmed, canonical));
+        Assert.False(OptimisticMessageGrouping.StartsNewGroup(confirmed, pending, presentations));
+        Assert.False(OptimisticMessageGrouping.StartsNewGroup(confirmed, canonical, presentations));
+    }
+
+    [Fact]
+    public void ConfirmedRowAfterPendingSiblingUsesTransientIdentityDuringHandoff()
+    {
+        var authorId = Guid.NewGuid();
+        var presentation = Presentation(null, "Skye", null, 19);
+        var pending = Message(authorId, At.AddSeconds(2), "Skye", 19, pending: true);
+        var confirmed = Confirm(Message(authorId, At.AddSeconds(1), "Skye", 2, pending: true), At.AddSeconds(3));
+        var presentations = Presentations((pending, presentation), (confirmed, presentation));
+
+        Assert.False(OptimisticMessageGrouping.StartsNewGroup(pending, confirmed, presentations));
+    }
+
+    [Fact]
+    public void RapidConfirmationsNeverExposeConfirmedGroupStartForSamePresentation()
+    {
+        var authorId = Guid.NewGuid();
+        var presentation = Presentation(null, "Skye", null, 19);
+        var first = Message(authorId, At, "Skye", 2, historical: true);
+        var second = Message(authorId, At.AddSeconds(1), "Skye", 19, pending: true);
+        var third = Message(authorId, At.AddSeconds(2), "Skye", 19, pending: true);
+        var fourth = Message(authorId, At.AddSeconds(3), "Skye", 19, pending: true);
+        var presentations = Presentations((first, presentation), (second, presentation),
+            (third, presentation), (fourth, presentation));
+
+        AssertEveryFollowingRowGrouped([first, second, third, fourth], presentations);
+        second = Confirm(second, At.AddSeconds(4));
+        AssertEveryFollowingRowGrouped([first, third, fourth, second], presentations);
+        third = Confirm(third, At.AddSeconds(5));
+        AssertEveryFollowingRowGrouped([first, fourth, second, third], presentations);
+        fourth = Confirm(fourth, At.AddSeconds(6));
+        AssertEveryFollowingRowGrouped([first, second, third, fourth], presentations);
     }
 
     [Theory]
@@ -46,6 +83,42 @@ public sealed class OptimisticMessageGroupingTests
         var pending = Message(authorId, At.AddSeconds(5), displayName, avatarRevision, pending: true);
 
         Assert.True(OptimisticMessageGrouping.StartsNewGroup(confirmed, pending));
+    }
+
+    [Fact]
+    public void SameDefaultProfileGroupsDespiteSnapshotAndAccountRevisionDifference()
+    {
+        var authorId = Guid.NewGuid();
+        var accountAvatarId = Guid.NewGuid();
+        var confirmed = Message(authorId, At, "Skye", 2, historical: true);
+        var pending = Message(authorId, At.AddSeconds(5), "Skye", 19, pending: true);
+        var defaultProfile = Presentation(null, "Skye", accountAvatarId, 19);
+
+        Assert.False(OptimisticMessageGrouping.StartsNewGroup(confirmed, pending,
+            Presentations((confirmed, defaultProfile), (pending, defaultProfile))));
+    }
+
+    [Fact]
+    public void CommunityAvatarAssignmentChangesAlwaysStartPendingGroup()
+    {
+        var authorId = Guid.NewGuid();
+        var avatarA = Presentation(Guid.NewGuid(), "Skye", Guid.NewGuid(), 1);
+        var avatarB = Presentation(Guid.NewGuid(), "Skye", Guid.NewGuid(), 1);
+        var defaultProfile = Presentation(null, "Skye", avatarA.AvatarPresetId, 1);
+        var confirmed = Message(authorId, At, "Skye", 1, historical: true);
+        var pending = Message(authorId, At.AddSeconds(5), "Skye", 1, pending: true);
+
+        Assert.True(OptimisticMessageGrouping.StartsNewGroup(confirmed, pending,
+            Presentations((confirmed, avatarA), (pending, avatarB))));
+        Assert.True(OptimisticMessageGrouping.StartsNewGroup(confirmed, pending,
+            Presentations((confirmed, avatarA), (pending, defaultProfile))));
+        Assert.True(OptimisticMessageGrouping.StartsNewGroup(confirmed, pending,
+            Presentations((confirmed, defaultProfile), (pending, avatarA))));
+
+        var confirmedAvatarB = Confirm(Message(authorId, At.AddSeconds(4), "Skye", 1, pending: true),
+            At.AddSeconds(6));
+        Assert.True(OptimisticMessageGrouping.StartsNewGroup(pending, confirmedAvatarB,
+            Presentations((pending, avatarA), (confirmedAvatarB, avatarB))));
     }
 
     [Fact]
@@ -81,6 +154,16 @@ public sealed class OptimisticMessageGroupingTests
     }
 
     [Fact]
+    public void SystemMessageInterruptsPendingGrouping()
+    {
+        var authorId = Guid.NewGuid();
+        var system = Message(authorId, At, "Skye", 12) with { Kind = MessageKind.CallStarted };
+        var pending = Message(authorId, At.AddSeconds(5), "Skye", 12, pending: true);
+
+        Assert.True(OptimisticMessageGrouping.StartsNewGroup(system, pending));
+    }
+
+    [Fact]
     public void FirstPendingMessageStartsGroup()
     {
         var pending = Message(Guid.NewGuid(), At, "Aria", 7, pending: true);
@@ -100,6 +183,34 @@ public sealed class OptimisticMessageGroupingTests
 
     private static readonly DateTimeOffset At = DateTimeOffset.Parse("2026-08-27T12:00:00Z");
 
+    private static OptimisticCommunityAuthorPresentation Presentation(Guid? profilePresetId, string displayName,
+        Guid? avatarPresetId, long avatarRevision) =>
+        new(profilePresetId, displayName, avatarPresetId, avatarRevision);
+
+    private static IReadOnlyDictionary<Guid, OptimisticCommunityAuthorPresentation> Presentations(
+        params (ChannelMessageDto Message, OptimisticCommunityAuthorPresentation Presentation)[] values) =>
+        values.ToDictionary(value => value.Message.ClientMessageId!.Value, value => value.Presentation);
+
+    private static ChannelMessageDto Confirm(ChannelMessageDto message, DateTimeOffset createdAt) => message with
+    {
+        Id = Guid.NewGuid(),
+        CreatedAt = createdAt,
+        DeliveryState = MessageDeliveryState.Confirmed,
+        Author = message.Author with
+        {
+            AvatarRevision = 2,
+            AvatarSnapshotMessageId = Guid.NewGuid(),
+            HasHistoricalSnapshot = true
+        }
+    };
+
+    private static void AssertEveryFollowingRowGrouped(IReadOnlyList<ChannelMessageDto> messages,
+        IReadOnlyDictionary<Guid, OptimisticCommunityAuthorPresentation> presentations)
+    {
+        for (var index = 1; index < messages.Count; index++)
+            Assert.False(OptimisticMessageGrouping.StartsNewGroup(messages[index - 1], messages[index], presentations));
+    }
+
     private static ChannelMessageDto Message(Guid authorId, DateTimeOffset at, string displayName,
         long avatarRevision, bool historical = false, bool pending = false) => new(
         Guid.NewGuid(),
@@ -113,5 +224,6 @@ public sealed class OptimisticMessageGroupingTests
         null,
         false,
         null,
+        ClientMessageId: Guid.NewGuid(),
         DeliveryState: pending ? MessageDeliveryState.Pending : MessageDeliveryState.Confirmed);
 }

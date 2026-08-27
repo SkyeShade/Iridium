@@ -29,7 +29,7 @@
             else
             {
                 <MessageRow @key="(message.ClientMessageId ?? message.Id)" Message="message"
-                        StartsGroup="OptimisticMessageGrouping.StartsNewGroup(previous, message)"
+                        StartsGroup="OptimisticMessageGrouping.StartsNewGroup(previous, message, OptimisticCommunityPresentations)"
                         CanEdit="@(message.Kind == MessageKind.User && message.DeliveryState == MessageDeliveryState.Confirmed && !message.IsDeleted && message.Author.AccountId == CurrentAccountId)"
                         CanDelete="@(message.Id != RootMessageId && message.Kind == MessageKind.User && message.DeliveryState == MessageDeliveryState.Confirmed && !message.IsDeleted && (message.Author.AccountId == CurrentAccountId || CanManage))"
                         CurrentAccountId="CurrentAccountId" NodeAuthority="@NodeAuthority" CommunityManagement="CommunityManagement"
@@ -62,6 +62,7 @@
     [Parameter] public bool CanManage { get; set; }
     [Parameter, EditorRequired] public required string NodeAuthority { get; set; }
     [Parameter] public CommunityManagementDto? CommunityManagement { get; set; }
+    [Parameter] public IReadOnlyDictionary<Guid, OptimisticCommunityAuthorPresentation>? OptimisticCommunityPresentations { get; set; }
     [Parameter] public DirectParticipantDto? DirectParticipant { get; set; }
     [Parameter] public EventCallback OnEditProfile { get; set; }
     [Parameter] public EventCallback OnEditAvatars { get; set; }

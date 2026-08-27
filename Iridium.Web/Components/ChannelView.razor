@@ -18,6 +18,7 @@
     <div class="message-region">
         <MessageList @key="Channel.Id" @ref="_messageList" Messages="VisibleMessages" CurrentAccountId="CurrentAccountId" CanManage="CanManageMessages"
                      NodeAuthority="@NodeAuthority" CommunityManagement="CommunityManagement"
+                     OptimisticCommunityPresentations="_optimisticCommunityPresentations"
                      OnEditProfile="OnEditProfile" OnEditAvatars="OnEditAvatars"
                      OnCommunityProfileChanged="OnCommunityProfileChanged" OnMessage="OnMessage" OnMemberRolesChanged="OnMemberRolesChanged"
                      OnMention="MentionMemberAsync"
@@ -74,6 +75,8 @@
     [Parameter] public bool IsMobileLayout { get; set; }
     private Guid? _loadedChannelId;
     private ChannelMessageDto? _replyTo;
+    private readonly Dictionary<Guid, OptimisticCommunityAuthorPresentation> _optimisticCommunityPresentations = [];
+    private readonly Queue<Guid> _optimisticPresentationOrder = [];
     private MessageComposer? _composer;
     private MessageList? _messageList;
     private Guid? _loadedTargetMessageId;
@@ -99,6 +102,11 @@
         }
         else if (FocusRequest > _consumedFocusRequest) _focusAfterRender = true;
         if (_loadedChannelId == Channel.Id && _loadedTargetMessageId == TargetMessageId) return;
+        if (_loadedChannelId is not null && _loadedChannelId != Channel.Id)
+        {
+            _optimisticCommunityPresentations.Clear();
+            _optimisticPresentationOrder.Clear();
+        }
         _replyTo = null;
         _error = null;
         _loading = true;
@@ -193,10 +201,13 @@
             var smooth = ShowJumpToLatest;
             _messageList?.PrepareUserLatestTransition(smooth);
             var currentMember = CommunityManagement?.Members.FirstOrDefault(value => value.AccountId == CurrentAccountId);
-            Messaging.QueueMessage(submission.Content, _replyTo?.Id, submission.Mentions, submission.Attachments,
+            var clientMessageId = Messaging.QueueMessage(submission.Content, _replyTo?.Id, submission.Mentions, submission.Attachments,
                 submission.UploadAttachments, currentMember is null ? null : new MessageAuthorDto(
                     currentMember.AccountId, currentMember.Username, currentMember.DisplayName,
                     currentMember.AvatarPresetId, currentMember.AvatarRevision));
+            if (currentMember is not null)
+                RememberOptimisticPresentation(clientMessageId, new(currentMember.ProfilePresetId,
+                    currentMember.DisplayName, currentMember.AvatarPresetId, currentMember.AvatarRevision));
             _replyTo = null;
             await RenderAsync();
             if (_composer is not null) await _composer.FocusAsync();
@@ -238,7 +249,19 @@
         }
     }
     private Task RetryMessageAsync(Guid clientMessageId) => Messaging.RetryAsync(clientMessageId);
-    private void RemoveLocalMessage(Guid clientMessageId) => Messaging.RemoveFailedMessage(clientMessageId);
+    private void RemoveLocalMessage(Guid clientMessageId)
+    {
+        _optimisticCommunityPresentations.Remove(clientMessageId);
+        Messaging.RemoveFailedMessage(clientMessageId);
+    }
+    private void RememberOptimisticPresentation(Guid clientMessageId,
+        OptimisticCommunityAuthorPresentation presentation)
+    {
+        _optimisticCommunityPresentations[clientMessageId] = presentation;
+        _optimisticPresentationOrder.Enqueue(clientMessageId);
+        while (_optimisticPresentationOrder.Count > 128)
+            _optimisticCommunityPresentations.Remove(_optimisticPresentationOrder.Dequeue());
+    }
     private Task EditLastOwnMessageAsync() => _messageList?.BeginEditLatestOwnAsync() ?? Task.CompletedTask;
 
     private bool ShowJumpToLatest => _shouldShowJumpToLatest || Messaging.WindowMode == MessageWindowMode.SearchTarget;
@@ -259,11 +282,26 @@
 
     private async Task RenderFromRealtimeAsync()
     {
-        try { await RenderAsync(); }
+        try
+        {
+            ClearCompletedOptimisticPresentations();
+            await RenderAsync();
+        }
         catch (Exception exception) when (!_disposed)
         {
             Logger.LogError(exception, "Rendering a realtime update failed for channel {ChannelId}.", Channel.Id);
         }
+    }
+
+    private void ClearCompletedOptimisticPresentations()
+    {
+        if (_optimisticCommunityPresentations.Count == 0) return;
+        var tracked = VisibleMessages.Where(message => message.ClientMessageId is { } clientMessageId &&
+            _optimisticCommunityPresentations.ContainsKey(clientMessageId)).ToArray();
+        if (tracked.Length == 0 || tracked.Any(message => message.DeliveryState != MessageDeliveryState.Confirmed ||
+                !message.Author.HasHistoricalSnapshot)) return;
+        _optimisticCommunityPresentations.Clear();
+        _optimisticPresentationOrder.Clear();
     }
 
     private Task RenderAsync() => _disposed ? Task.CompletedTask : InvokeAsync(StateHasChanged);
