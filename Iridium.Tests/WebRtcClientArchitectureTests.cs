@@ -59,7 +59,7 @@ public sealed class WebRtcClientArchitectureTests
     {
         var sfu = Source("Iridium.Web", "wwwroot", "js", "liveKitMedia.js");
 
-        Assert.Contains("width: 3840, height: 2160, frameRate: 60", sfu);
+        Assert.Contains("width: 2560, height: 1440, frameRate: 60", sfu);
         Assert.Contains("name === \"Safari\"", sfu);
         Assert.Contains("contentHint = \"detail\"", sfu);
         Assert.Contains("screenShareEncoding: { maxBitrate, maxFramerate: frameRate, priority: \"high\" }", sfu);
@@ -74,7 +74,8 @@ public sealed class WebRtcClientArchitectureTests
         Assert.Contains("{ pixels: 640 * 360, fps30: 1_000_000, fps60: 1_500_000 }", sfu);
         Assert.Contains("{ pixels: 1920 * 1080, fps30: 6_000_000, fps60: 10_000_000 }", sfu);
         Assert.Contains("{ pixels: 2560 * 1440, fps30: 10_000_000, fps60: 16_000_000 }", sfu);
-        Assert.Contains("{ pixels: 3840 * 2160, fps30: 20_000_000, fps60: 30_000_000 }", sfu);
+        Assert.DoesNotContain("{ pixels: 3840 * 2160, fps30: 20_000_000, fps60: 30_000_000 }", sfu);
+        Assert.Contains("Math.min(16_000_000", sfu);
         Assert.Contains("senderEncodingSummary(track)", sfu);
         Assert.Contains("qualityLimitationReasons", sfu);
         Assert.Contains("framesPerSecond", sfu);

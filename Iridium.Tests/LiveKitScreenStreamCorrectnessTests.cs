@@ -47,11 +47,27 @@ public sealed class LiveKitScreenStreamCorrectnessTests
     }
 
     [Fact]
+    public void StreamAudioDiagnosticsCoverEveryCaptureToPlaybackBoundary()
+    {
+        var liveKit = Source("Iridium.Web", "wwwroot", "js", "liveKitMedia.js");
+
+        Assert.Contains("videoTracks: videoTracks.length, audioTracks: audioTracks.length", liveKit);
+        Assert.Contains("LiveKit screen share audio published", liveKit);
+        Assert.Contains("publication: safePublicationDiagnostic(publication)", liveKit);
+        Assert.Contains("LiveKit screen publication discovered", liveKit);
+        Assert.Contains("LiveKit screen track subscribed", liveKit);
+        Assert.Contains("LiveKit screen viewer media attached", liveKit);
+        Assert.Contains("audioAttached: true, playSucceeded: !playback.playBlocked", liveKit);
+        Assert.Contains("selfPreview:", liveKit);
+        Assert.Contains("audioMuted: viewer.audioMuted", liveKit);
+    }
+
+    [Fact]
     public void DiagnosticsCaptureSenderAndSubscriberFrameHealth()
     {
         var liveKit = Source("Iridium.Web", "wwwroot", "js", "liveKitMedia.js");
 
-        Assert.Contains("frameRate: videoSettings.frameRate", liveKit);
+        Assert.Contains("frameRate: settings.frameRate", liveKit);
         Assert.Contains("framesEncoded", liveKit);
         Assert.Contains("framesSent", liveKit);
         Assert.Contains("totalEncodeTime", liveKit);
@@ -63,6 +79,20 @@ public sealed class LiveKitScreenStreamCorrectnessTests
         Assert.Contains("jitterMs", liveKit);
         Assert.Contains("decoderImplementations", liveKit);
         Assert.Contains("sample: \"10s\"", liveKit);
+    }
+
+    [Fact]
+    public void StreamVolumeIsLocalPerViewerAndPersistedByOwner()
+    {
+        var viewer = Source("Iridium.Web", "Components", "VoiceStreamViewer.razor");
+        var liveKit = Source("Iridium.Web", "wwwroot", "js", "liveKitMedia.js");
+
+        Assert.Contains("Preferences.GetAsync(stream.OwnerAccountId)", viewer);
+        Assert.Contains("Preferences.SetScreenShareVolumeAsync(stream.OwnerAccountId", viewer);
+        Assert.Contains("session.viewers.set(elementId", liveKit);
+        Assert.Contains("viewer.audioPlayback", liveKit);
+        Assert.Contains("minimumVolumePercent: 0", liveKit);
+        Assert.Contains("volumePercent: viewer.volumePercent", liveKit);
     }
 
     private static string Source(params string[] parts) => File.ReadAllText(

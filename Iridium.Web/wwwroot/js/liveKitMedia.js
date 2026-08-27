@@ -5,15 +5,14 @@ import { createVoiceActivityGate, evaluateVoiceActivity, inputSensitivityConfigu
 
 const sessions = new Map();
 
-// getDisplayMedia treats these as an upper capture target, so smaller sources retain their
-// native dimensions while 1440p/4K displays are no longer downscaled to LiveKit's 1080p30 default.
-const screenCaptureTarget = Object.freeze({ width: 3840, height: 2160, frameRate: 60 });
+// Capture keeps the selected source's native shape and only scales when it exceeds this box.
+const screenCaptureTarget = Object.freeze({ width: 2560, height: 1440, frameRate: 60 });
+const screenCaptureSources = new WeakMap();
 const screenBitrateAnchors = Object.freeze([
     { pixels: 640 * 360, fps30: 1_000_000, fps60: 1_500_000 },
     { pixels: 1280 * 720, fps30: 3_500_000, fps60: 6_000_000 },
     { pixels: 1920 * 1080, fps30: 6_000_000, fps60: 10_000_000 },
-    { pixels: 2560 * 1440, fps30: 10_000_000, fps60: 16_000_000 },
-    { pixels: 3840 * 2160, fps30: 20_000_000, fps60: 30_000_000 }
+    { pixels: 2560 * 1440, fps30: 10_000_000, fps60: 16_000_000 }
 ]);
 
 function sdk() {
@@ -37,6 +36,29 @@ function allPublications(participant) {
     return Array.from(participant?.trackPublications?.values?.() ?? []);
 }
 
+function safeTrackDiagnostic(track) {
+    if (!track) return null;
+    const settings = track.getSettings?.() ?? {};
+    return {
+        kind: track.kind, label: track.label || null, enabled: track.enabled,
+        muted: track.muted, readyState: track.readyState,
+        settings: {
+            width: settings.width ?? null, height: settings.height ?? null,
+            frameRate: settings.frameRate ?? null, displaySurface: settings.displaySurface ?? null,
+            sampleRate: settings.sampleRate ?? null, channelCount: settings.channelCount ?? null,
+            suppressLocalAudioPlayback: settings.suppressLocalAudioPlayback ?? null
+        }
+    };
+}
+
+function safePublicationDiagnostic(publication) {
+    return {
+        kind: publication?.kind ?? null, source: publication?.source ?? null,
+        trackName: publicationName(publication) || null, trackSid: publication?.trackSid ?? null,
+        isSubscribed: publication?.isSubscribed ?? null, hasTrack: !!publication?.track
+    };
+}
+
 function interpolate(value, lowerValue, upperValue, lowerResult, upperResult) {
     if (upperValue === lowerValue) return upperResult;
     const amount = Math.max(0, Math.min(1, (value - lowerValue) / (upperValue - lowerValue)));
@@ -56,16 +78,26 @@ export function screenShareBitrate(width, height, frameRate) {
     const at30 = interpolate(pixels, lower.pixels, upper.pixels, lower.fps30, upper.fps30);
     const at60 = interpolate(pixels, lower.pixels, upper.pixels, lower.fps60, upper.fps60);
     const target = fps <= 30 ? at30 * Math.max(.5, fps / 30) : interpolate(fps, 30, 60, at30, at60);
-    return Math.max(1_000_000, Math.min(30_000_000, Math.round(target / 250_000) * 250_000));
+    return Math.max(1_000_000, Math.min(16_000_000, Math.round(target / 250_000) * 250_000));
+}
+
+export function fitScreenShareResolution(sourceWidth, sourceHeight, maxWidth = 2560, maxHeight = 1440) {
+    const width = Math.max(2, Number(sourceWidth) || maxWidth);
+    const height = Math.max(2, Number(sourceHeight) || maxHeight);
+    const scale = Math.min(1, maxWidth / width, maxHeight / height);
+    const even = (value, maximum) => Math.max(2, Math.min(maximum, Math.round(value * scale / 2) * 2));
+    return { width: even(width, maxWidth), height: even(height, maxHeight), scale };
 }
 
 function screenSharePublishOptions(track, mediaStreamId) {
     const { VideoPreset } = sdk();
     const settings = track.mediaStreamTrack.getSettings();
-    const width = settings.width || 1920, height = settings.height || 1080;
+    const output = fitScreenShareResolution(settings.width || 1920, settings.height || 1080);
+    const width = output.width, height = output.height;
     const frameRate = Math.max(1, Math.min(60, settings.frameRate || 30));
     const maxBitrate = screenShareBitrate(width, height, frameRate);
-    const lowWidth = Math.max(1, Math.floor(width / 2)), lowHeight = Math.max(1, Math.floor(height / 2));
+    const lowWidth = Math.max(2, Math.round(width / 4) * 2);
+    const lowHeight = Math.max(2, Math.round(height / 4) * 2);
     return {
         settings: { width, height, frameRate }, maxBitrate,
         options: {
@@ -259,6 +291,12 @@ async function diagnoseAudioTransport(session, track, direction, label = "microp
 function setScreenSubscription(session, publication, subscribed) {
     const { Track, VideoQuality } = sdk();
     publication.setSubscribed?.(subscribed);
+    if (session.diagnostics && (publication.source === Track.Source.ScreenShare ||
+        publication.source === Track.Source.ScreenShareAudio))
+        console.debug("LiveKit screen publication subscription requested", {
+            subscribed, watchedMediaStream: session.watched.has(publicationName(publication)),
+            ...safePublicationDiagnostic(publication)
+        });
     if (subscribed && publication.source === Track.Source.ScreenShare && publication.setVideoQuality) {
         publication.setVideoQuality(VideoQuality.HIGH);
         if (session.diagnostics) console.debug("LiveKit screen share subscription", { selectedQuality: "HIGH" });
@@ -299,7 +337,12 @@ function configurePublication(session, publication) {
     const { Track } = sdk();
     const microphone = source === Track.Source.Microphone;
     const screen = source === Track.Source.ScreenShare || source === Track.Source.ScreenShareAudio;
-    if (publication.setSubscribed) setScreenSubscription(session, publication, microphone || (screen && session.watched.has(publicationName(publication))));
+    const shouldSubscribe = microphone || (screen && session.watched.has(publicationName(publication)));
+    if (session.diagnostics && screen) console.debug("LiveKit screen publication discovered", {
+        shouldSubscribe, watchedMediaStream: session.watched.has(publicationName(publication)),
+        ...safePublicationDiagnostic(publication)
+    });
+    if (publication.setSubscribed) setScreenSubscription(session, publication, shouldSubscribe);
 }
 
 function wireRoom(session) {
@@ -314,6 +357,11 @@ function wireRoom(session) {
             });
         if (publication.source === Track.Source.ScreenShareAudio)
             diagnoseAudioTransport(session, track, "inbound", "screen share audio");
+        if (session.diagnostics && (publication.source === Track.Source.ScreenShare ||
+            publication.source === Track.Source.ScreenShareAudio))
+            console.debug("LiveKit screen track subscribed", {
+                ...safePublicationDiagnostic(publication), track: safeTrackDiagnostic(track.mediaStreamTrack)
+            });
         refreshViewers(session, publicationName(publication));
     });
     room.on(RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
@@ -367,12 +415,15 @@ function startLocalSpeaking(session) {
     }
 }
 
-function matchingTracks(session, mediaStreamId) {
-    const publications = [
+function matchingPublications(session, mediaStreamId) {
+    return [
         ...allPublications(session.room.localParticipant),
         ...Array.from(session.room.remoteParticipants.values()).flatMap(allPublications)
     ].filter(p => publicationName(p) === mediaStreamId && p.track?.mediaStreamTrack);
-    return publications.map(p => p.track.mediaStreamTrack);
+}
+
+function matchingTracks(session, mediaStreamId) {
+    return matchingPublications(session, mediaStreamId).map(p => p.track.mediaStreamTrack);
 }
 
 function configureLiveVideoElement(session, viewer, element) {
@@ -407,7 +458,8 @@ async function refreshViewers(session, mediaStreamId) {
         const element = document.getElementById(viewer.elementId);
         if (!element) continue;
         configureLiveVideoElement(session, viewer, element);
-        const tracks = matchingTracks(session, mediaStreamId);
+        const publications = matchingPublications(session, mediaStreamId);
+        const tracks = publications.map(publication => publication.track.mediaStreamTrack);
         const videoTracks = tracks.filter(track => track.kind === "video");
         const audioTrack = tracks.find(track => track.kind === "audio");
         element.srcObject = new MediaStream(videoTracks);
@@ -423,7 +475,13 @@ async function refreshViewers(session, mediaStreamId) {
         if (viewer.audioPlayback) destroyRemoteVoicePlayback(viewer.audioPlayback);
         viewer.audioPlayback = null;
         viewer.audioTrackId = audioTrack?.id ?? null;
-        if (!audioTrack) continue;
+        if (!audioTrack) {
+            if (session.diagnostics) console.debug("LiveKit screen viewer media attached", {
+                mediaStreamId, screenVideoPublication: videoTracks.length > 0,
+                screenAudioPublication: false, audioAttached: false, playSucceeded: null
+            });
+            continue;
+        }
         const playback = await createRemoteVoicePlayback(new MediaStream([audioTrack]), session.audioContext, {
             volumePercent: viewer.volumePercent, minimumVolumePercent: 0,
             locallyMuted: viewer.audioMuted, deafened: session.deafened,
@@ -438,6 +496,15 @@ async function refreshViewers(session, mediaStreamId) {
         }
         viewer.audioPlayback = playback;
         element.dataset.audioBlocked = playback.playBlocked ? "true" : "false";
+        if (session.diagnostics) console.debug("LiveKit screen viewer media attached", {
+            mediaStreamId, screenVideoPublication: videoTracks.length > 0,
+            screenAudioPublication: true, screenAudioSubscribed: publications.some(publication =>
+                publication.source === sdk().Track.Source.ScreenShareAudio && publication.isSubscribed !== false),
+            audioAttached: true, playSucceeded: !playback.playBlocked, playbackMode: playback.mode,
+            selfPreview: allPublications(session.room.localParticipant).some(publication =>
+                publicationName(publication) === mediaStreamId),
+            audioMuted: viewer.audioMuted, volumePercent: viewer.volumePercent
+        });
     }
 }
 
@@ -558,30 +625,59 @@ export function screenShareCaptureOptions(supported = {}, safari = false) {
     captureOptions.windowAudio = "window";
     captureOptions.surfaceSwitching = "include";
     if (!safari) captureOptions.video = {
-        width: { ideal: screenCaptureTarget.width }, height: { ideal: screenCaptureTarget.height },
+        width: { ideal: screenCaptureTarget.width, max: screenCaptureTarget.width },
+        height: { ideal: screenCaptureTarget.height, max: screenCaptureTarget.height },
         frameRate: { ideal: screenCaptureTarget.frameRate, max: screenCaptureTarget.frameRate }
     };
     return captureOptions;
 }
 
-async function captureScreenTracks(session) {
+async function constrainScreenCapture(video) {
+    const source = video.getSettings?.() ?? {};
+    const fitted = fitScreenShareResolution(source.width, source.height);
+    if ((source.width > fitted.width || source.height > fitted.height) && video.applyConstraints) {
+        await video.applyConstraints({
+            width: { ideal: fitted.width, max: fitted.width },
+            height: { ideal: fitted.height, max: fitted.height },
+            aspectRatio: { ideal: source.width / source.height },
+            frameRate: { ideal: Math.min(screenCaptureTarget.frameRate, source.frameRate || screenCaptureTarget.frameRate),
+                max: screenCaptureTarget.frameRate }
+        });
+    }
+    const output = video.getSettings?.() ?? source;
+    if ((output.width || 0) > screenCaptureTarget.width || (output.height || 0) > screenCaptureTarget.height)
+        throw new DOMException("Screen capture could not be constrained to 2560x1440.", "OverconstrainedError");
+    screenCaptureSources.set(video, { sourceWidth: source.width ?? null, sourceHeight: source.height ?? null,
+        sourceFrameRate: source.frameRate ?? null });
+    return { source, output };
+}
+
+export async function captureScreenTracks(session) {
     const { LocalVideoTrack, LocalAudioTrack, Track } = sdk();
     const supported = navigator.mediaDevices?.getSupportedConstraints?.() ?? {};
     const media = await navigator.mediaDevices.getDisplayMedia(
         screenShareCaptureOptions(supported, sdk().getBrowser?.()?.name === "Safari"));
-    const video = media.getVideoTracks()[0];
+    const videoTracks = media.getVideoTracks(), audioTracks = media.getAudioTracks();
+    const video = videoTracks[0];
     if (!video) {
         media.getTracks().forEach(track => track.stop());
         throw new DOMException("Screen capture did not provide a video track.", "NotFoundError");
     }
+    let captureGeometry;
+    try { captureGeometry = await constrainScreenCapture(video); }
+    catch (error) {
+        media.getTracks().forEach(track => track.stop());
+        throw error;
+    }
     const videoTrack = new LocalVideoTrack(video, undefined, false);
     videoTrack.source = Track.Source.ScreenShare;
-    const tracks = [videoTrack], audio = media.getAudioTracks()[0];
-    const videoSettings = video.getSettings();
+    const tracks = [videoTrack], audio = audioTracks[0];
     if (session.diagnostics) console.debug("LiveKit display capture result", {
-            width: videoSettings.width ?? null, height: videoSettings.height ?? null,
-            frameRate: videoSettings.frameRate ?? null, displaySurface: videoSettings.displaySurface ?? null,
-            displayAudioTrackPresent: !!audio,
+            videoTracks: videoTracks.length, audioTracks: audioTracks.length,
+            video: safeTrackDiagnostic(video), audio: safeTrackDiagnostic(audio),
+            sourceWidth: captureGeometry.source.width ?? null, sourceHeight: captureGeometry.source.height ?? null,
+            actualCaptureFPS: captureGeometry.output.frameRate ?? null,
+            outputWidth: captureGeometry.output.width ?? null, outputHeight: captureGeometry.output.height ?? null,
             systemAudioHintRequested: true,
             suppressLocalAudioPlaybackSupported: supported.suppressLocalAudioPlayback === true
         });
@@ -593,18 +689,34 @@ async function captureScreenTracks(session) {
     return tracks;
 }
 
+async function publishCapturedScreenTrack(session, track, options, mediaStreamId) {
+    try { return await session.room.localParticipant.publishTrack(track, options); }
+    catch (error) {
+        if (session.diagnostics) console.debug("LiveKit screen track publication failed", {
+            mediaStreamId, kind: track.kind, source: track.source,
+            errorName: error?.name, errorMessage: error?.message
+        });
+        throw error;
+    }
+}
+
 async function publishScreenTracks(session, tracks, mediaStreamId) {
+    const published = [];
     for (const track of tracks) {
         if (track.kind === "video") {
             track.mediaStreamTrack.contentHint = "detail";
             const profile = screenSharePublishOptions(track, mediaStreamId);
-            await session.room.localParticipant.publishTrack(track, profile.options);
+            const publication = await publishCapturedScreenTrack(session, track, profile.options, mediaStreamId);
+            published.push(publication);
             if (session.diagnostics) console.debug("LiveKit screen share published", {
-                displayVideoTrackPresent: true, displayAudioTrackPresent: tracks.some(value => value.kind === "audio"),
+                videoPublished: true, audioCaptured: tracks.some(value => value.kind === "audio"),
                 displaySurface: track.mediaStreamTrack.getSettings().displaySurface ?? null,
-                audioTrackPublished: tracks.some(value => value.kind === "audio"),
-                ...profile.settings, contentHint: track.mediaStreamTrack.contentHint,
+                publication: safePublicationDiagnostic(publication),
+                ...profile.settings, ...screenCaptureSources.get(track.mediaStreamTrack),
+                outputWidth: profile.settings.width, outputHeight: profile.settings.height,
+                contentHint: track.mediaStreamTrack.contentHint,
                 codec: profile.options.videoCodec, targetMaxBitrateBps: profile.maxBitrate,
+                maxBitrateBps: 16_000_000,
                 configuredSimulcastLayers: profile.options.screenShareSimulcastLayers.length + 1,
                 degradationPreference: profile.options.degradationPreference,
                 senderEncodings: senderEncodingSummary(track)
@@ -615,19 +727,27 @@ async function publishScreenTracks(session, tracks, mediaStreamId) {
                 configuredSimulcastLayers: profile.options.screenShareSimulcastLayers.length + 1
             });
         } else {
-            await session.room.localParticipant.publishTrack(track, {
+            const publication = await publishCapturedScreenTrack(session, track, {
                 name: mediaStreamId, stream: mediaStreamId, source: track.source
-            });
+            }, mediaStreamId);
+            published.push(publication);
             if (session.diagnostics) {
                 const settings = track.mediaStreamTrack.getSettings();
                 console.debug("LiveKit screen share audio published", {
-                    mediaStreamId, sampleRate: settings.sampleRate ?? null,
-                    channelCount: settings.channelCount ?? null, muted: track.mediaStreamTrack.muted
+                    audioPublished: true, mediaStreamId,
+                    publication: safePublicationDiagnostic(publication),
+                    track: safeTrackDiagnostic(track.mediaStreamTrack),
+                    sampleRate: settings.sampleRate ?? null, channelCount: settings.channelCount ?? null
                 });
                 diagnoseAudioTransport(session, track, "outbound", "screen share audio");
             }
         }
     }
+    if (session.diagnostics) console.debug("LiveKit screen share publication complete", {
+        mediaStreamId, publicationCount: published.length,
+        videoPublished: published.some(publication => publication?.kind === "video"),
+        audioPublished: published.some(publication => publication?.kind === "audio")
+    });
 }
 
 function wireScreenEnded(session, tracks, generation) {
@@ -742,6 +862,9 @@ export async function setStreamAudioMuted(id, elementId, muted) {
     const session = sessions.get(id), viewer = session?.viewers.get(elementId);
     if (viewer) viewer.audioMuted = muted;
     updateRemoteVoicePlayback(viewer?.audioPlayback, { locallyMuted: muted, deafened: session?.deafened });
+    if (session?.diagnostics) console.debug("LiveKit screen audio mute changed", {
+        muted, audioAttached: !!viewer?.audioPlayback, playbackMode: viewer?.audioPlayback?.mode ?? "none"
+    });
     if (!muted && viewer?.audioPlayback) {
         await resumeRemoteVoicePlayback(viewer.audioPlayback);
         const element = document.getElementById(elementId);
@@ -755,6 +878,12 @@ export async function setStreamAudioVolume(id, elementId, volumePercent) {
     viewer.volumePercent = Math.min(300, Math.max(0, Number(volumePercent) || 0));
     updateRemoteVoicePlayback(viewer.audioPlayback, { volumePercent: viewer.volumePercent,
         locallyMuted: viewer.audioMuted, deafened: session.deafened });
+    if (session.diagnostics) console.debug("LiveKit screen audio volume changed", {
+        volumePercent: viewer.volumePercent, audioAttached: !!viewer.audioPlayback,
+        effectiveGain: viewer.audioPlayback?.gain?.gain?.value ??
+            (viewer.audioMuted || session.deafened ? 0 : viewer.volumePercent / 100),
+        playbackMode: viewer.audioPlayback?.mode ?? "none"
+    });
     await resumeRemoteVoicePlayback(viewer.audioPlayback);
     const element = document.getElementById(elementId);
     if (element) element.dataset.audioBlocked = viewer.audioPlayback?.playBlocked ? "true" : "false";

@@ -23,6 +23,19 @@ public sealed class VoiceParticipantPreferencesTests
     }
 
     [Fact]
+    public async Task EachViewerPersistsAnIndependentStreamOwnerVolume()
+    {
+        var alice = Guid.NewGuid();
+        var viewerA = new VoiceParticipantPreferencesService(new MemoryStore());
+        var viewerB = new VoiceParticipantPreferencesService(new MemoryStore());
+        await viewerA.SetScreenShareVolumeAsync(alice, 40);
+        await viewerB.SetScreenShareVolumeAsync(alice, 130);
+
+        Assert.Equal(40, (await viewerA.GetAsync(alice)).ScreenShareVolumePercent);
+        Assert.Equal(130, (await viewerB.GetAsync(alice)).ScreenShareVolumePercent);
+    }
+
+    [Fact]
     public async Task ScreenShareVolumeAllowsZeroAndClampsToSharedMaximum()
     {
         var service = new VoiceParticipantPreferencesService(new MemoryStore());

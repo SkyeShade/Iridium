@@ -34,8 +34,8 @@ test("screen-share bitrate follows the high-quality resolution/FPS policy", () =
     assert.equal(bitrate(1920, 1080, 60), 10_000_000);
     assert.equal(bitrate(2560, 1440, 30), 10_000_000);
     assert.equal(bitrate(2560, 1440, 60), 16_000_000);
-    assert.equal(bitrate(3840, 2160, 30), 20_000_000);
-    assert.equal(bitrate(3840, 2160, 60), 30_000_000);
+    assert.equal(bitrate(3840, 2160, 30), 10_000_000);
+    assert.equal(bitrate(3840, 2160, 60), 16_000_000);
     assert.equal(bitrate(640, 360, 30), 1_000_000);
 });
 
