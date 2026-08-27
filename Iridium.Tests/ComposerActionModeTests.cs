@@ -109,6 +109,38 @@ public sealed class ComposerActionModeTests
     }
 
     [Fact]
+    public void SuccessfulQuickAvatarSelectionsReuseDesktopOneShotComposerFocus()
+    {
+        var composer = Source("Iridium.Web", "Components", "MessageComposer.razor");
+        var channel = Source("Iridium.Web", "Components", "ChannelView.razor");
+        var selectStart = composer.IndexOf("private async Task SelectQuickAvatarAsync", StringComparison.Ordinal);
+        var defaultStart = composer.IndexOf("private async Task ActivateDefaultAvatarAsync", StringComparison.Ordinal);
+        var selectionSuccess = composer.IndexOf("_attachmentError = null;", selectStart, StringComparison.Ordinal);
+        var closeSelection = composer.IndexOf("CloseActionPopups();", selectionSuccess, StringComparison.Ordinal);
+        var focusSelection = composer.IndexOf("await OnAvatarSelectionSucceeded.InvokeAsync();", closeSelection,
+            StringComparison.Ordinal);
+        var selectionCatch = composer.IndexOf("catch (Exception exception)", focusSelection, StringComparison.Ordinal);
+        var defaultSuccess = composer.IndexOf("_attachmentError = null;", defaultStart, StringComparison.Ordinal);
+        var closeDefault = composer.IndexOf("CloseActionPopups();", defaultSuccess, StringComparison.Ordinal);
+        var focusDefault = composer.IndexOf("await OnAvatarSelectionSucceeded.InvokeAsync();", closeDefault,
+            StringComparison.Ordinal);
+        var defaultCatch = composer.IndexOf("catch (Exception exception)", focusDefault, StringComparison.Ordinal);
+
+        Assert.True(selectStart >= 0 && selectionSuccess < closeSelection && closeSelection < focusSelection &&
+                    focusSelection < selectionCatch);
+        Assert.True(defaultStart >= 0 && defaultSuccess < closeDefault && closeDefault < focusDefault &&
+                    focusDefault < defaultCatch);
+        Assert.Contains("OnAvatarSelectionSucceeded=\"FocusComposerAfterEditAsync\"", channel);
+        Assert.Contains("private async Task FocusComposerAfterEditAsync()", channel);
+        Assert.Contains("if (IsMobileLayout) return;", channel);
+        Assert.Contains("_focusAfterRender = true;", channel);
+        Assert.Contains("if (_composer is not null) await _composer.FocusAsync();", channel);
+        Assert.DoesNotContain("Task.Delay", composer[selectStart..defaultStart]);
+        Assert.DoesNotContain("Task.Delay", composer[defaultStart..composer.IndexOf(
+            "private void CloseActionPopups", defaultStart, StringComparison.Ordinal)]);
+    }
+
+    [Fact]
     public async Task RecentAvatarUsageOrdersPresetsPerNodeAndAccount()
     {
         var store = new MemoryUsageStore();

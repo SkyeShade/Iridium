@@ -41,6 +41,7 @@
             <MessageComposer @ref="_composer" ChannelName="@Channel.Name" ReplyToDisplayName="@(_replyTo?.Author.DisplayName)" Busy="@_sending"
                              Community="Community" CommunityManagement="CommunityManagement" SendRich="SendMessageAsync" OnCancelReply="CancelReplyAsync"
                              OnCommunityProfileChanged="OnCommunityProfileChanged"
+                             OnAvatarSelectionSucceeded="FocusComposerAfterEditAsync"
                              CanAttachFiles="CanAttachFiles" CanMentionEveryone="CanMentionEveryone"
                              OnEditLastMessage="EditLastOwnMessageAsync"
                              NodeAuthority="@NodeAuthority" AccountId="@CurrentAccountId" ConversationKind="@DraftConversationKind" ConversationId="@(DraftConversationId ?? Channel.Id)" />
