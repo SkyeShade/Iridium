@@ -48,8 +48,9 @@
             var member = Members.FirstOrDefault(value => value.AccountId == participant.AccountId);
             <div class="voice-participant @(participant.Speaking ? "speaking" : null)" title="@(participant.MediaStatus == CommunityVoiceMediaStatus.MediaUnavailable ? "Voice control connected; media backend unavailable" : participant.MediaStatus.ToString())"
                  @oncontextmenu="args => OpenParticipantMenu(participant, args)" @oncontextmenu:preventDefault="true" @oncontextmenu:stopPropagation="true">
-                <span class="participant-avatar"><ProfileAvatar AccountId="participant.AccountId" DisplayName="participant.DisplayName" Presence="participant.Presence"
-                    AvatarPresetId="participant.AvatarPresetId" AvatarRevision="participant.AvatarRevision" Size="tiny" Surface="sidebar" /></span>
+                <span class="participant-avatar"><ProfileAvatar AccountId="participant.AccountId" DisplayName="participant.DisplayName"
+                    AvatarPresetId="participant.AvatarPresetId" AvatarRevision="participant.AvatarRevision"
+                    BadgeMode="AvatarBadgeMode.None" Tooltip="@participant.DisplayName" Size="tiny" Surface="sidebar" /></span>
                 <span class="display-name">@participant.DisplayName</span>
                 @if (participant.Muted) { <Icon Name="microphone" Size="12" /> }
                 @if (participant.Deafened) { <Icon Name="headphones" Size="12" /> }
@@ -61,7 +62,6 @@
                     <VoiceParticipantMenu AccountId="@participant.AccountId"
                                           DisplayName="@(member?.DisplayName ?? participant.DisplayName)"
                                           Username="@(member?.Username ?? participant.Username)"
-                                          Presence="@(member?.Presence ?? participant.Presence)"
                                           AvatarRevision="@(member?.AvatarRevision ?? participant.AvatarRevision)"
                                           X="@_menuX" Y="@_menuY" OnClose="CloseParticipantMenu" />
                 }

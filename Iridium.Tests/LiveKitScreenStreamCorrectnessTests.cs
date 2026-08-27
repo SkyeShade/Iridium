@@ -11,7 +11,7 @@ public sealed class LiveKitScreenStreamCorrectnessTests
         Assert.Contains("CommunityManagement?.Members ?? []", viewer);
         Assert.Contains("Session.DirectConversations, Session.Friends", viewer);
         Assert.DoesNotContain("AvatarPresetId=\"participant.AvatarPresetId\"", viewer);
-        Assert.Contains("Presence=\"@presentation.Presence\"", viewer);
+        Assert.Contains("BadgeMode=\"AvatarBadgeMode.None\"", viewer);
         Assert.Contains("DisplayName=\"@presentation.DisplayName\"", viewer);
     }
 

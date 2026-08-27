@@ -8,7 +8,8 @@
 {
     <section class="dm-call-stage incoming" aria-label="Incoming voice call">
         <div class="single-call-participant">
-            <div class="call-avatar"><ProfileAvatar AccountId="incoming.CallerAccountId" DisplayName="@incoming.CallerDisplayName" Presence="@Participant.Presence" Size="large" Surface="base" /></div>
+            <div class="call-avatar"><ProfileAvatar AccountId="incoming.CallerAccountId" DisplayName="@incoming.CallerDisplayName"
+                                                    BadgeMode="AvatarBadgeMode.None" Tooltip="@incoming.CallerDisplayName" Size="large" Surface="base" /></div>
             <strong>@incoming.CallerDisplayName</strong>
             <span>Incoming voice call</span>
         </div>
@@ -34,11 +35,13 @@ else if (CallForConversation is { } call)
             {
                 <div class="call-participants mobile-preanswer-participants">
                     <div class="call-participant">
-                        <div class="call-avatar"><ProfileAvatar AccountId="CurrentAccountId" DisplayName="@CurrentParticipantName" Presence="PublicPresence.Online" Size="large" Surface="base" /></div>
+                        <div class="call-avatar"><ProfileAvatar AccountId="CurrentAccountId" DisplayName="@CurrentParticipantName"
+                                                                BadgeMode="AvatarBadgeMode.None" Tooltip="@CurrentParticipantName" Size="large" Surface="base" /></div>
                         <strong>@CurrentParticipantName</strong><span>You</span>
                     </div>
                     <div class="call-participant">
-                        <div class="call-avatar"><ProfileAvatar AccountId="Participant.AccountId" DisplayName="@Participant.DisplayName" Presence="@Participant.Presence" Size="large" Surface="base" /></div>
+                        <div class="call-avatar"><ProfileAvatar AccountId="Participant.AccountId" DisplayName="@Participant.DisplayName"
+                                                                BadgeMode="AvatarBadgeMode.None" Tooltip="@Participant.DisplayName" Size="large" Surface="base" /></div>
                         <strong>@Participant.DisplayName</strong><span>Calling</span>
                     </div>
                 </div>
@@ -46,7 +49,8 @@ else if (CallForConversation is { } call)
             else
             {
             <div class="single-call-participant">
-                <div class="call-avatar"><ProfileAvatar AccountId="Participant.AccountId" DisplayName="@Participant.DisplayName" Presence="@Participant.Presence" Size="large" Surface="base" /></div>
+                <div class="call-avatar"><ProfileAvatar AccountId="Participant.AccountId" DisplayName="@Participant.DisplayName"
+                                                        BadgeMode="AvatarBadgeMode.None" Tooltip="@Participant.DisplayName" Size="large" Surface="base" /></div>
                 <strong>@Participant.DisplayName</strong>
                 <span>Calling…</span>
             </div>
@@ -79,7 +83,7 @@ else if (CallForConversation is { } call)
                                 <span class="dm-participant-stream-live">LIVE</span>
                                 <span class="dm-participant-stream-avatar">
                                     <ProfileAvatar AccountId="callParticipant.AccountId" DisplayName="@callParticipant.DisplayName"
-                                                   Presence="@(callParticipant.AccountId == CurrentAccountId ? PublicPresence.Online : Participant.Presence)"
+                                                   BadgeMode="AvatarBadgeMode.None" Tooltip="@callParticipant.DisplayName"
                                                    Size="small" Surface="base" />
                                 </span>
                             </button>
@@ -88,7 +92,7 @@ else if (CallForConversation is { } call)
                         {
                             <div class="call-avatar @(callParticipant.IsSpeaking ? "speaking" : null)">
                                 <ProfileAvatar AccountId="callParticipant.AccountId" DisplayName="@callParticipant.DisplayName"
-                                               Presence="@(callParticipant.AccountId == CurrentAccountId ? PublicPresence.Online : Participant.Presence)"
+                                               BadgeMode="AvatarBadgeMode.None" Tooltip="@callParticipant.DisplayName"
                                                Size="large" Surface="base" />
                             </div>
                         }
@@ -99,7 +103,7 @@ else if (CallForConversation is { } call)
                         {
                             <VoiceParticipantMenu AccountId="@callParticipant.AccountId"
                                                   DisplayName="@Participant.DisplayName" Username="@Participant.Username"
-                                                  Presence="@Participant.Presence" X="@_menuX" Y="@_menuY"
+                                                  X="@_menuX" Y="@_menuY"
                                                   OnClose="CloseParticipantMenu" />
                         }
                     </div>

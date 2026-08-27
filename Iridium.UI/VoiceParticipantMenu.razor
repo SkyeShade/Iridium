@@ -12,15 +12,10 @@
                 @onclick="CloseAsync"><Icon Name="close" /></button>
         <header>
             <ProfileAvatar AccountId="@AccountId" AvatarRevision="@AvatarRevision" DisplayName="@DisplayName"
-                           Presence="@Presence" Size="small" Surface="panel" />
+                           BadgeMode="AvatarBadgeMode.None" Tooltip="@DisplayName" Size="small" Surface="panel" />
             <div class="voice-participant-identity">
                 <strong class="display-name">@DisplayName</strong>
                 <small>@Identity</small>
-                <span class="voice-participant-presence">
-                    <ProfileAvatar Presence="@Presence" BadgeMode="AvatarBadgeMode.PresenceGlyph"
-                                   Size="tiny" Surface="panel" />
-                    <span>@PresenceLabel</span>
-                </span>
             </div>
         </header>
         <div class="voice-popup-divider"></div>
@@ -50,7 +45,6 @@
     [Parameter, EditorRequired] public required Guid AccountId { get; set; }
     [Parameter, EditorRequired] public required string DisplayName { get; set; }
     [Parameter] public string? Username { get; set; }
-    [Parameter] public PublicPresence Presence { get; set; }
     [Parameter] public long AvatarRevision { get; set; }
     [Parameter] public double X { get; set; }
     [Parameter] public double Y { get; set; }
@@ -62,13 +56,6 @@
     private bool _focusPending;
     private string Identity => Username is not null && Session.SelectedNode?.PublicAuthority is { } authority
         ? IridiumIdentity.Format(Username, authority) : "Local voice settings";
-    private string PresenceLabel => Presence switch
-    {
-        PublicPresence.Online => "Online",
-        PublicPresence.Idle => "Idle",
-        PublicPresence.DoNotDisturb => "Do Not Disturb",
-        _ => "Offline"
-    };
     private string PopupPosition => FormattableString.Invariant($"--voice-popup-x:{X}px;--voice-popup-y:{Y}px");
     private string VolumeStyle => FormattableString.Invariant($"--volume-fill:{VolumeFill:0.###}%");
     private double VolumeFill => _preference is null ? 0 :

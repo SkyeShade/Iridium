@@ -75,7 +75,8 @@
                     <div class="viewer-participant">
                         <span class="participant-avatar @(participant.IsSpeaking ? "speaking" : null)">
                             <ProfileAvatar AccountId="@presentation.AccountId" DisplayName="@presentation.DisplayName"
-                                           AvatarRevision="@presentation.AvatarRevision" Presence="@presentation.Presence"
+                                           AvatarRevision="@presentation.AvatarRevision" BadgeMode="AvatarBadgeMode.None"
+                                           Tooltip="@presentation.DisplayName"
                                            Size="medium" Surface="base" />
                         </span>
                         <span>@presentation.DisplayName</span>
@@ -91,7 +92,8 @@
                     <div class="viewer-participant">
                         <span class="participant-avatar @(participant.Speaking ? "speaking" : null)">
                             <ProfileAvatar AccountId="@presentation.AccountId" DisplayName="@presentation.DisplayName"
-                                           AvatarRevision="@presentation.AvatarRevision" Presence="@presentation.Presence"
+                                           AvatarRevision="@presentation.AvatarRevision" BadgeMode="AvatarBadgeMode.None"
+                                           Tooltip="@presentation.DisplayName"
                                            Size="medium" Surface="base" />
                         </span>
                         <span>@presentation.DisplayName</span>
