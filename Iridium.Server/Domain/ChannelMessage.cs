@@ -30,4 +30,5 @@ public sealed class ChannelMessage
     public ForwardedMessageSnapshot? ForwardedMessageSnapshot { get; set; }
     public ICollection<ChannelMessage> Replies { get; set; } = [];
     public ICollection<Attachment> Attachments { get; set; } = [];
+    public ICollection<MessageReaction> Reactions { get; set; } = [];
 }

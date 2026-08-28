@@ -1,0 +1,105 @@
+@using Iridium.Protocol
+@inject ChannelMessagingSession Messaging
+
+<div class="reaction-details-backdrop" role="presentation" @onclick="CloseAsync">
+    <section class="reaction-details" role="dialog" aria-modal="true" aria-label="View Reactions"
+             @onclick:stopPropagation="true">
+        <header><h2>Reactions</h2><button type="button" aria-label="Close" @onclick="CloseAsync"><Icon Name="close" /></button></header>
+        <div class="reaction-layout">
+            <nav aria-label="Reaction emoji">
+                @foreach (var summary in Message.Reactions ?? [])
+                {
+                    <button type="button" class="@(Same(summary.Emoji, _selected) ? "selected" : null)"
+                            @onclick="() => SelectAsync(summary.Emoji)">
+                        <ReactionEmojiArtwork Emoji="summary.Emoji" /><span>@summary.Count</span>
+                    </button>
+                }
+            </nav>
+            <main>
+                @if (_loading) { <p>Loading reactions...</p> }
+                else if (!string.IsNullOrWhiteSpace(_error)) { <p class="error">@_error</p> }
+                else
+                {
+                    @foreach (var user in _users)
+                    {
+                        <div class="reactor-row">
+                            <ProfileAvatar AccountId="user.AccountId" DisplayName="user.DisplayName"
+                                           AvatarPresetId="user.AvatarPresetId" AvatarRevision="user.AvatarRevision"
+                                           BadgeMode="AvatarBadgeMode.None" Size="small" Surface="base" />
+                            <strong>@user.DisplayName</strong>
+                            @if (user.AccountId == CurrentAccountId || CanManage)
+                            {
+                                <button type="button" title="Remove reaction" aria-label="Remove @user.DisplayName's reaction"
+                                        @onclick="() => RemoveAsync(user.AccountId)"><Icon Name="close" /></button>
+                            }
+                        </div>
+                    }
+                    @if (_next is not null) { <button class="load-more" type="button" @onclick="LoadMoreAsync">Load more</button> }
+                }
+            </main>
+        </div>
+    </section>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public required ChannelMessageDto Message { get; set; }
+    [Parameter, EditorRequired] public required Guid CurrentAccountId { get; set; }
+    [Parameter] public bool CanManage { get; set; }
+    [Parameter] public bool IsDirectMessage { get; set; }
+    [Parameter] public Guid? DirectConversationId { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    private ReactionEmojiDto? _selected;
+    private List<ReactionUserDto> _users = [];
+    private string? _next;
+    private string? _error;
+    private bool _loading;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _selected = Message.Reactions?.FirstOrDefault()?.Emoji;
+        if (_selected is not null) await LoadAsync(false);
+    }
+    private async Task SelectAsync(ReactionEmojiDto emoji) { _selected = emoji; await LoadAsync(false); }
+    private async Task LoadMoreAsync() => await LoadAsync(true);
+    private async Task LoadAsync(bool append)
+    {
+        if (_selected is null) return;
+        _loading = true; _error = null;
+        try
+        {
+            Guid? after = append && Guid.TryParse(_next, out var cursor) ? cursor : null;
+            var details = IsDirectMessage && DirectConversationId is { } conversationId
+                ? await Messaging.GetDirectReactionDetailsAsync(conversationId, Message.Id, Request(_selected), after)
+                : await Messaging.GetReactionDetailsAsync(Message.Id, Request(_selected), after);
+            if (!append) _users.Clear();
+            _users.AddRange(details.Users);
+            _next = details.NextCursor;
+        }
+        catch (Exception exception) { _error = exception.GetBaseException().Message; }
+        finally { _loading = false; }
+    }
+    private async Task RemoveAsync(Guid accountId)
+    {
+        if (_selected is null) return;
+        _error = null;
+        try
+        {
+            if (IsDirectMessage)
+            {
+                if (accountId != CurrentAccountId) return;
+                await Messaging.RemoveDirectReactionAsync(Message.Id, Request(_selected));
+            }
+            else await Messaging.RemoveReactionAsync(Message.Id, Request(_selected), accountId);
+            _users.RemoveAll(value => value.AccountId == accountId);
+            if (_users.Count == 0 && (Message.Reactions?.FirstOrDefault(value => Same(value.Emoji, _selected))?.Count ?? 1) <= 1)
+                await CloseAsync();
+        }
+        catch (Exception exception) { _error = exception.GetBaseException().Message; }
+    }
+    private Task CloseAsync() => OnClose.InvokeAsync();
+    private static ReactionEmojiRequest Request(ReactionEmojiDto emoji) => new(emoji.Kind,
+        emoji.StandardEmojiValue, emoji.CustomEmojiId);
+    private static bool Same(ReactionEmojiDto left, ReactionEmojiDto? right) => right is not null &&
+        left.Kind == right.Kind && (left.Kind == ReactionEmojiKind.Standard
+            ? left.StandardEmojiValue == right.StandardEmojiValue : left.CustomEmojiId == right.CustomEmojiId);
+}

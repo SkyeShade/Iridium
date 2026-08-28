@@ -10,6 +10,7 @@ using Iridium.Server.Configuration;
 using Microsoft.Extensions.Options;
 using Iridium.Server.Calls;
 using Iridium.Server.Voice;
+using Iridium.Server.Messages;
 
 namespace Iridium.Server.Hubs;
 
@@ -20,6 +21,7 @@ public sealed class ChatHub(
     SessionService sessions,
     CommunityAuthorizationService authorization,
     HistoricalAuthorPresentationService historicalAuthors,
+    MessageReactionService reactions,
     IOptions<NodeOptions> nodeOptions,
     ICommunityLimitsService limitService,
     ICallService calls,
@@ -38,7 +40,10 @@ public sealed class ChatHub(
     private const string AccountKey = "iridium.account-id";
     private const string LastTypingSignalKey = "iridium.last-typing-signal";
     private const string TypingSessionKey = "iridium.typing-session";
+    private const string ReactionRateKey = "iridium.reaction-rate";
     private static readonly TimeSpan MinimumTypingSignalInterval = TimeSpan.FromMilliseconds(500);
+    private static readonly TimeSpan ReactionRateWindow = TimeSpan.FromSeconds(10);
+    private const int ReactionRateLimit = 30;
 
     public override async Task OnConnectedAsync()
     {
@@ -446,6 +451,63 @@ public sealed class ChatHub(
         return result;
     }
 
+    public async Task<ReactionSummaryDto> AddReaction(Guid messageId, ReactionEmojiRequest request)
+    {
+        RequireReactionRateLimit();
+        var session = await RequireSessionAsync();
+        MessageReactionChangedEvent changed;
+        try { changed = await reactions.AddAsync(messageId, session.AccountId, request, Context.ConnectionAborted); }
+        catch (KeyNotFoundException exception) { throw new HubException(exception.Message); }
+        catch (UnauthorizedAccessException exception) { throw new HubException(exception.Message); }
+        await Clients.Group(GroupName(changed.CommunityId, changed.ChannelId))
+            .SendAsync(ChatHubContract.MessageReactionChanged, changed);
+        return new(changed.Emoji, changed.Count, true);
+    }
+
+    public async Task<ReactionSummaryDto> RemoveReaction(Guid messageId, ReactionEmojiRequest request,
+        Guid? targetAccountId = null)
+    {
+        RequireReactionRateLimit();
+        var session = await RequireSessionAsync();
+        MessageReactionChangedEvent changed;
+        try { changed = await reactions.RemoveAsync(messageId, session.AccountId, request, targetAccountId,
+            Context.ConnectionAborted); }
+        catch (KeyNotFoundException exception) { throw new HubException(exception.Message); }
+        catch (UnauthorizedAccessException exception) { throw new HubException(exception.Message); }
+        await Clients.Group(GroupName(changed.CommunityId, changed.ChannelId))
+            .SendAsync(ChatHubContract.MessageReactionChanged, changed);
+        return new(changed.Emoji, changed.Count, false);
+    }
+
+    public async Task<ReactionSummaryDto> AddDirectMessageReaction(Guid messageId, ReactionEmojiRequest request)
+    {
+        RequireReactionRateLimit();
+        var session = await RequireSessionAsync();
+        DirectMessageReactionChangedEvent changed;
+        try { changed = await reactions.AddDirectAsync(messageId, session.AccountId, request,
+            Context.ConnectionAborted); }
+        catch (KeyNotFoundException exception) { throw new HubException(exception.Message); }
+        catch (UnauthorizedAccessException exception) { throw new HubException(exception.Message); }
+        var conversation = await RequireDirectConversationAsync(changed.ConversationId, session.AccountId);
+        await DirectParticipants(conversation).SendAsync(DirectMessageHubContract.MessageReactionChanged, changed);
+        return new(changed.Emoji, changed.Count, true);
+    }
+
+    public async Task<ReactionSummaryDto> RemoveDirectMessageReaction(Guid messageId,
+        ReactionEmojiRequest request)
+    {
+        RequireReactionRateLimit();
+        var session = await RequireSessionAsync();
+        DirectMessageReactionChangedEvent changed;
+        try { changed = await reactions.RemoveDirectAsync(messageId, session.AccountId, request,
+            Context.ConnectionAborted); }
+        catch (KeyNotFoundException exception) { throw new HubException(exception.Message); }
+        catch (UnauthorizedAccessException exception) { throw new HubException(exception.Message); }
+        var conversation = await RequireDirectConversationAsync(changed.ConversationId, session.AccountId);
+        await DirectParticipants(conversation).SendAsync(DirectMessageHubContract.MessageReactionChanged, changed);
+        return new(changed.Emoji, changed.Count, false);
+    }
+
     public async Task<ForwardMessagesResultDto> ForwardMessage(ForwardMessageRequest request)
     {
         var session = await RequireSessionAsync();
@@ -622,7 +684,8 @@ public sealed class ChatHub(
         message.EditedAt = DateTimeOffset.UtcNow;
         if (rootForumPost is not null) rootForumPost.UpdatedAt = message.EditedAt.Value;
         await db.SaveChangesAsync();
-        var result = await ChannelMessageMapper.ResolveCommunityProfileAsync(ChannelMessageMapper.ToDto(message), db);
+        var mapped = await ChannelMessageMapper.ResolveCommunityProfileAsync(ChannelMessageMapper.ToDto(message), db);
+        var result = (await reactions.AttachSummariesAsync([mapped], accountId, Context.ConnectionAborted))[0];
         await Clients.Group(GroupName(communityId, channelId)).SendAsync(ChatHubContract.MessageUpdated, result);
         if (rootForumPost is not null) await PublishForumPostAsync(rootForumPost, "updated", accountId);
         return result;
@@ -644,6 +707,7 @@ public sealed class ChatHub(
         message.IsDeleted = true;
         message.Content = string.Empty;
         message.DeletedAt = DateTimeOffset.UtcNow;
+        await db.MessageReactions.Where(value => value.MessageId == messageId).ExecuteDeleteAsync();
         await db.SaveChangesAsync();
         await Clients.Group(GroupName(communityId, channelId)).SendAsync(
             ChatHubContract.MessageDeleted,
@@ -1008,6 +1072,7 @@ public sealed class ChatHub(
         message.IsDeleted = true;
         message.Content = string.Empty;
         message.DeletedAt = DateTimeOffset.UtcNow;
+        await db.DirectMessageReactions.Where(value => value.MessageId == messageId).ExecuteDeleteAsync();
         await db.SaveChangesAsync();
         await DirectParticipants(conversation).SendAsync(
             DirectMessageHubContract.MessageDeleted,
@@ -1204,6 +1269,15 @@ public sealed class ChatHub(
     }
 
     private async Task<Guid> RequireAccountAsync() => (await RequireSessionAsync()).AccountId;
+    private void RequireReactionRateLimit()
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (!Context.Items.TryGetValue(ReactionRateKey, out var stored) || stored is not Queue<DateTimeOffset> uses)
+            Context.Items[ReactionRateKey] = uses = new();
+        while (uses.TryPeek(out var at) && now - at >= ReactionRateWindow) uses.Dequeue();
+        if (uses.Count >= ReactionRateLimit) throw new HubException("You are changing reactions too quickly.");
+        uses.Enqueue(now);
+    }
     private async Task<AccountSession> RequireSessionAsync() =>
         await GetSessionAsync() ?? throw new HubException("Your session is no longer valid. Sign in again.");
 

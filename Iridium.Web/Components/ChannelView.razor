@@ -18,6 +18,7 @@
     }
     <div class="message-region">
         <MessageList @key="Channel.Id" @ref="_messageList" Messages="VisibleMessages" CurrentAccountId="CurrentAccountId" CanManage="CanManageMessages"
+                     CanAddReactions="CanAddReactions" CanUseExternalEmoji="CanUseExternalEmoji"
                      IsMobileLayout="IsMobileLayout"
                      NodeAuthority="@NodeAuthority" CommunityManagement="CommunityManagement"
                      OptimisticCommunityPresentations="_optimisticCommunityPresentations"
@@ -62,6 +63,8 @@
     [Parameter, EditorRequired] public required CommunityChannelDto Channel { get; set; }
     [Parameter, EditorRequired] public required Guid CurrentAccountId { get; set; }
     [Parameter] public bool CanManageMessages { get; set; }
+    [Parameter] public bool CanAddReactions { get; set; }
+    [Parameter] public bool CanUseExternalEmoji { get; set; }
     [Parameter] public bool CanSend { get; set; } = true;
     [Parameter] public bool CanAttachFiles { get; set; } = true;
     [Parameter] public bool CanMentionEveryone { get; set; }

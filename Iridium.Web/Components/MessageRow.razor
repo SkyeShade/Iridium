@@ -8,8 +8,11 @@
 @inject CommunityEmojiService Emojis
 @inject ExternalEmbedResolver ExternalEmbeds
 @inject ModifierKeyStateService ModifierKeys
+@inject ChannelMessagingSession Messaging
+@inject EmojiPickerPreferencesService EmojiPreferences
+@inject ReactionEmojiPickerCoordinator ReactionPickers
 
-<article class="message-row @(StartsGroup ? "group-start" : "compact") @(Message.IsDeleted ? "deleted" : null) @(MentionsCurrentAccount ? "mentions-current-account" : null) @DeliveryClass"
+<article @ref="_messageRow" class="message-row @(StartsGroup ? "group-start" : "compact") @(Message.IsDeleted ? "deleted" : null) @(MentionsCurrentAccount ? "mentions-current-account" : null) @DeliveryClass"
          data-message-id="@Message.Id" @onpointerenter="MessageEntered" @onpointerleave="MessageLeft">
     @if (Message.ReplyTo is { } reply)
     {
@@ -93,11 +96,37 @@
                 </div>
             }
         </div>
+        @if (Message.Reactions is { Count: > 0 } reactionSummaries)
+        {
+            <div class="message-reactions" aria-label="Message reactions">
+                @foreach (var reaction in reactionSummaries)
+                {
+                    <button type="button" class="reaction-pill @(reaction.CurrentUserReacted ? "selected" : null)"
+                            aria-pressed="@reaction.CurrentUserReacted" aria-label="@ReactionLabel(reaction)"
+                            title="@ReactionLabel(reaction)" @onclick="() => ToggleReactionAsync(reaction.Emoji)"
+                            @onclick:stopPropagation="true">
+                        <ReactionEmojiArtwork Emoji="reaction.Emoji" /><span>@reaction.Count</span>
+                    </button>
+                }
+                @if (CanAddReactions)
+                {
+                    <button @ref="_reactionRowButton" type="button" class="reaction-add" title="Add Reaction"
+                            aria-label="Add Reaction" @onclick="() => OpenReactionPicker(true)" @onclick:stopPropagation="true">
+                        <Icon Name="plus" />
+                    </button>
+                }
+            </div>
+        }
+        @if (!string.IsNullOrWhiteSpace(_reactionError))
+        {
+            <div class="reaction-error" role="status">@_reactionError</div>
+        }
     </div>
 
     @if (Message.DeliveryState == MessageDeliveryState.Confirmed && !Message.IsDeleted && !_editing)
     {
         <div class="message-actions @(ModifierKeys.ShiftPressed && _messageHovered ? "expanded" : null)">
+            @if (CanAddReactions) { <button @ref="_reactionHoverButton" title="Add Reaction" @onclick="() => OpenReactionPicker(false)" @onclick:stopPropagation="true"><Icon Name="emoji" /></button> }
             <button title="Reply" @onclick="ReplyAsync" @onclick:stopPropagation="true"><Icon Name="reply" /></button>
             @if (CanEdit) { <button title="Edit" @onclick="BeginEdit" @onclick:stopPropagation="true"><Icon Name="edit" /></button> }
             @if (CanDelete) { <button class="shift-action destructive" title="Delete Message" @onclick="DeleteAsync" @onclick:stopPropagation="true"><Icon Name="trash" /></button> }
@@ -106,7 +135,21 @@
         @if (_menuOpen && !IsMobileLayout)
         {
             <div class="message-menu" @onpointerenter="MenuEntered" @onpointerleave="MenuLeft" @onclick:stopPropagation="true">
+                @if (CanAddReactions && _quickReactions.Count > 0)
+                {
+                    <div class="quick-reactions" aria-label="Quick reactions">
+                        @foreach (var quick in _quickReactions)
+                        {
+                            <button type="button" title="Quick reaction" @onclick="() => QuickReactionAsync(quick)">
+                                @if (quick.Standard is { } standard) { <StandardEmojiArtwork Glyph="standard.Glyph" ArtworkKey="standard.ArtworkKey" /> }
+                                else if (quick.Custom is { } custom) { <CommunityEmojiImage Emoji="custom" /> }
+                            </button>
+                        }
+                    </div>
+                }
                 <button @onclick="ReplyFromMenuAsync"><Icon Name="reply" /> Reply</button>
+                @if (CanAddReactions) { <button @onclick="OpenReactionPickerFromMenu"><Icon Name="emoji" /> Add Reaction</button> }
+                @if (Message.Reactions is { Count: > 0 }) { <button @onclick="OpenReactionDetails"><Icon Name="emoji" /> View Reactions</button> }
                 <button @onclick="ForwardFromMenu"><Icon Name="forward" /> Forward</button>
                 @if (CanEdit) { <button @onclick="EditFromMenu"><Icon Name="edit" /> Edit</button> }
                 @if (CanDelete) { <button class="destructive" @onclick="DeleteAsync"><Icon Name="trash" /> Delete Message</button> }
@@ -117,8 +160,16 @@
 @if (_menuOpen && IsMobileLayout)
 {
     <MobileMessageActionSheet MessageId="Message.Id" CanEdit="CanEdit" CanDelete="CanDelete"
+                              CanAddReaction="CanAddReactions" HasReactions="@(Message.Reactions is { Count: > 0 })"
+                              OnAddReaction="OpenReactionPickerFromMenu" OnViewReactions="OpenReactionDetails"
                               OnReply="ReplyFromMenuAsync" OnForward="ForwardFromMenu"
                               OnEdit="EditFromMenu" OnDelete="DeleteAsync" OnClose="CloseMessageMenu" />
+}
+@if (_reactionDetailsOpen)
+{
+    <ReactionDetailsModal Message="Message" CurrentAccountId="CurrentAccountId" CanManage="CanManageReactions"
+                          IsDirectMessage="IsDirectMessage" DirectConversationId="@(IsDirectMessage ? Message.ChannelId : null)"
+                          OnClose="CloseReactionDetails" />
 }
 @if (_forwardOpen)
 {
@@ -151,6 +202,9 @@
     [Parameter] public bool StartsGroup { get; set; }
     [Parameter] public bool CanEdit { get; set; }
     [Parameter] public bool CanDelete { get; set; }
+    [Parameter] public bool CanAddReactions { get; set; }
+    [Parameter] public bool CanUseExternalEmoji { get; set; }
+    [Parameter] public bool CanManageReactions { get; set; }
     [Parameter] public bool IsMobileLayout { get; set; }
     [Parameter, EditorRequired] public required Guid CurrentAccountId { get; set; }
     [Parameter, EditorRequired] public required string NodeAuthority { get; set; }
@@ -180,6 +234,13 @@
     private bool _editing;
     private bool _savingEdit;
     private bool _forwardOpen;
+    private bool _reactionDetailsOpen;
+    private bool _reactionPickerFromRow;
+    private string? _reactionError;
+    private ElementReference _reactionHoverButton;
+    private ElementReference _reactionRowButton;
+    private ElementReference _messageRow;
+    private IReadOnlyList<EmojiPickerSearchResult> _quickReactions = [];
     private string _editContent = string.Empty;
     private IJSObjectReference? _module;
     private ResolvedProfileDto? _profile;
@@ -207,6 +268,81 @@
         MessageDeliveryState.Failed => "failed",
         _ => null
     };
+    private ElementReference ReactionPickerAnchor => _reactionPickerFromRow ? _reactionRowButton :
+        IsMobileLayout ? _messageRow : _reactionHoverButton;
+    private static ReactionEmojiRequest ReactionRequest(ReactionEmojiDto emoji) =>
+        new(emoji.Kind, emoji.StandardEmojiValue, emoji.CustomEmojiId);
+    private static string ReactionLabel(ReactionSummaryDto reaction) =>
+        $"{(reaction.Emoji.Kind == ReactionEmojiKind.Standard ? reaction.Emoji.StandardEmojiValue : $":{reaction.Emoji.CustomEmojiName ?? "deleted_emoji"}:")} {reaction.Count}";
+    private async Task ToggleReactionAsync(ReactionEmojiDto emoji)
+    {
+        _reactionError = null;
+        try
+        {
+            if (IsDirectMessage) await Messaging.ToggleDirectReactionAsync(Message.Id, ReactionRequest(emoji));
+            else await Messaging.ToggleReactionAsync(Message.Id, ReactionRequest(emoji));
+        }
+        catch (Exception exception) { _reactionError = exception.GetBaseException().Message; }
+    }
+    private void OpenReactionPicker(bool fromRow)
+    {
+        MessageMenus.Close(Message.Id);
+        _reactionPickerFromRow = fromRow;
+        ReactionPickers.Open(new(Message.Id, CommunityManagement?.Community, CurrentAccountId,
+            CanUseExternalEmoji, ReactionPickerAnchor, ReactionSelectedAsync));
+    }
+    private void OpenReactionPickerFromMenu() => OpenReactionPicker(false);
+    private async Task ReactionSelectedAsync(EmojiSelection selection)
+    {
+        var request = selection.CustomEmojiId is { } customId
+            ? new ReactionEmojiRequest(ReactionEmojiKind.Custom, CustomEmojiId: customId)
+            : new ReactionEmojiRequest(ReactionEmojiKind.Standard, selection.InsertText);
+        _reactionError = null;
+        try
+        {
+            if (IsDirectMessage) await Messaging.AddDirectReactionAsync(Message.Id, request);
+            else await Messaging.AddReactionAsync(Message.Id, request);
+            await EmojiPreferences.RecordUsageAsync(CurrentAccountId, selection.CustomEmojiId is { } id
+                ? EmojiPickerPreferencesService.CustomKey(id)
+                : EmojiPickerPreferencesService.StandardKey(selection.StandardArtworkKey ?? string.Empty));
+            if (!ModifierKeys.ShiftPressed) ReactionPickers.Close(Message.Id);
+        }
+        catch (Exception exception) { _reactionError = exception.GetBaseException().Message; }
+    }
+    private async Task QuickReactionAsync(EmojiPickerSearchResult result)
+    {
+        var selection = result.Standard is { } standard
+            ? new EmojiSelection(standard.Glyph, standard.Name, StandardArtworkKey: standard.ArtworkKey)
+            : new EmojiSelection($":{result.Custom!.Name}:", result.Custom.Name, result.Custom.Id,
+                result.Community!.Id);
+        MessageMenus.Close(Message.Id);
+        ReactionPickers.Close(Message.Id);
+        await ReactionSelectedAsync(selection);
+    }
+    private async Task LoadQuickReactionsAsync()
+    {
+        if (!CanAddReactions) { _quickReactions = []; return; }
+        var available = await Emojis.GetAvailableAsync();
+        var preferences = await EmojiPreferences.GetAsync(CurrentAccountId);
+        var results = new List<EmojiPickerSearchResult>();
+        foreach (var usage in preferences.UsageHistory.OrderByDescending(value => value.UseCount)
+                     .ThenByDescending(value => value.LastUsedAt))
+        {
+            if (usage.EmojiKey.StartsWith("standard:", StringComparison.Ordinal) &&
+                StandardEmojiCatalog.All.FirstOrDefault(value => value.ArtworkKey == usage.EmojiKey[9..]) is { } standard)
+                results.Add(new(Standard: standard));
+            else if (usage.EmojiKey.StartsWith("custom:", StringComparison.Ordinal) &&
+                     Guid.TryParseExact(usage.EmojiKey[7..], "N", out var id) &&
+                     available.FirstOrDefault(value => value.Emoji.Id == id &&
+                         (CanUseExternalEmoji || value.Community.Id == Message.CommunityId)) is { } custom)
+                results.Add(new(Community: custom.Community, Custom: custom.Emoji));
+            if (results.Count == 4) break;
+        }
+        _quickReactions = results;
+    }
+    private void OpenReactionDetails() { MessageMenus.Close(Message.Id); _reactionDetailsOpen = true; }
+    private void CloseReactionDetails() => _reactionDetailsOpen = false;
+    private bool IsDirectMessage => Message.CommunityId == Guid.Empty;
     private bool MentionsCurrentAccount => CommunityMentionPresentation.IsTargetedAt(Message, CurrentAccountId, CommunityManagement);
 
     private string? ReplyAuthorStyle(Guid accountId)
@@ -229,7 +365,7 @@
     private ForwardMessageSourceDto ForwardSource => Message.CommunityId == Guid.Empty
         ? new(MessageLocationKind.DirectConversation, Message.Id, ConversationId: Message.ChannelId)
         : new(MessageLocationKind.CommunityChannel, Message.Id, Message.CommunityId, Message.ChannelId);
-    private void ToggleMenu() { CancelMenuClose(); MessageMenus.Toggle(Message.Id); }
+    private async Task ToggleMenu() { CancelMenuClose(); MessageMenus.Toggle(Message.Id); if (_menuOpen) await LoadQuickReactionsAsync(); }
     private void CloseMessageMenu() => MessageMenus.Close(Message.Id);
     private readonly List<CommunityEmojiDraftReference> _editEmojiReferences = [];
     private readonly List<StandardEmojiDraftReference> _editStandardEmojiReferences = [];
@@ -403,6 +539,7 @@
         MessageMenus.Changed -= MenuChanged;
         ModifierKeys.Changed -= ModifierChanged;
         MessageMenus.Close(Message.Id);
+        ReactionPickers.Close(Message.Id);
         CancelMenuClose();
         if (_module is not null)
         {

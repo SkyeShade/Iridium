@@ -25,6 +25,7 @@ builder.Services.AddScoped<MessageMenuCoordinator>();
 builder.Services.AddScoped<ModifierKeyStateService>();
 builder.Services.AddScoped<MobilePanelNavigationState>();
 builder.Services.AddScoped<EmojiDetailPopupCoordinator>();
+builder.Services.AddScoped<ReactionEmojiPickerCoordinator>();
 builder.Services.AddScoped<UiSoundService>();
 builder.Services.AddScoped<FaviconNotificationService>();
 builder.Services.AddScoped<IAttachmentComposerService, AttachmentComposerService>();

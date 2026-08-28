@@ -309,6 +309,71 @@ public static class DatabaseCompatibility
             """);
     }
 
+    public static async Task EnsureMessageReactionSchemaAsync(IridiumDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS MessageReactions (
+                MessageId TEXT NOT NULL,
+                AccountId TEXT NOT NULL,
+                EmojiKey TEXT NOT NULL,
+                EmojiKind INTEGER NOT NULL,
+                StandardEmojiValue TEXT NULL,
+                CustomEmojiId TEXT NULL,
+                CustomEmojiNameSnapshot TEXT NULL,
+                CustomEmojiContentTypeSnapshot TEXT NULL,
+                CustomEmojiAnimatedSnapshot INTEGER NOT NULL DEFAULT 0,
+                CustomEmojiWidthSnapshot INTEGER NOT NULL DEFAULT 0,
+                CustomEmojiHeightSnapshot INTEGER NOT NULL DEFAULT 0,
+                CustomEmojiRevisionSnapshot INTEGER NOT NULL DEFAULT 0,
+                CreatedAt INTEGER NOT NULL,
+                CONSTRAINT PK_MessageReactions PRIMARY KEY (MessageId, AccountId, EmojiKey),
+                CONSTRAINT FK_MessageReactions_ChannelMessages_MessageId FOREIGN KEY (MessageId) REFERENCES ChannelMessages (Id) ON DELETE CASCADE,
+                CONSTRAINT FK_MessageReactions_Accounts_AccountId FOREIGN KEY (AccountId) REFERENCES Accounts (Id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS IX_MessageReactions_MessageId ON MessageReactions (MessageId);
+            CREATE INDEX IF NOT EXISTS IX_MessageReactions_MessageId_EmojiKey ON MessageReactions (MessageId, EmojiKey);
+            CREATE INDEX IF NOT EXISTS IX_MessageReactions_AccountId ON MessageReactions (AccountId);
+            CREATE TABLE IF NOT EXISTS DirectMessageReactions (
+                MessageId TEXT NOT NULL,
+                AccountId TEXT NOT NULL,
+                EmojiKey TEXT NOT NULL,
+                EmojiKind INTEGER NOT NULL,
+                StandardEmojiValue TEXT NULL,
+                CustomEmojiId TEXT NULL,
+                CustomEmojiNameSnapshot TEXT NULL,
+                CustomEmojiContentTypeSnapshot TEXT NULL,
+                CustomEmojiAnimatedSnapshot INTEGER NOT NULL DEFAULT 0,
+                CustomEmojiWidthSnapshot INTEGER NOT NULL DEFAULT 0,
+                CustomEmojiHeightSnapshot INTEGER NOT NULL DEFAULT 0,
+                CustomEmojiRevisionSnapshot INTEGER NOT NULL DEFAULT 0,
+                CreatedAt INTEGER NOT NULL,
+                CONSTRAINT PK_DirectMessageReactions PRIMARY KEY (MessageId, AccountId, EmojiKey),
+                CONSTRAINT FK_DirectMessageReactions_DirectMessages_MessageId FOREIGN KEY (MessageId) REFERENCES DirectMessages (Id) ON DELETE CASCADE,
+                CONSTRAINT FK_DirectMessageReactions_Accounts_AccountId FOREIGN KEY (AccountId) REFERENCES Accounts (Id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS IX_DirectMessageReactions_MessageId ON DirectMessageReactions (MessageId);
+            CREATE INDEX IF NOT EXISTS IX_DirectMessageReactions_MessageId_EmojiKey ON DirectMessageReactions (MessageId, EmojiKey);
+            CREATE INDEX IF NOT EXISTS IX_DirectMessageReactions_AccountId ON DirectMessageReactions (AccountId);
+            CREATE TABLE IF NOT EXISTS IridiumCompatibilityMigrations (
+                Id TEXT NOT NULL CONSTRAINT PK_IridiumCompatibilityMigrations PRIMARY KEY,
+                AppliedAt INTEGER NOT NULL
+            );
+            """);
+
+        const string migration = "message-reaction-permission-defaults-v1";
+        if (await db.Database.SqlQueryRaw<int>(
+                "SELECT COUNT(*) AS Value FROM IridiumCompatibilityMigrations WHERE Id = {0}", migration)
+            .SingleAsync() > 0) return;
+        await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
+        await db.Database.ExecuteSqlRawAsync(
+            "UPDATE CommunityRoles SET Permissions = Permissions | {0} WHERE IsDefault = 1",
+            (long)(CommunityPermission.AddReactions | CommunityPermission.UseExternalEmoji));
+        await db.Database.ExecuteSqlRawAsync(
+            "INSERT INTO IridiumCompatibilityMigrations (Id, AppliedAt) VALUES ({0}, {1})",
+            migration, DateTimeOffset.UtcNow.UtcTicks);
+        await transaction.CommitAsync();
+    }
+
     public static async Task EnsureCommunityManagementSchemaAsync(IridiumDbContext db)
     {
         await EnsureColumnAsync(db, "Accounts", "Description", "TEXT NULL");
@@ -369,7 +434,8 @@ public static class DatabaseCompatibility
                               CommunityPermission.ConnectVoice | CommunityPermission.SpeakVoice |
                               CommunityPermission.ShareScreen | CommunityPermission.ReadMessageHistory |
                               CommunityPermission.AttachFiles | CommunityPermission.EmbedLinks |
-                              CommunityPermission.AddReactions | CommunityPermission.CreateForumPosts
+                              CommunityPermission.AddReactions | CommunityPermission.UseExternalEmoji |
+                              CommunityPermission.CreateForumPosts
             });
         if (missing.Count > 0) await db.SaveChangesAsync();
     }

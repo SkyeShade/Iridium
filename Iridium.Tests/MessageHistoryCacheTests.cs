@@ -1,5 +1,7 @@
 using Iridium.Client.Core;
 using Iridium.Protocol;
+using System.Text.Json;
+using System.Runtime.CompilerServices;
 
 namespace Iridium.Tests;
 
@@ -86,12 +88,30 @@ public sealed class MessageHistoryCacheTests
     [Fact]
     public void ServerSnapshotReconciliationPreservesRealtimeRowsNewerThanSnapshot()
     {
-        var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
+        var root = SolutionRoot();
         var source = File.ReadAllText(Path.Combine(root, "Iridium.Client.Core", "ChannelMessagingSession.cs"));
         Assert.Equal(2, source.Split("value.CreatedAt <= newest", StringSplitOptions.None).Length - 1);
+    }
+
+    [Fact]
+    public void DirectMessageReactionSummaryRoundTripsThroughCacheJsonShape()
+    {
+        var message = new DirectMessageDto(Guid.NewGuid(), Guid.NewGuid(),
+            new(Guid.NewGuid(), "user", "User"), "hello", DateTimeOffset.UtcNow, null, false, null,
+            Reactions: [new(new(ReactionEmojiKind.Standard, "👍", "1f44d"), 2, true)]);
+
+        var cached = JsonSerializer.Deserialize<DirectMessageDto>(JsonSerializer.Serialize(message));
+
+        var reaction = Assert.Single(cached!.Reactions!);
+        Assert.Equal(2, reaction.Count);
+        Assert.True(reaction.CurrentUserReacted);
+        Assert.Equal("1f44d", reaction.Emoji.StandardArtworkKey);
     }
 
     private static ChannelMessageDto ChannelMessage(string content, DateTimeOffset createdAt) => new(
         Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), new(Guid.NewGuid(), "user", "User"),
         content, createdAt, null, false, null);
+
+    private static string SolutionRoot([CallerFilePath] string sourceFile = "") =>
+        Directory.GetParent(Path.GetDirectoryName(sourceFile)!)!.FullName;
 }

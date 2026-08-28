@@ -17,7 +17,7 @@ public static partial class CommunityStructureEndpoints
         CommunityPermission.SendMessages | CommunityPermission.ManageMessages | CommunityPermission.ManageChannels |
         CommunityPermission.ManagePermissions | CommunityPermission.CreateInvites |
         CommunityPermission.ReadMessageHistory | CommunityPermission.AttachFiles | CommunityPermission.EmbedLinks |
-        CommunityPermission.AddReactions | CommunityPermission.MentionEveryone | CommunityPermission.ConnectVoice |
+        CommunityPermission.AddReactions | CommunityPermission.UseExternalEmoji | CommunityPermission.MentionEveryone | CommunityPermission.ConnectVoice |
         CommunityPermission.SpeakVoice | CommunityPermission.ShareScreen | CommunityPermission.MuteMembers |
         CommunityPermission.DeafenMembers | CommunityPermission.MoveMembers | CommunityPermission.CreateForumPosts;
 

@@ -19,6 +19,7 @@ public sealed class ChannelMessagingSession(
     private readonly object _messageSync = new();
     private readonly Dictionary<Guid, Func<CancellationToken, Task<IReadOnlyList<AttachmentDto>>>> _channelAttachmentUploads = [];
     private readonly Dictionary<Guid, Func<CancellationToken, Task<IReadOnlyList<AttachmentDto>>>> _directAttachmentUploads = [];
+    private readonly HashSet<string> _pendingReactionToggles = new(StringComparer.Ordinal);
     private readonly TypingIndicatorState _typingIndicators = new();
     private readonly object _typingSync = new();
     private readonly Guid _typingSessionId = Guid.NewGuid();
@@ -826,12 +827,19 @@ public sealed class ChannelMessagingSession(
             message => ReceiveSafely(ChatHubContract.MessageUpdated, () => ReceiveUpdated(message))));
         _handlerRegistrations.Add(connection.On<ChannelMessageDeletedEvent>(ChatHubContract.MessageDeleted,
             deleted => ReceiveSafely(ChatHubContract.MessageDeleted, () => ReceiveDeleted(deleted))));
+        _handlerRegistrations.Add(connection.On<MessageReactionChangedEvent>(ChatHubContract.MessageReactionChanged,
+            changed => ReceiveSafely(ChatHubContract.MessageReactionChanged,
+                () => ReceiveReactionChanged(changed))));
         _handlerRegistrations.Add(connection.On<DirectMessageDto>(DirectMessageHubContract.MessageCreated,
             message => ReceiveSafely(DirectMessageHubContract.MessageCreated, () => ReceiveDirectCreated(message))));
         _handlerRegistrations.Add(connection.On<DirectMessageDto>(DirectMessageHubContract.MessageUpdated,
             message => ReceiveSafely(DirectMessageHubContract.MessageUpdated, () => ReceiveDirectUpdated(message))));
         _handlerRegistrations.Add(connection.On<DirectMessageDeletedEvent>(DirectMessageHubContract.MessageDeleted,
             deleted => ReceiveSafely(DirectMessageHubContract.MessageDeleted, () => ReceiveDirectDeleted(deleted))));
+        _handlerRegistrations.Add(connection.On<DirectMessageReactionChangedEvent>(
+            DirectMessageHubContract.MessageReactionChanged,
+            changed => ReceiveSafely(DirectMessageHubContract.MessageReactionChanged,
+                () => ReceiveDirectReactionChanged(changed))));
         _handlerRegistrations.Add(connection.On<TypingActivityEvent>(TypingHubContract.Changed,
             activity => ReceiveSafely(TypingHubContract.Changed, () => ReceiveTypingActivity(activity))));
         _handlerRegistrations.Add(connection.On<FriendshipChangedEvent>(FriendshipHubContract.RequestReceived,
@@ -1006,6 +1014,129 @@ public sealed class ChannelMessagingSession(
             logger.LogWarning(exception, "Could not leave direct conversation {ConversationId} cleanly.", conversationId);
         }
     }
+
+    public async Task ToggleReactionAsync(Guid messageId, ReactionEmojiRequest emoji,
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        var operationKey = $"{messageId:N}:{ReactionKey(emoji)}";
+        lock (_messageSync) if (!_pendingReactionToggles.Add(operationKey)) return;
+        ChannelMessageDto? before;
+        bool remove;
+        lock (_messageSync)
+        {
+            var index = _messages.FindIndex(value => value.Id == messageId);
+            if (index < 0) { _pendingReactionToggles.Remove(operationKey); return; }
+            before = _messages[index];
+            var current = before.Reactions?.FirstOrDefault(value => SameEmoji(value.Emoji, emoji));
+            remove = current?.CurrentUserReacted == true;
+            _messages[index] = ApplySummary(before, emoji, current?.Emoji,
+                remove ? Math.Max(0, current!.Count - 1) : (current?.Count ?? 0) + 1, !remove);
+        }
+        NotifyChanged();
+        try
+        {
+            if (remove)
+                await RequireConnection().InvokeAsync<ReactionSummaryDto>(ChatHubContract.RemoveReaction,
+                    messageId, emoji, null, cancellationToken);
+            else
+                await RequireConnection().InvokeAsync<ReactionSummaryDto>(ChatHubContract.AddReaction,
+                    messageId, emoji, cancellationToken);
+        }
+        catch
+        {
+            lock (_messageSync)
+            {
+                var index = _messages.FindIndex(value => value.Id == messageId);
+                if (index >= 0 && before is not null) _messages[index] = before;
+            }
+            NotifyChanged();
+            throw;
+        }
+        finally { lock (_messageSync) _pendingReactionToggles.Remove(operationKey); }
+    }
+
+    public Task AddReactionAsync(Guid messageId, ReactionEmojiRequest emoji,
+        CancellationToken cancellationToken = default)
+    {
+        lock (_messageSync)
+        {
+            var message = _messages.FirstOrDefault(value => value.Id == messageId);
+            if (message?.Reactions?.Any(value => SameEmoji(value.Emoji, emoji) &&
+                    value.CurrentUserReacted) == true) return Task.CompletedTask;
+        }
+        return ToggleReactionAsync(messageId, emoji, cancellationToken);
+    }
+
+    public Task RemoveReactionAsync(Guid messageId, ReactionEmojiRequest emoji, Guid targetAccountId,
+        CancellationToken cancellationToken = default) => RequireConnection().InvokeAsync<ReactionSummaryDto>(
+        ChatHubContract.RemoveReaction, messageId, emoji, targetAccountId, cancellationToken);
+
+    public Task<ReactionDetailsDto> GetReactionDetailsAsync(Guid messageId, ReactionEmojiRequest emoji,
+        Guid? after = null, int? limit = null, CancellationToken cancellationToken = default) =>
+        nodeSession.AuthorizedClient.GetReactionDetailsAsync(messageId, emoji, after, limit, cancellationToken);
+
+    public async Task ToggleDirectReactionAsync(Guid messageId, ReactionEmojiRequest emoji,
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        var operationKey = $"d:{messageId:N}:{ReactionKey(emoji)}";
+        lock (_messageSync) if (!_pendingReactionToggles.Add(operationKey)) return;
+        DirectMessageDto? before;
+        bool remove;
+        lock (_messageSync)
+        {
+            var index = _directMessages.FindIndex(value => value.Id == messageId);
+            if (index < 0) { _pendingReactionToggles.Remove(operationKey); return; }
+            before = _directMessages[index];
+            var current = before.Reactions?.FirstOrDefault(value => SameEmoji(value.Emoji, emoji));
+            remove = current?.CurrentUserReacted == true;
+            _directMessages[index] = ApplySummary(before, emoji, current?.Emoji,
+                remove ? Math.Max(0, current!.Count - 1) : (current?.Count ?? 0) + 1, !remove);
+        }
+        NotifyChanged();
+        try
+        {
+            if (remove)
+                await RequireConnection().InvokeAsync<ReactionSummaryDto>(DirectMessageHubContract.RemoveReaction,
+                    messageId, emoji, cancellationToken);
+            else
+                await RequireConnection().InvokeAsync<ReactionSummaryDto>(DirectMessageHubContract.AddReaction,
+                    messageId, emoji, cancellationToken);
+        }
+        catch
+        {
+            lock (_messageSync)
+            {
+                var index = _directMessages.FindIndex(value => value.Id == messageId);
+                if (index >= 0 && before is not null) _directMessages[index] = before;
+            }
+            NotifyChanged();
+            throw;
+        }
+        finally { lock (_messageSync) _pendingReactionToggles.Remove(operationKey); }
+    }
+
+    public Task AddDirectReactionAsync(Guid messageId, ReactionEmojiRequest emoji,
+        CancellationToken cancellationToken = default)
+    {
+        lock (_messageSync)
+        {
+            var message = _directMessages.FirstOrDefault(value => value.Id == messageId);
+            if (message?.Reactions?.Any(value => SameEmoji(value.Emoji, emoji) &&
+                    value.CurrentUserReacted) == true) return Task.CompletedTask;
+        }
+        return ToggleDirectReactionAsync(messageId, emoji, cancellationToken);
+    }
+
+    public Task RemoveDirectReactionAsync(Guid messageId, ReactionEmojiRequest emoji,
+        CancellationToken cancellationToken = default) => RequireConnection().InvokeAsync<ReactionSummaryDto>(
+        DirectMessageHubContract.RemoveReaction, messageId, emoji, cancellationToken);
+
+    public Task<ReactionDetailsDto> GetDirectReactionDetailsAsync(Guid conversationId, Guid messageId,
+        ReactionEmojiRequest emoji, Guid? after = null, int? limit = null,
+        CancellationToken cancellationToken = default) => nodeSession.AuthorizedClient.GetDirectReactionDetailsAsync(
+        conversationId, messageId, emoji, after, limit, cancellationToken);
 
     private TypingConversationDto? CurrentTypingConversation =>
         CommunityId is { } communityId && ChannelId is { } channelId
@@ -1576,6 +1707,78 @@ public sealed class ChannelMessagingSession(
         NotifyChanged();
     }
 
+    private void ReceiveReactionChanged(MessageReactionChangedEvent changed)
+    {
+        ChannelMessageDto? updated = null;
+        lock (_messageSync)
+        {
+            var index = _messages.FindIndex(value => value.Id == changed.MessageId);
+            if (index < 0) return;
+            var existing = _messages[index].Reactions?.FirstOrDefault(value => SameEmoji(value.Emoji, changed.Emoji));
+            var reacted = changed.AccountId == nodeSession.Account?.Id
+                ? changed.Added : existing?.CurrentUserReacted == true;
+            updated = ApplySummary(_messages[index], Request(changed.Emoji), changed.Emoji, changed.Count, reacted);
+            _messages[index] = updated;
+        }
+        if (updated is null) return;
+        UpdateHotChannel(ChannelScope(changed.ChannelId), updated);
+        CacheSafely(_historyCache.UpsertChannelAsync(ChannelScope(changed.ChannelId), [updated]),
+            "cache reaction change");
+        NotifyChanged();
+    }
+
+    private static ChannelMessageDto ApplySummary(ChannelMessageDto message, ReactionEmojiRequest request,
+        ReactionEmojiDto? presentation, int count, bool reacted)
+    {
+        var reactions = (message.Reactions ?? []).ToList();
+        var index = reactions.FindIndex(value => SameEmoji(value.Emoji, request));
+        if (count <= 0)
+        {
+            if (index >= 0) reactions.RemoveAt(index);
+        }
+        else
+        {
+            var emoji = presentation ?? (index >= 0 ? reactions[index].Emoji : Presentation(request));
+            var updated = new ReactionSummaryDto(emoji, count, reacted);
+            if (index >= 0) reactions[index] = updated; else reactions.Add(updated);
+        }
+        return message with { Reactions = reactions };
+    }
+
+    private static DirectMessageDto ApplySummary(DirectMessageDto message, ReactionEmojiRequest request,
+        ReactionEmojiDto? presentation, int count, bool reacted)
+    {
+        var reactions = (message.Reactions ?? []).ToList();
+        var index = reactions.FindIndex(value => SameEmoji(value.Emoji, request));
+        if (count <= 0)
+        {
+            if (index >= 0) reactions.RemoveAt(index);
+        }
+        else
+        {
+            var emoji = presentation ?? (index >= 0 ? reactions[index].Emoji : Presentation(request));
+            var updated = new ReactionSummaryDto(emoji, count, reacted);
+            if (index >= 0) reactions[index] = updated; else reactions.Add(updated);
+        }
+        return message with { Reactions = reactions };
+    }
+
+    private static ReactionEmojiDto Presentation(ReactionEmojiRequest request)
+    {
+        var standard = request.Kind == ReactionEmojiKind.Standard
+            ? StandardEmojiCatalog.All.FirstOrDefault(value => value.Glyph == request.StandardEmojiValue) : null;
+        return new(request.Kind, request.StandardEmojiValue, standard?.ArtworkKey, request.CustomEmojiId);
+    }
+
+    private static ReactionEmojiRequest Request(ReactionEmojiDto emoji) =>
+        new(emoji.Kind, emoji.StandardEmojiValue, emoji.CustomEmojiId);
+    private static bool SameEmoji(ReactionEmojiDto emoji, ReactionEmojiRequest request) =>
+        emoji.Kind == request.Kind && (emoji.Kind == ReactionEmojiKind.Standard
+            ? emoji.StandardEmojiValue == request.StandardEmojiValue : emoji.CustomEmojiId == request.CustomEmojiId);
+    private static bool SameEmoji(ReactionEmojiDto left, ReactionEmojiDto right) => SameEmoji(left, Request(right));
+    private static string ReactionKey(ReactionEmojiRequest emoji) => emoji.Kind == ReactionEmojiKind.Custom
+        ? $"c:{emoji.CustomEmojiId:N}" : $"s:{emoji.StandardEmojiValue}";
+
     private void ReceiveDirectCreated(DirectMessageDto message)
     {
         UpdateHotDirect(DirectScope(message.ConversationId), message);
@@ -1603,6 +1806,28 @@ public sealed class ChannelMessagingSession(
             "remove realtime-deleted Direct Message from cache");
         if (deleted.ConversationId != DirectConversationId) return;
         MessageTimeline.ApplyDeletion(_directMessages, deleted.MessageId);
+        NotifyChanged();
+    }
+
+    private void ReceiveDirectReactionChanged(DirectMessageReactionChangedEvent changed)
+    {
+        DirectMessageDto? updated = null;
+        lock (_messageSync)
+        {
+            var index = _directMessages.FindIndex(value => value.Id == changed.MessageId);
+            if (index < 0) return;
+            var existing = _directMessages[index].Reactions?.FirstOrDefault(value =>
+                SameEmoji(value.Emoji, changed.Emoji));
+            var reacted = changed.AccountId == nodeSession.Account?.Id
+                ? changed.Added : existing?.CurrentUserReacted == true;
+            updated = ApplySummary(_directMessages[index], Request(changed.Emoji), changed.Emoji, changed.Count,
+                reacted);
+            _directMessages[index] = updated;
+        }
+        if (updated is null) return;
+        UpdateHotDirect(DirectScope(changed.ConversationId), updated);
+        CacheSafely(_historyCache.UpsertDirectAsync(DirectScope(changed.ConversationId), [updated]),
+            "cache Direct Message reaction change");
         NotifyChanged();
     }
 

@@ -35,6 +35,8 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
     public DbSet<AccountBannerPreset> AccountBannerPresets => Set<AccountBannerPreset>();
     public DbSet<CommunityMediaPreset> CommunityMediaPresets => Set<CommunityMediaPreset>();
     public DbSet<CommunityEmoji> CommunityEmojis => Set<CommunityEmoji>();
+    public DbSet<MessageReaction> MessageReactions => Set<MessageReaction>();
+    public DbSet<DirectMessageReaction> DirectMessageReactions => Set<DirectMessageReaction>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -305,6 +307,22 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
         message.HasOne(value => value.ForwardedMessageSnapshot).WithMany(value => value.ChannelMessages)
             .HasForeignKey(value => value.ForwardedMessageSnapshotId).OnDelete(DeleteBehavior.Restrict);
 
+        var reaction = modelBuilder.Entity<MessageReaction>();
+        reaction.HasKey(value => new { value.MessageId, value.AccountId, value.EmojiKey });
+        reaction.Property(value => value.EmojiKey).HasMaxLength(80);
+        reaction.Property(value => value.StandardEmojiValue).HasMaxLength(32);
+        reaction.Property(value => value.CustomEmojiNameSnapshot).HasMaxLength(CommunityEmojiLimits.MaximumNameLength);
+        reaction.Property(value => value.CustomEmojiContentTypeSnapshot).HasMaxLength(64);
+        reaction.Property(value => value.CreatedAt)
+            .HasConversion(value => value.UtcTicks, value => new DateTimeOffset(value, TimeSpan.Zero));
+        reaction.HasIndex(value => value.MessageId);
+        reaction.HasIndex(value => new { value.MessageId, value.EmojiKey });
+        reaction.HasIndex(value => value.AccountId);
+        reaction.HasOne(value => value.Message).WithMany(value => value.Reactions)
+            .HasForeignKey(value => value.MessageId).OnDelete(DeleteBehavior.Cascade);
+        reaction.HasOne(value => value.Account).WithMany()
+            .HasForeignKey(value => value.AccountId).OnDelete(DeleteBehavior.Cascade);
+
         var mentionNotification = modelBuilder.Entity<CommunityMentionNotification>();
         mentionNotification.HasKey(value => new { value.MessageId, value.AccountId });
         mentionNotification.Property(value => value.CreatedAt)
@@ -366,6 +384,22 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
             .HasForeignKey(value => value.ReplyToMessageId).OnDelete(DeleteBehavior.SetNull);
         directMessage.HasOne(value => value.ForwardedMessageSnapshot).WithMany(value => value.DirectMessages)
             .HasForeignKey(value => value.ForwardedMessageSnapshotId).OnDelete(DeleteBehavior.Restrict);
+
+        var directReaction = modelBuilder.Entity<DirectMessageReaction>();
+        directReaction.HasKey(value => new { value.MessageId, value.AccountId, value.EmojiKey });
+        directReaction.Property(value => value.EmojiKey).HasMaxLength(80);
+        directReaction.Property(value => value.StandardEmojiValue).HasMaxLength(32);
+        directReaction.Property(value => value.CustomEmojiNameSnapshot).HasMaxLength(CommunityEmojiLimits.MaximumNameLength);
+        directReaction.Property(value => value.CustomEmojiContentTypeSnapshot).HasMaxLength(64);
+        directReaction.Property(value => value.CreatedAt)
+            .HasConversion(value => value.UtcTicks, value => new DateTimeOffset(value, TimeSpan.Zero));
+        directReaction.HasIndex(value => value.MessageId);
+        directReaction.HasIndex(value => new { value.MessageId, value.EmojiKey });
+        directReaction.HasIndex(value => value.AccountId);
+        directReaction.HasOne(value => value.Message).WithMany(value => value.Reactions)
+            .HasForeignKey(value => value.MessageId).OnDelete(DeleteBehavior.Cascade);
+        directReaction.HasOne(value => value.Account).WithMany()
+            .HasForeignKey(value => value.AccountId).OnDelete(DeleteBehavior.Cascade);
 
         var forwardedSnapshot = modelBuilder.Entity<ForwardedMessageSnapshot>();
         forwardedSnapshot.HasKey(value => value.Id);

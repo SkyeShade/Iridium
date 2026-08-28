@@ -1,0 +1,26 @@
+@using Iridium.Protocol
+@inject CommunityEmojiService Emojis
+
+@if (Emoji.Kind == ReactionEmojiKind.Standard)
+{
+    <span class="reaction-standard-box">
+        <StandardEmojiArtwork Glyph="@(Emoji.StandardEmojiValue ?? "�")"
+                              ArtworkKey="@(Emoji.StandardArtworkKey ?? string.Empty)" Class="reaction-standard-emoji" />
+    </span>
+}
+else if (_source is not null)
+{
+    <img class="reaction-emoji-artwork" src="@_source" alt="@Alt" title="@Alt" loading="lazy" decoding="async" />
+}
+else
+{
+    <span class="reaction-emoji-unavailable" title="This custom emoji was deleted">�</span>
+}
+
+@code {
+    [Parameter, EditorRequired] public required ReactionEmojiDto Emoji { get; set; }
+    private string? _source;
+    private string Alt => $":{Emoji.CustomEmojiName ?? "deleted_emoji"}:";
+    protected override async Task OnParametersSetAsync() => _source =
+        Emoji.Kind == ReactionEmojiKind.Custom ? await Emojis.GetReactionMediaDataUrlAsync(Emoji) : null;
+}

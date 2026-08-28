@@ -23,6 +23,7 @@
                               OnMobileMinimize="OnMobileCallMinimize" />
         <div class="dm-message-history">
         <MessageList @key="Conversation.Id" @ref="_messageList" Messages="ProjectedMessages" CurrentAccountId="CurrentAccountId" CanManage="false"
+                     CanAddReactions="true" CanUseExternalEmoji="true"
                      IsMobileLayout="IsMobileLayout"
                      DirectParticipant="Conversation.OtherParticipant"
                      NodeAuthority="@NodeAuthority" OnEditProfile="OnEditProfile" OnEditAvatars="OnEditAvatars" OnMessage="OnMessage"
@@ -84,7 +85,7 @@
         new ChannelMessageDto(message.Id, Guid.Empty, message.ConversationId, message.Author, message.Content,
             message.CreatedAt, message.EditedAt, message.IsDeleted, message.ReplyTo, null,
             message.ClientMessageId, message.DeliveryState, message.DeliveryError, message.CanRetry,
-            message.Attachments, message.Kind, message.Forwarded)).ToArray();
+            message.Attachments, message.Kind, message.Forwarded, message.Reactions)).ToArray();
 
     protected override void OnInitialized() { Messaging.Changed += MessagesChanged; Calls.Changed += CallsChanged; }
     protected override void OnParametersSet()

@@ -231,6 +231,16 @@ public sealed class NodeClient(Uri nodeAddress)
         return await response.Content.ReadAsByteArrayAsync(ct);
     }
 
+    public async Task<byte[]> DownloadCommunityEmojiReferenceAsync(Guid emojiId, long? revision = null,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Get,
+            $"api/emojis/{emojiId}/media{(revision is null ? string.Empty : $"?rev={revision}")}", null, ct);
+        if (!response.IsSuccessStatusCode) throw new NodeApiException(response.StatusCode,
+            await ReadErrorAsync(response, ct));
+        return await response.Content.ReadAsByteArrayAsync(ct);
+    }
+
     public Task MarkDirectConversationReadAsync(Guid conversationId, CancellationToken cancellationToken = default) =>
         SendNoContentAsync(HttpMethod.Post, $"api/direct-messages/{conversationId}/read", null, cancellationToken);
 
@@ -455,6 +465,19 @@ public sealed class NodeClient(Uri nodeAddress)
         SendAsync<MessageHistoryPage<ChannelMessageDto>>(HttpMethod.Get,
             $"api/communities/{communityId}/channels/{channelId}/messages?limit={Math.Clamp(limit, 1, MessageHistoryDefaults.MaximumPageSize)}{Query("before", before)}{Query("around", around?.ToString())}",
             null, cancellationToken);
+
+    public Task<ReactionDetailsDto> GetReactionDetailsAsync(Guid messageId, ReactionEmojiRequest emoji,
+        Guid? after = null, int? limit = null, CancellationToken cancellationToken = default) =>
+        SendAsync<ReactionDetailsDto>(HttpMethod.Post,
+            $"api/messages/{messageId}/reactions/query?page=1{Query("after", after?.ToString())}{Query("limit", limit?.ToString())}",
+            emoji, cancellationToken);
+
+    public Task<ReactionDetailsDto> GetDirectReactionDetailsAsync(Guid conversationId, Guid messageId,
+        ReactionEmojiRequest emoji, Guid? after = null, int? limit = null,
+        CancellationToken cancellationToken = default) =>
+        SendAsync<ReactionDetailsDto>(HttpMethod.Post,
+            $"api/direct-messages/{conversationId}/messages/{messageId}/reactions/query?page=1{Query("after", after?.ToString())}{Query("limit", limit?.ToString())}",
+            emoji, cancellationToken);
 
     public Task<MessageSearchPageDto> SearchCommunityMessagesAsync(
         Guid communityId, string? text, string? from, string? channel, string? before = null,

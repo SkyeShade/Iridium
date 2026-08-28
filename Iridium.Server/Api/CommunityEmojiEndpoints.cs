@@ -22,7 +22,23 @@ public static class CommunityEmojiEndpoints
         group.MapPatch("/{emojiId:guid}", RenameAsync);
         group.MapDelete("/{emojiId:guid}", DeleteAsync);
         endpoints.MapGet("/api/emojis/{emojiId:guid}", ResolveReferenceAsync);
+        endpoints.MapGet("/api/emojis/{emojiId:guid}/media", DownloadReferenceAsync);
         return endpoints;
+    }
+
+    private static async Task<IResult> DownloadReferenceAsync(Guid emojiId, HttpContext context,
+        IridiumDbContext db, SessionService sessions, IAttachmentStorage storage,
+        CancellationToken cancellationToken)
+    {
+        if (await sessions.GetAsync(context, db) is null) return Results.Unauthorized();
+        var emoji = await db.CommunityEmojis.AsNoTracking().SingleOrDefaultAsync(value => value.Id == emojiId,
+            cancellationToken);
+        if (emoji is null) return Results.NotFound();
+        var stream = await storage.OpenReadAsync(emoji.ObjectKey, cancellationToken);
+        if (stream is not null) context.Response.Headers.CacheControl = context.Request.Query.ContainsKey("rev")
+            ? "private,max-age=31536000,immutable" : "private,no-cache";
+        return stream is null ? Results.NotFound() : Results.File(stream, emoji.ContentType,
+            enableRangeProcessing: true);
     }
 
     private static async Task<(AccountSession? Session, IResult? Error)> MemberAsync(Guid communityId,

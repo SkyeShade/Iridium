@@ -11,6 +11,7 @@ using Iridium.Server.Calls;
 using Iridium.Server.Voice;
 using Iridium.Server.Communities;
 using Iridium.Server.Profiles;
+using Iridium.Server.Messages;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.RateLimiting;
 
@@ -55,6 +56,7 @@ builder.Services.AddRateLimiter(options => options.AddPolicy("password-recovery"
         })));
 builder.Services.AddScoped<CommunityAuthorizationService>();
 builder.Services.AddScoped<HistoricalAuthorPresentationService>();
+builder.Services.AddScoped<MessageReactionService>();
 builder.Services.AddScoped<CommunityInviteService>();
 builder.Services.AddSingleton<IAttachmentStorage, LocalAttachmentStorage>();
 builder.Services.AddSingleton<IImagePreviewGenerator, ImagePreviewGenerator>();
@@ -119,6 +121,7 @@ await using (var scope = app.Services.CreateAsyncScope())
     await DatabaseCompatibility.EnsureBannerPresetSchemaAsync(db);
 await DatabaseCompatibility.EnsureCommunityMediaSchemaAsync(db);
 await DatabaseCompatibility.EnsureCommunityEmojiSchemaAsync(db);
+    await DatabaseCompatibility.EnsureMessageReactionSchemaAsync(db);
     await DatabaseCompatibility.EnsureAttachmentsTableAsync(db);
     await DatabaseCompatibility.EnsureMessageForwardingSchemaAsync(db);
 }

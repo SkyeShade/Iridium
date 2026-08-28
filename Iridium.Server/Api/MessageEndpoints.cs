@@ -3,6 +3,8 @@ using Iridium.Server.Persistence;
 using Iridium.Server.Security;
 using Iridium.Server.Storage;
 using Microsoft.EntityFrameworkCore;
+using Iridium.Server.Messages;
+using Microsoft.AspNetCore.SignalR;
 
 namespace Iridium.Server.Api;
 
@@ -20,7 +22,21 @@ public static class MessageEndpoints
         endpoints.MapPost("/api/communities/{communityId:guid}/messages/search", SearchRequestAsync);
         endpoints.MapGet("/api/messages/{messageId:guid}/author-avatar/metadata", GetAuthorAvatarMetadataAsync);
         endpoints.MapGet("/api/messages/{messageId:guid}/author-avatar", DownloadAuthorAvatarAsync);
+        endpoints.MapPost("/api/messages/{messageId:guid}/reactions/query", ReactionDetailsAsync);
         return endpoints;
+    }
+
+    private static async Task<IResult> ReactionDetailsAsync(Guid messageId, ReactionEmojiRequest request,
+        Guid? after, int? limit, HttpContext context, IridiumDbContext db, SessionService sessions,
+        MessageReactionService reactions, CancellationToken cancellationToken)
+    {
+        var session = await sessions.GetAsync(context, db);
+        if (session is null) return Results.Unauthorized();
+        try { return Results.Ok(await reactions.DetailsAsync(messageId, session.AccountId, request, after, limit,
+            cancellationToken)); }
+        catch (KeyNotFoundException exception) { return Results.NotFound(new { message = exception.Message }); }
+        catch (UnauthorizedAccessException) { return Results.Forbid(); }
+        catch (HubException exception) { return Results.BadRequest(new { message = exception.Message }); }
     }
 
     private static async Task<IResult> GetAuthorAvatarMetadataAsync(
@@ -103,7 +119,8 @@ public static class MessageEndpoints
         HttpContext context,
         IridiumDbContext db,
         SessionService sessions,
-        CommunityAuthorizationService authorization)
+        CommunityAuthorizationService authorization,
+        MessageReactionService reactions)
     {
         var session = await sessions.GetAsync(context, db);
         if (session is null) return Results.Unauthorized();
@@ -119,7 +136,7 @@ public static class MessageEndpoints
             return Results.BadRequest(new { message = "The history cursor is invalid." });
 
         if (around is { } targetId)
-            return await AroundAsync(communityId, channelId, targetId, take, db);
+            return await AroundAsync(communityId, channelId, targetId, take, db, reactions, session.AccountId);
 
         var query = db.ChannelMessages.AsNoTracking()
             .Where(value => value.CommunityId == communityId && value.ChannelId == channelId && !value.IsDeleted);
@@ -144,13 +161,15 @@ public static class MessageEndpoints
         var messages = newest.OrderBy(value => value.CreatedAt).ThenBy(value => value.Id)
             .Select(ChannelMessageMapper.ToDto).ToList();
         var profiled = await ChannelMessageMapper.ResolveCommunityProfilesAsync(messages, db);
-        var resolved = await ChannelMessageMapper.ResolveMentionNamesAsync(profiled, db);
+        var named = await ChannelMessageMapper.ResolveMentionNamesAsync(profiled, db);
+        var resolved = await reactions.AttachSummariesAsync(named, session.AccountId);
         var olderCursor = resolved.Count == 0 ? null : MessageHistoryCursor.Encode(resolved[0].CreatedAt, resolved[0].Id);
         return Results.Ok(new MessageHistoryPage<ChannelMessageDto>(resolved, olderCursor, hasOlder));
     }
 
     private static async Task<IResult> AroundAsync(
-        Guid communityId, Guid channelId, Guid targetId, int take, IridiumDbContext db)
+        Guid communityId, Guid channelId, Guid targetId, int take, IridiumDbContext db,
+        MessageReactionService reactions, Guid accountId)
     {
         var target = await db.ChannelMessages.AsNoTracking()
             .Include(value => value.AuthorAccount)
@@ -185,7 +204,8 @@ public static class MessageEndpoints
         var entities = before.OrderBy(value => value.CreatedAt).ThenBy(value => value.Id).Append(target).Concat(after);
         var messages = entities.Select(ChannelMessageMapper.ToDto).ToList();
         var profiled = await ChannelMessageMapper.ResolveCommunityProfilesAsync(messages, db);
-        var resolved = await ChannelMessageMapper.ResolveMentionNamesAsync(profiled, db);
+        var named = await ChannelMessageMapper.ResolveMentionNamesAsync(profiled, db);
+        var resolved = await reactions.AttachSummariesAsync(named, accountId);
         var olderCursor = resolved.Count == 0 ? null : MessageHistoryCursor.Encode(resolved[0].CreatedAt, resolved[0].Id);
         return Results.Ok(new MessageHistoryPage<ChannelMessageDto>(resolved, olderCursor, hasOlder, true, targetId));
     }

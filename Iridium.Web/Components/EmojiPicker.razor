@@ -5,7 +5,7 @@
 @inject IJSRuntime JS
 @implements IAsyncDisposable
 
-<section @ref="_picker" class="emoji-picker" role="dialog" aria-label="Emoji picker">
+<section @ref="_picker" class="emoji-picker @(AnchoredPopup ? "anchored-popup" : null)" role="dialog" aria-label="Emoji picker">
     <header><input aria-label="Search emoji" placeholder="Search emoji..." value="@_searchInput" @oninput="SearchChanged" autofocus /></header>
     <div class="picker-body">
         <nav aria-label="Emoji sources">
@@ -82,6 +82,8 @@
 
 @code {
     [Parameter] public CommunityDto? Community { get; set; }
+    [Parameter] public bool AllowExternalEmoji { get; set; } = true;
+    [Parameter] public bool AnchoredPopup { get; set; }
     [Parameter, EditorRequired] public required Guid AccountId { get; set; }
     [Parameter] public EventCallback<EmojiSelection> OnSelected { get; set; }
     [Parameter] public EventCallback OnClose { get; set; }
@@ -127,7 +129,10 @@
         _module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/emojiPicker.js");
         _self = DotNetObjectReference.Create(this);
         await _module.InvokeVoidAsync("observeGridWidth", _viewport, _self);
-        await _module.InvokeVoidAsync("wireDismiss", _picker, Anchor, _self);
+        if (AnchoredPopup)
+            await _module.InvokeVoidAsync("wireAnchoredPopup", _picker, Anchor, _self);
+        else
+            await _module.InvokeVoidAsync("wireDismiss", _picker, Anchor, _self);
     }
 
     [JSInvokable]
@@ -160,6 +165,7 @@
     private void RebuildGroups()
     {
         _communityGroups = CommunityEmojiDraftCodec.Order(_available, Community?.Id)
+            .Where(value => AllowExternalEmoji || value.Community.Id == Community?.Id)
             .Where(value => !IsSearching || value.Emoji.Name.Contains(_search, StringComparison.OrdinalIgnoreCase) ||
                             value.Community.Name.Contains(_search, StringComparison.OrdinalIgnoreCase))
             .GroupBy(value => value.Community.Id).Select(values => new CommunityEmojiGroup(values.First().Community,
@@ -170,6 +176,7 @@
             .GroupBy(value => value.Emoji.Category)
             .Select(group => new StandardEmojiGroup(group.Key, group.Select(value => value.Emoji).ToArray())).ToArray();
         _searchResults = !IsSearching ? [] : _available
+            .Where(value => AllowExternalEmoji || value.Community.Id == Community?.Id)
             .Where(value => value.Emoji.Name.Contains(_search, StringComparison.OrdinalIgnoreCase) ||
                             value.Community.Name.Contains(_search, StringComparison.OrdinalIgnoreCase))
             .Select(value => new EmojiPickerSearchResult(Community: value.Community, Custom: value.Emoji))
@@ -219,7 +226,8 @@
                 results.Add(new(Standard: standard));
             else if (entry.EmojiKey.StartsWith("custom:", StringComparison.Ordinal) &&
                      Guid.TryParseExact(entry.EmojiKey[7..], "N", out var emojiId) &&
-                     _available.FirstOrDefault(value => value.Emoji.Id == emojiId) is { } custom)
+                     _available.FirstOrDefault(value => value.Emoji.Id == emojiId &&
+                         (AllowExternalEmoji || value.Community.Id == Community?.Id)) is { } custom)
                 results.Add(new(Community: custom.Community, Custom: custom.Emoji));
             if (results.Count == 20) break;
         }

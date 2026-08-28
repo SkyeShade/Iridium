@@ -1,0 +1,20 @@
+@implements IDisposable
+@using Iridium.Protocol
+@inject ReactionEmojiPickerCoordinator Coordinator
+
+@if (Coordinator.Current is { } state)
+{
+    <div class="reaction-emoji-picker-layer">
+        <EmojiPicker @key="state.InstanceId" Community="state.Community" AccountId="state.AccountId"
+                     AllowExternalEmoji="state.AllowExternalEmoji" Anchor="state.Anchor"
+                     AnchoredPopup="true" OnSelected="SelectedAsync" OnClose="Close" />
+    </div>
+}
+
+@code {
+    protected override void OnInitialized() => Coordinator.Changed += CoordinatorChanged;
+    private void CoordinatorChanged() => _ = InvokeAsync(StateHasChanged);
+    private Task SelectedAsync(EmojiSelection selection) => Coordinator.Current?.OnSelected(selection) ?? Task.CompletedTask;
+    private void Close() => Coordinator.Close();
+    public void Dispose() => Coordinator.Changed -= CoordinatorChanged;
+}

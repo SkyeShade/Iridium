@@ -56,6 +56,28 @@ public sealed class CommunityEmojiService : IDisposable
         return await download;
     }
 
+    public async Task<string?> GetReactionMediaDataUrlAsync(ReactionEmojiDto emoji,
+        CancellationToken cancellationToken = default)
+    {
+        if (emoji.CustomEmojiId is not { } id || !emoji.CustomEmojiAvailable) return null;
+        EnsureAccountCache();
+        var key = (id, emoji.CustomEmojiRevision);
+        if (_media.TryGetValue(key, out var cached)) return await cached;
+        async Task<string?> Download()
+        {
+            try
+            {
+                var bytes = await _session.AuthorizedClient.DownloadCommunityEmojiReferenceAsync(id,
+                    emoji.CustomEmojiRevision, cancellationToken);
+                return $"data:{emoji.CustomEmojiContentType ?? "image/png"};base64,{Convert.ToBase64String(bytes)}";
+            }
+            catch { return null; }
+        }
+        var task = Download();
+        _media[key] = task;
+        return await task;
+    }
+
     private async Task<string?> DownloadMediaAsync(CommunityEmojiDto emoji, CancellationToken cancellationToken)
     {
         try

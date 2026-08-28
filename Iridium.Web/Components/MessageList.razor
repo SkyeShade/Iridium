@@ -32,6 +32,8 @@
                         StartsGroup="OptimisticMessageGrouping.StartsNewGroup(previous, message, OptimisticCommunityPresentations)"
                         CanEdit="@(message.Kind == MessageKind.User && message.DeliveryState == MessageDeliveryState.Confirmed && !message.IsDeleted && message.Author.AccountId == CurrentAccountId)"
                         CanDelete="@(message.Id != RootMessageId && message.Kind == MessageKind.User && message.DeliveryState == MessageDeliveryState.Confirmed && !message.IsDeleted && (message.Author.AccountId == CurrentAccountId || CanManage))"
+                        CanAddReactions="CanAddReactions" CanUseExternalEmoji="CanUseExternalEmoji"
+                        CanManageReactions="CanManage"
                         IsMobileLayout="IsMobileLayout"
                         CurrentAccountId="CurrentAccountId" NodeAuthority="@NodeAuthority" CommunityManagement="CommunityManagement"
                         AuthorPresence="@PresenceFor(message.Author.AccountId)"
@@ -62,6 +64,8 @@
     [Parameter] public string EmptyDescription { get; set; } = "Start the conversation in this channel.";
     [Parameter, EditorRequired] public required Guid CurrentAccountId { get; set; }
     [Parameter] public bool CanManage { get; set; }
+    [Parameter] public bool CanAddReactions { get; set; }
+    [Parameter] public bool CanUseExternalEmoji { get; set; }
     [Parameter] public bool IsMobileLayout { get; set; }
     [Parameter, EditorRequired] public required string NodeAuthority { get; set; }
     [Parameter] public CommunityManagementDto? CommunityManagement { get; set; }

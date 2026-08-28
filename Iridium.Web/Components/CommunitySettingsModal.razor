@@ -275,6 +275,7 @@
         CommunityPermission.ShareScreen,
         CommunityPermission.ManagePermissions, CommunityPermission.ReadMessageHistory,
         CommunityPermission.AttachFiles, CommunityPermission.EmbedLinks, CommunityPermission.AddReactions,
+        CommunityPermission.UseExternalEmoji,
         CommunityPermission.MuteMembers, CommunityPermission.DeafenMembers, CommunityPermission.MoveMembers,
         CommunityPermission.ManageExpressions, CommunityPermission.CreateForumPosts,
         CommunityPermission.Administrator
@@ -482,6 +483,8 @@
         CommunityPermission.ManageChannels => "Create, edit, delete, move and organize channels and categories.",
         CommunityPermission.ManagePermissions => "Change channel/category permission overrides and private access.",
         CommunityPermission.ManageExpressions => "Create, rename and delete custom emoji and future Server expression assets.",
+        CommunityPermission.AddReactions => "Allows members to add new emoji reactions to messages. Members may still use reactions already present when this is denied.",
+        CommunityPermission.UseExternalEmoji => "Allows members to use custom emoji from other Servers.",
         _ => $"Grants {PermissionLabel(permission).ToLowerInvariant()} across this Server."
     };
     private static string Expiration(CommunityInviteDto invite) => invite.ExpiresAt is null ? "Never expires" : $"Expires {invite.ExpiresAt.Value.ToLocalTime():g}";

@@ -23,4 +23,5 @@ public sealed class DirectMessage
     public ForwardedMessageSnapshot? ForwardedMessageSnapshot { get; set; }
     public ICollection<DirectMessage> Replies { get; set; } = [];
     public ICollection<Attachment> Attachments { get; set; } = [];
+    public ICollection<DirectMessageReaction> Reactions { get; set; } = [];
 }

@@ -3,6 +3,8 @@ using Iridium.Server.Domain;
 using Iridium.Server.Hubs;
 using Iridium.Server.Persistence;
 using Iridium.Server.Security;
+using Iridium.Server.Messages;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 
 namespace Iridium.Server.Api;
@@ -17,9 +19,25 @@ public static class DirectMessageEndpoints
         group.MapGet("/{conversationId:guid}/messages", HistoryAsync);
         group.MapGet("/{conversationId:guid}/messages/search", SearchAsync);
         group.MapPost("/{conversationId:guid}/messages/search", SearchRequestAsync);
+        group.MapPost("/{conversationId:guid}/messages/{messageId:guid}/reactions/query", ReactionDetailsAsync);
         group.MapPost("/{conversationId:guid}/hide", HideAsync);
         group.MapPost("/{conversationId:guid}/read", MarkReadAsync);
         return endpoints;
+    }
+
+    private static async Task<IResult> ReactionDetailsAsync(Guid conversationId, Guid messageId,
+        ReactionEmojiRequest request, Guid? after, int? limit, HttpContext context, IridiumDbContext db,
+        SessionService sessions, MessageReactionService reactions, CancellationToken cancellationToken)
+    {
+        var session = await sessions.GetAsync(context, db);
+        if (session is null) return Results.Unauthorized();
+        if (!await db.DirectMessages.AsNoTracking().AnyAsync(value => value.Id == messageId &&
+                value.ConversationId == conversationId, cancellationToken)) return Results.NotFound();
+        try { return Results.Ok(await reactions.DirectDetailsAsync(messageId, session.AccountId, request, after,
+            limit, cancellationToken)); }
+        catch (KeyNotFoundException exception) { return Results.NotFound(new { message = exception.Message }); }
+        catch (UnauthorizedAccessException) { return Results.Forbid(); }
+        catch (HubException exception) { return Results.BadRequest(new { message = exception.Message }); }
     }
 
     private static async Task<IResult> ListAsync(HttpContext context, IridiumDbContext db, SessionService sessions, PresenceTracker presence)
@@ -105,7 +123,9 @@ public static class DirectMessageEndpoints
         Guid? around,
         HttpContext context,
         IridiumDbContext db,
-        SessionService sessions)
+        SessionService sessions,
+        MessageReactionService reactions,
+        CancellationToken cancellationToken)
     {
         var session = await sessions.GetAsync(context, db);
         if (session is null) return Results.Unauthorized();
@@ -113,7 +133,8 @@ public static class DirectMessageEndpoints
         var take = Math.Clamp(limit ?? MessageHistoryDefaults.PageSize, 1, MessageHistoryDefaults.MaximumPageSize);
         if (!string.IsNullOrWhiteSpace(before) && !MessageHistoryCursor.TryDecode(before, out _))
             return Results.BadRequest(new { message = "The history cursor is invalid." });
-        if (around is { } targetId) return await AroundAsync(conversationId, targetId, take, db);
+        if (around is { } targetId) return await AroundAsync(conversationId, targetId, take, session.AccountId, db,
+            reactions, cancellationToken);
         var query = db.DirectMessages.AsNoTracking()
             .Where(value => value.ConversationId == conversationId && !value.IsDeleted);
         if (MessageHistoryCursor.TryDecode(before, out var cursor))
@@ -134,13 +155,15 @@ public static class DirectMessageEndpoints
             .ToListAsync();
         var hasOlder = messages.Count > take;
         if (hasOlder) messages.RemoveAt(messages.Count - 1);
-        var result = messages.OrderBy(value => value.CreatedAt).ThenBy(value => value.Id)
+        IReadOnlyList<DirectMessageDto> result = messages.OrderBy(value => value.CreatedAt).ThenBy(value => value.Id)
             .Select(DirectMessageMapper.ToDto).ToArray();
-        var olderCursor = result.Length == 0 ? null : MessageHistoryCursor.Encode(result[0].CreatedAt, result[0].Id);
+        result = await reactions.AttachDirectSummariesAsync(result, session.AccountId, cancellationToken);
+        var olderCursor = result.Count == 0 ? null : MessageHistoryCursor.Encode(result[0].CreatedAt, result[0].Id);
         return Results.Ok(new MessageHistoryPage<DirectMessageDto>(result, olderCursor, hasOlder));
     }
 
-    private static async Task<IResult> AroundAsync(Guid conversationId, Guid targetId, int take, IridiumDbContext db)
+    private static async Task<IResult> AroundAsync(Guid conversationId, Guid targetId, int take, Guid accountId,
+        IridiumDbContext db, MessageReactionService reactions, CancellationToken cancellationToken)
     {
         var target = await db.DirectMessages.AsNoTracking().Include(value => value.AuthorAccount)
             .Include(value => value.ReplyToMessage).ThenInclude(value => value!.AuthorAccount)
@@ -170,9 +193,10 @@ public static class DirectMessageEndpoints
             .Include(value => value.Attachments)
             .IncludeForwardedSnapshot()
             .OrderBy(value => value.CreatedAt).ThenBy(value => value.Id).Take(half).ToListAsync();
-        var result = older.OrderBy(value => value.CreatedAt).ThenBy(value => value.Id).Append(target).Concat(newer)
+        IReadOnlyList<DirectMessageDto> result = older.OrderBy(value => value.CreatedAt).ThenBy(value => value.Id).Append(target).Concat(newer)
             .Select(DirectMessageMapper.ToDto).ToArray();
-        var cursor = result.Length == 0 ? null : MessageHistoryCursor.Encode(result[0].CreatedAt, result[0].Id);
+        result = await reactions.AttachDirectSummariesAsync(result, accountId, cancellationToken);
+        var cursor = result.Count == 0 ? null : MessageHistoryCursor.Encode(result[0].CreatedAt, result[0].Id);
         return Results.Ok(new MessageHistoryPage<DirectMessageDto>(result, cursor, hasOlder, true, targetId));
     }
 

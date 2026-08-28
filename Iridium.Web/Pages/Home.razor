@@ -237,6 +237,8 @@ else
                                       OnPostOpenChanged="ForumPostOpenChanged" OnSubViewChanged="ForumSubViewChanged"
                                       CanCreatePosts="@HasSelectedChannelPermission(CommunityPermission.CreateForumPosts)"
                                       CanManageMessages="@HasSelectedChannelPermission(CommunityPermission.ManageMessages)"
+                                      CanAddReactions="@HasSelectedChannelPermission(CommunityPermission.AddReactions)"
+                                      CanUseExternalEmoji="@HasSelectedChannelPermission(CommunityPermission.UseExternalEmoji)"
                                       CanAttachFiles="@HasSelectedChannelPermission(CommunityPermission.AttachFiles)"
                                       CanMentionEveryone="@HasSelectedChannelPermission(CommunityPermission.MentionEveryone)" />
                 }
@@ -253,6 +255,8 @@ else
                                  OnOpenForwardSource="OpenForwardSourceAsync"
                                  OnMemberRolesChanged="SetCommunityMemberRolesAsync"
                                  CanManageMessages="@HasSelectedChannelPermission(CommunityPermission.ManageMessages)"
+                                 CanAddReactions="@HasSelectedChannelPermission(CommunityPermission.AddReactions)"
+                                 CanUseExternalEmoji="@HasSelectedChannelPermission(CommunityPermission.UseExternalEmoji)"
                                  CanSend="@HasSelectedChannelPermission(CommunityPermission.SendMessages)"
                                  CanAttachFiles="@HasSelectedChannelPermission(CommunityPermission.AttachFiles)"
                                  CanMentionEveryone="@HasSelectedChannelPermission(CommunityPermission.MentionEveryone)"

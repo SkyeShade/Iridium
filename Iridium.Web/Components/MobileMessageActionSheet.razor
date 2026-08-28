@@ -14,6 +14,8 @@
                     <button type="button" @onclick="() => ExecuteAsync(OnEdit)"><Icon Name="edit" /><span>Edit</span></button>
                 }
                 <button type="button" @onclick="() => ExecuteAsync(OnReply)"><Icon Name="reply" /><span>Reply</span></button>
+                @if (CanAddReaction) { <button type="button" @onclick="() => ExecuteAsync(OnAddReaction)"><Icon Name="emoji" /><span>Add Reaction</span></button> }
+                @if (HasReactions) { <button type="button" @onclick="() => ExecuteAsync(OnViewReactions)"><Icon Name="emoji" /><span>View Reactions</span></button> }
                 <button type="button" @onclick="() => ExecuteAsync(OnForward)"><Icon Name="forward" /><span>Forward</span></button>
             </div>
             @if (CanDelete)
@@ -31,10 +33,14 @@
     [Parameter, EditorRequired] public Guid MessageId { get; set; }
     [Parameter] public bool CanEdit { get; set; }
     [Parameter] public bool CanDelete { get; set; }
+    [Parameter] public bool CanAddReaction { get; set; }
+    [Parameter] public bool HasReactions { get; set; }
     [Parameter] public EventCallback OnReply { get; set; }
     [Parameter] public EventCallback OnForward { get; set; }
     [Parameter] public EventCallback OnEdit { get; set; }
     [Parameter] public EventCallback OnDelete { get; set; }
+    [Parameter] public EventCallback OnAddReaction { get; set; }
+    [Parameter] public EventCallback OnViewReactions { get; set; }
     [Parameter] public EventCallback OnClose { get; set; }
 
     private ElementReference _backdrop;

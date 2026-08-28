@@ -10,6 +10,9 @@ public static class DirectMessageHubContract
     public const string MessageCreated = "DirectMessageCreated";
     public const string MessageUpdated = "DirectMessageUpdated";
     public const string MessageDeleted = "DirectMessageDeleted";
+    public const string AddReaction = "AddDirectMessageReaction";
+    public const string RemoveReaction = "RemoveDirectMessageReaction";
+    public const string MessageReactionChanged = "DirectMessageReactionChanged";
 }
 
 public enum MessageKind
@@ -52,7 +55,16 @@ public sealed record DirectMessageDto(
     IReadOnlyList<AttachmentDto>? Attachments = null,
     MessageKind Kind = MessageKind.User,
     Guid? RelatedCallId = null,
-    ForwardedMessageSnapshotDto? Forwarded = null);
+    ForwardedMessageSnapshotDto? Forwarded = null,
+    IReadOnlyList<ReactionSummaryDto>? Reactions = null);
+
+public sealed record DirectMessageReactionChangedEvent(
+    Guid ConversationId,
+    Guid MessageId,
+    ReactionEmojiDto Emoji,
+    int Count,
+    Guid AccountId,
+    bool Added);
 
 public sealed record SendDirectMessageRequest(string Content, Guid? ReplyToMessageId, Guid? ClientMessageId = null,
     IReadOnlyList<Guid>? AttachmentIds = null);
