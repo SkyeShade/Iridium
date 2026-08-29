@@ -1,0 +1,156 @@
+@using Iridium.Client.Core
+@using Iridium.Protocol
+@inject NodeSession Session
+@inject CommunityEmojiService Emojis
+
+<section class="forum-tag-management" aria-label="Forum Tags">
+    <header class="tag-section-header">
+        <div><h2>Tags</h2><p>Tags help members organize and filter Posts.</p></div>
+        <button type="button" class="settings-button add-tag-button compact" disabled="@_editing" @onclick="BeginCreate">
+            <Icon Name="plus" Size="15" /> Add Tag
+        </button>
+    </header>
+    <section class="require-tag-card">
+        <button type="button" class="iridium-toggle @(RequireTag ? "on" : null)" role="switch"
+                aria-checked="@RequireTag" aria-labelledby="require-tag-label" @onclick="ToggleRequireTag">
+            <span aria-hidden="true"></span>
+        </button>
+        <div><strong id="require-tag-label">Require Tag</strong><small>Require members to select a tag before publishing a Post.</small></div>
+    </section>
+    @if (_editing)
+    {
+        <section class="tag-editor" aria-label="@(_editingId is null ? "Add Tag" : "Edit Tag")">
+            <h3>@(_editingId is null ? "Add Tag" : "Edit Tag")</h3>
+            <div class="tag-primary-fields">
+                <div class="emoji-field">
+                    <span>Emoji</span>
+                    <div class="emoji-control">
+                        <button @ref="_emojiButton" type="button" class="emoji-select-button" aria-label="@EmojiButtonLabel"
+                                aria-haspopup="dialog" aria-expanded="@_emojiPickerOpen" @onclick="ToggleEmojiPicker">
+                            @if (SelectedStandardEmoji is { } standardEmoji)
+                            {
+                                <StandardEmojiArtwork ArtworkKey="@standardEmoji.ArtworkKey" Glyph="@standardEmoji.Glyph" Title="@standardEmoji.Name" />
+                            }
+                            else if (SelectedCustomEmoji is { } customEmoji)
+                            {
+                                <CommunityEmojiImage Emoji="customEmoji" />
+                            }
+                            else if (_selectedEmoji?.CustomEmojiId is not null)
+                            {
+                                <span class="unavailable-emoji" title="This Server emoji is no longer available"><Icon Name="emoji" Size="17" /></span>
+                            }
+                            else
+                            {
+                                <Icon Name="plus" Size="17" />
+                            }
+                        </button>
+                        @if (HasEmoji)
+                        {
+                            <button type="button" class="clear-emoji-button" title="Remove emoji" aria-label="Remove tag emoji" @onclick="ClearEmoji"><Icon Name="close" Size="11" /></button>
+                        }
+                    </div>
+                </div>
+                <label class="control-field tag-name-field"><span>Tag name</span>
+                    <input maxlength="@CommunityForumTagLimits.MaximumNameLength" @bind="_name" placeholder="Tag name" />
+                </label>
+            </div>
+            @if (_emojiPickerOpen && Session.Account is { } account)
+            {
+                <EmojiPicker Community="Community" AccountId="account.Id" AllowExternalEmoji="AllowExternalEmoji"
+                             Anchor="_emojiButton" AnchoredPopup="true" OnSelected="SelectEmoji" OnClose="CloseEmojiPicker" />
+            }
+            <div class="tag-editor-footer">
+                <div class="moderated-setting">
+                    <button type="button" class="iridium-toggle compact @(_moderated ? "on" : null)" role="switch"
+                            aria-checked="@_moderated" aria-labelledby="moderated-label" @onclick="ToggleModerated">
+                        <span aria-hidden="true"></span>
+                    </button>
+                    <div><strong id="moderated-label">Moderated</strong><small>Only moderators can apply or remove this Tag.</small></div>
+                </div>
+                <div class="editor-actions">
+                    <button type="button" class="settings-button secondary" @onclick="Cancel">Cancel</button>
+                    <button type="button" class="settings-button primary" @onclick="SaveAsync">Save</button>
+                </div>
+            </div>
+        </section>
+    }
+    <div class="tag-list">
+        @foreach (var tag in _tags.OrderBy(value => value.SortOrder))
+        {
+            <article @key="tag.Id" class="tag-row">
+                <span class="drag" title="Reorder Tag" aria-hidden="true">⋮⋮</span>
+                <ForumTagChip Tag="tag" />
+                @if (tag.Moderated) { <small class="moderated-badge">Moderated</small> }
+                <span class="spacer"></span>
+                <div class="tag-actions">
+                    <button type="button" class="icon-button move-up" disabled="@(tag.SortOrder == 0)" title="Move up" aria-label="Move @tag.Name up" @onclick="() => MoveAsync(tag, -1)"><Icon Name="chevron" Size="14" /></button>
+                    <button type="button" class="icon-button move-down" disabled="@(tag.SortOrder == _tags.Count - 1)" title="Move down" aria-label="Move @tag.Name down" @onclick="() => MoveAsync(tag, 1)"><Icon Name="chevron" Size="14" /></button>
+                    <button type="button" class="icon-button" title="Edit Tag" aria-label="Edit @tag.Name" @onclick="() => BeginEdit(tag)"><Icon Name="edit" Size="15" /></button>
+                    <button type="button" class="delete-button @(_confirmDelete == tag.Id ? "confirm" : null)" title="@(_confirmDelete == tag.Id ? "Confirm deletion" : "Delete Tag")" aria-label="@(_confirmDelete == tag.Id ? $"Confirm deleting {tag.Name}" : $"Delete {tag.Name}")" @onclick="() => DeleteAsync(tag)">
+                        @if (_confirmDelete == tag.Id) { <span>Confirm</span> } else { <Icon Name="trash" Size="15" /> }
+                    </button>
+                </div>
+            </article>
+        }
+    </div>
+    @if (!string.IsNullOrWhiteSpace(_error)) { <p class="error" role="alert">@_error</p> }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public required CommunityChannelDto Channel { get; set; }
+    [Parameter, EditorRequired] public required CommunityDto Community { get; set; }
+    [Parameter] public bool RequireTag { get; set; }
+    [Parameter] public bool AllowExternalEmoji { get; set; }
+    [Parameter] public EventCallback<bool> RequireTagChanged { get; set; }
+    private Guid? _loaded, _editingId, _confirmDelete; private bool _editing, _moderated, _emojiPickerOpen;
+    private string _name = ""; private string? _error;
+    private EmojiSelection? _selectedEmoji;
+    private IReadOnlyList<CommunityForumTagDto> _tags = []; private IReadOnlyList<CommunityEmojiDto> _emojis = [];
+    private ElementReference _emojiButton;
+    private StandardEmoji? SelectedStandardEmoji => _selectedEmoji?.StandardArtworkKey is { Length: > 0 } artworkKey
+        ? StandardEmojiCatalog.All.FirstOrDefault(value => value.ArtworkKey == artworkKey && value.Glyph == _selectedEmoji.InsertText)
+        : null;
+    private CommunityEmojiDto? SelectedCustomEmoji => _selectedEmoji?.CustomEmojiId is { } id
+        ? _emojis.FirstOrDefault(value => value.Id == id) : null;
+    private bool HasEmoji => _selectedEmoji is not null;
+    private string EmojiButtonLabel => _selectedEmoji?.Name is { Length: > 0 } name
+        ? $"Change tag emoji, currently {name}" : "Select tag emoji";
+    protected override async Task OnParametersSetAsync() { if (_loaded == Channel.Id) return; _loaded = Channel.Id; try { var tags = Session.GetForumTagsAsync(Channel.CommunityId, Channel.Id); var emojis = Emojis.GetAvailableAsync(Community); _tags = await tags; _emojis = (await emojis).Select(value => value.Emoji).DistinctBy(value => value.Id).ToArray(); } catch (Exception exception) { _error = exception.GetBaseException().Message; } }
+    private Task ToggleRequireTag() => RequireTagChanged.InvokeAsync(!RequireTag);
+    private void ToggleModerated() => _moderated = !_moderated;
+    private void BeginCreate() { Reset(); _editing = true; }
+    private void BeginEdit(CommunityForumTagDto tag) { Reset(); _editing = true; _editingId = tag.Id; _name = tag.Name; _moderated = tag.Moderated; _selectedEmoji = HydrateEmoji(tag); }
+    private EmojiSelection? HydrateEmoji(CommunityForumTagDto tag)
+    {
+        if (tag.EmojiKind == ReactionEmojiKind.Standard && tag.StandardEmoji is { Length: > 0 } glyph &&
+            StandardEmojiCatalog.All.FirstOrDefault(value => value.Glyph == glyph) is { } standard)
+            return new(standard.Glyph, standard.Name, StandardArtworkKey: standard.ArtworkKey);
+        if (tag.EmojiKind == ReactionEmojiKind.Custom && tag.CustomEmojiId is { } customId)
+        {
+            var custom = _emojis.FirstOrDefault(value => value.Id == customId);
+            return new(custom is null ? "" : $":{custom.Name}:", custom?.Name ?? "Unavailable emoji",
+                customId, custom?.CommunityId);
+        }
+        return null;
+    }
+    private void Reset() { _editingId = null; _name = ""; _selectedEmoji = null; _moderated = false; _emojiPickerOpen = false; _error = null; }
+    private void Cancel() { _editing = false; Reset(); }
+    private void ToggleEmojiPicker() => _emojiPickerOpen = !_emojiPickerOpen;
+    private void CloseEmojiPicker() => _emojiPickerOpen = false;
+    private void ClearEmoji() { _selectedEmoji = null; _emojiPickerOpen = false; }
+    private async Task SelectEmoji(EmojiSelection selection)
+    {
+        if (selection.CustomEmojiId is not null)
+            _emojis = (await Emojis.GetAvailableAsync(Community)).Select(value => value.Emoji)
+                .DistinctBy(value => value.Id).ToArray();
+        _selectedEmoji = selection;
+        _emojiPickerOpen = false;
+    }
+    private (ReactionEmojiKind? Kind, string? Standard, Guid? Custom) Emoji() =>
+        _selectedEmoji?.CustomEmojiId is { } id ? (ReactionEmojiKind.Custom, null, id) :
+        SelectedStandardEmoji is { } standard ? (ReactionEmojiKind.Standard, standard.Glyph, null) :
+        (null, null, null);
+    private async Task SaveAsync() { try { var emoji = Emoji(); if (_editingId is { } id) await Session.UpdateForumTagAsync(Channel.CommunityId, Channel.Id, id, new(_name, emoji.Kind, emoji.Standard, emoji.Custom, _moderated)); else await Session.CreateForumTagAsync(Channel.CommunityId, Channel.Id, new(_name, emoji.Kind, emoji.Standard, emoji.Custom, _moderated)); _tags = await Session.GetForumTagsAsync(Channel.CommunityId, Channel.Id); Cancel(); } catch (Exception exception) { _error = exception.GetBaseException().Message; } }
+    private async Task MoveAsync(CommunityForumTagDto tag, int direction) { var ordered = _tags.OrderBy(value => value.SortOrder).ToList(); var index = ordered.FindIndex(value => value.Id == tag.Id); var target = index + direction; if (index < 0 || target < 0 || target >= ordered.Count) return; (ordered[index], ordered[target]) = (ordered[target], ordered[index]); await Session.ReorderForumTagsAsync(Channel.CommunityId, Channel.Id, ordered.Select(value => value.Id).ToArray()); _tags = ordered.Select((value, order) => value with { SortOrder = order }).ToArray(); }
+    private async Task DeleteAsync(CommunityForumTagDto tag) { if (_confirmDelete != tag.Id) { _confirmDelete = tag.Id; return; } await Session.DeleteForumTagAsync(Channel.CommunityId, Channel.Id, tag.Id); _tags = _tags.Where(value => value.Id != tag.Id).Select((value, order) => value with { SortOrder = order }).ToArray(); _confirmDelete = null; }
+}

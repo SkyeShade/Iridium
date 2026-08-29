@@ -1,0 +1,74 @@
+@using Iridium.Protocol
+
+<div class="forum-post-context-layer context-menu" @onclick="CloseAsync" @oncontextmenu:preventDefault="true">
+    <div class="forum-post-context" role="menu" tabindex="-1"
+         style="--context-x:@($"{X}px");--context-y:@($"{Y}px")"
+         @ref="_menu" @onclick:stopPropagation="true" @onkeydown="KeyDownAsync">
+        <button role="menuitem" disabled="@(!CanMarkRead)" aria-disabled="@(!CanMarkRead)" @onclick="MarkReadAsync"><Icon Name="check" /><span>Mark as Read</span></button>
+        <div class="separator" role="separator"></div>
+        @if (!IsOpenPost)
+        {
+            <button role="menuitem" @onclick="OpenAsync"><Icon Name="open" /><span>Open Post</span></button>
+        }
+        @if (CanManage)
+        {
+            <button role="menuitem" @onclick="ToggleLockAsync"><Icon Name="lock" /><span>@(Post.IsLocked ? "Unlock Post" : "Lock Post")</span></button>
+        }
+        @if (CanEdit)
+        {
+            <button role="menuitem" @onclick="EditTitleAsync"><Icon Name="edit" /><span>Edit Title</span></button>
+            <button role="menuitem" @onclick="EditTagsAsync"><Icon Name="tag" /><span>Edit Tags</span></button>
+        }
+        @if (CanManage)
+        {
+            <div class="separator" role="separator"></div>
+            <button role="menuitem" @onclick="TogglePinAsync"><Icon Name="pin" /><span>@(Post.IsPinned ? "Unpin Post" : "Pin Post")</span></button>
+        }
+        @if (CanDelete)
+        {
+            <div class="separator" role="separator"></div>
+            <button class="destructive" role="menuitem" @onclick="DeleteAsync"><Icon Name="trash" /><span>@(_confirmDelete ? "Confirm Delete Post" : "Delete Post")</span></button>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public required CommunityForumPostDto Post { get; set; }
+    [Parameter] public double X { get; set; }
+    [Parameter] public double Y { get; set; }
+    [Parameter] public bool IsOpenPost { get; set; }
+    [Parameter] public bool CanMarkRead { get; set; }
+    [Parameter] public bool CanEdit { get; set; }
+    [Parameter] public bool CanManage { get; set; }
+    [Parameter] public bool CanDelete { get; set; }
+    [Parameter] public EventCallback OnOpen { get; set; }
+    [Parameter] public EventCallback OnMarkRead { get; set; }
+    [Parameter] public EventCallback OnToggleLock { get; set; }
+    [Parameter] public EventCallback OnEditTitle { get; set; }
+    [Parameter] public EventCallback OnEditTags { get; set; }
+    [Parameter] public EventCallback OnTogglePin { get; set; }
+    [Parameter] public EventCallback OnDelete { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    private ElementReference _menu;
+    private bool _confirmDelete;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender) await _menu.FocusAsync();
+    }
+
+    private Task CloseAsync() => OnClose.InvokeAsync();
+    private Task KeyDownAsync(KeyboardEventArgs args) => args.Key == "Escape" ? CloseAsync() : Task.CompletedTask;
+    private async Task InvokeAndCloseAsync(EventCallback callback) { await callback.InvokeAsync(); await CloseAsync(); }
+    private Task OpenAsync() => InvokeAndCloseAsync(OnOpen);
+    private Task MarkReadAsync() => CanMarkRead ? InvokeAndCloseAsync(OnMarkRead) : Task.CompletedTask;
+    private Task ToggleLockAsync() => InvokeAndCloseAsync(OnToggleLock);
+    private Task EditTitleAsync() => InvokeAndCloseAsync(OnEditTitle);
+    private Task EditTagsAsync() => InvokeAndCloseAsync(OnEditTags);
+    private Task TogglePinAsync() => InvokeAndCloseAsync(OnTogglePin);
+    private async Task DeleteAsync()
+    {
+        if (!_confirmDelete) { _confirmDelete = true; return; }
+        await InvokeAndCloseAsync(OnDelete);
+    }
+}

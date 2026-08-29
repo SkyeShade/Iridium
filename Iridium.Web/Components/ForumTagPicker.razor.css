@@ -1,0 +1,13 @@
+.forum-tag-picker{position:relative;display:flex;align-items:center;gap:.45rem;flex-wrap:wrap}
+.tag-picker-trigger{display:inline-flex;align-items:center;gap:.3rem;border:1px solid var(--border);border-radius:.38rem;padding:.38rem .55rem;background:var(--surface-panel);color:var(--text-secondary);cursor:pointer}
+.tag-picker-trigger:hover{background:var(--surface-hover);color:var(--text-primary)}
+.tag-picker-trigger :deep(svg){width:.9rem;height:.9rem}
+.selected-tag-chips{display:flex;gap:.3rem;flex-wrap:wrap}
+.tag-picker-popover{position:absolute;z-index:20;top:calc(100% + .35rem);left:0;width:min(20rem,calc(100vw - 2rem));max-height:18rem;overflow:auto;padding:.35rem;border:1px solid var(--border);border-radius:.5rem;background:var(--surface-raised,var(--surface-panel));box-shadow:0 .65rem 1.6rem #0005}
+.tag-option{width:100%;display:flex;align-items:center;gap:.4rem;padding:.42rem;border:0;border-radius:.35rem;background:transparent;color:var(--text-primary);text-align:left;cursor:pointer}
+.tag-option:hover:not(:disabled){background:var(--surface-hover)}
+.tag-option small{margin-left:auto;color:var(--text-muted)}
+.tag-option-check{width:.9rem;height:.9rem;flex:0 0 .9rem;display:grid;place-items:center;color:var(--accent)}
+.tag-option-check :deep(svg){width:.9rem;height:.9rem}
+.tag-option:disabled{opacity:.58;cursor:not-allowed}
+.tag-picker-empty{display:block;padding:.55rem;color:var(--text-muted);font-size:.78rem}

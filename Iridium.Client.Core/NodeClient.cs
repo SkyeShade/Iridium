@@ -345,8 +345,10 @@ public sealed class NodeClient(Uri nodeAddress)
         SendAsync<CommunityChannelDto>(HttpMethod.Post, $"api/communities/{communityId}/channels", new CreateChannelRequest(name, categoryId, kind), cancellationToken);
 
     public Task<CommunityChannelDto> UpdateChannelAsync(Guid communityId, Guid channelId, string name, Guid? categoryId,
-        CommunityChannelKind kind = CommunityChannelKind.Text, CancellationToken cancellationToken = default) =>
-        SendAsync<CommunityChannelDto>(HttpMethod.Patch, $"api/communities/{communityId}/channels/{channelId}", new UpdateChannelRequest(name, categoryId, kind), cancellationToken);
+        CommunityChannelKind kind = CommunityChannelKind.Text, bool? requireTag = null,
+        CancellationToken cancellationToken = default) =>
+        SendAsync<CommunityChannelDto>(HttpMethod.Patch, $"api/communities/{communityId}/channels/{channelId}",
+            new UpdateChannelRequest(name, categoryId, kind, requireTag), cancellationToken);
 
     public Task MoveChannelAsync(Guid communityId, Guid channelId, CommunitySidebarMoveRequest request, CancellationToken cancellationToken = default) =>
         SendNoContentAsync(HttpMethod.Post, $"api/communities/{communityId}/channels/{channelId}/move", request, cancellationToken);
@@ -363,6 +365,17 @@ public sealed class NodeClient(Uri nodeAddress)
         SendAsync<CommunityForumPostPageDto>(HttpMethod.Get,
             $"api/communities/{communityId}/forums/{channelId}/posts?offset={Math.Max(0, offset)}&limit={Math.Clamp(limit, 1, 50)}",
             null, cancellationToken);
+
+    public Task<CommunityForumPostPageDto> QueryForumPostsAsync(Guid communityId, Guid channelId,
+        string? search, IReadOnlyCollection<Guid>? tagIds, int offset = 0, int limit = 30,
+        CancellationToken cancellationToken = default)
+    {
+        var query = $"offset={Math.Max(0, offset)}&limit={Math.Clamp(limit, 1, 50)}";
+        if (!string.IsNullOrWhiteSpace(search)) query += $"&search={Uri.EscapeDataString(search.Trim())}";
+        if (tagIds is { Count: > 0 }) query += $"&tags={string.Join(',', tagIds)}";
+        return SendAsync<CommunityForumPostPageDto>(HttpMethod.Get,
+            $"api/communities/{communityId}/forums/{channelId}/posts?{query}", null, cancellationToken);
+    }
 
     public Task<CommunityForumPostDto> GetForumPostAsync(Guid communityId, Guid channelId, Guid postId,
         CancellationToken cancellationToken = default) => SendAsync<CommunityForumPostDto>(HttpMethod.Get,
@@ -381,6 +394,30 @@ public sealed class NodeClient(Uri nodeAddress)
     public Task DeleteForumPostAsync(Guid communityId, Guid channelId, Guid postId,
         CancellationToken cancellationToken = default) => SendNoContentAsync(HttpMethod.Delete,
         $"api/communities/{communityId}/forums/{channelId}/posts/{postId}", null, cancellationToken);
+
+    public Task<IReadOnlyList<CommunityForumTagDto>> GetForumTagsAsync(Guid communityId, Guid channelId,
+        CancellationToken cancellationToken = default) => SendAsync<IReadOnlyList<CommunityForumTagDto>>(
+        HttpMethod.Get, $"api/communities/{communityId}/forums/{channelId}/tags", null, cancellationToken);
+    public Task<CommunityForumTagDto> CreateForumTagAsync(Guid communityId, Guid channelId,
+        CreateCommunityForumTagRequest request, CancellationToken cancellationToken = default) =>
+        SendAsync<CommunityForumTagDto>(HttpMethod.Post,
+            $"api/communities/{communityId}/forums/{channelId}/tags", request, cancellationToken);
+    public Task<CommunityForumTagDto> UpdateForumTagAsync(Guid communityId, Guid channelId, Guid tagId,
+        UpdateCommunityForumTagRequest request, CancellationToken cancellationToken = default) =>
+        SendAsync<CommunityForumTagDto>(HttpMethod.Put,
+            $"api/communities/{communityId}/forums/{channelId}/tags/{tagId}", request, cancellationToken);
+    public Task DeleteForumTagAsync(Guid communityId, Guid channelId, Guid tagId,
+        CancellationToken cancellationToken = default) => SendNoContentAsync(HttpMethod.Delete,
+        $"api/communities/{communityId}/forums/{channelId}/tags/{tagId}", null, cancellationToken);
+    public Task ReorderForumTagsAsync(Guid communityId, Guid channelId, IReadOnlyList<Guid> tagIds,
+        CancellationToken cancellationToken = default) => SendNoContentAsync(HttpMethod.Put,
+        $"api/communities/{communityId}/forums/{channelId}/tags/order",
+        new ReorderCommunityForumTagsRequest(tagIds), cancellationToken);
+    public Task<CommunityForumPostDto> UpdateForumPostTagsAsync(Guid communityId, Guid channelId, Guid postId,
+        IReadOnlyList<Guid> tagIds, CancellationToken cancellationToken = default) =>
+        SendAsync<CommunityForumPostDto>(HttpMethod.Put,
+            $"api/communities/{communityId}/forums/{channelId}/posts/{postId}/tags",
+            new UpdateCommunityForumPostTagsRequest(tagIds), cancellationToken);
 
     public Task<PermissionOverwriteScopeDto> GetPermissionScopeAsync(Guid communityId,
         PermissionOverwriteScopeType scopeType, Guid scopeId, CancellationToken cancellationToken = default) =>

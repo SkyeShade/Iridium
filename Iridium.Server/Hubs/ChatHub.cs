@@ -371,6 +371,7 @@ public sealed class ChatHub(
         if (attachments.Count > 0)
             await RequireChannelAsync(communityId, channelId, session.AccountId, CommunityPermission.AttachFiles);
         var content = ValidContent(request.Content, attachments.Count > 0, communityId);
+        await ValidateCommunityEmojiUseAsync(content, session.AccountId, communityId, channelId);
         var (mentions, recipients) = await ValidateMentionsAsync(
             communityId, channelId, session.AccountId, content, request.Mentions);
 
@@ -680,6 +681,7 @@ public sealed class ChatHub(
 
         message.Content = ValidContent(request.Content, allowEmpty: message.ForwardedMessageSnapshotId is not null,
             communityId: communityId);
+        await ValidateCommunityEmojiUseAsync(message.Content, accountId, communityId, channelId);
         message.MentionsJson = null;
         message.EditedAt = DateTimeOffset.UtcNow;
         if (rootForumPost is not null) rootForumPost.UpdatedAt = message.EditedAt.Value;
@@ -1013,6 +1015,8 @@ public sealed class ChatHub(
             if (reply is null || reply.IsDeleted) throw new HubException("The message being replied to is no longer available.");
             if (reply.Kind != MessageKind.User) throw new HubException("System messages cannot be replied to.");
         }
+        var content = ValidContent(request.Content, attachments.Count > 0);
+        await ValidateCommunityEmojiUseAsync(content, session.AccountId);
         var message = new DirectMessage
         {
             Id = Guid.NewGuid(),
@@ -1021,7 +1025,7 @@ public sealed class ChatHub(
             AuthorAccountId = session.AccountId,
             ClientMessageId = request.ClientMessageId,
             AuthorAccount = session.Account,
-            Content = ValidContent(request.Content, attachments.Count > 0),
+            Content = content,
             CreatedAt = DateTimeOffset.UtcNow,
             ReplyToMessageId = reply?.Id,
             ReplyToMessage = reply
@@ -1054,6 +1058,7 @@ public sealed class ChatHub(
         if (message.AuthorAccountId != accountId) throw new HubException("You can only edit your own messages.");
         if (message.IsDeleted) throw new HubException("Deleted messages cannot be edited.");
         message.Content = ValidContent(request.Content, allowEmpty: message.ForwardedMessageSnapshotId is not null);
+        await ValidateCommunityEmojiUseAsync(message.Content, accountId);
         message.EditedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync();
         var result = DirectMessageMapper.ToDto(message);
@@ -1158,7 +1163,7 @@ public sealed class ChatHub(
                     CommunityPermission.ViewChannels, db))
                 await Clients.Group(AccountGroup(accountId)).SendAsync(CommunityForumHubContract.PostChanged,
                     new CommunityForumPostChangedEvent(post.CommunityId, post.ForumChannelId,
-                        CommunityForumEndpoints.ToDto(post), post.Id, change, actorAccountId));
+                        await CommunityForumEndpoints.ToDtoAsync(post, db), post.Id, change, actorAccountId));
     }
 
     private async Task RequireChannelAsync(
@@ -1321,6 +1326,29 @@ public sealed class ChatHub(
         if (MessageText.CountCharacters(value) > maximum)
             throw new HubException($"Messages cannot exceed {maximum:N0} characters.");
         return value;
+    }
+
+    private async Task ValidateCommunityEmojiUseAsync(string content, Guid accountId,
+        Guid? targetCommunityId = null, Guid? targetChannelId = null)
+    {
+        var references = CommunityEmojiNames.References(content).DistinctBy(value => value.EmojiId).ToArray();
+        if (references.Length == 0) return;
+        var ids = references.Select(value => value.EmojiId).ToArray();
+        var emojis = await db.CommunityEmojis.AsNoTracking().Where(value => ids.Contains(value.Id)).ToArrayAsync();
+        if (emojis.Length != ids.Length) throw new HubException("One or more custom emoji are no longer available.");
+        foreach (var emoji in emojis)
+        {
+            if (!await authorization.IsMemberAsync(emoji.CommunityId, accountId, db))
+                throw new HubException("That custom emoji is not available to your account.");
+            var external = targetCommunityId.HasValue && emoji.CommunityId != targetCommunityId.Value;
+            if (external && (targetChannelId is null || !await authorization.HasChannelPermissionAsync(
+                    targetCommunityId!.Value, targetChannelId.Value, accountId,
+                    CommunityPermission.UseExternalEmoji, db)))
+                throw new HubException("You do not have permission to use custom emoji from another Server.");
+            if (environment.IsDevelopment()) logger.LogDebug(
+                "Resolved custom message emoji {EmojiId} from Server {SourceCommunityId}; external={External}.",
+                emoji.Id, emoji.CommunityId, external);
+        }
     }
 
     private static string GroupName(Guid communityId, Guid channelId) => $"community:{communityId:N}:channel:{channelId:N}";

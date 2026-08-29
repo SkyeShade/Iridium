@@ -1,6 +1,7 @@
 const composerHandlers = new WeakMap();
 const composerActionButtonHandlers = new WeakMap();
 const messageLongPressHandlers = new WeakMap();
+const forumPostLongPressHandlers = new WeakMap();
 const mobileMessageActionSheets = new WeakMap();
 const horizontalWheelElements = new WeakSet();
 const markdownSourceEditorHandlers = new WeakMap();
@@ -914,7 +915,7 @@ export function longPressMovementExceeded(startX, startY, currentX, currentY,
     return Math.hypot(currentX - startX, currentY - startY) > tolerance;
 }
 
-function wireTouchLongPress(root, { threshold, targetSelector, activeClass, invoke }) {
+function wireTouchLongPress(root, { threshold, targetSelector, activeClass, ignoreSelector, invoke }) {
     let timer = 0;
     let candidate = null;
     let suppressTarget = null;
@@ -931,6 +932,7 @@ function wireTouchLongPress(root, { threshold, targetSelector, activeClass, invo
     const down = event => {
         if ((event.pointerType !== "touch" && event.pointerType !== "pen") || event.button !== 0 ||
             !window.matchMedia("(max-width: 860px)").matches) return;
+        if (ignoreSelector && event.target?.closest?.(ignoreSelector)) return;
         const target = targetFor(event);
         if (!target) return;
         clearCandidate();
@@ -1050,6 +1052,44 @@ export function unwireMessageLongPress(container) {
     if (!handlers) return;
     handlers.dispose();
     messageLongPressHandlers.delete(container);
+}
+
+export function wireForumPostLongPress(container, dotNetReference) {
+    if (!container || forumPostLongPressHandlers.has(container)) return;
+    let menuOpened = false;
+    const gesture = wireTouchLongPress(container, {
+        threshold: messageActionLongPressMilliseconds,
+        targetSelector: "[data-forum-post-context-id]",
+        ignoreSelector: "a,button,input,textarea,select,[contenteditable='true'],[role='dialog'],[data-forum-context-ignore]",
+        activeClass: "forum-post-long-pressing",
+        invoke: async (target, x, y) => {
+            await dotNetReference.invokeMethodAsync(
+                "OpenForumPostContextFromLongPressAsync", target.dataset.forumPostContextId, x, y);
+            menuOpened = true;
+        }
+    });
+    const keydown = event => {
+        if (!menuOpened || event.key !== "Escape") return;
+        menuOpened = false;
+        dotNetReference.invokeMethodAsync("CloseForumPostContextFromLongPressAsync");
+    };
+    const navigationSwipeClaimed = event => gesture.cancelPointer(event.detail?.pointerId);
+    window.addEventListener("keydown", keydown);
+    window.addEventListener("iridium-mobile-navigation-swipe-claimed", navigationSwipeClaimed);
+    forumPostLongPressHandlers.set(container, {
+        dispose() {
+            gesture.dispose();
+            window.removeEventListener("keydown", keydown);
+            window.removeEventListener("iridium-mobile-navigation-swipe-claimed", navigationSwipeClaimed);
+        }
+    });
+}
+
+export function unwireForumPostLongPress(container) {
+    const handlers = container ? forumPostLongPressHandlers.get(container) : null;
+    if (!handlers) return;
+    handlers.dispose();
+    forumPostLongPressHandlers.delete(container);
 }
 
 export function animateMobileMessageActionSheetClose(backdrop, sheet) {

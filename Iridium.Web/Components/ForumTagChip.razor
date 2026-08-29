@@ -1,0 +1,31 @@
+@using Iridium.Client.Core
+@using Iridium.Protocol
+@inject CommunityEmojiService Emojis
+
+<span class="forum-tag-chip @(Selected ? "selected" : null) @(Interactive ? "interactive" : null)">
+    @if (_standard is not null)
+    {
+        <StandardEmojiArtwork ArtworkKey="@_standard.ArtworkKey" Glyph="@_standard.Glyph" Title="@_standard.Name" />
+    }
+    else if (_custom is not null && Tag.CustomEmojiAvailable)
+    {
+        <CommunityEmojiImage Emoji="_custom" />
+    }
+    <span>@Tag.Name</span>
+</span>
+
+@code {
+    [Parameter, EditorRequired] public required CommunityForumTagDto Tag { get; set; }
+    [Parameter] public bool Selected { get; set; }
+    [Parameter] public bool Interactive { get; set; }
+    private CommunityEmojiDto? _custom;
+    private StandardEmoji? _standard;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _standard = Tag.EmojiKind == ReactionEmojiKind.Standard && Tag.StandardEmoji is { Length: > 0 } glyph
+            ? StandardEmojiCatalog.All.FirstOrDefault(value => value.Glyph == glyph) : null;
+        _custom = Tag.CustomEmojiId is { } id && Tag.CustomEmojiAvailable
+            ? await Emojis.ResolveReferenceAsync(id) : null;
+    }
+}

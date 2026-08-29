@@ -20,6 +20,8 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
     public DbSet<CommunityCategory> CommunityCategories => Set<CommunityCategory>();
     public DbSet<CommunityChannel> CommunityChannels => Set<CommunityChannel>();
     public DbSet<CommunityForumPost> CommunityForumPosts => Set<CommunityForumPost>();
+    public DbSet<CommunityForumTag> CommunityForumTags => Set<CommunityForumTag>();
+    public DbSet<CommunityForumPostTag> CommunityForumPostTags => Set<CommunityForumPostTag>();
     public DbSet<CommunityPermissionOverwrite> CommunityPermissionOverwrites => Set<CommunityPermissionOverwrite>();
     public DbSet<ChannelMessage> ChannelMessages => Set<ChannelMessage>();
     public DbSet<CommunityChannelReadState> CommunityChannelReadStates => Set<CommunityChannelReadState>();
@@ -221,6 +223,7 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
         channel.Property(value => value.Name).HasMaxLength(100);
         channel.Property(value => value.Kind).HasDefaultValue(Iridium.Protocol.CommunityChannelKind.Text);
         channel.Property(value => value.PermissionsSyncedToCategory).HasDefaultValue(false);
+        channel.Property(value => value.RequireTag).HasDefaultValue(false);
         channel.HasIndex(value => new { value.CommunityId, value.ParentForumChannelId });
         channel.HasIndex(value => new { value.CommunityId, value.CategoryId, value.Position });
         channel.HasOne(value => value.Community).WithMany(value => value.Channels).HasForeignKey(value => value.CommunityId);
@@ -252,6 +255,31 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
             .OnDelete(DeleteBehavior.Cascade);
         forumPost.HasOne(value => value.AuthorAccount).WithMany().HasForeignKey(value => value.AuthorAccountId)
             .OnDelete(DeleteBehavior.Restrict);
+
+        var forumTag = modelBuilder.Entity<CommunityForumTag>();
+        forumTag.HasKey(value => value.Id);
+        forumTag.Property(value => value.Name).HasMaxLength(CommunityForumTagLimits.MaximumNameLength)
+            .UseCollation("NOCASE");
+        forumTag.Property(value => value.StandardEmoji).HasMaxLength(32);
+        forumTag.Property(value => value.CreatedAt)
+            .HasConversion(value => value.UtcTicks, value => new DateTimeOffset(value, TimeSpan.Zero));
+        forumTag.HasIndex(value => value.ChannelId);
+        forumTag.HasIndex(value => new { value.ChannelId, value.Name }).IsUnique();
+        forumTag.HasIndex(value => new { value.ChannelId, value.SortOrder });
+        forumTag.HasOne(value => value.Channel).WithMany()
+            .HasForeignKey(value => new { value.CommunityId, value.ChannelId })
+            .HasPrincipalKey(value => new { value.CommunityId, value.Id }).OnDelete(DeleteBehavior.Cascade);
+        forumTag.HasOne(value => value.CustomEmoji).WithMany().HasForeignKey(value => value.CustomEmojiId)
+            .OnDelete(DeleteBehavior.SetNull);
+
+        var forumPostTag = modelBuilder.Entity<CommunityForumPostTag>();
+        forumPostTag.HasKey(value => new { value.PostId, value.TagId });
+        forumPostTag.HasIndex(value => value.PostId);
+        forumPostTag.HasIndex(value => value.TagId);
+        forumPostTag.HasOne(value => value.Post).WithMany(value => value.TagAssignments)
+            .HasForeignKey(value => value.PostId).OnDelete(DeleteBehavior.Cascade);
+        forumPostTag.HasOne(value => value.Tag).WithMany(value => value.PostAssignments)
+            .HasForeignKey(value => value.TagId).OnDelete(DeleteBehavior.Cascade);
 
         var overwrite = modelBuilder.Entity<CommunityPermissionOverwrite>();
         overwrite.HasKey(value => value.Id);

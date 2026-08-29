@@ -6,16 +6,18 @@
 @inject NodeSession Session
 @inject IMessageDraftStore Drafts
 @inject ILogger<ForumChannelView> Logger
+@inject IJSRuntime JS
 
-<section class="forum-view @Mode.ToString().ToLowerInvariant()">
+<section class="forum-view @Mode.ToString().ToLowerInvariant()" @ref="_forumSurface">
     @switch (Mode)
     {
         case ForumViewMode.Index:
-            <ForumPostBrowser ChannelName="@Channel.Name" Posts="FilteredPosts" Search="@_search"
+            <ForumPostBrowser ChannelName="@Channel.Name" Posts="FilteredPosts" Search="@_search" Tags="Forum.Tags" SelectedTagIds="_filterTagIds"
                               CommunityManagement="CommunityManagement"
-                              SearchChangedCallback="SearchChanged" CanCreatePosts="CanCreatePosts"
+                              SearchChangedCallback="SearchChangedAsync" TagFilterChanged="TagFilterChangedAsync" CanCreatePosts="CanCreatePosts"
                               IsLoading="Forum.IsLoading" HasMore="Forum.NextOffset.HasValue"
-                              OnNewPost="BeginCreateAsync" OnLoadMore="() => Forum.LoadMoreAsync()" OnOpen="OpenPostAsync" />
+                              OnNewPost="BeginCreateAsync" OnLoadMore="() => Forum.LoadMoreAsync()" OnOpen="OpenPostAsync"
+                              OnContextMenu="OpenPostContextMenu" />
             break;
 
         case ForumViewMode.CreatingPost:
@@ -26,13 +28,20 @@
                 </header>
                 <div class="forum-create-content">
                     <label class="forum-title-field"><span>Title</span><input maxlength="120" value="@_newTitle" @oninput="TitleChangedAsync" placeholder="What is this discussion about?" autofocus /></label>
+                    <ForumTagPicker Tags="Forum.Tags" SelectedTagIds="_newTagIds" CanManageModerated="CanManageMessages"
+                                    SelectedTagIdsChanged="NewTagsChanged" />
+                    @if (Channel.RequireTag && _newTagIds.Count == 0)
+                    {
+                        <p class="forum-tag-required" role="status">Select at least one tag before publishing this Post.</p>
+                    }
                     <MessageComposer @ref="_newPostComposer" Class="forum-create-composer" ChannelName="@Channel.Name"
                                      PlaceholderText="Enter a message..." Busy="_creating" Community="Community"
                                      CommunityManagement="CommunityManagement" SendRich="CreatePostAsync"
                                      OnCommunityProfileChanged="OnCommunityProfileChanged"
                                      OnSubmitted="FinishCreatedPostAsync" SendableContentChanged="BodySendableChanged"
                                      CanAttachFiles="CanAttachFiles"
-                                     CanMentionEveryone="CanMentionEveryone" NodeAuthority="@NodeAuthority"
+                                     CanMentionEveryone="CanMentionEveryone" CanUseExternalEmoji="CanUseExternalEmoji"
+                                     NodeAuthority="@NodeAuthority"
                                      AccountId="@CurrentAccountId" ConversationKind="@CreateBodyDraftScope.ConversationKind"
                                      ConversationId="@CreateBodyDraftScope.ConversationId" />
                     @if (!string.IsNullOrWhiteSpace(_error)) { <p class="forum-error" role="alert">@_error</p> }
@@ -49,12 +58,13 @@
             {
                 <div class="forum-split-shell">
                     <aside class="forum-browser-pane">
-                        <ForumPostBrowser ChannelName="@Channel.Name" Posts="FilteredPosts" Search="@_search" Compact="true"
+                        <ForumPostBrowser ChannelName="@Channel.Name" Posts="FilteredPosts" Search="@_search" Compact="true" Tags="Forum.Tags" SelectedTagIds="_filterTagIds"
                                           CommunityManagement="CommunityManagement"
-                                          SearchChangedCallback="SearchChanged" CanCreatePosts="CanCreatePosts"
+                                          SearchChangedCallback="SearchChangedAsync" TagFilterChanged="TagFilterChangedAsync" CanCreatePosts="CanCreatePosts"
                                           IsLoading="Forum.IsLoading" HasMore="Forum.NextOffset.HasValue"
                                           SelectedPostId="SelectedForumPostId" OnNewPost="BeginCreateAsync"
-                                          OnLoadMore="() => Forum.LoadMoreAsync()" OnOpen="OpenPostAsync" />
+                                          OnLoadMore="() => Forum.LoadMoreAsync()" OnOpen="OpenPostAsync"
+                                          OnContextMenu="OpenPostContextMenu" />
                     </aside>
                     <section class="forum-discussion-pane">
                         <header class="forum-discussion-header">
@@ -65,7 +75,14 @@
                             }
                             else
                             {
-                                <div><strong>@selectedPost.Title</strong><small># @Channel.Name</small></div>
+                                <div class="forum-post-context-surface" data-forum-post-context-id="@selectedPost.Id"
+                                     @oncontextmenu="OpenCurrentPostContextMenu" @oncontextmenu:preventDefault="true" @oncontextmenu:stopPropagation="true">
+                                    @if (selectedPost.Tags is { Count: > 0 })
+                                    {
+                                        <span class="forum-header-tags">@foreach (var tag in selectedPost.Tags.OrderBy(value => value.SortOrder)) { <ForumTagChip Tag="tag" /> }</span>
+                                    }
+                                    <strong>@selectedPost.Title</strong><small># @Channel.Name</small>
+                                </div>
                             }
                             @if (selectedPost.IsPinned && !CanManageMessages) { <span title="Pinned"><Icon Name="pin" /></span> }
                             @if (CanManageMessages)
@@ -77,10 +94,20 @@
                             }
                             @if (selectedPost.Author.AccountId == CurrentAccountId || CanManageMessages)
                             {
-                                <button title="@(_editingTitle ? "Save title" : "Edit title")" aria-label="@(_editingTitle ? "Save Forum post title" : "Edit Forum post title")" @onclick="EditTitleAsync"><Icon Name="@(_editingTitle ? "check" : "edit")" /></button>
+                                <button title="@(_editingTitle ? "Save title" : "Edit title")" aria-label="@(_editingTitle ? "Save title" : "Edit title")" @onclick="EditTitleAsync"><Icon Name="@(_editingTitle ? "check" : "edit")" /></button>
+                                <button title="Edit tags" aria-label="Edit tags" @onclick="BeginEditTags"><Icon Name="tag" /></button>
                                 <button class="delete-post" title="@(_confirmDelete ? "Confirm delete post" : "Delete post")" aria-label="@(_confirmDelete ? "Confirm delete Forum post" : "Delete Forum post")" @onclick="DeletePostAsync"><Icon Name="trash" /></button>
                             }
                         </header>
+                        @if (_editingTags)
+                        {
+                            <div class="forum-edit-tags">
+                                <ForumTagPicker Tags="Forum.Tags" SelectedTagIds="_editTagIds" CanManageModerated="CanManageMessages"
+                                                SelectedTagIdsChanged="EditTagsChanged" />
+                                <button type="button" @onclick="SaveEditedTagsAsync">Save Tags</button>
+                                <button type="button" @onclick="CancelEditTags">Cancel</button>
+                            </div>
+                        }
                         @if (selectedPost.IsLocked)
                         {
                             <div class="forum-lock-banner"><Icon Name="lock" /><span>This post has been locked. Only moderators can send messages.</span>@if (CanManageMessages) { <button @onclick="ToggleLockedAsync">Unlock</button> }</div>
@@ -104,6 +131,18 @@
             break;
     }
 </section>
+
+@if (_postContext is { } postContext)
+{
+    var canEditContextPost = postContext.Post.Author.AccountId == CurrentAccountId || CanManageMessages;
+    <ForumPostContextMenu Post="postContext.Post" X="postContext.X" Y="postContext.Y" IsOpenPost="postContext.IsOpenPost"
+                          CanMarkRead="@(postContext.Post.UnreadCount > 0)" CanEdit="canEditContextPost"
+                          CanManage="CanManageMessages" CanDelete="canEditContextPost"
+                          OnOpen="OpenContextPostAsync" OnMarkRead="MarkContextPostReadAsync"
+                          OnToggleLock="ToggleContextPostLockedAsync" OnEditTitle="EditContextPostTitleAsync"
+                          OnEditTags="EditContextPostTagsAsync" OnTogglePin="ToggleContextPostPinnedAsync"
+                          OnDelete="DeleteContextPostAsync" OnClose="ClosePostContextMenu" />
+}
 
 @code {
     public enum ForumViewMode { Index, CreatingPost, ViewingPost }
@@ -133,21 +172,36 @@
     private CommunityForumPostDto? _selectedPost;
     private CommunityForumPostDto? _createdPost;
     private MessageComposer? _newPostComposer;
-    private bool _creating, _confirmDelete, _editingTitle;
+    private bool _creating, _confirmDelete, _editingTitle, _editingTags;
     private bool _newBodySendable;
     private string _titleDraft = string.Empty, _newTitle = string.Empty, _search = string.Empty;
     private string? _error;
     private CancellationTokenSource? _titleDraftDebounce;
+    private CancellationTokenSource? _filterDebounce;
+    private IReadOnlyList<Guid> _newTagIds = [], _editTagIds = [], _filterTagIds = [];
+    private ForumPostContextRequest? _postContext;
+    private ElementReference _forumSurface;
+    private IJSObjectReference? _module;
+    private DotNetObjectReference<ForumChannelView>? _selfReference;
 
     private MessageDraftScope CreateBodyDraftScope => CommunityForumPostDrafts.BodyScope(NodeAuthority, CurrentAccountId, Community.Id, Channel.Id);
     private MessageDraftScope CreateTitleDraftScope => CommunityForumPostDrafts.TitleScope(NodeAuthority, CurrentAccountId, Community.Id, Channel.Id);
-    private IReadOnlyList<CommunityForumPostDto> FilteredPosts => CommunityForumPostSearch.Filter(Forum.Posts, _search);
+    private IReadOnlyList<CommunityForumPostDto> FilteredPosts => Forum.Posts;
     private Guid? SelectedForumPostId { get; set; }
-    private bool CanPublish => !_creating && !string.IsNullOrWhiteSpace(_newTitle) && _newBodySendable;
+    private bool CanPublish => !_creating && !string.IsNullOrWhiteSpace(_newTitle) && _newBodySendable &&
+        (!Channel.RequireTag || _newTagIds.Count > 0);
     private string PinActionTitle => _selectedPost?.IsPinned == true ? "Unpin post" : "Pin post";
     private CommunityChannelDto DiscussionChannel => new(_selectedPost!.DiscussionChannelId, Community.Id, null, _selectedPost.Title, 0, _selectedPost.CreatedAt, Kind: CommunityChannelKind.Text, EffectivePermissions: Channel.EffectivePermissions);
 
     protected override void OnInitialized() => Forum.Changed += ForumChanged;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        _module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/chat.js");
+        _selfReference = DotNetObjectReference.Create(this);
+        await _module.InvokeVoidAsync("wireForumPostLongPress", _forumSurface, _selfReference);
+    }
 
     protected override async Task OnParametersSetAsync()
     {
@@ -158,6 +212,8 @@
         _createdPost = null;
         Mode = ForumViewMode.Index;
         _search = string.Empty;
+        _filterTagIds = [];
+        _newTagIds = [];
         _error = null;
         _newTitle = await Drafts.LoadAsync(CreateTitleDraftScope) ?? string.Empty;
         await OnSubViewChanged.InvokeAsync(false);
@@ -166,6 +222,7 @@
 
     private void ForumChanged()
     {
+        _postContext = null;
         if (_selectedPost is { } selected)
         {
             var refreshed = Forum.Posts.FirstOrDefault(value => value.Id == selected.Id);
@@ -186,7 +243,20 @@
         _ = InvokeAsync(StateHasChanged);
     }
 
-    private void SearchChanged(string value) => _search = value;
+    private async Task SearchChangedAsync(string value)
+    {
+        _search = value;
+        _filterDebounce?.Cancel();
+        _filterDebounce?.Dispose();
+        _filterDebounce = new();
+        try { await Task.Delay(250, _filterDebounce.Token); await Forum.ApplyFilterAsync(_search, _filterTagIds, _filterDebounce.Token); }
+        catch (OperationCanceledException) { }
+    }
+    private async Task TagFilterChangedAsync(IReadOnlyList<Guid> value)
+    {
+        _filterTagIds = value;
+        await Forum.ApplyFilterAsync(_search, _filterTagIds);
+    }
     private void BodySendableChanged(bool sendable) => _newBodySendable = sendable;
 
     private async Task BeginCreateAsync()
@@ -221,7 +291,9 @@
         _error = null;
         try
         {
-            _createdPost = await Forum.CreateAsync(_newTitle.Trim(), submission.Content, submission.Mentions, submission.Attachments, submission.UploadAttachments);
+            if (Channel.RequireTag && _newTagIds.Count == 0) { _error = "Select at least one tag."; return false; }
+            _createdPost = await Forum.CreateAsync(_newTitle.Trim(), submission.Content, submission.Mentions,
+                submission.Attachments, submission.UploadAttachments, _newTagIds);
             return true;
         }
         catch (Exception exception)
@@ -239,17 +311,21 @@
         _titleDraftDebounce?.Cancel();
         await Drafts.RemoveAsync(CreateTitleDraftScope);
         _newTitle = string.Empty;
+        _newTagIds = [];
         _createdPost = null;
         await OpenPostAsync(post);
     }
 
     private async Task OpenPostAsync(CommunityForumPostDto post)
     {
+        _postContext = null;
         _selectedPost = post;
         SelectedForumPostId = post.Id;
         Mode = ForumViewMode.ViewingPost;
         _confirmDelete = false;
         _editingTitle = false;
+        _editingTags = false;
+        _editTagIds = [];
         _titleDraft = post.Title;
         Forum.MarkRead(post.Id);
         try { await Session.MarkCommunityChannelReadAsync(Community.Id, post.DiscussionChannelId); }
@@ -262,6 +338,7 @@
 
     public async Task BackToIndexAsync()
     {
+        _postContext = null;
         if (Mode == ForumViewMode.CreatingPost) await PersistTitleDraftAsync();
         _selectedPost = null;
         SelectedForumPostId = null;
@@ -269,6 +346,8 @@
         Mode = ForumViewMode.Index;
         _confirmDelete = false;
         _editingTitle = false;
+        _editingTags = false;
+        _editTagIds = [];
         _error = null;
         await OnPostOpenChanged.InvokeAsync(null);
         await OnSubViewChanged.InvokeAsync(false);
@@ -279,6 +358,72 @@
         if (_selectedPost is not { } post) return;
         await Session.MarkCommunityChannelReadAsync(Community.Id, post.DiscussionChannelId);
         Forum.MarkRead(post.Id);
+    }
+
+    private Task OpenPostContextMenu(ForumPostContextRequest request)
+    {
+        _postContext = request;
+        return Task.CompletedTask;
+    }
+
+    private Task OpenCurrentPostContextMenu(MouseEventArgs args)
+    {
+        if (_selectedPost is null) return Task.CompletedTask;
+        _postContext = new(_selectedPost, args.ClientX, args.ClientY, true);
+        return Task.CompletedTask;
+    }
+
+    [JSInvokable]
+    public Task OpenForumPostContextFromLongPressAsync(string postId, double x, double y)
+    {
+        if (!Guid.TryParse(postId, out var id)) return Task.CompletedTask;
+        var post = _selectedPost?.Id == id ? _selectedPost : Forum.Posts.FirstOrDefault(value => value.Id == id);
+        if (post is not null) _postContext = new(post, x, y, _selectedPost?.Id == id);
+        return InvokeAsync(StateHasChanged);
+    }
+
+    [JSInvokable]
+    public Task CloseForumPostContextFromLongPressAsync()
+    {
+        _postContext = null;
+        return InvokeAsync(StateHasChanged);
+    }
+
+    private void ClosePostContextMenu() => _postContext = null;
+    private bool CanEditPost(CommunityForumPostDto post) => post.Author.AccountId == CurrentAccountId || CanManageMessages;
+    private async Task OpenContextPostAsync() { if (_postContext is { } context) await OpenPostAsync(context.Post); }
+    private async Task MarkContextPostReadAsync()
+    {
+        if (_postContext is not { } context) return;
+        await Session.MarkCommunityChannelReadAsync(Community.Id, context.Post.DiscussionChannelId);
+        Forum.MarkRead(context.Post.Id);
+    }
+    private async Task ToggleContextPostLockedAsync() => await UpdateContextPostAsync(new(IsLocked: !_postContext!.Post.IsLocked));
+    private async Task ToggleContextPostPinnedAsync() => await UpdateContextPostAsync(new(IsPinned: !_postContext!.Post.IsPinned));
+    private async Task UpdateContextPostAsync(UpdateCommunityForumPostRequest request)
+    {
+        if (_postContext is not { } context || !CanManageMessages) return;
+        var updated = await Forum.UpdateAsync(context.Post.Id, request);
+        if (_selectedPost?.Id == updated.Id) _selectedPost = updated;
+    }
+    private async Task EditContextPostTitleAsync()
+    {
+        if (_postContext is not { } context || !CanEditPost(context.Post)) return;
+        if (_selectedPost?.Id != context.Post.Id) await OpenPostAsync(context.Post);
+        _titleDraft = _selectedPost!.Title;
+        _editingTitle = true;
+    }
+    private async Task EditContextPostTagsAsync()
+    {
+        if (_postContext is not { } context || !CanEditPost(context.Post)) return;
+        if (_selectedPost?.Id != context.Post.Id) await OpenPostAsync(context.Post);
+        BeginEditTags();
+    }
+    private async Task DeleteContextPostAsync()
+    {
+        if (_postContext is not { } context || !CanEditPost(context.Post)) return;
+        await Forum.DeleteAsync(context.Post.Id);
+        if (_selectedPost?.Id == context.Post.Id) await BackToIndexAsync();
     }
 
     private async Task TogglePinnedAsync() { if (_selectedPost is not null) _selectedPost = await Forum.UpdateAsync(_selectedPost.Id, new(IsPinned: !_selectedPost.IsPinned)); }
@@ -304,6 +449,24 @@
         await OnPostOpenChanged.InvokeAsync(_selectedPost);
     }
 
+    private void NewTagsChanged(IReadOnlyList<Guid> value) => _newTagIds = value;
+    private void EditTagsChanged(IReadOnlyList<Guid> value) => _editTagIds = value;
+    private void BeginEditTags()
+    {
+        if (_selectedPost is null) return;
+        _editTagIds = (_selectedPost.Tags ?? []).Select(value => value.Id).ToArray();
+        _editingTags = true;
+    }
+    private void CancelEditTags() { _editingTags = false; _editTagIds = []; }
+    private async Task SaveEditedTagsAsync()
+    {
+        if (_selectedPost is null) return;
+        _selectedPost = await Forum.UpdateTagsAsync(_selectedPost.Id, _editTagIds);
+        _editingTags = false;
+        _editTagIds = [];
+        await OnPostOpenChanged.InvokeAsync(_selectedPost);
+    }
+
     private async Task PersistTitleDraftAsync(CancellationToken cancellationToken = default)
     {
         try
@@ -320,8 +483,16 @@
         Forum.Changed -= ForumChanged;
         _titleDraftDebounce?.Cancel();
         _titleDraftDebounce?.Dispose();
+        _filterDebounce?.Cancel();
+        _filterDebounce?.Dispose();
         if (Mode == ForumViewMode.CreatingPost) await PersistTitleDraftAsync();
         if (_selectedPost is not null) await OnPostOpenChanged.InvokeAsync(null);
         if (Mode != ForumViewMode.Index) await OnSubViewChanged.InvokeAsync(false);
+        if (_module is not null)
+        {
+            await _module.InvokeVoidAsync("unwireForumPostLongPress", _forumSurface);
+            await _module.DisposeAsync();
+        }
+        _selfReference?.Dispose();
     }
 }

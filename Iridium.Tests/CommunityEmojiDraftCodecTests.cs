@@ -93,6 +93,26 @@ public sealed class CommunityEmojiDraftCodecTests
         Assert.Equal(serialized.Length, CommunityEmojiDraftCodec.MapDocumentPositionToSerialized(3, custom, standard));
     }
 
+    [Fact]
+    public void StaleCustomReferenceCannotCrashCharacterCountingDuringComposerClear()
+    {
+        CommunityEmojiDraftReference[] stale = [new(0, 1, Guid.NewGuid(), "mudrock", Guid.NewGuid())];
+
+        Assert.Equal(0, CommunityEmojiDraftCodec.CountCharacters(string.Empty, stale));
+    }
+
+    [Fact]
+    public void CanonicalMessageTokenRoundTripsStableCustomEmojiIdentity()
+    {
+        var id = Guid.NewGuid();
+        var content = CommunityEmojiNames.Token(id, "mudrock");
+
+        var reference = Assert.Single(CommunityEmojiNames.References(content));
+        Assert.Equal(id, reference.EmojiId);
+        Assert.Equal("mudrock", reference.Name);
+        Assert.Equal(1, MessageText.CountCharacters(content));
+    }
+
     private static CommunityDto Community(string name) =>
         new(Guid.NewGuid(), name, null, Guid.NewGuid(), DateTimeOffset.UtcNow);
 

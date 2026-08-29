@@ -1,9 +1,16 @@
 @using Iridium.Client.Core
 @using Iridium.Protocol
+@using Iridium.Web.Models
 
 <article class="forum-post-card @(Compact ? "compact" : null) @(Selected ? "selected" : null) @(Post.UnreadCount > 0 ? "unread" : null)"
-         role="button" tabindex="0" @onclick="OpenAsync" @onkeydown="CardKeyDownAsync">
+         role="button" tabindex="0" data-forum-post-context-id="@Post.Id"
+         @onclick="OpenAsync" @onkeydown="CardKeyDownAsync"
+         @oncontextmenu="OpenContextMenuAsync" @oncontextmenu:preventDefault="true" @oncontextmenu:stopPropagation="true">
     <span class="forum-post-copy">
+        @if (Post.Tags is { Count: > 0 })
+        {
+            <span class="forum-post-tags">@foreach (var tag in Post.Tags.OrderBy(value => value.SortOrder)) { <ForumTagChip Tag="tag" /> }</span>
+        }
         <span class="forum-post-title">
             @if (Post.IsPinned) { <span title="Pinned"><Icon Name="pin" /></span> }
             <strong>@Post.Title</strong>
@@ -34,8 +41,11 @@
     [Parameter] public bool Compact { get; set; }
     [Parameter] public bool Selected { get; set; }
     [Parameter] public EventCallback<CommunityForumPostDto> OnOpen { get; set; }
+    [Parameter] public EventCallback<ForumPostContextRequest> OnContextMenu { get; set; }
 
     private Task OpenAsync() => OnOpen.InvokeAsync(Post);
+    private Task OpenContextMenuAsync(MouseEventArgs args) =>
+        OnContextMenu.InvokeAsync(new(Post, args.ClientX, args.ClientY));
     private Task CardKeyDownAsync(KeyboardEventArgs args) => args.Key is "Enter" or " " ? OpenAsync() : Task.CompletedTask;
     private string? AuthorColor => CommunityManagement?.Members
         .FirstOrDefault(member => member.AccountId == Post.Author.AccountId) is { } member

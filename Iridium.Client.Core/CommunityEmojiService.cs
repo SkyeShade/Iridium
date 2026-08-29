@@ -1,4 +1,5 @@
 using Iridium.Protocol;
+using Microsoft.Extensions.Logging;
 
 namespace Iridium.Client.Core;
 
@@ -7,18 +8,24 @@ public sealed record AvailableCommunityEmoji(CommunityDto Community, CommunityEm
 public sealed class CommunityEmojiService : IDisposable
 {
     private readonly NodeSession _session;
+    private readonly ILogger<CommunityEmojiService>? _logger;
     private readonly Dictionary<Guid, IReadOnlyList<CommunityEmojiDto>> _collections = [];
     private readonly Dictionary<(Guid Id, long Revision), Task<string?>> _media = [];
     private readonly Dictionary<Guid, CommunityEmojiDto> _references = [];
     private Guid? _accountId;
+    private string? _nodeAddress;
+    private HashSet<Guid> _communityIds = [];
     public event Action<Guid>? Changed;
 
-    public CommunityEmojiService(NodeSession session)
+    public CommunityEmojiService(NodeSession session, ILogger<CommunityEmojiService>? logger = null)
     {
         _session = session;
+        _logger = logger;
         _session.CommunityChanged += OnCommunityChanged;
         _session.Changed += OnSessionChanged;
         _accountId = session.Account?.Id;
+        _nodeAddress = session.SelectedNode?.Address;
+        _communityIds = session.Communities.Select(value => value.Id).ToHashSet();
     }
 
     public IReadOnlyList<CommunityEmojiDto> GetCached(Guid communityId) =>
@@ -35,15 +42,39 @@ public sealed class CommunityEmojiService : IDisposable
     }
 
     public async Task<IReadOnlyList<AvailableCommunityEmoji>> GetAvailableAsync(
-        CancellationToken cancellationToken = default)
+        CommunityDto? requiredCommunity = null, CancellationToken cancellationToken = default)
     {
         EnsureAccountCache();
-        var communities = _session.Communities.OrderBy(value => value.Name, StringComparer.OrdinalIgnoreCase)
+        var communities = _session.Communities
+            .Concat(requiredCommunity is null || _session.Communities.Any(value => value.Id == requiredCommunity.Id)
+                ? [] : [requiredCommunity])
+            .DistinctBy(value => value.Id)
+            .OrderBy(value => value.Name, StringComparer.OrdinalIgnoreCase)
             .ThenBy(value => value.Id).ToArray();
-        var collections = await Task.WhenAll(communities.Select(async community =>
-            (Community: community, Emojis: await GetAsync(community.Id, cancellationToken: cancellationToken))));
+        var collections = await Task.WhenAll(communities.Select(community =>
+            LoadAvailableCollectionAsync(community, cancellationToken)));
         return collections.SelectMany(value => value.Emojis.Select(emoji =>
             new AvailableCommunityEmoji(value.Community, emoji))).ToArray();
+    }
+
+    private async Task<(CommunityDto Community, IReadOnlyList<CommunityEmojiDto> Emojis)>
+        LoadAvailableCollectionAsync(CommunityDto community, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return (community, await GetAsync(community.Id, cancellationToken: cancellationToken));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            _logger?.LogWarning(exception,
+                "Could not load custom emoji for Server {CommunityId}; other emoji sources remain available.",
+                community.Id);
+            return (community, []);
+        }
     }
 
     public async Task<string?> GetMediaDataUrlAsync(CommunityEmojiDto emoji, CancellationToken cancellationToken = default)
@@ -121,16 +152,35 @@ public sealed class CommunityEmojiService : IDisposable
         Changed?.Invoke(communityId);
     }
 
-    private void OnSessionChanged() => EnsureAccountCache();
+    private void OnSessionChanged()
+    {
+        if (!EnsureAccountCache()) return;
+        Changed?.Invoke(Guid.Empty);
+    }
 
-    private void EnsureAccountCache()
+    private bool EnsureAccountCache()
     {
         var accountId = _session.Account?.Id;
-        if (_accountId == accountId) return;
+        var nodeAddress = _session.SelectedNode?.Address;
+        var communityIds = _session.Communities.Select(value => value.Id).ToHashSet();
+        var accountChanged = _accountId != accountId ||
+            !string.Equals(_nodeAddress, nodeAddress, StringComparison.OrdinalIgnoreCase);
+        var membershipsChanged = !_communityIds.SetEquals(communityIds);
+        if (!accountChanged && !membershipsChanged) return false;
         _accountId = accountId;
-        _collections.Clear();
-        _media.Clear();
-        _references.Clear();
+        _nodeAddress = nodeAddress;
+        if (accountChanged)
+        {
+            _collections.Clear();
+            _media.Clear();
+            _references.Clear();
+        }
+        else
+        {
+            foreach (var removed in _communityIds.Except(communityIds).ToArray()) _collections.Remove(removed);
+        }
+        _communityIds = communityIds;
+        return true;
     }
 
     public void Dispose()

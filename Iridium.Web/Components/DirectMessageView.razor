@@ -44,6 +44,7 @@
                          PlaceholderText="@($"Message {Conversation.OtherParticipant.DisplayName}")"
                          ReplyToDisplayName="@(_replyTo?.Author.DisplayName)" Busy="@_sending"
                          SendRich="SendMessageAsync" OnCancelReply="CancelReplyAsync"
+                         CanUseExternalEmoji="true"
                          TypingActivityChanged="Messaging.ReportTypingActivityAsync"
                          OnEditLastMessage="EditLastOwnMessageAsync"
                          NodeAuthority="@NodeAuthority" AccountId="@CurrentAccountId" ConversationKind="direct" ConversationId="@Conversation.Id" />

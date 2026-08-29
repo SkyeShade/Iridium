@@ -29,6 +29,7 @@ public static class CommunityForumEndpoints
     }
 
     private static async Task<IResult> ListAsync(Guid communityId, Guid channelId, int? offset, int? limit,
+        string? search, string? tags,
         HttpContext context, IridiumDbContext db, SessionService sessions,
         CommunityAuthorizationService authorization)
     {
@@ -38,10 +39,31 @@ public static class CommunityForumEndpoints
             return Results.NotFound();
         var skip = Math.Max(0, offset ?? 0);
         var take = Math.Clamp(limit ?? DefaultPageSize, 1, MaximumPageSize);
-        var posts = await db.CommunityForumPosts.AsNoTracking()
+        var query = db.CommunityForumPosts.AsNoTracking()
             .Include(value => value.AuthorAccount)
             .Include(value => value.RootMessage)
-            .Where(value => value.CommunityId == communityId && value.ForumChannelId == channelId)
+            .Where(value => value.CommunityId == communityId && value.ForumChannelId == channelId);
+        var term = search?.Trim();
+        if (!string.IsNullOrEmpty(term))
+        {
+            var normalizedTerm = term.ToLower();
+            query = query.Where(value => value.Title.ToLower().Contains(normalizedTerm) ||
+                value.RootMessage.Content.ToLower().Contains(normalizedTerm) ||
+                value.AuthorAccount.DisplayName.ToLower().Contains(normalizedTerm) ||
+                value.AuthorAccount.Username.ToLower().Contains(normalizedTerm));
+        }
+        var selectedTags = ParseTagIds(tags);
+        if (selectedTags is null) return Invalid("One or more tag filters are invalid.");
+        if (selectedTags.Count > 0)
+        {
+            var available = await db.CommunityForumTags.Where(value => value.ChannelId == channelId &&
+                selectedTags.Contains(value.Id)).Select(value => value.Id).CountAsync();
+            if (available != selectedTags.Count) return Invalid("One or more tag filters do not belong to this Forum.");
+            // Discord's multi-tag filter is union/OR: a post matching any selected tag is included.
+            query = query.Where(value => db.CommunityForumPostTags.Any(assignment =>
+                assignment.PostId == value.Id && selectedTags.Contains(assignment.TagId)));
+        }
+        var posts = await query
             .OrderByDescending(value => value.IsPinned)
             .ThenByDescending(value => value.LastActivityAt)
             .ThenByDescending(value => value.Id)
@@ -49,8 +71,9 @@ public static class CommunityForumEndpoints
         var hasMore = posts.Count > take;
         if (hasMore) posts.RemoveAt(posts.Count - 1);
         var unread = await UnreadCountsAsync(posts, session.AccountId, db);
+        var tagMap = await LoadPostTagsAsync(posts.Select(value => value.Id).ToArray(), db);
         return Results.Ok(new CommunityForumPostPageDto(
-            posts.Select(value => ToDto(value, unread.GetValueOrDefault(value.Id))).ToArray(),
+            posts.Select(value => ToDto(value, unread.GetValueOrDefault(value.Id), tagMap.GetValueOrDefault(value.Id))).ToArray(),
             hasMore ? skip + take : null));
     }
 
@@ -68,7 +91,7 @@ public static class CommunityForumEndpoints
                 value.ForumChannelId == channelId);
         if (post is null) return Results.NotFound();
         var unread = await UnreadCountsAsync([post], session.AccountId, db);
-        return Results.Ok(ToDto(post, unread.GetValueOrDefault(post.Id)));
+        return Results.Ok(await ToDtoAsync(post, db, unread.GetValueOrDefault(post.Id)));
     }
 
     private static async Task<IResult> CreateAsync(Guid communityId, Guid channelId,
@@ -88,6 +111,11 @@ public static class CommunityForumEndpoints
         var title = request.Title.Trim();
         if (title.Length is < 1 or > MaximumTitleLength)
             return Invalid($"Post titles must contain 1 to {MaximumTitleLength} characters.");
+        var requestedTags = request.TagIds?.ToArray() ?? [];
+        var tagValidation = await ValidateTagSelectionAsync(channelId, requestedTags, access, db,
+            requireAtLeastOne: await db.CommunityChannels.Where(value => value.CommunityId == communityId &&
+                value.Id == channelId).Select(value => value.RequireTag).SingleAsync());
+        if (tagValidation.Error is { } tagError) return Invalid(tagError);
 
         var attachmentsResult = await ValidateAttachmentsAsync(request.InitialMessage.AttachmentIds,
             session.AccountId, db, nodeOptions.Value);
@@ -140,6 +168,8 @@ public static class CommunityForumEndpoints
         db.CommunityChannels.Add(discussion);
         db.ChannelMessages.Add(root);
         db.CommunityForumPosts.Add(post);
+        foreach (var tag in tagValidation.Tags)
+            db.CommunityForumPostTags.Add(new() { Post = post, PostId = post.Id, Tag = tag, TagId = tag.Id });
         foreach (var recipientId in mentionResult.Recipients)
             db.CommunityMentionNotifications.Add(new CommunityMentionNotification
             {
@@ -147,7 +177,7 @@ public static class CommunityForumEndpoints
                 ChannelId = discussionId, CreatedAt = now, Message = root, Account = null!
             });
         await db.SaveChangesAsync();
-        var dto = ToDto(post);
+        var dto = ToDto(post, tags: tagValidation.Tags.Select(ToDto).ToArray());
         await PublishAsync(communityId, channelId, new(communityId, channelId, dto, post.Id, "created", session.AccountId),
             db, authorization, hub);
         return Results.Created($"/api/communities/{communityId}/forums/{channelId}/posts/{post.Id}", dto);
@@ -180,7 +210,7 @@ public static class CommunityForumEndpoints
         if (request.IsPinned.HasValue) post.IsPinned = request.IsPinned.Value;
         post.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync();
-        var dto = ToDto(post);
+        var dto = await ToDtoAsync(post, db);
         await PublishAsync(communityId, channelId, new(communityId, channelId, dto, post.Id, "updated"),
             db, authorization, hub);
         return Results.Ok(dto);
@@ -231,7 +261,8 @@ public static class CommunityForumEndpoints
         return posts.ToDictionary(value => value.Id, value => counts.GetValueOrDefault(value.DiscussionChannelId));
     }
 
-    internal static CommunityForumPostDto ToDto(CommunityForumPost value, int unreadCount = 0) => new(
+    internal static CommunityForumPostDto ToDto(CommunityForumPost value, int unreadCount = 0,
+        IReadOnlyList<CommunityForumTagDto>? tags = null) => new(
         value.Id, value.CommunityId, value.ForumChannelId, value.DiscussionChannelId, value.RootMessageId,
         new(value.AuthorAccountId, value.AuthorAccount.Username,
             value.RootMessage.AuthorDisplayNameSnapshot ?? value.AuthorAccount.DisplayName,
@@ -241,7 +272,55 @@ public static class CommunityForumEndpoints
             HasHistoricalSnapshot: value.RootMessage.AuthorDisplayNameSnapshot is not null), value.Title,
         value.CreatedAt, value.UpdatedAt, value.LastActivityAt, value.ReplyCount, value.IsLocked, value.IsPinned,
         unreadCount, RootPreview(value.RootMessage?.Content),
-        ChannelMessageMapper.DeserializeMentions(value.RootMessage?.MentionsJson));
+        ChannelMessageMapper.DeserializeMentions(value.RootMessage?.MentionsJson), tags ?? []);
+
+    internal static async Task<CommunityForumPostDto> ToDtoAsync(CommunityForumPost value, IridiumDbContext db,
+        int unreadCount = 0)
+    {
+        var map = await LoadPostTagsAsync([value.Id], db);
+        return ToDto(value, unreadCount, map.GetValueOrDefault(value.Id));
+    }
+
+    internal static CommunityForumTagDto ToDto(CommunityForumTag value) => new(value.Id, value.ChannelId,
+        value.Name, value.EmojiKind, value.StandardEmoji, value.CustomEmojiId,
+        value.CustomEmojiId is null || value.CustomEmoji is not null, value.Moderated, value.SortOrder, value.CreatedAt);
+
+    private static async Task<Dictionary<Guid, IReadOnlyList<CommunityForumTagDto>>> LoadPostTagsAsync(
+        IReadOnlyList<Guid> postIds, IridiumDbContext db)
+    {
+        if (postIds.Count == 0) return [];
+        var rows = await db.CommunityForumPostTags.AsNoTracking().Where(value => postIds.Contains(value.PostId))
+            .Include(value => value.Tag).ThenInclude(value => value.CustomEmoji)
+            .OrderBy(value => value.Tag.SortOrder).ThenBy(value => value.Tag.Name).ToListAsync();
+        return rows.GroupBy(value => value.PostId).ToDictionary(value => value.Key,
+            value => (IReadOnlyList<CommunityForumTagDto>)value.Select(row => ToDto(row.Tag)).ToArray());
+    }
+
+    internal static async Task<(IReadOnlyList<CommunityForumTag> Tags, string? Error)> ValidateTagSelectionAsync(
+        Guid channelId, IReadOnlyList<Guid> requested, CommunityAccessDto access, IridiumDbContext db,
+        bool requireAtLeastOne)
+    {
+        if (requested.Count > CommunityForumTagLimits.MaximumTagsPerPost)
+            return ([], $"A Post may have at most {CommunityForumTagLimits.MaximumTagsPerPost} tags.");
+        if (requested.Count != requested.Distinct().Count()) return ([], "A tag was selected more than once.");
+        if (requireAtLeastOne && requested.Count == 0) return ([], "Select at least one tag before publishing this Post.");
+        var values = await db.CommunityForumTags.Include(value => value.CustomEmoji)
+            .Where(value => requested.Contains(value.Id)).ToListAsync();
+        if (values.Count != requested.Count || values.Any(value => value.ChannelId != channelId))
+            return ([], "One or more tags do not belong to this Forum.");
+        if (!access.Has(CommunityPermission.ManageMessages) && values.Any(value => value.Moderated))
+            return ([], "Only Forum moderators may apply moderated tags.");
+        return (values.OrderBy(value => value.SortOrder).ToArray(), null);
+    }
+
+    private static IReadOnlyList<Guid>? ParseTagIds(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return [];
+        var result = new List<Guid>();
+        foreach (var item in value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            if (!Guid.TryParse(item, out var id)) return null; else if (!result.Contains(id)) result.Add(id);
+        return result;
+    }
 
     private static string? RootPreview(string? content)
     {

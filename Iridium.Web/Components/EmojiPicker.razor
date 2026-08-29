@@ -2,6 +2,7 @@
 @using Iridium.Web.Models
 @inject CommunityEmojiService Emojis
 @inject EmojiPickerPreferencesService Preferences
+@inject ILogger<EmojiPicker> Logger
 @inject IJSRuntime JS
 @implements IAsyncDisposable
 
@@ -116,11 +117,12 @@
     {
         Emojis.Changed += OnChanged;
         Preferences.Changed += OnPreferencesChanged;
-        _available = await Emojis.GetAvailableAsync();
+        _available = await Emojis.GetAvailableAsync(Community);
         var saved = await Preferences.GetAsync(AccountId);
         foreach (var (key, collapsed) in saved.Categories) _collapsedSections[key] = collapsed;
         RebuildGroups();
         RebuildRecent(saved.UsageHistory);
+        LogAvailability();
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -238,11 +240,18 @@
             760, 1000, 1000, Math.Max(1, community.AvatarZoom), community.AvatarCropX, community.AvatarCropY);
     private void OnChanged(Guid communityId) => _ = InvokeAsync(async () =>
     {
-        _available = await Emojis.GetAvailableAsync();
+        _available = await Emojis.GetAvailableAsync(Community);
         RebuildGroups();
         RebuildRecent((await Preferences.GetAsync(AccountId)).UsageHistory);
+        LogAvailability();
         StateHasChanged();
     });
+
+    private void LogAvailability() => Logger.LogDebug(
+        "Emoji picker account={AccountId} memberships={MembershipCount} customServers={ServerCount} customEmoji={EmojiCount} mode={PickerMode} currentServer={CommunityId}",
+        AccountId, _available.Select(value => value.Community.Id).Distinct().Count(), _communityGroups.Count,
+        _communityGroups.Sum(value => value.Emojis.Count), AllowExternalEmoji ? "all-usable" : "local-only",
+        Community?.Id);
     private void OnPreferencesChanged(Guid accountId)
     {
         if (accountId == AccountId) _ = InvokeAsync(async () =>

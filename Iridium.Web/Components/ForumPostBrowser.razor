@@ -1,4 +1,5 @@
 @using Iridium.Protocol
+@using Iridium.Web.Models
 
 <section class="forum-browser @(Compact ? "compact" : null)" aria-label="Forum post browser">
     <header class="forum-browser-header">
@@ -8,6 +9,18 @@
             @if (CanCreatePosts) { <button class="new-post-button" @onclick="OnNewPost"><Icon Name="plus" />New Post</button> }
         </div>
     </header>
+    @if (Tags.Count > 0)
+    {
+        <nav class="forum-tag-filter" aria-label="Filter Forum posts by tags">
+            <button type="button" class="filter-chip-button" aria-pressed="@(SelectedTagIds.Count == 0)" @onclick="ClearTags"><span class="all-filter-chip @(SelectedTagIds.Count == 0 ? "selected" : null)">All</span></button>
+            @foreach (var tag in Tags.OrderBy(value => value.SortOrder))
+            {
+                var selected = SelectedTagIds.Contains(tag.Id);
+                <button type="button" class="filter-chip-button" aria-pressed="@selected"
+                        @onclick="() => ToggleTag(tag.Id)"><ForumTagChip Tag="tag" Selected="selected" Interactive="true" /></button>
+            }
+        </nav>
+    }
     <div class="forum-post-list" aria-label="Forum posts">
         @if (IsLoading && Posts.Count == 0)
         {
@@ -25,7 +38,7 @@
                 @foreach (var post in PinnedPosts)
                 {
                     <ForumPostCard @key="post.Id" Post="post" Compact="Compact" Selected="@(post.Id == SelectedPostId)"
-                                   CommunityManagement="CommunityManagement" OnOpen="OnOpen" />
+                                   CommunityManagement="CommunityManagement" OnOpen="OnOpen" OnContextMenu="OnContextMenu" />
                 }
             }
             @if (RecentPosts.Count > 0)
@@ -34,7 +47,7 @@
                 @foreach (var post in RecentPosts)
                 {
                     <ForumPostCard @key="post.Id" Post="post" Compact="Compact" Selected="@(post.Id == SelectedPostId)"
-                                   CommunityManagement="CommunityManagement" OnOpen="OnOpen" />
+                                   CommunityManagement="CommunityManagement" OnOpen="OnOpen" OnContextMenu="OnContextMenu" />
                 }
             }
             @if (string.IsNullOrWhiteSpace(Search) && HasMore)
@@ -50,17 +63,29 @@
     [Parameter] public IReadOnlyList<CommunityForumPostDto> Posts { get; set; } = [];
     [Parameter] public CommunityManagementDto? CommunityManagement { get; set; }
     [Parameter] public string Search { get; set; } = string.Empty;
+    [Parameter] public IReadOnlyList<CommunityForumTagDto> Tags { get; set; } = [];
+    [Parameter] public IReadOnlyCollection<Guid> SelectedTagIds { get; set; } = [];
     [Parameter] public bool Compact { get; set; }
     [Parameter] public bool CanCreatePosts { get; set; }
     [Parameter] public bool IsLoading { get; set; }
     [Parameter] public bool HasMore { get; set; }
     [Parameter] public Guid? SelectedPostId { get; set; }
     [Parameter] public EventCallback<string> SearchChangedCallback { get; set; }
+    [Parameter] public EventCallback<IReadOnlyList<Guid>> TagFilterChanged { get; set; }
     [Parameter] public EventCallback OnNewPost { get; set; }
     [Parameter] public EventCallback OnLoadMore { get; set; }
     [Parameter] public EventCallback<CommunityForumPostDto> OnOpen { get; set; }
+    [Parameter] public EventCallback<ForumPostContextRequest> OnContextMenu { get; set; }
 
     private IReadOnlyList<CommunityForumPostDto> PinnedPosts => Posts.Where(post => post.IsPinned).ToArray();
     private IReadOnlyList<CommunityForumPostDto> RecentPosts => Posts.Where(post => !post.IsPinned).ToArray();
     private Task SearchChanged(ChangeEventArgs args) => SearchChangedCallback.InvokeAsync(args.Value?.ToString() ?? string.Empty);
+    private Task ClearTags() => TagFilterChanged.InvokeAsync([]);
+    private Task ToggleTag(Guid id)
+    {
+        var selected = SelectedTagIds.ToHashSet();
+        if (!selected.Remove(id)) selected.Add(id);
+        return TagFilterChanged.InvokeAsync(Tags.Where(value => selected.Contains(value.Id))
+            .OrderBy(value => value.SortOrder).Select(value => value.Id).ToArray());
+    }
 }

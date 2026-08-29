@@ -17,10 +17,13 @@ public sealed class CommunityForumSession(
     private bool _initialized;
     private HubConnection? _boundConnection;
     private bool _disposed;
+    private string _search = string.Empty;
+    private IReadOnlyList<Guid> _tagFilter = [];
 
     public Guid? CommunityId { get; private set; }
     public Guid? ChannelId { get; private set; }
     public IReadOnlyList<CommunityForumPostDto> Posts => _posts;
+    public IReadOnlyList<CommunityForumTagDto> Tags { get; private set; } = [];
     public int? NextOffset { get; private set; }
     public bool IsLoading { get; private set; }
     public Guid? LastDeletedPostId { get; private set; }
@@ -33,6 +36,11 @@ public sealed class CommunityForumSession(
         await _gate.WaitAsync(cancellationToken);
         try
         {
+            if (CommunityId != communityId || ChannelId != channelId)
+            {
+                _search = string.Empty;
+                _tagFilter = [];
+            }
             CommunityId = communityId;
             ChannelId = channelId;
             IsLoading = true;
@@ -49,8 +57,10 @@ public sealed class CommunityForumSession(
                 Notify();
             }
             Notify();
-            var page = await session.AuthorizedClient.GetForumPostsAsync(communityId, channelId,
-                cancellationToken: cancellationToken);
+            var tagsTask = session.AuthorizedClient.GetForumTagsAsync(communityId, channelId, cancellationToken);
+            var page = await session.AuthorizedClient.QueryForumPostsAsync(communityId, channelId, _search,
+                _tagFilter, cancellationToken: cancellationToken);
+            Tags = await tagsTask;
             if (CommunityId != communityId || ChannelId != channelId) return;
             _posts.Clear();
             _posts.AddRange(page.Posts);
@@ -78,8 +88,8 @@ public sealed class CommunityForumSession(
         {
             IsLoading = true;
             Notify();
-            var page = await session.AuthorizedClient.GetForumPostsAsync(communityId, channelId, offset,
-                cancellationToken: cancellationToken);
+            var page = await session.AuthorizedClient.QueryForumPostsAsync(communityId, channelId, _search,
+                _tagFilter, offset, cancellationToken: cancellationToken);
             foreach (var post in page.Posts) Upsert(post);
             NextOffset = page.NextOffset;
             PersistCacheSafely();
@@ -95,13 +105,14 @@ public sealed class CommunityForumSession(
     public async Task<CommunityForumPostDto> CreateAsync(string title, string content,
         IReadOnlyList<CommunityMentionInput>? mentions, IReadOnlyList<AttachmentDto>? attachments,
         Func<CancellationToken, Task<IReadOnlyList<AttachmentDto>>>? uploadAttachments,
-        CancellationToken cancellationToken = default)
+        IReadOnlyList<Guid>? tagIds = null, CancellationToken cancellationToken = default)
     {
         var communityId = CommunityId ?? throw new InvalidOperationException("Open a Forum first.");
         var channelId = ChannelId ?? throw new InvalidOperationException("Open a Forum first.");
         if (uploadAttachments is not null) attachments = await uploadAttachments(cancellationToken);
         var post = await session.AuthorizedClient.CreateForumPostAsync(communityId, channelId,
-            new(title, new(content, null, mentions, Guid.NewGuid(), attachments?.Select(value => value.Id).ToArray())),
+            new(title, new(content, null, mentions, Guid.NewGuid(), attachments?.Select(value => value.Id).ToArray()),
+                tagIds),
             cancellationToken);
         Upsert(post);
         PersistCacheSafely();
@@ -129,6 +140,37 @@ public sealed class CommunityForumSession(
         Notify();
     }
 
+    public async Task<CommunityForumPostDto> UpdateTagsAsync(Guid postId, IReadOnlyList<Guid> tagIds,
+        CancellationToken cancellationToken = default)
+    {
+        var post = await session.AuthorizedClient.UpdateForumPostTagsAsync(CommunityId!.Value, ChannelId!.Value,
+            postId, tagIds, cancellationToken);
+        Upsert(post);
+        PersistCacheSafely();
+        Notify();
+        return post;
+    }
+
+    public async Task ApplyFilterAsync(string? search, IReadOnlyCollection<Guid>? tagIds,
+        CancellationToken cancellationToken = default)
+    {
+        if (CommunityId is not { } communityId || ChannelId is not { } channelId) return;
+        _search = search?.Trim() ?? string.Empty;
+        _tagFilter = tagIds?.Distinct().ToArray() ?? [];
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            IsLoading = true;
+            Notify();
+            var page = await session.AuthorizedClient.QueryForumPostsAsync(communityId, channelId, _search,
+                _tagFilter, cancellationToken: cancellationToken);
+            _posts.Clear();
+            _posts.AddRange(page.Posts);
+            NextOffset = page.NextOffset;
+        }
+        finally { IsLoading = false; _gate.Release(); Notify(); }
+    }
+
     public void MarkRead(Guid postId)
     {
         var index = _posts.FindIndex(value => value.Id == postId);
@@ -146,6 +188,8 @@ public sealed class CommunityForumSession(
         _registrations.Clear();
         _registrations.Add(connection.On<CommunityForumPostChangedEvent>(CommunityForumHubContract.PostChanged,
             ReceiveChange));
+        _registrations.Add(connection.On<CommunityForumTagsChangedEvent>(CommunityForumHubContract.TagsChanged,
+            ReceiveTagsChange));
         _boundConnection = connection;
         if (!_initialized) _recoveryRegistration = realtime.RegisterRecoveryHandler("forum-post-list", async (_, ct) =>
         {
@@ -166,11 +210,35 @@ public sealed class CommunityForumSession(
             var post = change.Change is "activity" or "created" && change.ActorAccountId != session.Account?.Id
                 ? change.Post with { UnreadCount = Math.Max(1, (existing?.UnreadCount ?? 0) + 1) }
                 : change.Post with { UnreadCount = existing?.UnreadCount ?? change.Post.UnreadCount };
-            Upsert(post);
+            if (MatchesCurrentFilter(post)) Upsert(post);
+            else _posts.RemoveAll(value => value.Id == post.Id);
         }
         PersistCacheSafely();
         Notify();
         LastDeletedPostId = null;
+    }
+
+    private void ReceiveTagsChange(CommunityForumTagsChangedEvent change)
+    {
+        if (change.CommunityId != CommunityId || change.ForumChannelId != ChannelId) return;
+        Tags = change.Tags;
+        var definitions = change.Tags.ToDictionary(value => value.Id);
+        var validFilter = _tagFilter.Where(definitions.ContainsKey).ToArray();
+        var filterChanged = validFilter.Length != _tagFilter.Count;
+        _tagFilter = validFilter;
+        for (var index = 0; index < _posts.Count; index++)
+            _posts[index] = _posts[index] with { Tags = (_posts[index].Tags ?? [])
+                .Where(value => definitions.ContainsKey(value.Id)).Select(value => definitions[value.Id])
+                .OrderBy(value => value.SortOrder).ToArray() };
+        PersistCacheSafely();
+        Notify();
+        if (filterChanged) _ = ApplyFilterAsync(_search, _tagFilter);
+    }
+
+    private bool MatchesCurrentFilter(CommunityForumPostDto post)
+    {
+        if (_tagFilter.Count > 0 && !(post.Tags ?? []).Any(value => _tagFilter.Contains(value.Id))) return false;
+        return CommunityForumPostSearch.Filter([post], _search, _tagFilter).Count == 1;
     }
 
     private void Upsert(CommunityForumPostDto post)

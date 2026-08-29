@@ -1,0 +1,106 @@
+@using Iridium.Protocol
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+
+<div class="forum-tag-picker">
+    <button @ref="_trigger" type="button" class="tag-picker-trigger" aria-expanded="@_open" @onclick="ToggleAsync">
+        <Icon Name="plus" /> @(Selected.Count == 0 ? "Add Tags" : "Edit Tags")
+    </button>
+    @if (Selected.Count > 0)
+    {
+        <div class="selected-tag-chips" aria-label="Selected tags">
+            @foreach (var tag in Ordered.Where(value => Selected.Contains(value.Id)))
+            {
+                <ForumTagChip Tag="tag" />
+            }
+        </div>
+    }
+    @if (_open)
+    {
+        <div @ref="_popover" class="tag-picker-popover" role="group" aria-label="Select Forum tags">
+            @if (Ordered.Count == 0) { <span class="tag-picker-empty">This Forum has no tags.</span> }
+            @foreach (var tag in Ordered)
+            {
+                var selected = Selected.Contains(tag.Id);
+                var disabled = tag.Moderated && !CanManageModerated;
+                <button type="button" role="checkbox" aria-checked="@selected" aria-disabled="@disabled"
+                        disabled="@disabled" class="tag-option @(selected ? "selected" : null)"
+                        @onclick="() => ToggleTagAsync(tag.Id)">
+                    <ForumTagChip Tag="tag" Selected="selected" Interactive="true" />
+                    @if (tag.Moderated) { <small>Moderators</small> }
+                    <span class="tag-option-check" aria-hidden="true">
+                        @if (selected) { <Icon Name="check" /> }
+                    </span>
+                </button>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter] public IReadOnlyList<CommunityForumTagDto> Tags { get; set; } = [];
+    [Parameter] public IReadOnlyCollection<Guid> SelectedTagIds { get; set; } = [];
+    [Parameter] public bool CanManageModerated { get; set; }
+    [Parameter] public EventCallback<IReadOnlyList<Guid>> SelectedTagIdsChanged { get; set; }
+    private bool _open;
+    private bool _dismissWired;
+    private ElementReference _trigger;
+    private ElementReference _popover;
+    private IJSObjectReference? _dismissModule;
+    private DotNetObjectReference<ForumTagPicker>? _selfReference;
+    private HashSet<Guid> Selected => SelectedTagIds.ToHashSet();
+    private IReadOnlyList<CommunityForumTagDto> Ordered => Tags.OrderBy(value => value.SortOrder).ThenBy(value => value.Name).ToArray();
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_open || _dismissWired) return;
+        _dismissModule ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/emojiPicker.js");
+        _selfReference ??= DotNetObjectReference.Create(this);
+        await _dismissModule.InvokeVoidAsync("wireDismiss", _popover, _trigger, _selfReference);
+        _dismissWired = true;
+    }
+
+    private async Task ToggleAsync()
+    {
+        if (_open) await ClosePopupAsync();
+        else _open = true;
+    }
+
+    [JSInvokable]
+    public Task DismissAsync() => ClosePopupAsync();
+
+    private async Task ClosePopupAsync()
+    {
+        if (!_open) return;
+        if (_dismissWired && _dismissModule is not null)
+        {
+            await _dismissModule.InvokeVoidAsync("disposeDismiss", _popover);
+            _dismissWired = false;
+        }
+        _open = false;
+    }
+    private async Task ToggleTagAsync(Guid id)
+    {
+        var selected = Selected;
+        if (!selected.Remove(id))
+        {
+            if (selected.Count >= CommunityForumTagLimits.MaximumTagsPerPost) return;
+            selected.Add(id);
+        }
+        await SelectedTagIdsChanged.InvokeAsync(Ordered.Where(value => selected.Contains(value.Id)).Select(value => value.Id).ToArray());
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_dismissModule is not null)
+        {
+            try
+            {
+                if (_dismissWired) await _dismissModule.InvokeVoidAsync("disposeDismiss", _popover);
+                await _dismissModule.DisposeAsync();
+            }
+            catch (JSDisconnectedException) { }
+        }
+        _selfReference?.Dispose();
+    }
+}

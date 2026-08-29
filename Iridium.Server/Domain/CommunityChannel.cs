@@ -13,6 +13,7 @@ public sealed class CommunityChannel
     public int Position { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
     public bool PermissionsSyncedToCategory { get; set; }
+    public bool RequireTag { get; set; }
     public required Community Community { get; set; }
     public CommunityCategory? Category { get; set; }
     public ICollection<ChannelMessage> Messages { get; set; } = [];

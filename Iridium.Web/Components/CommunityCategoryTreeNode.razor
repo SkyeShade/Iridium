@@ -12,7 +12,7 @@
         {
             if (item.Channel is { } channel)
             {
-                <ChannelRow @key="item.Id" Channel="channel" CanManage="CanManage" CanManagePermissions="@MayManagePermissions(channel.EffectivePermissions)" Depth="@(Depth + 1)"
+                <ChannelRow @key="item.Id" Channel="channel" CanManage="CanManage" CanManageForumTags="@MayManageForumTags(channel)" CanManagePermissions="@MayManagePermissions(channel.EffectivePermissions)" Depth="@(Depth + 1)"
                             Selected="@(SelectedChannelId == channel.Id)" OnSelect="OnSelectChannel"
                             Room="@VoiceRooms.FirstOrDefault(value => value.ChannelId == channel.Id)"
                             Connected="@(ConnectedVoiceChannelId == channel.Id)"
@@ -93,4 +93,6 @@
     private bool MayManagePermissions(CommunityPermission permissions) =>
         (permissions & CommunityPermission.Administrator) != 0 ||
         (permissions & CommunityPermission.ManagePermissions) != 0;
+    private static bool MayManageForumTags(CommunityChannelDto channel) => channel.Kind == CommunityChannelKind.Forum &&
+        (channel.EffectivePermissions & (CommunityPermission.Administrator | CommunityPermission.ManageMessages)) != 0;
 }

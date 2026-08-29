@@ -22,7 +22,7 @@
             {
                 if (item.Channel is { } rootChannel)
                 {
-                    <ChannelRow @key="item.Id" Channel="rootChannel" CanManage="State.CanManage" CanManagePermissions="@CanManagePermissions(rootChannel.EffectivePermissions)" Depth="1"
+                    <ChannelRow @key="item.Id" Channel="rootChannel" CanManage="State.CanManage" CanManageForumTags="@CanManageForumTags(rootChannel)" CanManagePermissions="@CanManagePermissions(rootChannel.EffectivePermissions)" Depth="1"
                                 Selected="@(SelectedChannel?.Id == rootChannel.Id)" OnSelect="SelectChannelAsync"
                                 Room="@Voice.Room(rootChannel.Id)" Connected="@(Voice.CurrentRoom?.ChannelId == rootChannel.Id)"
                                 CurrentAccountId="AccountId"
@@ -69,7 +69,7 @@
 
 @if (_showChannelDialog)
 {
-    <ChannelSettingsDialog Channel="_editingChannel" InitialCategoryId="_newChannelCategoryId"
+    <ChannelSettingsDialog Channel="_editingChannel" Community="Community" InitialCategoryId="_newChannelCategoryId"
                            Categories="State.Categories" Busy="_busy" Error="@_dialogError"
                            ConfirmDeleteInitially="_confirmChannelDelete" OnSave="SaveChannelAsync"
                            OnDelete="DeleteChannelAsync" OnCancel="CloseChannelDialog" />
@@ -83,7 +83,7 @@
 }
 @if (_permissionChannel is not null || _permissionCategory is not null)
 {
-    <CommunityPermissionEditor State="State" Channel="_permissionChannel" Category="_permissionCategory"
+    <CommunityPermissionEditor State="State" Community="Community" Channel="_permissionChannel" Category="_permissionCategory"
                                InitialSection="@_settingsInitialSection"
                                OnSaveChannel="SaveSettingsChannelAsync" OnSaveCategory="SaveSettingsCategoryAsync"
                                OnDeleteChannel="DeleteSettingsChannelAsync" OnDeleteCategory="DeleteSettingsCategoryAsync"
@@ -92,6 +92,7 @@
 
 @code {
     [Parameter, EditorRequired] public required CommunitySession State { get; set; }
+    [Parameter, EditorRequired] public required CommunityDto Community { get; set; }
     [Parameter, EditorRequired] public required Guid AccountId { get; set; }
     [Parameter, EditorRequired] public required Guid CommunityId { get; set; }
     [Parameter] public CommunityChannelDto? SelectedChannel { get; set; }
@@ -117,6 +118,9 @@
     private bool CanManagePermissions(CommunityPermission permissions) => State.IsOwner ||
         (permissions & CommunityPermission.Administrator) != 0 ||
         (permissions & CommunityPermission.ManagePermissions) != 0;
+    private bool CanManageForumTags(CommunityChannelDto channel) => channel.Kind == CommunityChannelKind.Forum &&
+        (State.IsOwner || (channel.EffectivePermissions & (CommunityPermission.Administrator |
+            CommunityPermission.ManageMessages)) != 0);
 
     protected override async Task OnParametersSetAsync()
     {
@@ -193,7 +197,8 @@
     private async Task SaveChannelAsync(ChannelSettingsSubmission submission) => await RunDialogAsync(async () =>
     {
         CommunityChannelDto? created = null;
-        if (submission.ChannelId is { } id) await State.UpdateChannelAsync(id, submission.Name, submission.CategoryId, submission.Kind);
+        if (submission.ChannelId is { } id) await State.UpdateChannelAsync(id, submission.Name,
+            submission.CategoryId, submission.Kind, submission.RequireTag);
         else created = await State.CreateChannelAsync(submission.Name, submission.CategoryId, submission.Kind);
         CloseChannelDialog(); if (created is { Kind: CommunityChannelKind.Text or CommunityChannelKind.Forum }) await OnChannelSelected.InvokeAsync(created);
     });
@@ -214,7 +219,8 @@
     });
     private async Task SaveSettingsChannelAsync(ChannelSettingsSubmission submission)
     {
-        await State.UpdateChannelAsync(submission.ChannelId!.Value, submission.Name, submission.CategoryId, submission.Kind);
+        await State.UpdateChannelAsync(submission.ChannelId!.Value, submission.Name, submission.CategoryId,
+            submission.Kind, submission.RequireTag);
         _permissionChannel = State.Channels.FirstOrDefault(value => value.Id == submission.ChannelId) ?? _permissionChannel;
     }
     private async Task SaveSettingsCategoryAsync(CategorySettingsSubmission submission)

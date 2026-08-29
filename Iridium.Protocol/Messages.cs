@@ -177,7 +177,8 @@ public sealed record CommunityChannelDto(Guid Id, Guid CommunityId, Guid? Catego
     CommunityChannelKind Kind = CommunityChannelKind.Text,
     CommunityPermission EffectivePermissions = CommunityPermission.None,
     bool PermissionsSyncedToCategory = false,
-    bool IsPrivate = false);
+    bool IsPrivate = false,
+    bool RequireTag = false);
 public sealed record CommunityStructureDto(
     Guid CommunityId,
     bool CanManage,
@@ -198,7 +199,28 @@ public sealed record CommunitySidebarMoveRequest(
 public sealed record CreateChannelRequest(string Name, Guid? CategoryId,
     CommunityChannelKind Kind = CommunityChannelKind.Text);
 public sealed record UpdateChannelRequest(string Name, Guid? CategoryId,
-    CommunityChannelKind Kind = CommunityChannelKind.Text);
+    CommunityChannelKind Kind = CommunityChannelKind.Text, bool? RequireTag = null);
+
+public static class CommunityForumTagLimits
+{
+    public const int MaximumNameLength = 20;
+    public const int MaximumTagsPerPost = 5;
+    public const int MaximumTagsPerForum = 20;
+}
+
+public sealed record CommunityForumTagDto(Guid Id, Guid ChannelId, string Name,
+    ReactionEmojiKind? EmojiKind = null, string? StandardEmoji = null, Guid? CustomEmojiId = null,
+    bool CustomEmojiAvailable = true, bool Moderated = false, int SortOrder = 0,
+    DateTimeOffset CreatedAt = default);
+public sealed record CreateCommunityForumTagRequest(string Name, ReactionEmojiKind? EmojiKind = null,
+    string? StandardEmoji = null, Guid? CustomEmojiId = null, bool Moderated = false);
+public sealed record UpdateCommunityForumTagRequest(string Name, ReactionEmojiKind? EmojiKind = null,
+    string? StandardEmoji = null, Guid? CustomEmojiId = null, bool Moderated = false,
+    int? SortOrder = null);
+public sealed record ReorderCommunityForumTagsRequest(IReadOnlyList<Guid> TagIds);
+public sealed record UpdateCommunityForumPostTagsRequest(IReadOnlyList<Guid> TagIds);
+public sealed record CommunityForumTagsChangedEvent(Guid CommunityId, Guid ForumChannelId,
+    IReadOnlyList<CommunityForumTagDto> Tags);
 
 public sealed record CommunityForumPostDto(
     Guid Id,
@@ -216,10 +238,12 @@ public sealed record CommunityForumPostDto(
     bool IsPinned,
     int UnreadCount = 0,
     string? RootPreview = null,
-    IReadOnlyList<CommunityMentionDto>? RootMentions = null);
+    IReadOnlyList<CommunityMentionDto>? RootMentions = null,
+    IReadOnlyList<CommunityForumTagDto>? Tags = null);
 
 public sealed record CommunityForumPostPageDto(IReadOnlyList<CommunityForumPostDto> Posts, int? NextOffset);
-public sealed record CreateCommunityForumPostRequest(string Title, SendChannelMessageRequest InitialMessage);
+public sealed record CreateCommunityForumPostRequest(string Title, SendChannelMessageRequest InitialMessage,
+    IReadOnlyList<Guid>? TagIds = null);
 public sealed record UpdateCommunityForumPostRequest(string? Title = null, bool? IsLocked = null, bool? IsPinned = null);
 public sealed record CommunityForumPostChangedEvent(Guid CommunityId, Guid ForumChannelId,
     CommunityForumPostDto? Post, Guid PostId, string Change, Guid? ActorAccountId = null);
@@ -227,4 +251,5 @@ public sealed record CommunityForumPostChangedEvent(Guid CommunityId, Guid Forum
 public static class CommunityForumHubContract
 {
     public const string PostChanged = "CommunityForumPostChanged";
+    public const string TagsChanged = "CommunityForumTagsChanged";
 }

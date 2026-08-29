@@ -313,6 +313,12 @@ public static partial class CommunityStructureEndpoints
         if (channel is null) return Results.NotFound();
         channel.Name = name;
         channel.Kind = request.Kind;
+        if (request.RequireTag.HasValue)
+        {
+            if (channel.Kind != CommunityChannelKind.Forum && request.RequireTag.Value)
+                return Invalid("Only Forum Channels can require tags.");
+            channel.RequireTag = channel.Kind == CommunityChannelKind.Forum && request.RequireTag.Value;
+        }
         if (channel.CategoryId != request.CategoryId)
         {
             if (channel.PermissionsSyncedToCategory && request.CategoryId is null)
@@ -762,7 +768,8 @@ public static partial class CommunityStructureEndpoints
         new(value.Id, value.CommunityId, value.Name, value.Position, value.ParentCategoryId);
     private static CommunityChannelDto ToDto(CommunityChannel value) =>
         new(value.Id, value.CommunityId, value.CategoryId, value.Name, value.Position, value.CreatedAt,
-            Kind: value.Kind, PermissionsSyncedToCategory: value.PermissionsSyncedToCategory);
+            Kind: value.Kind, PermissionsSyncedToCategory: value.PermissionsSyncedToCategory,
+            RequireTag: value.RequireTag);
 
     [GeneratedRegex("^[a-z0-9_-]+$", RegexOptions.CultureInvariant)]
     private static partial Regex ChannelNamePattern();

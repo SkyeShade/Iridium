@@ -25,6 +25,12 @@
                 </select>
             </label>
         }
+        @if (Channel is not null && _kind == CommunityChannelKind.Forum)
+        {
+            <ForumTagSettings Channel="Channel" Community="Community"
+                              AllowExternalEmoji="@Has(Channel.EffectivePermissions, CommunityPermission.UseExternalEmoji)"
+                              RequireTag="_requireTag" RequireTagChanged="SetRequireTag" />
+        }
         @if (!string.IsNullOrWhiteSpace(_validationError)) { <p class="field-hint error">@_validationError</p> }
         @if (!string.IsNullOrWhiteSpace(Error)) { <p class="error">@Error</p> }
         @if (_confirmDelete)
@@ -41,6 +47,7 @@
 
 @code {
     [Parameter] public CommunityChannelDto? Channel { get; set; }
+    [Parameter, EditorRequired] public required CommunityDto Community { get; set; }
     [Parameter] public Guid? InitialCategoryId { get; set; }
     [Parameter] public IReadOnlyList<CommunityCategoryDto> Categories { get; set; } = [];
     [Parameter] public bool Busy { get; set; }
@@ -52,19 +59,24 @@
     private Guid? _initializedId; private bool _initializedCreate; private string _name = string.Empty;
     private string _categoryValue = string.Empty; private bool _confirmDelete; private string? _validationError;
     private CommunityChannelKind _kind = CommunityChannelKind.Text;
+    private bool _requireTag;
     private Guid? DestinationId => Channel?.CategoryId ?? InitialCategoryId;
     private CommunityCategoryDto? Destination => Categories.FirstOrDefault(value => value.Id == DestinationId);
     private string DestinationName => Destination is null ? "Server root" : Breadcrumb(Destination);
     private bool IsValid => Normalize(_name) is not null;
+    private static bool Has(CommunityPermission value, CommunityPermission permission) =>
+        (value & (CommunityPermission.Administrator | permission)) != 0;
 
-    protected override void OnParametersSet()
+    protected override Task OnParametersSetAsync()
     {
         var createChanged = Channel is null && !_initializedCreate;
-        if (!createChanged && Channel?.Id == _initializedId) return;
+        if (!createChanged && Channel?.Id == _initializedId) return Task.CompletedTask;
         _initializedId = Channel?.Id; _initializedCreate = Channel is null; _name = Channel?.Name ?? string.Empty;
         _categoryValue = DestinationId?.ToString() ?? string.Empty; _confirmDelete = ConfirmDeleteInitially;
         _kind = Channel?.Kind ?? CommunityChannelKind.Text;
+        _requireTag = Channel?.RequireTag == true;
         Validate();
+        return Task.CompletedTask;
     }
     private void NameChanged(ChangeEventArgs args) { _name = args.Value?.ToString() ?? string.Empty; Validate(); }
     private void Validate() => _validationError = _name.Length == 0 ? null : Normalize(_name) is null
@@ -72,9 +84,10 @@
     private Task SaveAsync()
     {
         var categoryId = Channel is null ? InitialCategoryId : Guid.TryParse(_categoryValue, out var parsed) ? parsed : null;
-        return OnSave.InvokeAsync(new(Channel?.Id, _name, categoryId, _kind));
+        return OnSave.InvokeAsync(new(Channel?.Id, _name, categoryId, _kind, _requireTag));
     }
     private Task DeleteAsync() { if (!_confirmDelete) { _confirmDelete = true; return Task.CompletedTask; } return OnDelete.InvokeAsync(Channel!.Id); }
+    private void SetRequireTag(bool value) => _requireTag = value;
     private string Breadcrumb(CommunityCategoryDto category)
     {
         var parts = new Stack<string>(); var current = category; var seen = new HashSet<Guid>();

@@ -23,7 +23,7 @@ public sealed record ProfileSubmission(string DisplayName, string? Pronouns, str
 public sealed record CommunitySubmission(string Name, string? Description);
 
 public sealed record ChannelSettingsSubmission(Guid? ChannelId, string Name, Guid? CategoryId,
-    CommunityChannelKind Kind);
+    CommunityChannelKind Kind, bool RequireTag = false);
 
 public sealed record CategorySettingsSubmission(Guid? CategoryId, string Name, Guid? ParentCategoryId = null);
 

@@ -23,16 +23,16 @@
             <span class="red-notification-count">@(Channel.MentionCount > 99 ? "99+" : Channel.MentionCount)</span>
         </span>
     }
-    @if (CanManage)
+    @if (CanManage || CanManageForumTags)
     {
         <button class="channel-settings" title="Channel settings" aria-label="Settings for @Channel.Name"
                 draggable="false" @onpointerdown:stopPropagation="true"
                 @onclick="EditAsync" @onclick:stopPropagation="true"><Icon Name="settings" /></button>
     }
-    @if (_menuOpen && (CanManage || CanManagePermissions))
+    @if (_menuOpen && (CanManage || CanManageForumTags || CanManagePermissions))
     {
         <div class="row-menu" @onclick:stopPropagation="true">
-            @if (CanManage) { <button @onclick="EditFromMenuAsync"><Icon Name="edit" /> Channel Settings</button> }
+            @if (CanManage || CanManageForumTags) { <button @onclick="EditFromMenuAsync"><Icon Name="edit" /> Channel Settings</button> }
             @if (CanManagePermissions) { <button @onclick="PermissionsAsync"><Icon Name="settings" /> Permissions</button> }
             @if (CanManage) { <button class="destructive" @onclick="DeleteAsync"><Icon Name="trash" /> Delete Channel</button> }
         </div>
@@ -75,6 +75,7 @@
     [Parameter] public bool Selected { get; set; }
     [Parameter] public bool CanManage { get; set; }
     [Parameter] public bool CanManagePermissions { get; set; }
+    [Parameter] public bool CanManageForumTags { get; set; }
     [Parameter] public bool Connected { get; set; }
     [Parameter] public ActiveVoiceRoomDto? Room { get; set; }
     [Parameter] public Guid CurrentAccountId { get; set; }
@@ -93,7 +94,7 @@
     private double _menuY;
 
     private Task SelectAsync() { _menuOpen = false; return OnSelect.InvokeAsync(Channel); }
-    private void OpenMenu() { if (CanManage || CanManagePermissions) _menuOpen = true; }
+    private void OpenMenu() { if (CanManage || CanManageForumTags || CanManagePermissions) _menuOpen = true; }
     private void OpenParticipantMenu(VoiceParticipantDto participant, MouseEventArgs args)
     {
         if (participant.AccountId == CurrentAccountId) { CloseParticipantMenu(); return; }

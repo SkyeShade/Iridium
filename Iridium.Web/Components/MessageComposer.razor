@@ -159,7 +159,8 @@
         }
         @if (_emojiPickerOpen)
         {
-            <EmojiPicker Community="Community" AccountId="AccountId" Anchor="_emojiButton" OnSelected="InsertEmojiAsync"
+            <EmojiPicker Community="Community" AccountId="AccountId" AllowExternalEmoji="CanUseExternalEmoji"
+                         Anchor="_emojiButton" OnSelected="InsertEmojiAsync"
                          OnClose="CloseEmojiPicker" />
         }
         @if (Suggestions.Count > 0)
@@ -220,6 +221,7 @@
     [Parameter] public EventCallback OnCancelReply { get; set; }
     [Parameter] public EventCallback OnEditLastMessage { get; set; }
     [Parameter] public bool CanAttachFiles { get; set; } = true;
+    [Parameter] public bool CanUseExternalEmoji { get; set; }
     [Parameter] public bool CanMentionEveryone { get; set; }
     [Parameter, EditorRequired] public required string NodeAuthority { get; set; }
     [Parameter, EditorRequired] public required Guid AccountId { get; set; }
@@ -367,8 +369,8 @@
 
     protected override async Task OnParametersSetAsync()
     {
-        _availableEmojis = await Emojis.GetAvailableAsync();
-        _emojiIndex.UpdateCustom(_availableEmojis);
+        _availableEmojis = await Emojis.GetAvailableAsync(Community);
+        RebuildEmojiIndex();
         if (_actionModeScope is { } actionScope)
         {
             var version = _actionModeLoadVersion;
@@ -449,14 +451,15 @@
         if (string.IsNullOrWhiteSpace(_content) && PendingAttachments.Count == 0) return;
 
         _submitting = true;
-        var content = CommunityEmojiDraftCodec.SerializeDocument(_content, _emojiReferences, _standardEmojiReferences);
-        var mentions = _mentions.Select(value => value with
-        {
-            Start = CommunityEmojiDraftCodec.MapDocumentPositionToSerialized(value.Start, _emojiReferences,
-                _standardEmojiReferences)
-        }).ToArray();
         try
         {
+            var content = CommunityEmojiDraftCodec.SerializeDocument(_content, _emojiReferences,
+                _standardEmojiReferences);
+            var mentions = _mentions.Select(value => value with
+            {
+                Start = CommunityEmojiDraftCodec.MapDocumentPositionToSerialized(value.Start, _emojiReferences,
+                    _standardEmojiReferences)
+            }).ToArray();
             var localAttachments = _attachmentKey is { } key ? Attachments.LocalDtos(key) : [];
             var uploadOperation = _attachmentKey is { } uploadKey && localAttachments.Count > 0
                 ? Attachments.CreateUploadOperation(uploadKey)
@@ -469,10 +472,10 @@
                 CancelDraftDebounce();
                 _draftVersion++;
                 _content = string.Empty;
-                await TypingActivityChanged.InvokeAsync(false);
                 _mentions.Clear();
                 _emojiReferences.Clear();
                 _standardEmojiReferences.Clear();
+                await TypingActivityChanged.InvokeAsync(false);
                 if (_module is not null) await _module.InvokeVoidAsync("clearComposer", _textarea);
                 await RemoveStoredDraftAsync();
                 CloseSuggestions();
@@ -925,6 +928,8 @@
         if (selection.CustomEmojiId is { } emojiId && selection.CommunityId is { } communityId &&
             _availableEmojis.FirstOrDefault(value => value.Emoji.Id == emojiId) is { } source)
         {
+            Logger.LogDebug("Inserting resolved custom emoji {EmojiId} from Server {SourceCommunityId}; external={External}.",
+                emojiId, communityId, Community is not null && Community.Id != communityId);
             var mediaUrl = await Emojis.GetMediaDataUrlAsync(source.Emoji);
             if (mediaUrl is null) return;
             snapshot = await _module.InvokeAsync<ComposerDocumentSnapshot>("insertComposerEmoji", _textarea,
@@ -1046,6 +1051,9 @@
                 value.Name)));
         if (scheduleDraft) ScheduleDraftPersistence();
     }
+
+    private void RebuildEmojiIndex() => _emojiIndex.UpdateCustom(_availableEmojis.Where(value =>
+        Community is null || CanUseExternalEmoji || value.Community.Id == Community.Id).ToArray());
 
     private async Task AcceptSuggestionAsync(MentionSuggestion suggestion)
     {
@@ -1222,8 +1230,8 @@
 
     private void OnEmojiCollectionChanged(Guid unusedCommunityId) => _ = InvokeAsync(async () =>
     {
-        _availableEmojis = await Emojis.GetAvailableAsync();
-        _emojiIndex.UpdateCustom(_availableEmojis);
+        _availableEmojis = await Emojis.GetAvailableAsync(Community);
+        RebuildEmojiIndex();
         StateHasChanged();
     });
 

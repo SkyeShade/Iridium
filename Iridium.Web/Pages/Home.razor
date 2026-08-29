@@ -152,7 +152,7 @@ else
             }
             else
             {
-                <CommunitySidebar @ref="_communitySidebar" State="CommunityState" AccountId="Session.Account!.Id"
+                <CommunitySidebar @ref="_communitySidebar" State="CommunityState" Community="_selectedCommunity" AccountId="Session.Account!.Id"
                                   CommunityId="_selectedCommunity.Id" SelectedChannel="_selectedChannel"
                                   OnChannelSelected="SelectChannelFromNavigationAsync"/>
             }

@@ -19,9 +19,24 @@ public static partial class CommunityEmojiDraftCodec
 
     public static string ToUserFacing(string content) => CommunityEmojiNames.ToUserFacing(content);
 
-    public static int CountCharacters(string content, IReadOnlyList<CommunityEmojiDraftReference> references) =>
-        content.EnumerateRunes().Count() - references.Sum(value =>
-            content.Substring(value.Start, value.Length).EnumerateRunes().Count() - 1);
+    public static int CountCharacters(string content, IReadOnlyList<CommunityEmojiDraftReference> references)
+    {
+        var count = content.EnumerateRunes().Count();
+        foreach (var reference in references)
+        {
+            if (reference.Start < 0 || reference.Length <= 0 || reference.Start > content.Length - reference.Length)
+                continue;
+            count -= CountRunes(content.AsSpan(reference.Start, reference.Length)) - 1;
+        }
+        return Math.Max(0, count);
+    }
+
+    private static int CountRunes(ReadOnlySpan<char> value)
+    {
+        var count = 0;
+        foreach (var unused in value.EnumerateRunes()) count++;
+        return count;
+    }
 
     public static CommunityEmojiDraftDocument Deserialize(string content,
         IReadOnlyList<AvailableCommunityEmoji> available)

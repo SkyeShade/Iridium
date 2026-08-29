@@ -18,12 +18,13 @@ public sealed record CommunityEmojiDto(Guid Id, Guid CommunityId, string Name, s
 public sealed record RenameCommunityEmojiRequest(string Name);
 public sealed record EmojiSelection(string InsertText, string Name, Guid? CustomEmojiId = null,
     Guid? CommunityId = null, string? StandardArtworkKey = null);
+public sealed record CommunityEmojiReference(Guid EmojiId, string Name);
 
 public static partial class CommunityEmojiNames
 {
     [GeneratedRegex("^[a-z0-9_]{2,32}$", RegexOptions.CultureInvariant)]
     private static partial Regex ValidPattern();
-    [GeneratedRegex("<:([a-z0-9_]{2,32}):[0-9a-fA-F]{32}>", RegexOptions.CultureInvariant)]
+    [GeneratedRegex("<:([a-z0-9_]{2,32}):([0-9a-fA-F]{32})>", RegexOptions.CultureInvariant)]
     private static partial Regex InternalTokenPattern();
 
     public static string Normalize(string value)
@@ -37,6 +38,9 @@ public static partial class CommunityEmojiNames
     public static string Token(Guid id, string name) => $"<:{name}:{id:N}>";
     public static string ToUserFacing(string content) => InternalTokenPattern().Replace(content, ":$1:");
     public static string ToCharacterCountingText(string content) => InternalTokenPattern().Replace(content, "x");
+    public static IReadOnlyList<CommunityEmojiReference> References(string content) => InternalTokenPattern()
+        .Matches(content).Select(match => new CommunityEmojiReference(
+            Guid.ParseExact(match.Groups[2].Value, "N"), match.Groups[1].Value)).ToArray();
 }
 
 public sealed record StandardEmoji(string Glyph, string Name, string Category, string ArtworkKey,

@@ -37,6 +37,12 @@
                             { <option value="@category.Id">@category.Name</option> }
                         </select>
                     </label>
+                    @if (Channel!.Kind == CommunityChannelKind.Forum)
+                    {
+                        <ForumTagSettings Channel="Channel" Community="Community"
+                                          AllowExternalEmoji="@CanUseExternalEmoji"
+                                          RequireTag="_requireTag" RequireTagChanged="RequireTagChanged" />
+                    }
                 }
                 <p class="settings-help">Changes remain local until you press Save Changes.</p>
             }
@@ -180,6 +186,7 @@
 @code {
     private const string EveryoneKey = "everyone";
     [Parameter, EditorRequired] public required CommunitySession State { get; set; }
+    [Parameter, EditorRequired] public required CommunityDto Community { get; set; }
     [Parameter] public CommunityChannelDto? Channel { get; set; }
     [Parameter] public CommunityCategoryDto? Category { get; set; }
     [Parameter] public string InitialSection { get; set; } = "Overview";
@@ -191,7 +198,7 @@
     private enum SettingsSection { Overview, Permissions }
     private SettingsSection _section; private PermissionOverwriteScopeDto? _scope;
     private bool _loading = true, _busy, _pickerOpen, _pickerForAccess, _confirmClose, _confirmDelete;
-    private bool _permissionsDirty, _overviewDirty; private string _selected = EveryoneKey, _search = "", _pickerTab = "Roles";
+    private bool _permissionsDirty, _overviewDirty, _requireTag; private string _selected = EveryoneKey, _search = "", _pickerTab = "Roles";
     private bool _serverStateChanged, _disposed;
     private long _deferredRealtimeRevision;
     private string _name = "", _categoryValue = ""; private string? _error;
@@ -207,6 +214,8 @@
     private bool IsDirty => _permissionsDirty || _overviewDirty;
     private bool _private => _drafts.TryGetValue(EveryoneKey, out var everyone) && (everyone.Deny & CommunityPermission.ViewChannels) != 0;
     private string ParentCategoryName => State.Categories.FirstOrDefault(value => value.Id == Channel?.CategoryId)?.Name ?? "parent category";
+    private bool CanUseExternalEmoji => State.IsOwner ||
+        (Channel!.EffectivePermissions & (CommunityPermission.Administrator | CommunityPermission.UseExternalEmoji)) != 0;
 
     private static readonly CommunityPermission[] TextPermissions = [CommunityPermission.SendMessages, CommunityPermission.CreateForumPosts, CommunityPermission.ReadMessageHistory, CommunityPermission.ManageMessages, CommunityPermission.AttachFiles, CommunityPermission.EmbedLinks, CommunityPermission.AddReactions, CommunityPermission.UseExternalEmoji, CommunityPermission.MentionEveryone];
     private static readonly CommunityPermission[] VoicePermissions = [CommunityPermission.ConnectVoice, CommunityPermission.SpeakVoice, CommunityPermission.ShareScreen, CommunityPermission.MuteMembers, CommunityPermission.DeafenMembers, CommunityPermission.MoveMembers];
@@ -233,6 +242,7 @@
         _section = Enum.TryParse<SettingsSection>(InitialSection, true, out var parsed) ? parsed : SettingsSection.Overview;
         _confirmDelete = string.Equals(InitialSection, "Delete", StringComparison.OrdinalIgnoreCase);
         _name = ScopeName; _categoryValue = Channel?.CategoryId?.ToString() ?? "";
+        _requireTag = Channel?.RequireTag == true;
         try { if (State.Management is null) await State.LoadManagementAsync(); await LoadPermissionsAsync(); }
         catch (Exception exception) { _error = exception.Message; }
         finally { _loading = false; }
@@ -302,6 +312,7 @@
     private void OpenAccessPicker(){_pickerForAccess=true;_pickerOpen=true;_search="";}
     private void ClosePicker(){_pickerOpen=false;}
     private void SearchChanged(ChangeEventArgs args)=>_search=args.Value?.ToString()??"";
+    private void RequireTagChanged(bool value) { _requireTag = value; _overviewDirty = true; }
     private void SelectRolesTab() => _pickerTab = "Roles";
     private void SelectMembersTab() => _pickerTab = "Members";
     private void AddSubject(string key){var(type,id)=ParseKey(key);if(!_drafts.TryGetValue(key,out var row))row=new(type,id,CommunityPermission.None,CommunityPermission.None);if(_pickerForAccess)row=row with{Allow=row.Allow|CommunityPermission.ViewChannels,Deny=row.Deny&~CommunityPermission.ViewChannels};_drafts[key]=row;_selected=key;_permissionsDirty=true;_pickerOpen=false;}
@@ -333,7 +344,7 @@
                 if (IsChannel)
                 {
                     Guid? category = Guid.TryParse(_categoryValue, out var id) ? id : null;
-                    await OnSaveChannel.InvokeAsync(new(Channel!.Id, _name, category, Channel.Kind));
+                    await OnSaveChannel.InvokeAsync(new(Channel!.Id, _name, category, Channel.Kind, _requireTag));
                 }
                 else await OnSaveCategory.InvokeAsync(new(Category!.Id, _name, Category.ParentCategoryId));
                 _overviewDirty = false;

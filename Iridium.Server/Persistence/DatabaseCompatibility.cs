@@ -7,6 +7,17 @@ namespace Iridium.Server.Persistence;
 
 public static class DatabaseCompatibility
 {
+    /// <summary>
+    /// Applies additive Community schema changes before compatibility routines that materialize
+    /// current EF entities. Keep newly mapped Community columns and tables in this phase so an
+    /// older database can be queried safely by subsequent data migrations.
+    /// </summary>
+    public static async Task EnsureEarlyCommunitySchemaAsync(IridiumDbContext db)
+    {
+        await EnsureCommunityStructureTablesAsync(db);
+        await EnsureCommunityForumSchemaAsync(db);
+    }
+
     public static async Task EnsureMessageForwardingSchemaAsync(IridiumDbContext db)
     {
         await EnsureColumnAsync(db, "ChannelMessages", "ForwardedMessageSnapshotId", "TEXT NULL");
@@ -755,9 +766,11 @@ public static class DatabaseCompatibility
                 CommunityId TEXT NOT NULL,
                 Id TEXT NOT NULL,
                 CategoryId TEXT NULL,
+                ParentForumChannelId TEXT NULL,
                 Name TEXT NOT NULL,
                 Kind INTEGER NOT NULL DEFAULT 0,
                 PermissionsSyncedToCategory INTEGER NOT NULL DEFAULT 0,
+                RequireTag INTEGER NOT NULL DEFAULT 0,
                 Position INTEGER NOT NULL,
                 CreatedAt TEXT NOT NULL,
                 CONSTRAINT PK_CommunityChannels PRIMARY KEY (CommunityId, Id),
@@ -770,6 +783,7 @@ public static class DatabaseCompatibility
         await EnsureColumnAsync(db, "CommunityChannels", "Kind", "INTEGER NOT NULL DEFAULT 0");
         await EnsureColumnAsync(db, "CommunityChannels", "PermissionsSyncedToCategory", "INTEGER NOT NULL DEFAULT 0");
         await EnsureColumnAsync(db, "CommunityChannels", "ParentForumChannelId", "TEXT NULL");
+        await EnsureColumnAsync(db, "CommunityChannels", "RequireTag", "INTEGER NOT NULL DEFAULT 0");
         await EnsureCommunityChannelCategoryNullableAsync(db);
         await db.Database.ExecuteSqlRawAsync("""
             CREATE INDEX IF NOT EXISTS IX_CommunityCategories_CommunityId_ParentCategoryId_Position
@@ -780,6 +794,7 @@ public static class DatabaseCompatibility
     public static async Task EnsureCommunityForumSchemaAsync(IridiumDbContext db)
     {
         await EnsureColumnAsync(db, "CommunityChannels", "ParentForumChannelId", "TEXT NULL");
+        await EnsureColumnAsync(db, "CommunityChannels", "RequireTag", "INTEGER NOT NULL DEFAULT 0");
         await db.Database.ExecuteSqlRawAsync("""
             CREATE INDEX IF NOT EXISTS IX_CommunityChannels_CommunityId_ParentForumChannelId
                 ON CommunityChannels (CommunityId, ParentForumChannelId);
@@ -812,6 +827,41 @@ public static class DatabaseCompatibility
                 ON CommunityForumPosts (DiscussionChannelId);
             CREATE INDEX IF NOT EXISTS IX_CommunityForumPosts_ForumActivity
                 ON CommunityForumPosts (CommunityId, ForumChannelId, IsPinned, LastActivityAt);
+            CREATE TABLE IF NOT EXISTS CommunityForumTags (
+                Id TEXT NOT NULL CONSTRAINT PK_CommunityForumTags PRIMARY KEY,
+                CommunityId TEXT NOT NULL,
+                ChannelId TEXT NOT NULL,
+                Name TEXT COLLATE NOCASE NOT NULL,
+                EmojiKind INTEGER NULL,
+                StandardEmoji TEXT NULL,
+                CustomEmojiId TEXT NULL,
+                Moderated INTEGER NOT NULL DEFAULT 0,
+                SortOrder INTEGER NOT NULL DEFAULT 0,
+                CreatedAt INTEGER NOT NULL,
+                CONSTRAINT FK_CommunityForumTags_Channel FOREIGN KEY (CommunityId, ChannelId)
+                    REFERENCES CommunityChannels (CommunityId, Id) ON DELETE CASCADE,
+                CONSTRAINT FK_CommunityForumTags_CustomEmoji FOREIGN KEY (CustomEmojiId)
+                    REFERENCES CommunityEmojis (Id) ON DELETE SET NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS IX_CommunityForumTags_ChannelId_Name
+                ON CommunityForumTags (ChannelId, Name COLLATE NOCASE);
+            CREATE INDEX IF NOT EXISTS IX_CommunityForumTags_ChannelId
+                ON CommunityForumTags (ChannelId);
+            CREATE INDEX IF NOT EXISTS IX_CommunityForumTags_ChannelId_SortOrder
+                ON CommunityForumTags (ChannelId, SortOrder);
+            CREATE TABLE IF NOT EXISTS CommunityForumPostTags (
+                PostId TEXT NOT NULL,
+                TagId TEXT NOT NULL,
+                CONSTRAINT PK_CommunityForumPostTags PRIMARY KEY (PostId, TagId),
+                CONSTRAINT FK_CommunityForumPostTags_Post FOREIGN KEY (PostId)
+                    REFERENCES CommunityForumPosts (Id) ON DELETE CASCADE,
+                CONSTRAINT FK_CommunityForumPostTags_Tag FOREIGN KEY (TagId)
+                    REFERENCES CommunityForumTags (Id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS IX_CommunityForumPostTags_PostId
+                ON CommunityForumPostTags (PostId);
+            CREATE INDEX IF NOT EXISTS IX_CommunityForumPostTags_TagId
+                ON CommunityForumPostTags (TagId);
             """);
     }
 
@@ -820,6 +870,9 @@ public static class DatabaseCompatibility
         await EnsureColumnAsync(db, "CommunityChannels", "Kind", "INTEGER NOT NULL DEFAULT 0");
         await EnsureColumnAsync(db, "CommunityChannels", "PermissionsSyncedToCategory", "INTEGER NOT NULL DEFAULT 0");
         await EnsureColumnAsync(db, "CommunityChannels", "ParentForumChannelId", "TEXT NULL");
+        // Keep this migration independently safe for maintenance tools and focused tests.
+        // Normal startup adds it earlier through EnsureEarlyCommunitySchemaAsync.
+        await EnsureColumnAsync(db, "CommunityChannels", "RequireTag", "INTEGER NOT NULL DEFAULT 0");
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
         // SQLite compares TEXT primary keys case-sensitively. Microsoft.Data.Sqlite writes
         // Guid values in upper-case, so normalize IDs created by the original raw-SQL
@@ -896,14 +949,15 @@ public static class DatabaseCompatibility
                     Name TEXT NOT NULL,
                     Kind INTEGER NOT NULL DEFAULT 0,
                     PermissionsSyncedToCategory INTEGER NOT NULL DEFAULT 0,
+                    RequireTag INTEGER NOT NULL DEFAULT 0,
                     Position INTEGER NOT NULL,
                     CreatedAt TEXT NOT NULL,
                     CONSTRAINT PK_CommunityChannels PRIMARY KEY (CommunityId, Id),
                     CONSTRAINT FK_CommunityChannels_Communities_CommunityId FOREIGN KEY (CommunityId) REFERENCES Communities (Id) ON DELETE CASCADE,
                     CONSTRAINT FK_CommunityChannels_CommunityCategories_CommunityId_CategoryId FOREIGN KEY (CommunityId, CategoryId) REFERENCES CommunityCategories (CommunityId, Id) ON DELETE RESTRICT
                 );
-                INSERT INTO CommunityChannels_NullableUpgrade (CommunityId, Id, CategoryId, ParentForumChannelId, Name, Kind, PermissionsSyncedToCategory, Position, CreatedAt)
-                    SELECT CommunityId, Id, CategoryId, ParentForumChannelId, Name, Kind, PermissionsSyncedToCategory, Position, CreatedAt FROM CommunityChannels;
+                INSERT INTO CommunityChannels_NullableUpgrade (CommunityId, Id, CategoryId, ParentForumChannelId, Name, Kind, PermissionsSyncedToCategory, RequireTag, Position, CreatedAt)
+                    SELECT CommunityId, Id, CategoryId, ParentForumChannelId, Name, Kind, PermissionsSyncedToCategory, RequireTag, Position, CreatedAt FROM CommunityChannels;
                 DROP TABLE CommunityChannels;
                 ALTER TABLE CommunityChannels_NullableUpgrade RENAME TO CommunityChannels;
                 CREATE INDEX IX_CommunityChannels_CommunityId_CategoryId_Position

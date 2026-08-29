@@ -147,6 +147,18 @@ public sealed class NodeSession(
     public Task<CommunityEmojiDto> RenameCommunityEmojiAsync(Guid communityId,Guid emojiId,string name,CancellationToken ct=default)=>AuthorizedClient.RenameCommunityEmojiAsync(communityId,emojiId,name,ct);
     public Task DeleteCommunityEmojiAsync(Guid communityId,Guid emojiId,CancellationToken ct=default)=>AuthorizedClient.DeleteCommunityEmojiAsync(communityId,emojiId,ct);
     public Task<byte[]> DownloadCommunityEmojiAsync(Guid communityId,Guid emojiId,long? revision=null,CancellationToken ct=default)=>AuthorizedClient.DownloadCommunityEmojiAsync(communityId,emojiId,revision,ct);
+    public Task<IReadOnlyList<CommunityForumTagDto>> GetForumTagsAsync(Guid communityId, Guid channelId,
+        CancellationToken ct = default) => AuthorizedClient.GetForumTagsAsync(communityId, channelId, ct);
+    public Task<CommunityForumTagDto> CreateForumTagAsync(Guid communityId, Guid channelId,
+        CreateCommunityForumTagRequest request, CancellationToken ct = default) =>
+        AuthorizedClient.CreateForumTagAsync(communityId, channelId, request, ct);
+    public Task<CommunityForumTagDto> UpdateForumTagAsync(Guid communityId, Guid channelId, Guid tagId,
+        UpdateCommunityForumTagRequest request, CancellationToken ct = default) =>
+        AuthorizedClient.UpdateForumTagAsync(communityId, channelId, tagId, request, ct);
+    public Task DeleteForumTagAsync(Guid communityId, Guid channelId, Guid tagId,
+        CancellationToken ct = default) => AuthorizedClient.DeleteForumTagAsync(communityId, channelId, tagId, ct);
+    public Task ReorderForumTagsAsync(Guid communityId, Guid channelId, IReadOnlyList<Guid> tagIds,
+        CancellationToken ct = default) => AuthorizedClient.ReorderForumTagsAsync(communityId, channelId, tagIds, ct);
 
     internal NodeClient AuthorizedClient
     {
