@@ -60,7 +60,7 @@
         _copyError = null;
         try
         {
-            await JS.InvokeVoidAsync("navigator.clipboard.writeText", InviteUrl);
+            await JS.InvokeVoidAsync("iridiumBrowserCompatibility.copyText", InviteUrl);
             _copied = true;
         }
         catch

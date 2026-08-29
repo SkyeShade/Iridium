@@ -460,7 +460,7 @@
         _error = null;
         try
         {
-            await JS.InvokeVoidAsync("navigator.clipboard.writeText", _createdInviteUrl);
+            await JS.InvokeVoidAsync("iridiumBrowserCompatibility.copyText", _createdInviteUrl);
             _inviteCopied = true;
         }
         catch

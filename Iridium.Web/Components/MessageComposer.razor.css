@@ -32,6 +32,7 @@ textarea { grid-column:2;min-width:0;width:100%;height:var(--composer-min-height
     .composer-input-row.has-mobile-send{grid-template-columns:3rem minmax(0,1fr) 2.7rem 2.7rem}
     .composer-input-row ::deep .composer-editor{--composer-text-end-padding:0;grid-column:2}
     .composer-text-geometry{scrollbar-gutter:auto}
+    .composer-rich-editor{scrollbar-width:none}
     .composer-rich-editor::-webkit-scrollbar{width:0;height:0}
     .attachment-button{align-self:end;margin:0 0 calc((var(--composer-min-height) - 2.25rem)/2)}
     .emoji-button{grid-column:3;align-self:end;margin:0 .2rem calc((var(--composer-min-height) - 2.3rem)/2) 0}

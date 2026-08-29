@@ -233,7 +233,7 @@ export function wireChannelSorter(root, dotNetReference, initialProjection) {
         if (!active) {
             if (Math.hypot(event.clientY - candidate.startY, event.clientX - candidate.startX) < 6) return;
             active = true;
-            candidate.element.setPointerCapture?.(event.pointerId);
+            try { candidate.element.setPointerCapture?.(event.pointerId); } catch { }
             candidate.element.classList.add("pointer-dragging");
             root.classList.add("pointer-sorting");
         }
@@ -1533,7 +1533,11 @@ export function wireRoleSorter(root, dotNetReference) {
     const move = event => {
         if (!candidate || candidate.pointerId !== event.pointerId) return;
         if (!dragging && Math.abs(event.clientY - candidate.startY) < 5) return;
-        if (!dragging) { dragging = candidate; dragging.row.setPointerCapture?.(event.pointerId); dragging.row.classList.add("role-dragging"); }
+        if (!dragging) {
+            dragging = candidate;
+            try { dragging.row.setPointerCapture?.(event.pointerId); } catch { }
+            dragging.row.classList.add("role-dragging");
+        }
         event.preventDefault(); clear(); dragging.row.classList.add("role-dragging");
         const rows = [...root.querySelectorAll("[data-iridium-role-drag]")].filter(value => value !== dragging.row);
         dropIndex = rows.findIndex(value => event.clientY < value.getBoundingClientRect().top + value.getBoundingClientRect().height / 2);

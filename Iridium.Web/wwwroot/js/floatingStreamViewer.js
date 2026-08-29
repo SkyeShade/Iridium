@@ -35,7 +35,8 @@ export function initialize(elementId) {
         if (event.button !== 0 || event.target.closest("button")) return;
         dragging = true; pointerId = event.pointerId;
         const rect = element.getBoundingClientRect(); dx = event.clientX-rect.left; dy = event.clientY-rect.top;
-        handle.setPointerCapture(pointerId); element.style.transition = "none"; event.preventDefault();
+        try { handle.setPointerCapture?.(pointerId); } catch { }
+        element.style.transition = "none"; event.preventDefault();
     };
     const move = event => {
         if (!dragging || event.pointerId !== pointerId) return;

@@ -1,10 +1,12 @@
 export function capturePointer(element, pointerId) {
-    element.setPointerCapture(pointerId);
+    try { element?.setPointerCapture?.(pointerId); } catch { }
     return element.getBoundingClientRect().width;
 }
 
 export function releasePointer(element, pointerId) {
-    if (element.hasPointerCapture(pointerId)) element.releasePointerCapture(pointerId);
+    try {
+        if (element?.hasPointerCapture?.(pointerId)) element.releasePointerCapture?.(pointerId);
+    } catch { }
 }
 
 function loadImage(sourceUrl) {
