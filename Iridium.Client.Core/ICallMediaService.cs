@@ -80,6 +80,11 @@ public interface ICallMediaService : IAsyncDisposable
     event Func<bool, Task>? SpeakingChanged;
     event Func<string, Task>? ScreenShareEnded;
     event Func<bool, Task>? ScreenShareAudioAvailabilityChanged;
+    event Func<string, bool, Task>? WatchedStreamAudioAvailabilityChanged
+    {
+        add { }
+        remove { }
+    }
     event Func<string, Task>? Error;
     event Func<VoiceDiagnosticReport, Task>? DiagnosticGenerated;
 
@@ -104,6 +109,9 @@ public interface ICallMediaService : IAsyncDisposable
     Task DetachStreamViewerAsync(string elementId, CancellationToken cancellationToken = default);
     Task SetStreamSubscriptionAsync(string mediaStreamId, bool subscribed,
         CancellationToken cancellationToken = default) => Task.CompletedTask;
+    Task SetStreamSubscriptionAsync(string iridiumStreamId, string mediaStreamId,
+        string? participantIdentity, bool subscribed, CancellationToken cancellationToken = default) =>
+        SetStreamSubscriptionAsync(mediaStreamId, subscribed, cancellationToken);
     Task SetStreamAudioMutedAsync(string elementId, bool muted, CancellationToken cancellationToken = default);
     Task SetStreamAudioVolumeAsync(string elementId, int volumePercent,
         CancellationToken cancellationToken = default);

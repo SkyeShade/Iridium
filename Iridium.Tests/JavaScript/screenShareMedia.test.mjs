@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { captureScreenTracks, fitScreenShareResolution, publicationStreamIdentity, publishScreenTracks,
-    replacePublishedScreenTracks, screenShareBitrate, screenShareCaptureOptions, wireScreenEnded
+import { attachStreamViewerForSession, captureScreenTracks, detachStreamViewerForSession,
+    fitScreenShareResolution, publicationStreamIdentity, publishScreenTracks, reconcileScreenWatch,
+    refreshViewers, replacePublishedScreenTracks, screenShareBitrate, screenShareCaptureOptions,
+    setStreamSubscriptionForSession, wireScreenEnded
 } from "../../Iridium.Web/wwwroot/js/liveKitMedia.js";
 import { clampPlaybackVolume, effectiveGain } from "../../Iridium.Web/wwwroot/js/voicePlayback.js";
 
@@ -112,11 +114,154 @@ test("screen video and audio publish separately with one LiveKit stream identity
     assert.deepEqual(publications.map(publicationStreamIdentity), ["shared-screen-stream", "shared-screen-stream"]);
 });
 
-test("LiveKit stream identity wins over independently assigned publication names", () => {
+test("LiveKit stream metadata wins and trackName is the compatibility fallback", () => {
     assert.equal(publicationStreamIdentity({ trackName:"screen-video", trackInfo:{ stream:"iridium-screen-1" } }),
         "iridium-screen-1");
     assert.equal(publicationStreamIdentity({ trackName:"screen-audio", track:{ mediaStream:{ id:"iridium-screen-1" } } }),
-        "iridium-screen-1");
+        "screen-audio");
+});
+
+test("receiver-created media stream IDs never replace authoritative or compatible publication identity", () => {
+    assert.equal(publicationStreamIdentity({ trackName:"shared-screen",
+        track:{ mediaStream:{ id:"receiver-only-audio-stream" } } }), "shared-screen");
+});
+
+function installPlaybackDom() {
+    const elements = new Map(), audioElements = [];
+    globalThis.MediaStream = class {
+        constructor(tracks = []) { this.tracks = tracks; }
+        getAudioTracks() { return this.tracks.filter(track => track.kind === "audio"); }
+        getVideoTracks() { return this.tracks.filter(track => track.kind === "video"); }
+    };
+    const makeElement = kind => ({ kind, dataset:{}, muted:false, srcObject:null,
+        play:async () => {}, pause:() => {}, remove:() => {}, removeAttribute:() => {},
+        addEventListener:() => {}, removeEventListener:() => {} });
+    globalThis.document = {
+        getElementById:id => elements.get(id) ?? null,
+        createElement:kind => { const element = makeElement(kind); if (kind === "audio") audioElements.push(element); return element; },
+        body:{ appendChild:() => {} }
+    };
+    elements.set("viewer", makeElement("video"));
+    return { elements, audioElements };
+}
+
+function screenPublication(kind, stream, subscribed = false) {
+    const mediaTrack = { kind, id:`${kind}-track`, readyState:"live", getSettings:() => ({}) };
+    const publication = {
+        kind, source:kind === "video" ? "screen_share" : "screen_share_audio",
+        trackName:`compatible-${kind}`, trackInfo:{ stream }, trackSid:`sid-${kind}`,
+        isSubscribed:subscribed, track:subscribed ? { mediaStreamTrack:mediaTrack } : null,
+        subscriptionRequests:[], setSubscribed(value) { this.subscriptionRequests.push(value); this.isSubscribed = value; }
+    };
+    publication.subscribedTrack = { mediaStreamTrack:mediaTrack };
+    return publication;
+}
+
+function screenSession(publications, participantIdentity = "publisher") {
+    const participant = { identity:participantIdentity,
+        trackPublications:new Map(publications.map((publication, index) => [index, publication])) };
+    return { kind:"community", diagnostics:false, callback:{ invokeMethodAsync:async () => {} },
+        room:{ localParticipant:{ identity:"viewer", trackPublications:new Map() },
+            remoteParticipants:new Map([[participantIdentity, participant]]) },
+        viewers:new Map(), watched:new Map(), audioContext:null, deafened:false };
+}
+
+test("Watch enumerates existing remote video and audio and requests both subscriptions despite DTO lag", async () => {
+    installPlaybackDom();
+    const video = screenPublication("video", "existing-stream"), audio = screenPublication("audio", "existing-stream");
+    const session = screenSession([video, audio]);
+
+    await setStreamSubscriptionForSession(session, "iridium-id", "existing-stream", "publisher", true);
+
+    assert.deepEqual(video.subscriptionRequests, [true]);
+    assert.deepEqual(audio.subscriptionRequests, [true]);
+    assert.equal(session.watched.get("existing-stream").audioAvailable, true);
+});
+
+test("delayed TrackSubscribed reconciliation attaches screen audio", async () => {
+    const dom = installPlaybackDom();
+    const video = screenPublication("video", "delayed", true), audio = screenPublication("audio", "delayed");
+    const session = screenSession([video, audio]);
+    await setStreamSubscriptionForSession(session, "stream-id", "delayed", "publisher", true);
+    attachStreamViewerForSession(session, "delayed", "viewer", false, 100);
+    await refreshViewers(session, "delayed");
+    assert.equal(session.viewers.get("viewer").audioPlayback, null);
+
+    audio.track = audio.subscribedTrack;
+    await refreshViewers(session, "delayed");
+
+    assert.equal(session.viewers.get("viewer").audioTrackId, "audio-track");
+    assert.equal(dom.audioElements.length, 1);
+});
+
+test("already-subscribed audio attaches immediately and duplicate reconciliation does not double attach", async () => {
+    const dom = installPlaybackDom();
+    const video = screenPublication("video", "ready", true), audio = screenPublication("audio", "ready", true);
+    const session = screenSession([video, audio]);
+    await setStreamSubscriptionForSession(session, "stream-id", "ready", "publisher", true);
+    attachStreamViewerForSession(session, "ready", "viewer", false, 100);
+    await refreshViewers(session, "ready");
+    await refreshViewers(session, "ready");
+
+    assert.equal(session.viewers.get("viewer").audioTrackId, "audio-track");
+    assert.equal(dom.audioElements.length, 1);
+});
+
+test("StopWatch then Watch creates a new playback and never reuses the disposed graph", async () => {
+    const dom = installPlaybackDom();
+    const publications = [screenPublication("video", "reenter", true), screenPublication("audio", "reenter", true)];
+    const session = screenSession(publications);
+    await setStreamSubscriptionForSession(session, "stream-id", "reenter", "publisher", true);
+    attachStreamViewerForSession(session, "reenter", "viewer", false, 100);
+    await refreshViewers(session, "reenter");
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const first = session.viewers.get("viewer").audioPlayback;
+
+    detachStreamViewerForSession(session, "viewer");
+    await setStreamSubscriptionForSession(session, "stream-id", "reenter", "publisher", false);
+    await setStreamSubscriptionForSession(session, "stream-id", "reenter", "publisher", true);
+    attachStreamViewerForSession(session, "reenter", "viewer", false, 100);
+    await refreshViewers(session, "reenter");
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const second = session.viewers.get("viewer").audioPlayback;
+
+    assert.equal(first.disposed, true);
+    assert.notEqual(second, first);
+    assert.equal(second.disposed, false);
+    assert.equal(dom.audioElements.length, 2);
+});
+
+test("remote subscription is scoped to the authoritative participant and is independent of self-watch", () => {
+    installPlaybackDom();
+    const remoteAudio = screenPublication("audio", "same-name"), localAudio = screenPublication("audio", "same-name", true);
+    const session = screenSession([remoteAudio], "remote-publisher");
+    session.room.localParticipant.trackPublications.set("local", localAudio);
+    const watch = { iridiumStreamId:"id", mediaStreamId:"same-name",
+        participantIdentity:"remote-publisher", audioAvailable:null };
+    session.watched.set("same-name", watch);
+
+    const discovered = reconcileScreenWatch(session, watch);
+
+    assert.deepEqual(discovered, [remoteAudio]);
+    assert.deepEqual(remoteAudio.subscriptionRequests, [true]);
+    assert.deepEqual(localAudio.subscriptionRequests, []);
+});
+
+test("a ScreenShareAudio publication appearing after Watch is discovered and subscribed", () => {
+    installPlaybackDom();
+    const video = screenPublication("video", "late-audio");
+    const session = screenSession([video]);
+    const watch = { iridiumStreamId:"id", mediaStreamId:"late-audio",
+        participantIdentity:"publisher", audioAvailable:null };
+    session.watched.set("late-audio", watch);
+    reconcileScreenWatch(session, watch);
+    const audio = screenPublication("audio", "late-audio");
+    session.room.remoteParticipants.get("publisher").trackPublications.set("audio", audio);
+
+    reconcileScreenWatch(session, watch);
+
+    assert.deepEqual(audio.subscriptionRequests, [true]);
+    assert.equal(watch.audioAvailable, true);
 });
 
 test("an independently ended screen-audio track is unpublished and clears advertised availability", async () => {

@@ -16,6 +16,7 @@ public sealed class LiveKitCommunityVoiceMediaClient(IJSRuntime js, VoicePartici
     public event Func<bool, Task>? SpeakingChanged;
     public event Func<string, Task>? ScreenShareEnded;
     public event Func<bool, Task>? ScreenShareAudioAvailabilityChanged;
+    public event Func<string, bool, Task>? WatchedStreamAudioAvailabilityChanged;
     public event Func<string, Task>? Error;
     public event Func<string, Guid, WebRtcSessionDescription, Task>? OfferCreated { add { } remove { } }
     public event Func<string, Guid, WebRtcSessionDescription, Task>? AnswerCreated { add { } remove { } }
@@ -57,6 +58,9 @@ public sealed class LiveKitCommunityVoiceMediaClient(IJSRuntime js, VoicePartici
     public Task AttachStreamViewerAsync(string mediaStreamId, string elementId, bool audioMuted, int volumePercent, CancellationToken cancellationToken = default) => Invoke("attachStreamViewer", cancellationToken, mediaStreamId, elementId, audioMuted, volumePercent);
     public Task DetachStreamViewerAsync(string elementId, CancellationToken cancellationToken = default) => Invoke("detachStreamViewer", cancellationToken, elementId);
     public Task SetStreamSubscriptionAsync(string mediaStreamId, bool subscribed, CancellationToken cancellationToken = default) => Invoke("setStreamSubscription", cancellationToken, mediaStreamId, subscribed);
+    public Task SetStreamSubscriptionAsync(string iridiumStreamId, string mediaStreamId,
+        string? participantIdentity, bool subscribed, CancellationToken cancellationToken = default) =>
+        Invoke("setStreamSubscription", cancellationToken, iridiumStreamId, mediaStreamId, participantIdentity, subscribed);
     public Task SetStreamAudioMutedAsync(string elementId, bool muted, CancellationToken cancellationToken = default) => Invoke("setStreamAudioMuted", cancellationToken, elementId, muted);
     public Task SetStreamAudioVolumeAsync(string elementId, int volumePercent, CancellationToken cancellationToken = default) => Invoke("setStreamAudioVolume", cancellationToken, elementId, volumePercent);
     public Task RequestStreamFullscreenAsync(string elementId, CancellationToken cancellationToken = default) => Invoke("requestStreamFullscreen", cancellationToken, elementId);
@@ -74,6 +78,8 @@ public sealed class LiveKitCommunityVoiceMediaClient(IJSRuntime js, VoicePartici
     [JSInvokable] public Task OnScreenShareEnded(string reason) => InvokeHandlers(ScreenShareEnded, reason);
     [JSInvokable] public Task OnScreenShareAudioAvailabilityChanged(bool available) =>
         InvokeHandlers(ScreenShareAudioAvailabilityChanged, available);
+    [JSInvokable] public Task OnWatchedStreamAudioAvailabilityChanged(string mediaStreamId, bool available) =>
+        InvokeHandlers(WatchedStreamAudioAvailabilityChanged, mediaStreamId, available);
     [JSInvokable] public Task OnMediaError(string message) => InvokeHandlers(Error, message);
 
     private Task Invoke(string method, CancellationToken token, params object?[] args) => _module is not null && _sessionId is not null ? _module.InvokeVoidAsync(method, token, [_sessionId, .. args]).AsTask() : Task.CompletedTask;
@@ -81,6 +87,7 @@ public sealed class LiveKitCommunityVoiceMediaClient(IJSRuntime js, VoicePartici
     private void PreferenceChanged(VoiceParticipantPreference value) { if (_sessionId is not null) _ = Invoke("setParticipantPreference", CancellationToken.None, value); }
     private void LocalVoicePreferenceChanged() { if (_sessionId is not null) _ = Invoke("setInputSensitivity", CancellationToken.None, localVoicePreferences.Current); }
     private static async Task InvokeHandlers<T>(Func<T, Task>? handlers, T value) { if (handlers is null) return; foreach (Func<T, Task> handler in handlers.GetInvocationList()) await handler(value); }
+    private static async Task InvokeHandlers<T1, T2>(Func<T1, T2, Task>? handlers, T1 first, T2 second) { if (handlers is null) return; foreach (Func<T1, T2, Task> handler in handlers.GetInvocationList()) await handler(first, second); }
 
     public async ValueTask DisposeAsync()
     {

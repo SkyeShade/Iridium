@@ -200,7 +200,8 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
             await _connection.InvokeAsync(VoiceStreamHubContract.Watch, VoiceMediaSessionKind.CommunityVoice,
                 CurrentRoom.ChannelId, streamId, cancellationToken);
         WatchedStream = stream;
-        await media.SetStreamSubscriptionAsync(stream.MediaStreamId, true, cancellationToken);
+        await media.SetStreamSubscriptionAsync(stream.StreamId.ToString("D"), stream.MediaStreamId,
+            stream.OwnerParticipantId, true, cancellationToken);
         Changed?.Invoke();
     }
 
@@ -212,7 +213,8 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
             _connection?.State == HubConnectionState.Connected)
             await _connection.InvokeAsync(VoiceStreamHubContract.StopWatching, stream.StreamId, cancellationToken);
         if (stream is not null)
-            await media.SetStreamSubscriptionAsync(stream.MediaStreamId, false, cancellationToken);
+            await media.SetStreamSubscriptionAsync(stream.StreamId.ToString("D"), stream.MediaStreamId,
+                stream.OwnerParticipantId, false, cancellationToken);
         Changed?.Invoke();
     }
 
@@ -375,6 +377,7 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
         media.IceCandidateGenerated += MediaIceCandidateGeneratedAsync;
         media.ScreenShareEnded += MediaScreenShareEndedAsync;
         media.ScreenShareAudioAvailabilityChanged += MediaScreenShareAudioAvailabilityChangedAsync;
+        media.WatchedStreamAudioAvailabilityChanged += MediaWatchedStreamAudioAvailabilityChangedAsync;
     }
 
     private async Task MediaSpeakingChangedAsync(bool speaking)
@@ -402,6 +405,18 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
         var updated = await _connection.InvokeAsync<PublishedVoiceStreamDto>(VoiceStreamHubContract.Update,
             VoiceMediaSessionKind.CommunityVoice, CurrentRoom.ChannelId, stream.StreamId, available);
         ApplyPublishedStream(updated);
+    }
+
+    private Task MediaWatchedStreamAudioAvailabilityChangedAsync(string mediaStreamId, bool available)
+    {
+        if (WatchedStream is not { } stream || stream.MediaStreamId != mediaStreamId ||
+            stream.HasAudio == available) return Task.CompletedTask;
+        var reconciled = stream with { HasAudio = available };
+        _publishedStreams.RemoveAll(value => value.StreamId == stream.StreamId);
+        _publishedStreams.Add(reconciled);
+        WatchedStream = reconciled;
+        Changed?.Invoke();
+        return Task.CompletedTask;
     }
 
     private Task MediaOfferCreatedAsync(string targetParticipantId, Guid negotiationId,
@@ -463,6 +478,7 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
         media.IceCandidateGenerated -= MediaIceCandidateGeneratedAsync;
         media.ScreenShareEnded -= MediaScreenShareEndedAsync;
         media.ScreenShareAudioAvailabilityChanged -= MediaScreenShareAudioAvailabilityChangedAsync;
+        media.WatchedStreamAudioAvailabilityChanged -= MediaWatchedStreamAudioAvailabilityChangedAsync;
         await media.DisposeAsync();
     }
 }

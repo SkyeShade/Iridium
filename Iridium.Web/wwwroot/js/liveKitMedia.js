@@ -36,7 +36,9 @@ function publicationName(publication) {
 // identity is their shared association; track names are presentation metadata and are not
 // guaranteed to remain identical after the server accepts both publications.
 export function publicationStreamIdentity(publication) {
-    return publication?.trackInfo?.stream || publication?.track?.mediaStream?.id || publicationName(publication);
+    // `RemoteTrack.mediaStream.id` is created by the receiving SDK and is not the publisher's
+    // authoritative stream association. It can also differ between the video and audio tracks.
+    return publication?.trackInfo?.stream || publicationName(publication);
 }
 
 function allPublications(participant) {
@@ -340,14 +342,85 @@ function makeAudioPlayback(session, participant, track) {
     diagnoseAudioTransport(session, track, "inbound");
 }
 
-function configurePublication(session, publication) {
+function participantMatchesWatch(session, participant, watch) {
+    if (!watch?.participantIdentity) return true;
+    return accountKey(participant?.identity) === accountKey(watch.participantIdentity);
+}
+
+function participantForWatch(session, watch) {
+    if (participantMatchesWatch(session, session.room.localParticipant, watch))
+        return session.room.localParticipant;
+    return Array.from(session.room.remoteParticipants.values())
+        .find(participant => participantMatchesWatch(session, participant, watch)) ?? null;
+}
+
+function publicationMatchesWatch(publication, watch) {
+    const { Track } = sdk();
+    return (publication?.source === Track.Source.ScreenShare ||
+        publication?.source === Track.Source.ScreenShareAudio) &&
+        publicationStreamIdentity(publication) === watch.mediaStreamId;
+}
+
+function reportWatchedAudioAvailability(session, watch, publications) {
+    const { Track } = sdk();
+    const available = publications.some(publication => publicationMatchesWatch(publication, watch) &&
+        publication.source === Track.Source.ScreenShareAudio);
+    if (watch.audioAvailable === available) return;
+    watch.audioAvailable = available;
+    callback(session, "OnWatchedStreamAudioAvailabilityChanged",
+        ...(session.kind === "call"
+            ? [session.peerGeneration, watch.mediaStreamId, available]
+            : [watch.mediaStreamId, available]));
+}
+
+export function reconcileScreenWatch(session, watch) {
+    const participant = participantForWatch(session, watch);
+    const publications = allPublications(participant);
+    if (session.diagnostics) {
+        console.debug("[ScreenWatch] begin", {
+            participantIdentity: watch.participantIdentity || participant?.identity || null,
+            stream: watch.mediaStreamId, iridiumStreamId: watch.iridiumStreamId
+        });
+        for (const publication of publications) console.debug("[ScreenWatch] publication", {
+            participantIdentity: participant?.identity || null,
+            source: publication?.source ?? null,
+            publicationSid: publication?.trackSid ?? null,
+            trackName: publicationName(publication) || null,
+            trackInfoStream: publication?.trackInfo?.stream || null,
+            stream: publicationStreamIdentity(publication) || null,
+            isSubscribed: publication?.isSubscribed ?? null,
+            trackObjectPresent: !!publication?.track
+        });
+    }
+    // A missing participant is still connection/publication discovery pending, not proof that the
+    // stream has no audio. Once the participant exists, publication metadata is LiveKit truth.
+    if (participant) reportWatchedAudioAvailability(session, watch, publications);
+    if (!participant || participant === session.room.localParticipant) {
+        refreshViewers(session, watch.mediaStreamId);
+        return publications;
+    }
+    for (const publication of publications) {
+        if (!publicationMatchesWatch(publication, watch)) continue;
+        setScreenSubscription(session, publication, true);
+        if (session.diagnostics && publication.source === sdk().Track.Source.ScreenShareAudio)
+            console.debug("[ScreenWatch] requested audio subscription", safePublicationDiagnostic(publication));
+    }
+    // This covers publications whose RemoteTrack already existed before Watch. Publications that
+    // are still metadata-only are attached by TrackSubscribed and reconciled again there.
+    refreshViewers(session, watch.mediaStreamId);
+    return publications;
+}
+
+function configurePublication(session, publication, participant = null) {
     const source = publication.source;
     const { Track } = sdk();
     const microphone = source === Track.Source.Microphone;
     const screen = source === Track.Source.ScreenShare || source === Track.Source.ScreenShareAudio;
-    const shouldSubscribe = microphone || (screen && session.watched.has(publicationStreamIdentity(publication)));
+    const watch = screen ? Array.from(session.watched.values()).find(value =>
+        publicationMatchesWatch(publication, value) && participantMatchesWatch(session, participant, value)) : null;
+    const shouldSubscribe = microphone || !!watch;
     if (session.diagnostics && screen) console.debug("LiveKit screen publication discovered", {
-        shouldSubscribe, watchedMediaStream: session.watched.has(publicationStreamIdentity(publication)),
+        shouldSubscribe, watchedMediaStream: !!watch,
         ...safePublicationDiagnostic(publication)
     });
     if (publication.setSubscribed) setScreenSubscription(session, publication, shouldSubscribe);
@@ -356,21 +429,32 @@ function configurePublication(session, publication) {
 function wireRoom(session) {
     const { RoomEvent, Track } = sdk();
     const room = session.room;
-    room.on(RoomEvent.TrackPublished, publication => configurePublication(session, publication));
+    room.on(RoomEvent.TrackPublished, (publication, participant) => {
+        configurePublication(session, publication, participant);
+        for (const watch of session.watched.values())
+            if (participantMatchesWatch(session, participant, watch)) reconcileScreenWatch(session, watch);
+    });
     room.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
         if (publication.source === Track.Source.Microphone) makeAudioPlayback(session, participant, track);
         if (publication.source === Track.Source.ScreenShare)
             scheduleVideoDiagnostics(session, track, "inbound", {
                 requestedQuality: "HIGH", selectedQuality: selectedVideoQuality(publication)
             });
-        if (publication.source === Track.Source.ScreenShareAudio)
+        if (publication.source === Track.Source.ScreenShareAudio) {
             diagnoseAudioTransport(session, track, "inbound", "screen share audio");
+            if (session.diagnostics) console.debug("[ScreenWatch] audio TrackSubscribed", {
+                participant: participant?.identity || null, stream: publicationStreamIdentity(publication),
+                ...safePublicationDiagnostic(publication)
+            });
+        }
         if (session.diagnostics && (publication.source === Track.Source.ScreenShare ||
             publication.source === Track.Source.ScreenShareAudio))
             console.debug("LiveKit screen track subscribed", {
                 ...safePublicationDiagnostic(publication), track: safeTrackDiagnostic(track.mediaStreamTrack)
             });
-        refreshViewers(session, publicationStreamIdentity(publication));
+        for (const watch of session.watched.values())
+            if (participantMatchesWatch(session, participant, watch) && publicationMatchesWatch(publication, watch))
+                reconcileScreenWatch(session, watch);
     });
     room.on(RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
         if (publication.source === Track.Source.Microphone) {
@@ -378,13 +462,16 @@ function wireRoom(session) {
             if (playback) destroyRemoteVoicePlayback(playback);
             session.playbacks.delete(key);
         }
-        refreshViewers(session, publicationStreamIdentity(publication));
+        for (const watch of session.watched.values())
+            if (participantMatchesWatch(session, participant, watch) && publicationMatchesWatch(publication, watch))
+                reconcileScreenWatch(session, watch);
     });
-    room.on(RoomEvent.TrackUnpublished, publication => {
+    room.on(RoomEvent.TrackUnpublished, (publication, participant) => {
         if (session.diagnostics && (publication.source === Track.Source.ScreenShare ||
             publication.source === Track.Source.ScreenShareAudio))
             console.debug("LiveKit screen publication removed", safePublicationDiagnostic(publication));
-        refreshViewers(session, publicationStreamIdentity(publication));
+        for (const watch of session.watched.values())
+            if (participantMatchesWatch(session, participant, watch)) reconcileScreenWatch(session, watch);
     });
     room.on(RoomEvent.TrackMuted, publication => {
         if (publication.source === Track.Source.ScreenShare || publication.source === Track.Source.ScreenShareAudio)
@@ -404,7 +491,11 @@ function wireRoom(session) {
             publicationStreamIdentity(publication) === session.screenMediaStreamId)
             updateLocalScreenAudioAvailability(session, true);
     });
-    room.on(RoomEvent.ParticipantConnected, participant => allPublications(participant).forEach(p => configurePublication(session, p)));
+    room.on(RoomEvent.ParticipantConnected, participant => {
+        allPublications(participant).forEach(publication => configurePublication(session, publication, participant));
+        for (const watch of session.watched.values())
+            if (participantMatchesWatch(session, participant, watch)) reconcileScreenWatch(session, watch);
+    });
     room.on(RoomEvent.ParticipantDisconnected, participant => {
         const key = accountKey(participant.identity), playback = session.playbacks.get(key);
         if (playback) destroyRemoteVoicePlayback(playback);
@@ -413,12 +504,12 @@ function wireRoom(session) {
     room.on(RoomEvent.Reconnecting, () => reportState(session, "disconnected"));
     room.on(RoomEvent.Reconnected, () => {
         for (const participant of room.remoteParticipants.values())
-            for (const publication of allPublications(participant)) configurePublication(session, publication);
+            for (const publication of allPublications(participant)) configurePublication(session, publication, participant);
         if (session.screenMediaStreamId)
             updateLocalScreenAudioAvailability(session, allPublications(room.localParticipant).some(publication =>
                 publication.source === Track.Source.ScreenShareAudio &&
                 publicationStreamIdentity(publication) === session.screenMediaStreamId));
-        for (const mediaStreamId of session.watched) refreshViewers(session, mediaStreamId);
+        for (const watch of session.watched.values()) reconcileScreenWatch(session, watch);
         reportState(session, "connected");
     });
     room.on(RoomEvent.Disconnected, () => reportState(session, "disconnected"));
@@ -457,10 +548,14 @@ function startLocalSpeaking(session) {
 }
 
 function matchingPublications(session, mediaStreamId) {
-    return [
+    const watch = session.watched.get(mediaStreamId);
+    const participant = watch ? participantForWatch(session, watch) : null;
+    const publications = participant ? allPublications(participant) : [
         ...allPublications(session.room.localParticipant),
         ...Array.from(session.room.remoteParticipants.values()).flatMap(allPublications)
-    ].filter(p => publicationStreamIdentity(p) === mediaStreamId && p.track?.mediaStreamTrack);
+    ];
+    return publications.filter(publication => publicationStreamIdentity(publication) === mediaStreamId &&
+        publication.track?.mediaStreamTrack);
 }
 
 function matchingTracks(session, mediaStreamId) {
@@ -492,10 +587,10 @@ function configureLiveVideoElement(session, viewer, element) {
     element.addEventListener("pause", viewer.resumeLiveVideo);
 }
 
-async function refreshViewers(session, mediaStreamId) {
+export async function refreshViewers(session, mediaStreamId) {
     for (const viewer of session.viewers.values()) {
         if (viewer.mediaStreamId !== mediaStreamId) continue;
-        const refreshGeneration = ++viewer.refreshGeneration;
+        viewer.refreshGeneration++;
         const element = document.getElementById(viewer.elementId);
         if (!element) continue;
         configureLiveVideoElement(session, viewer, element);
@@ -512,10 +607,13 @@ async function refreshViewers(session, mediaStreamId) {
         catch (error) {
             if (session.diagnostics) console.debug("LiveKit screen video play blocked", { name: error?.name });
         }
-        if (viewer.audioTrackId === audioTrack?.id) continue;
+        if (viewer.audioTrackId === audioTrack?.id && viewer.audioPlayback && !viewer.audioPlayback.disposed) continue;
+        if (audioTrack && viewer.pendingAudioTrackId === audioTrack.id) continue;
+        viewer.pendingAudioAttachment = null;
+        viewer.pendingAudioTrackId = null;
         if (viewer.audioPlayback) destroyRemoteVoicePlayback(viewer.audioPlayback);
         viewer.audioPlayback = null;
-        viewer.audioTrackId = audioTrack?.id ?? null;
+        viewer.audioTrackId = null;
         if (!audioTrack) {
             if (session.diagnostics) console.debug("LiveKit screen viewer media attached", {
                 mediaStreamId, screenVideoSubscribed: videoTracks.length > 0,
@@ -523,6 +621,9 @@ async function refreshViewers(session, mediaStreamId) {
             });
             continue;
         }
+        const audioAttachment = {};
+        viewer.pendingAudioAttachment = audioAttachment;
+        viewer.pendingAudioTrackId = audioTrack.id;
         const playback = await createRemoteVoicePlayback(new MediaStream([audioTrack]), session.audioContext, {
             volumePercent: viewer.volumePercent, minimumVolumePercent: 0,
             locallyMuted: viewer.audioMuted, deafened: session.deafened,
@@ -531,11 +632,15 @@ async function refreshViewers(session, mediaStreamId) {
                 deafened: session.deafened, ...details
             })
         });
-        if (viewer.refreshGeneration !== refreshGeneration) {
+        if (session.viewers.get(viewer.elementId) !== viewer ||
+            viewer.pendingAudioAttachment !== audioAttachment) {
             destroyRemoteVoicePlayback(playback);
             continue;
         }
+        viewer.pendingAudioAttachment = null;
+        viewer.pendingAudioTrackId = null;
         viewer.audioPlayback = playback;
+        viewer.audioTrackId = audioTrack.id;
         element.dataset.audioBlocked = playback.playBlocked ? "true" : "false";
         if (session.diagnostics) console.debug("LiveKit screen viewer media attached", {
             mediaStreamId, screenVideoSubscribed: videoTracks.length > 0,
@@ -545,6 +650,10 @@ async function refreshViewers(session, mediaStreamId) {
             selfPreview: allPublications(session.room.localParticipant).some(publication =>
                 publicationStreamIdentity(publication) === mediaStreamId),
             audioMuted: viewer.audioMuted, volumePercent: viewer.volumePercent
+        });
+        if (session.diagnostics) console.debug("[ScreenWatch] audio playback attached", {
+            mediaStreamId, trackId: audioTrack.id, playbackMode: playback.mode,
+            blocked: playback.playBlocked
         });
     }
 }
@@ -563,7 +672,7 @@ async function connectCore(callbackRef, nodeSession, preferences, kind, peerGene
         // Screen viewers are deliberately subscribed by Watch/Stop Watching rather than SDK-managed elements.
         room: new Room({ autoSubscribe: false, adaptiveStream: false, dynacast: true }),
         preferences: new Map((preferences ?? []).map(p => [accountKey(p.remoteAccountId), p])),
-        playbacks: new Map(), viewers: new Map(), watched: new Set(), deafened: initialDeafened === true,
+        playbacks: new Map(), viewers: new Map(), watched: new Map(), deafened: initialDeafened === true,
         muted: initialMuted === true, speaking: false, inputSensitivity, voiceActivityGate: null,
         activeInputDeviceId: inputSensitivity.inputDeviceId,
         screenTracks: [], screenStreamId: null, screenMediaStreamId: null, screenGeneration: 0,
@@ -910,37 +1019,73 @@ export async function stopScreenShare(id, reason) {
     if (reason === "BrowserEnded") await callback(session, "OnScreenShareEnded", ...(session.kind === "call" ? [session.peerGeneration, reason] : [reason]));
 }
 
-export function setStreamSubscription(id, mediaStreamId, subscribed) {
-    const session = sessions.get(id); if (!session) return;
-    if (subscribed) session.watched.add(mediaStreamId); else session.watched.delete(mediaStreamId);
-    for (const participant of session.room.remoteParticipants.values())
+export async function setStreamSubscriptionForSession(session, iridiumStreamId, mediaStreamId,
+        participantIdentity, subscribed) {
+    const previous = session.watched.get(mediaStreamId);
+    const watch = previous ?? { iridiumStreamId, mediaStreamId, participantIdentity, audioAvailable:null };
+    Object.assign(watch, { iridiumStreamId, mediaStreamId, participantIdentity });
+    if (subscribed) {
+        session.watched.set(mediaStreamId, watch);
+        try { if (session.audioContext?.state === "suspended") await session.audioContext.resume(); }
+        catch (error) {
+            if (session.diagnostics) console.debug("[ScreenWatch] audio activation blocked", { name:error?.name });
+        }
+        reconcileScreenWatch(session, watch);
+        return;
+    }
+    session.watched.delete(mediaStreamId);
+    const participant = participantForWatch(session, watch);
+    if (participant && participant !== session.room.localParticipant)
         for (const publication of allPublications(participant))
-            if (publicationStreamIdentity(publication) === mediaStreamId)
-                setScreenSubscription(session, publication, subscribed);
+            if (publicationMatchesWatch(publication, watch)) setScreenSubscription(session, publication, false);
     refreshViewers(session, mediaStreamId);
+}
+
+export async function setStreamSubscription(id, iridiumStreamId, mediaStreamId, participantIdentity, subscribed) {
+    const session = sessions.get(id); if (!session) return;
+    await setStreamSubscriptionForSession(session, iridiumStreamId, mediaStreamId, participantIdentity, subscribed);
+}
+
+export function attachStreamViewerForSession(session, mediaStreamId, elementId, audioMuted, volumePercent = 100) {
+    const previous = session.viewers.get(elementId);
+    if (previous?.audioPlayback) destroyRemoteVoicePlayback(previous.audioPlayback);
+    if (previous) previous.refreshGeneration++;
+    session.viewers.set(elementId, { mediaStreamId, elementId, audioMuted,
+        volumePercent: Math.min(300, Math.max(0, Number(volumePercent) || 0)),
+        audioTrackId: null, audioPlayback: null, pendingAudioTrackId: null,
+        pendingAudioAttachment: null, refreshGeneration: 0,
+        videoElement: null, preventVideoToggle: null, resumeLiveVideo: null, resumePending: false });
+    const watch = session.watched.get(mediaStreamId);
+    if (watch) reconcileScreenWatch(session, watch); else refreshViewers(session, mediaStreamId);
 }
 
 export function attachStreamViewer(id, mediaStreamId, elementId, audioMuted, volumePercent = 100) {
     const session = sessions.get(id); if (!session) return;
-    session.viewers.set(elementId, { mediaStreamId, elementId, audioMuted,
-        volumePercent: Math.min(300, Math.max(0, Number(volumePercent) || 0)),
-        audioTrackId: null, audioPlayback: null, refreshGeneration: 0,
-        videoElement: null, preventVideoToggle: null, resumeLiveVideo: null, resumePending: false });
-    setStreamSubscription(id, mediaStreamId, true); refreshViewers(session, mediaStreamId);
+    attachStreamViewerForSession(session, mediaStreamId, elementId, audioMuted, volumePercent);
 }
 
-export function detachStreamViewer(id, elementId) {
-    const session = sessions.get(id); if (!session) return;
+export function detachStreamViewerForSession(session, elementId) {
     const viewer = session.viewers.get(elementId), element = document.getElementById(elementId);
     session.viewers.delete(elementId);
+    if (viewer) viewer.refreshGeneration++;
     if (viewer?.videoElement) {
         viewer.videoElement.removeEventListener("click", viewer.preventVideoToggle);
         viewer.videoElement.removeEventListener("pause", viewer.resumeLiveVideo);
     }
     if (element) { element.pause?.(); element.srcObject = null; }
-    if (viewer?.audioPlayback) destroyRemoteVoicePlayback(viewer.audioPlayback);
+    if (viewer?.audioPlayback) {
+        destroyRemoteVoicePlayback(viewer.audioPlayback);
+        if (session.diagnostics) console.debug("[ScreenWatch] audio playback disposed", {
+            mediaStreamId:viewer.mediaStreamId
+        });
+    }
     if (viewer && !Array.from(session.viewers.values()).some(v => v.mediaStreamId === viewer.mediaStreamId))
-        setStreamSubscription(id, viewer.mediaStreamId, session.watched.has(viewer.mediaStreamId));
+        refreshViewers(session, viewer.mediaStreamId);
+}
+
+export function detachStreamViewer(id, elementId) {
+    const session = sessions.get(id); if (!session) return;
+    detachStreamViewerForSession(session, elementId);
 }
 
 export async function setStreamAudioMuted(id, elementId, muted) {

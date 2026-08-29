@@ -25,6 +25,7 @@ public sealed class LiveKitCallMediaService(
     public event Func<bool, Task>? SpeakingChanged;
     public event Func<string, Task>? ScreenShareEnded;
     public event Func<bool, Task>? ScreenShareAudioAvailabilityChanged;
+    public event Func<string, bool, Task>? WatchedStreamAudioAvailabilityChanged;
     public event Func<string, Task>? Error;
     public event Func<VoiceDiagnosticReport, Task>? DiagnosticGenerated { add { } remove { } }
 
@@ -72,6 +73,9 @@ public sealed class LiveKitCallMediaService(
     public Task DetachStreamViewerAsync(string elementId, CancellationToken cancellationToken = default) => Invoke("detachStreamViewer", cancellationToken, elementId);
     public Task SetStreamSubscriptionAsync(string mediaStreamId, bool subscribed,
         CancellationToken cancellationToken = default) => Invoke("setStreamSubscription", cancellationToken, mediaStreamId, subscribed);
+    public Task SetStreamSubscriptionAsync(string iridiumStreamId, string mediaStreamId,
+        string? participantIdentity, bool subscribed, CancellationToken cancellationToken = default) =>
+        Invoke("setStreamSubscription", cancellationToken, iridiumStreamId, mediaStreamId, participantIdentity, subscribed);
     public Task SetStreamAudioMutedAsync(string elementId, bool muted, CancellationToken cancellationToken = default) => Invoke("setStreamAudioMuted", cancellationToken, elementId, muted);
     public Task SetStreamAudioVolumeAsync(string elementId, int volumePercent, CancellationToken cancellationToken = default) => Invoke("setStreamAudioVolume", cancellationToken, elementId, volumePercent);
     public Task RequestStreamFullscreenAsync(string elementId, CancellationToken cancellationToken = default) => Invoke("requestStreamFullscreen", cancellationToken, elementId);
@@ -95,6 +99,10 @@ public sealed class LiveKitCallMediaService(
     [JSInvokable] public Task OnScreenShareAudioAvailabilityChanged(int generation, bool available) =>
         generation == _context?.PeerGeneration
             ? InvokeHandlers(ScreenShareAudioAvailabilityChanged, available) : Task.CompletedTask;
+    [JSInvokable] public Task OnWatchedStreamAudioAvailabilityChanged(int generation, string mediaStreamId,
+        bool available) => generation == _context?.PeerGeneration
+            ? InvokeHandlers(WatchedStreamAudioAvailabilityChanged, mediaStreamId, available)
+            : Task.CompletedTask;
     [JSInvokable] public Task OnMediaError(int generation, string message) =>
         generation == _context?.PeerGeneration ? InvokeHandlers(Error, message) : Task.CompletedTask;
 
@@ -110,6 +118,7 @@ public sealed class LiveKitCallMediaService(
     private static Exception LegacySignaling() => new InvalidOperationException("Peer-to-peer signaling is not used by SFU media.");
     private static CallConnectionState ParseState(string state) => state switch { "connected" => CallConnectionState.Connected, "connecting" => CallConnectionState.Connecting, "disconnected" => CallConnectionState.Disconnected, "failed" => CallConnectionState.Failed, _ => CallConnectionState.New };
     private static async Task InvokeHandlers<T>(Func<T, Task>? handlers, T value) { if (handlers is null) return; foreach (Func<T, Task> handler in handlers.GetInvocationList()) await handler(value); }
+    private static async Task InvokeHandlers<T1, T2>(Func<T1, T2, Task>? handlers, T1 first, T2 second) { if (handlers is null) return; foreach (Func<T1, T2, Task> handler in handlers.GetInvocationList()) await handler(first, second); }
 
     public async ValueTask DisposeAsync()
     {

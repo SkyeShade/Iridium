@@ -41,7 +41,8 @@ public sealed class LiveKitScreenStreamCorrectnessTests
         Assert.Contains("session.room.localParticipant.publishTrack(track", liveKit);
         Assert.Contains("publication.source === Track.Source.ScreenShareAudio", liveKit);
         Assert.Contains("publication?.trackInfo?.stream", liveKit);
-        Assert.Contains("publicationStreamIdentity(p) === mediaStreamId", liveKit);
+        Assert.Contains("publicationStreamIdentity(publication) === mediaStreamId", liveKit);
+        Assert.Contains("publication?.trackInfo?.stream || publicationName(publication)", liveKit);
         Assert.Contains("createRemoteVoicePlayback(new MediaStream([audioTrack])", liveKit);
         Assert.Contains("@if (stream.HasAudio)", viewer);
         Assert.Contains("Stream Volume", viewer);
@@ -79,7 +80,8 @@ public sealed class LiveKitScreenStreamCorrectnessTests
         Assert.Contains("RoomEvent.LocalTrackPublished", liveKit);
         Assert.Contains("RoomEvent.LocalTrackUnpublished", liveKit);
         Assert.Contains("RoomEvent.Reconnected", liveKit);
-        Assert.Contains("for (const mediaStreamId of session.watched) refreshViewers", liveKit);
+        Assert.Contains("for (const watch of session.watched.values()) reconcileScreenWatch", liveKit);
+        Assert.Contains("OnWatchedStreamAudioAvailabilityChanged", liveKit);
         Assert.Contains("ScreenShareAudioAvailabilityChanged += MediaScreenShareAudioAvailabilityChangedAsync", calls);
         Assert.Contains("VoiceStreamHubContract.Update", calls);
         Assert.Contains("ScreenShareAudioAvailabilityChanged += MediaScreenShareAudioAvailabilityChangedAsync", community);
@@ -95,7 +97,8 @@ public sealed class LiveKitScreenStreamCorrectnessTests
         Assert.Contains("if (publication.source === Track.Source.Microphone) makeAudioPlayback", liveKit);
         Assert.Contains("viewer.audioPlayback = playback", liveKit);
         Assert.Contains("updateRemoteVoicePlayback(viewer?.audioPlayback, { locallyMuted: muted", liveKit);
-        Assert.Contains("if (viewer?.audioPlayback) destroyRemoteVoicePlayback(viewer.audioPlayback)", liveKit);
+        Assert.Contains("if (viewer?.audioPlayback) {", liveKit);
+        Assert.Contains("destroyRemoteVoicePlayback(viewer.audioPlayback)", liveKit);
         Assert.Contains("if (watched.OwnerAccountId == LocalAccountId) _mutedStreamAudio.Add", coordinator);
     }
 
