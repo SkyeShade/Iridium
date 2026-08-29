@@ -32,6 +32,13 @@ function publicationName(publication) {
     return publication?.trackName || publication?.name || publication?.track?.name || "";
 }
 
+// LiveKit publishes screen video and screen audio as separate publications. The `stream`
+// identity is their shared association; track names are presentation metadata and are not
+// guaranteed to remain identical after the server accepts both publications.
+export function publicationStreamIdentity(publication) {
+    return publication?.trackInfo?.stream || publication?.track?.mediaStream?.id || publicationName(publication);
+}
+
 function allPublications(participant) {
     return Array.from(participant?.trackPublications?.values?.() ?? []);
 }
@@ -54,7 +61,8 @@ function safeTrackDiagnostic(track) {
 function safePublicationDiagnostic(publication) {
     return {
         kind: publication?.kind ?? null, source: publication?.source ?? null,
-        trackName: publicationName(publication) || null, trackSid: publication?.trackSid ?? null,
+        trackName: publicationName(publication) || null,
+        streamIdentity: publicationStreamIdentity(publication) || null, trackSid: publication?.trackSid ?? null,
         isSubscribed: publication?.isSubscribed ?? null, hasTrack: !!publication?.track
     };
 }
@@ -294,7 +302,7 @@ function setScreenSubscription(session, publication, subscribed) {
     if (session.diagnostics && (publication.source === Track.Source.ScreenShare ||
         publication.source === Track.Source.ScreenShareAudio))
         console.debug("LiveKit screen publication subscription requested", {
-            subscribed, watchedMediaStream: session.watched.has(publicationName(publication)),
+            subscribed, watchedMediaStream: session.watched.has(publicationStreamIdentity(publication)),
             ...safePublicationDiagnostic(publication)
         });
     if (subscribed && publication.source === Track.Source.ScreenShare && publication.setVideoQuality) {
@@ -337,9 +345,9 @@ function configurePublication(session, publication) {
     const { Track } = sdk();
     const microphone = source === Track.Source.Microphone;
     const screen = source === Track.Source.ScreenShare || source === Track.Source.ScreenShareAudio;
-    const shouldSubscribe = microphone || (screen && session.watched.has(publicationName(publication)));
+    const shouldSubscribe = microphone || (screen && session.watched.has(publicationStreamIdentity(publication)));
     if (session.diagnostics && screen) console.debug("LiveKit screen publication discovered", {
-        shouldSubscribe, watchedMediaStream: session.watched.has(publicationName(publication)),
+        shouldSubscribe, watchedMediaStream: session.watched.has(publicationStreamIdentity(publication)),
         ...safePublicationDiagnostic(publication)
     });
     if (publication.setSubscribed) setScreenSubscription(session, publication, shouldSubscribe);
@@ -362,7 +370,7 @@ function wireRoom(session) {
             console.debug("LiveKit screen track subscribed", {
                 ...safePublicationDiagnostic(publication), track: safeTrackDiagnostic(track.mediaStreamTrack)
             });
-        refreshViewers(session, publicationName(publication));
+        refreshViewers(session, publicationStreamIdentity(publication));
     });
     room.on(RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
         if (publication.source === Track.Source.Microphone) {
@@ -370,7 +378,31 @@ function wireRoom(session) {
             if (playback) destroyRemoteVoicePlayback(playback);
             session.playbacks.delete(key);
         }
-        refreshViewers(session, publicationName(publication));
+        refreshViewers(session, publicationStreamIdentity(publication));
+    });
+    room.on(RoomEvent.TrackUnpublished, publication => {
+        if (session.diagnostics && (publication.source === Track.Source.ScreenShare ||
+            publication.source === Track.Source.ScreenShareAudio))
+            console.debug("LiveKit screen publication removed", safePublicationDiagnostic(publication));
+        refreshViewers(session, publicationStreamIdentity(publication));
+    });
+    room.on(RoomEvent.TrackMuted, publication => {
+        if (publication.source === Track.Source.ScreenShare || publication.source === Track.Source.ScreenShareAudio)
+            refreshViewers(session, publicationStreamIdentity(publication));
+    });
+    room.on(RoomEvent.TrackUnmuted, publication => {
+        if (publication.source === Track.Source.ScreenShare || publication.source === Track.Source.ScreenShareAudio)
+            refreshViewers(session, publicationStreamIdentity(publication));
+    });
+    room.on(RoomEvent.LocalTrackUnpublished, publication => {
+        if (publication.source !== Track.Source.ScreenShareAudio || session.screenPublicationMutation ||
+            publicationStreamIdentity(publication) !== session.screenMediaStreamId) return;
+        updateLocalScreenAudioAvailability(session, false);
+    });
+    room.on(RoomEvent.LocalTrackPublished, publication => {
+        if (publication.source === Track.Source.ScreenShareAudio &&
+            publicationStreamIdentity(publication) === session.screenMediaStreamId)
+            updateLocalScreenAudioAvailability(session, true);
     });
     room.on(RoomEvent.ParticipantConnected, participant => allPublications(participant).forEach(p => configurePublication(session, p)));
     room.on(RoomEvent.ParticipantDisconnected, participant => {
@@ -379,7 +411,16 @@ function wireRoom(session) {
         session.playbacks.delete(key);
     });
     room.on(RoomEvent.Reconnecting, () => reportState(session, "disconnected"));
-    room.on(RoomEvent.Reconnected, () => reportState(session, "connected"));
+    room.on(RoomEvent.Reconnected, () => {
+        for (const participant of room.remoteParticipants.values())
+            for (const publication of allPublications(participant)) configurePublication(session, publication);
+        if (session.screenMediaStreamId)
+            updateLocalScreenAudioAvailability(session, allPublications(room.localParticipant).some(publication =>
+                publication.source === Track.Source.ScreenShareAudio &&
+                publicationStreamIdentity(publication) === session.screenMediaStreamId));
+        for (const mediaStreamId of session.watched) refreshViewers(session, mediaStreamId);
+        reportState(session, "connected");
+    });
     room.on(RoomEvent.Disconnected, () => reportState(session, "disconnected"));
     room.on(RoomEvent.ConnectionStateChanged, state => {
         const mapped = state === "connected" ? "connected"
@@ -419,7 +460,7 @@ function matchingPublications(session, mediaStreamId) {
     return [
         ...allPublications(session.room.localParticipant),
         ...Array.from(session.room.remoteParticipants.values()).flatMap(allPublications)
-    ].filter(p => publicationName(p) === mediaStreamId && p.track?.mediaStreamTrack);
+    ].filter(p => publicationStreamIdentity(p) === mediaStreamId && p.track?.mediaStreamTrack);
 }
 
 function matchingTracks(session, mediaStreamId) {
@@ -477,8 +518,8 @@ async function refreshViewers(session, mediaStreamId) {
         viewer.audioTrackId = audioTrack?.id ?? null;
         if (!audioTrack) {
             if (session.diagnostics) console.debug("LiveKit screen viewer media attached", {
-                mediaStreamId, screenVideoPublication: videoTracks.length > 0,
-                screenAudioPublication: false, audioAttached: false, playSucceeded: null
+                mediaStreamId, screenVideoSubscribed: videoTracks.length > 0,
+                screenAudioSubscribed: false, screenAudioAttached: false, playSucceeded: null
             });
             continue;
         }
@@ -497,12 +538,12 @@ async function refreshViewers(session, mediaStreamId) {
         viewer.audioPlayback = playback;
         element.dataset.audioBlocked = playback.playBlocked ? "true" : "false";
         if (session.diagnostics) console.debug("LiveKit screen viewer media attached", {
-            mediaStreamId, screenVideoPublication: videoTracks.length > 0,
-            screenAudioPublication: true, screenAudioSubscribed: publications.some(publication =>
+            mediaStreamId, screenVideoSubscribed: videoTracks.length > 0,
+            screenAudioSubscribed: publications.some(publication =>
                 publication.source === sdk().Track.Source.ScreenShareAudio && publication.isSubscribed !== false),
-            audioAttached: true, playSucceeded: !playback.playBlocked, playbackMode: playback.mode,
+            screenAudioAttached: true, playSucceeded: !playback.playBlocked, playbackMode: playback.mode,
             selfPreview: allPublications(session.room.localParticipant).some(publication =>
-                publicationName(publication) === mediaStreamId),
+                publicationStreamIdentity(publication) === mediaStreamId),
             audioMuted: viewer.audioMuted, volumePercent: viewer.volumePercent
         });
     }
@@ -526,6 +567,7 @@ async function connectCore(callbackRef, nodeSession, preferences, kind, peerGene
         muted: initialMuted === true, speaking: false, inputSensitivity, voiceActivityGate: null,
         activeInputDeviceId: inputSensitivity.inputDeviceId,
         screenTracks: [], screenStreamId: null, screenMediaStreamId: null, screenGeneration: 0,
+        screenAudioAvailable: false, screenPublicationMutation: false,
         audioContext: (globalThis.AudioContext || globalThis.webkitAudioContext)
             ? new (globalThis.AudioContext || globalThis.webkitAudioContext)() : null
     };
@@ -700,7 +742,7 @@ async function publishCapturedScreenTrack(session, track, options, mediaStreamId
     }
 }
 
-async function publishScreenTracks(session, tracks, mediaStreamId) {
+export async function publishScreenTracks(session, tracks, mediaStreamId) {
     const published = [];
     for (const track of tracks) {
         if (track.kind === "video") {
@@ -748,13 +790,39 @@ async function publishScreenTracks(session, tracks, mediaStreamId) {
         videoPublished: published.some(publication => publication?.kind === "video"),
         audioPublished: published.some(publication => publication?.kind === "audio")
     });
+    return published;
 }
 
-function wireScreenEnded(session, tracks, generation) {
+function publishedScreenAudio(publications) {
+    const { Track } = sdk();
+    return publications.some(publication => publication?.source === Track.Source.ScreenShareAudio ||
+        publication?.kind === "audio");
+}
+
+function updateLocalScreenAudioAvailability(session, available) {
+    if (session.screenAudioAvailable === available) return;
+    session.screenAudioAvailable = available;
+    if (session.screenStreamId)
+        callback(session, "OnScreenShareAudioAvailabilityChanged",
+            ...(session.kind === "call" ? [session.peerGeneration, available] : [available]));
+}
+
+export function wireScreenEnded(session, tracks, generation) {
     const video = tracks.find(track => track.kind === "video");
     video?.mediaStreamTrack.addEventListener("ended", () => {
         if (session.screenGeneration === generation)
             stopScreenShare(session.id, "BrowserEnded");
+    }, { once: true });
+    const audio = tracks.find(track => track.kind === "audio");
+    audio?.mediaStreamTrack.addEventListener("ended", async () => {
+        if (session.screenGeneration !== generation || session.screenMediaStreamId === null) return;
+        session.screenTracks = session.screenTracks.filter(track => track !== audio);
+        session.screenPublicationMutation = true;
+        try { await session.room.localParticipant.unpublishTrack(audio, true); }
+        catch { }
+        finally { session.screenPublicationMutation = false; }
+        updateLocalScreenAudioAvailability(session, false);
+        refreshViewers(session, session.screenMediaStreamId);
     }, { once: true });
 }
 
@@ -765,7 +833,8 @@ export async function startScreenShare(id) {
     if (session.screenTracks.length) return switchScreenShare(id);
     const streamId = crypto.randomUUID(), mediaStreamId = `iridium-screen-${streamId.replaceAll("-", "")}`;
     const tracks = await captureScreenTracks(session);
-    try { await publishScreenTracks(session, tracks, mediaStreamId); }
+    let publications;
+    try { publications = await publishScreenTracks(session, tracks, mediaStreamId); }
     catch (error) {
         for (const track of tracks) {
             try { await session.room.localParticipant.unpublishTrack(track, true); } catch { }
@@ -774,8 +843,15 @@ export async function startScreenShare(id) {
         throw error;
     }
     session.screenTracks = tracks; session.screenStreamId = streamId; session.screenMediaStreamId = mediaStreamId;
+    session.screenAudioAvailable = publishedScreenAudio(publications);
     wireScreenEnded(session, tracks, ++session.screenGeneration);
-    return { streamId, kind: 0, hasAudio: tracks.some(t => t.kind === "audio"), mediaStreamId };
+    if (session.diagnostics) console.debug("LiveKit screen share state", {
+        screenVideoTrack: tracks.some(track => track.kind === "video"),
+        screenAudioTrack: tracks.some(track => track.kind === "audio"),
+        screenVideoPublished: publications.some(publication => publication?.kind === "video"),
+        screenAudioPublished: session.screenAudioAvailable
+    });
+    return { streamId, kind: 0, hasAudio: session.screenAudioAvailable, mediaStreamId };
 }
 
 export async function switchScreenShare(id) {
@@ -785,24 +861,27 @@ export async function switchScreenShare(id) {
         throw new DOMException("Display capture is unavailable on this browser or device.", "NotSupportedError");
     // Capture first. Picker cancellation or capture failure therefore cannot disturb the old share.
     const replacement = await captureScreenTracks(session);
-    const previous = await replacePublishedScreenTracks(session, replacement);
+    const { previous, publications } = await replacePublishedScreenTracks(session, replacement);
     session.screenTracks = replacement;
+    session.screenAudioAvailable = publishedScreenAudio(publications);
     wireScreenEnded(session, replacement, ++session.screenGeneration);
     for (const track of previous) track.stop();
     refreshViewers(session, session.screenMediaStreamId);
     return {
         streamId: session.screenStreamId, kind: 0,
-        hasAudio: replacement.some(track => track.kind === "audio"),
+        hasAudio: session.screenAudioAvailable,
         mediaStreamId: session.screenMediaStreamId
     };
 }
 
 export async function replacePublishedScreenTracks(session, replacement) {
     const previous = session.screenTracks.slice();
+    let publications;
+    session.screenPublicationMutation = true;
     try {
         for (const track of previous)
             await session.room.localParticipant.unpublishTrack(track, false);
-        await publishScreenTracks(session, replacement, session.screenMediaStreamId);
+        publications = await publishScreenTracks(session, replacement, session.screenMediaStreamId);
     } catch (error) {
         for (const track of replacement) {
             try { await session.room.localParticipant.unpublishTrack(track, true); } catch { }
@@ -812,17 +891,22 @@ export async function replacePublishedScreenTracks(session, replacement) {
         try { await publishScreenTracks(session, previous, session.screenMediaStreamId); } catch { }
         throw error;
     }
-    return previous;
+    finally { session.screenPublicationMutation = false; }
+    return { previous, publications };
 }
 
 export async function stopScreenShare(id, reason) {
     const session = sessions.get(id); if (!session || session.screenTracks.length === 0) return;
     const tracks = session.screenTracks.splice(0); session.screenStreamId = null;
-    session.screenMediaStreamId = null; session.screenGeneration++;
-    for (const track of tracks) {
-        try { await session.room.localParticipant.unpublishTrack(track); } catch { }
-        track.stop();
+    session.screenMediaStreamId = null; session.screenGeneration++; session.screenAudioAvailable = false;
+    session.screenPublicationMutation = true;
+    try {
+        for (const track of tracks) {
+            try { await session.room.localParticipant.unpublishTrack(track); } catch { }
+            track.stop();
+        }
     }
+    finally { session.screenPublicationMutation = false; }
     if (reason === "BrowserEnded") await callback(session, "OnScreenShareEnded", ...(session.kind === "call" ? [session.peerGeneration, reason] : [reason]));
 }
 
@@ -831,7 +915,8 @@ export function setStreamSubscription(id, mediaStreamId, subscribed) {
     if (subscribed) session.watched.add(mediaStreamId); else session.watched.delete(mediaStreamId);
     for (const participant of session.room.remoteParticipants.values())
         for (const publication of allPublications(participant))
-            if (publicationName(publication) === mediaStreamId) setScreenSubscription(session, publication, subscribed);
+            if (publicationStreamIdentity(publication) === mediaStreamId)
+                setScreenSubscription(session, publication, subscribed);
     refreshViewers(session, mediaStreamId);
 }
 

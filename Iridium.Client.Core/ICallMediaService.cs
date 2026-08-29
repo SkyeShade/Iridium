@@ -79,6 +79,7 @@ public interface ICallMediaService : IAsyncDisposable
     event Func<string, Task>? IceConnectionStateChanged;
     event Func<bool, Task>? SpeakingChanged;
     event Func<string, Task>? ScreenShareEnded;
+    event Func<bool, Task>? ScreenShareAudioAvailabilityChanged;
     event Func<string, Task>? Error;
     event Func<VoiceDiagnosticReport, Task>? DiagnosticGenerated;
 

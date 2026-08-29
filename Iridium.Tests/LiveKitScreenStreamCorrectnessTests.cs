@@ -40,6 +40,8 @@ public sealed class LiveKitScreenStreamCorrectnessTests
         Assert.Contains("audioTrack.source = Track.Source.ScreenShareAudio", liveKit);
         Assert.Contains("session.room.localParticipant.publishTrack(track", liveKit);
         Assert.Contains("publication.source === Track.Source.ScreenShareAudio", liveKit);
+        Assert.Contains("publication?.trackInfo?.stream", liveKit);
+        Assert.Contains("publicationStreamIdentity(p) === mediaStreamId", liveKit);
         Assert.Contains("createRemoteVoicePlayback(new MediaStream([audioTrack])", liveKit);
         Assert.Contains("@if (stream.HasAudio)", viewer);
         Assert.Contains("Stream Volume", viewer);
@@ -57,9 +59,44 @@ public sealed class LiveKitScreenStreamCorrectnessTests
         Assert.Contains("LiveKit screen publication discovered", liveKit);
         Assert.Contains("LiveKit screen track subscribed", liveKit);
         Assert.Contains("LiveKit screen viewer media attached", liveKit);
-        Assert.Contains("audioAttached: true, playSucceeded: !playback.playBlocked", liveKit);
+        Assert.Contains("screenAudioAttached: true, playSucceeded: !playback.playBlocked", liveKit);
         Assert.Contains("selfPreview:", liveKit);
         Assert.Contains("audioMuted: viewer.audioMuted", liveKit);
+    }
+
+    [Fact]
+    public void ScreenAudioLifecycleUpdatesMetadataAndReconnectRestoresExplicitSubscriptions()
+    {
+        var liveKit = Source("Iridium.Web", "wwwroot", "js", "liveKitMedia.js");
+        var calls = Source("Iridium.Client.Core", "CallClientService.cs");
+        var community = Source("Iridium.Client.Core", "CommunityVoiceSession.cs");
+
+        Assert.Contains("OnScreenShareAudioAvailabilityChanged", liveKit);
+        Assert.Contains("screenTracks.filter(track => track !== audio)", liveKit);
+        Assert.Contains("RoomEvent.TrackUnpublished", liveKit);
+        Assert.Contains("RoomEvent.TrackMuted", liveKit);
+        Assert.Contains("RoomEvent.TrackUnmuted", liveKit);
+        Assert.Contains("RoomEvent.LocalTrackPublished", liveKit);
+        Assert.Contains("RoomEvent.LocalTrackUnpublished", liveKit);
+        Assert.Contains("RoomEvent.Reconnected", liveKit);
+        Assert.Contains("for (const mediaStreamId of session.watched) refreshViewers", liveKit);
+        Assert.Contains("ScreenShareAudioAvailabilityChanged += MediaScreenShareAudioAvailabilityChangedAsync", calls);
+        Assert.Contains("VoiceStreamHubContract.Update", calls);
+        Assert.Contains("ScreenShareAudioAvailabilityChanged += MediaScreenShareAudioAvailabilityChangedAsync", community);
+        Assert.Contains("VoiceStreamHubContract.Update", community);
+    }
+
+    [Fact]
+    public void StreamAudioPlaybackIsSeparateFromMicrophoneAndIsDestroyedWithViewer()
+    {
+        var liveKit = Source("Iridium.Web", "wwwroot", "js", "liveKitMedia.js");
+        var coordinator = Source("Iridium.Client.Core", "ActiveVoiceSessionCoordinator.cs");
+
+        Assert.Contains("if (publication.source === Track.Source.Microphone) makeAudioPlayback", liveKit);
+        Assert.Contains("viewer.audioPlayback = playback", liveKit);
+        Assert.Contains("updateRemoteVoicePlayback(viewer?.audioPlayback, { locallyMuted: muted", liveKit);
+        Assert.Contains("if (viewer?.audioPlayback) destroyRemoteVoicePlayback(viewer.audioPlayback)", liveKit);
+        Assert.Contains("if (watched.OwnerAccountId == LocalAccountId) _mutedStreamAudio.Add", coordinator);
     }
 
     [Fact]

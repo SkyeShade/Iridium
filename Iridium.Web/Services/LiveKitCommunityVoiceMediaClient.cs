@@ -15,6 +15,7 @@ public sealed class LiveKitCommunityVoiceMediaClient(IJSRuntime js, VoicePartici
     private bool _preferenceSubscribed;
     public event Func<bool, Task>? SpeakingChanged;
     public event Func<string, Task>? ScreenShareEnded;
+    public event Func<bool, Task>? ScreenShareAudioAvailabilityChanged;
     public event Func<string, Task>? Error;
     public event Func<string, Guid, WebRtcSessionDescription, Task>? OfferCreated { add { } remove { } }
     public event Func<string, Guid, WebRtcSessionDescription, Task>? AnswerCreated { add { } remove { } }
@@ -71,6 +72,8 @@ public sealed class LiveKitCommunityVoiceMediaClient(IJSRuntime js, VoicePartici
 
     [JSInvokable] public Task OnSpeakingChanged(bool value) => InvokeHandlers(SpeakingChanged, value);
     [JSInvokable] public Task OnScreenShareEnded(string reason) => InvokeHandlers(ScreenShareEnded, reason);
+    [JSInvokable] public Task OnScreenShareAudioAvailabilityChanged(bool available) =>
+        InvokeHandlers(ScreenShareAudioAvailabilityChanged, available);
     [JSInvokable] public Task OnMediaError(string message) => InvokeHandlers(Error, message);
 
     private Task Invoke(string method, CancellationToken token, params object?[] args) => _module is not null && _sessionId is not null ? _module.InvokeVoidAsync(method, token, [_sessionId, .. args]).AsTask() : Task.CompletedTask;

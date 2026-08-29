@@ -10,6 +10,7 @@ public interface ICommunityVoiceMediaClient : IAsyncDisposable
 {
     event Func<bool, Task>? SpeakingChanged;
     event Func<string, Task>? ScreenShareEnded;
+    event Func<bool, Task>? ScreenShareAudioAvailabilityChanged;
     event Func<string, Task>? Error;
     event Func<string, Guid, WebRtcSessionDescription, Task>? OfferCreated;
     event Func<string, Guid, WebRtcSessionDescription, Task>? AnswerCreated;

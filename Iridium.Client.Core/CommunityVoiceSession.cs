@@ -374,6 +374,7 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
         media.AnswerCreated += MediaAnswerCreatedAsync;
         media.IceCandidateGenerated += MediaIceCandidateGeneratedAsync;
         media.ScreenShareEnded += MediaScreenShareEndedAsync;
+        media.ScreenShareAudioAvailabilityChanged += MediaScreenShareAudioAvailabilityChangedAsync;
     }
 
     private async Task MediaSpeakingChangedAsync(bool speaking)
@@ -390,6 +391,18 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
     }
 
     private Task MediaScreenShareEndedAsync(string reason) => StopScreenShareAsync(reason);
+
+    private async Task MediaScreenShareAudioAvailabilityChangedAsync(bool available)
+    {
+        var accountId = nodeSession.Account?.Id;
+        var stream = _publishedStreams.FirstOrDefault(value => value.OwnerAccountId == accountId &&
+            value.Kind == VoicePublishedStreamKind.ScreenShare);
+        if (stream is null || stream.HasAudio == available || CurrentRoom is null ||
+            _connection?.State != HubConnectionState.Connected) return;
+        var updated = await _connection.InvokeAsync<PublishedVoiceStreamDto>(VoiceStreamHubContract.Update,
+            VoiceMediaSessionKind.CommunityVoice, CurrentRoom.ChannelId, stream.StreamId, available);
+        ApplyPublishedStream(updated);
+    }
 
     private Task MediaOfferCreatedAsync(string targetParticipantId, Guid negotiationId,
         WebRtcSessionDescription description) =>
@@ -449,6 +462,7 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
         media.AnswerCreated -= MediaAnswerCreatedAsync;
         media.IceCandidateGenerated -= MediaIceCandidateGeneratedAsync;
         media.ScreenShareEnded -= MediaScreenShareEndedAsync;
+        media.ScreenShareAudioAvailabilityChanged -= MediaScreenShareAudioAvailabilityChangedAsync;
         await media.DisposeAsync();
     }
 }

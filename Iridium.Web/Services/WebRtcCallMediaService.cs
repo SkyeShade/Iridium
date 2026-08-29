@@ -26,6 +26,7 @@ public sealed class WebRtcCallMediaService(
     public event Func<string, Task>? IceConnectionStateChanged;
     public event Func<bool, Task>? SpeakingChanged;
     public event Func<string, Task>? ScreenShareEnded;
+    public event Func<bool, Task>? ScreenShareAudioAvailabilityChanged { add { } remove { } }
     public event Func<string, Task>? Error;
     public event Func<VoiceDiagnosticReport, Task>? DiagnosticGenerated;
 

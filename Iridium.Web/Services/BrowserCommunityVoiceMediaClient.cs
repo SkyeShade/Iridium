@@ -17,6 +17,7 @@ public sealed class BrowserCommunityVoiceMediaClient(IJSRuntime js, ILogger<Brow
 
     public event Func<bool, Task>? SpeakingChanged;
     public event Func<string, Task>? ScreenShareEnded;
+    public event Func<bool, Task>? ScreenShareAudioAvailabilityChanged { add { } remove { } }
     public event Func<string, Task>? Error;
     public event Func<string, Guid, WebRtcSessionDescription, Task>? OfferCreated;
     public event Func<string, Guid, WebRtcSessionDescription, Task>? AnswerCreated;

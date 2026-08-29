@@ -801,6 +801,7 @@ public sealed class CallClientService(
         media.IceConnectionStateChanged -= MediaIceConnectionChangedAsync;
         media.SpeakingChanged -= LocalSpeakingChangedAsync;
         media.ScreenShareEnded -= MediaScreenShareEndedAsync;
+        media.ScreenShareAudioAvailabilityChanged -= MediaScreenShareAudioAvailabilityChangedAsync;
         media.Error -= MediaErrorAsync;
         media.DiagnosticGenerated -= ForwardVoiceDiagnosticAsync;
         media.IceCandidateGenerated += SendIceAsync;
@@ -808,6 +809,7 @@ public sealed class CallClientService(
         media.IceConnectionStateChanged += MediaIceConnectionChangedAsync;
         media.SpeakingChanged += LocalSpeakingChangedAsync;
         media.ScreenShareEnded += MediaScreenShareEndedAsync;
+        media.ScreenShareAudioAvailabilityChanged += MediaScreenShareAudioAvailabilityChangedAsync;
         media.Error += MediaErrorAsync;
         media.DiagnosticGenerated += ForwardVoiceDiagnosticAsync;
         var accountId = _accountId ?? throw new InvalidOperationException("The active call account is unavailable.");
@@ -951,6 +953,16 @@ public sealed class CallClientService(
     }
 
     private Task MediaScreenShareEndedAsync(string reason) => StopScreenShareAsync(reason);
+
+    private async Task MediaScreenShareAudioAvailabilityChangedAsync(bool available)
+    {
+        var stream = _publishedStreams.FirstOrDefault(value => value.OwnerAccountId == _accountId &&
+            value.Kind == VoicePublishedStreamKind.ScreenShare);
+        if (stream is null || stream.HasAudio == available || CurrentCall is null || !IsSignalingConnected) return;
+        var updated = await _connection!.InvokeAsync<PublishedVoiceStreamDto>(VoiceStreamHubContract.Update,
+            VoiceMediaSessionKind.DirectCall, CurrentCall.Id, stream.StreamId, available);
+        ApplyPublishedStream(updated);
+    }
 
     private async Task PublishParticipantStateAsync(CancellationToken cancellationToken = default)
     {

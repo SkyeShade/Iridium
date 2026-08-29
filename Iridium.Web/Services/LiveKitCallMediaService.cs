@@ -24,6 +24,7 @@ public sealed class LiveKitCallMediaService(
     public event Func<string, Task>? IceConnectionStateChanged { add { } remove { } }
     public event Func<bool, Task>? SpeakingChanged;
     public event Func<string, Task>? ScreenShareEnded;
+    public event Func<bool, Task>? ScreenShareAudioAvailabilityChanged;
     public event Func<string, Task>? Error;
     public event Func<VoiceDiagnosticReport, Task>? DiagnosticGenerated { add { } remove { } }
 
@@ -91,6 +92,9 @@ public sealed class LiveKitCallMediaService(
         generation == _context?.PeerGeneration ? InvokeHandlers(SpeakingChanged, speaking) : Task.CompletedTask;
     [JSInvokable] public Task OnScreenShareEnded(int generation, string reason) =>
         generation == _context?.PeerGeneration ? InvokeHandlers(ScreenShareEnded, reason) : Task.CompletedTask;
+    [JSInvokable] public Task OnScreenShareAudioAvailabilityChanged(int generation, bool available) =>
+        generation == _context?.PeerGeneration
+            ? InvokeHandlers(ScreenShareAudioAvailabilityChanged, available) : Task.CompletedTask;
     [JSInvokable] public Task OnMediaError(int generation, string message) =>
         generation == _context?.PeerGeneration ? InvokeHandlers(Error, message) : Task.CompletedTask;
 

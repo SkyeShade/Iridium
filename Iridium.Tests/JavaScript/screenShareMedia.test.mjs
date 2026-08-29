@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { captureScreenTracks, fitScreenShareResolution, replacePublishedScreenTracks, screenShareBitrate,
-    screenShareCaptureOptions } from "../../Iridium.Web/wwwroot/js/liveKitMedia.js";
+import { captureScreenTracks, fitScreenShareResolution, publicationStreamIdentity, publishScreenTracks,
+    replacePublishedScreenTracks, screenShareBitrate, screenShareCaptureOptions, wireScreenEnded
+} from "../../Iridium.Web/wwwroot/js/liveKitMedia.js";
 import { clampPlaybackVolume, effectiveGain } from "../../Iridium.Web/wwwroot/js/voicePlayback.js";
 
 test("display capture requests browser-provided audio without Safari resolution constraints", () => {
@@ -92,6 +93,55 @@ test("capture remains video-only when the browser returns no display audio", asy
     assert.equal(tracks[0].source, "screen_share");
 });
 
+test("screen video and audio publish separately with one LiveKit stream identity", async () => {
+    globalThis.LivekitClient = { Room:function(){}, VideoPreset:class {},
+        Track:{ Source:{ ScreenShare:"screen_share", ScreenShareAudio:"screen_share_audio" } } };
+    const calls = [];
+    const session = { diagnostics:false, room:{ localParticipant:{ publishTrack:async (track, options) => {
+        calls.push({ track, options });
+        return { kind:track.kind, source:track.source, trackName:`accepted-${track.kind}`,
+            trackInfo:{ stream:options.stream } };
+    } } } };
+    const tracks = [fakeTrack("video", []), fakeTrack("audio", [])];
+
+    const publications = await publishScreenTracks(session, tracks, "shared-screen-stream");
+
+    assert.equal(publications.length, 2);
+    assert.deepEqual(calls.map(value => value.options.source), ["screen_share", "screen_share_audio"]);
+    assert.deepEqual(calls.map(value => value.options.stream), ["shared-screen-stream", "shared-screen-stream"]);
+    assert.deepEqual(publications.map(publicationStreamIdentity), ["shared-screen-stream", "shared-screen-stream"]);
+});
+
+test("LiveKit stream identity wins over independently assigned publication names", () => {
+    assert.equal(publicationStreamIdentity({ trackName:"screen-video", trackInfo:{ stream:"iridium-screen-1" } }),
+        "iridium-screen-1");
+    assert.equal(publicationStreamIdentity({ trackName:"screen-audio", track:{ mediaStream:{ id:"iridium-screen-1" } } }),
+        "iridium-screen-1");
+});
+
+test("an independently ended screen-audio track is unpublished and clears advertised availability", async () => {
+    globalThis.LivekitClient = { Room:function(){} };
+    let ended;
+    const callbacks = [], unpublished = [];
+    const audio = { kind:"audio", source:"screen_share_audio", mediaStreamTrack:{
+        addEventListener:(name, handler) => { if (name === "ended") ended = handler; }
+    } };
+    const video = { kind:"video", source:"screen_share", mediaStreamTrack:{ addEventListener:() => {} } };
+    const session = { id:"session", kind:"community", screenGeneration:3, screenMediaStreamId:"stream",
+        screenStreamId:"published", screenAudioAvailable:true, screenPublicationMutation:false,
+        screenTracks:[video, audio], viewers:new Map(), callback:{
+            invokeMethodAsync:async (...args) => callbacks.push(args)
+        }, room:{ localParticipant:{ unpublishTrack:async track => unpublished.push(track) } } };
+
+    wireScreenEnded(session, [video, audio], 3);
+    await ended();
+
+    assert.deepEqual(session.screenTracks, [video]);
+    assert.equal(session.screenAudioAvailable, false);
+    assert.deepEqual(unpublished, [audio]);
+    assert.deepEqual(callbacks, [["OnScreenShareAudioAvailabilityChanged", false]]);
+});
+
 test("capture applies a proportional 1440p publication cap to a 4K source", async () => {
     const capture = installCapture(null,
         { width:3840, height:2160, frameRate:60, displaySurface:"monitor" });
@@ -122,9 +172,10 @@ test("successful source replacement publishes under the existing media identity"
             publishTrack:async (track, options) => calls.push(["publish", track, options])
         } } };
 
-    const returned = await replacePublishedScreenTracks(session, replacement);
+    const result = await replacePublishedScreenTracks(session, replacement);
 
-    assert.equal(returned[0], previous[0]);
+    assert.equal(result.previous[0], previous[0]);
+    assert.equal(result.publications.length, 2);
     assert.equal(calls[1][2].name, "stable-media");
     assert.equal(calls[2][2].source, "screen_share_audio");
     assert.deepEqual(stopped, []);
