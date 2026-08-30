@@ -12,8 +12,10 @@ using Iridium.Server.Voice;
 using Iridium.Server.Communities;
 using Iridium.Server.Profiles;
 using Iridium.Server.Messages;
+using Iridium.Server.Embeds;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.RateLimiting;
+using System.Net;
 
 var builder = WebApplication.CreateBuilder(args);
 DeploymentConfiguration.AddExternalConfiguration(builder.Configuration, builder.Environment);
@@ -31,6 +33,20 @@ builder.Services.AddSingleton<CommunityRevisionTracker>();
 builder.Services.AddSingleton<CommunityRealtimePublisher>();
 builder.Services.AddScoped<CommunityVoicePermissionEnforcer>();
 builder.Services.AddSingleton<ProfileRealtimePublisher>();
+builder.Services.AddMemoryCache();
+builder.Services.AddSingleton<GoogleDocsDocumentParser>();
+builder.Services.AddHttpClient<IGoogleDocsPublishedDocumentService, GoogleDocsPublishedDocumentService>()
+    .ConfigureHttpClient(client =>
+    {
+        // Source and media requests use separate linked cancellation windows in the provider.
+        client.Timeout = Timeout.InfiniteTimeSpan;
+        client.MaxResponseContentBufferSize = GoogleDocsPublishedDocumentService.MaximumResponseBytes;
+    })
+    .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+    {
+        AllowAutoRedirect = false,
+        AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
+    });
 builder.Services.Configure<NodeOptions>(builder.Configuration.GetSection(NodeOptions.SectionName));
 builder.Services.Configure<EmailOptions>(builder.Configuration.GetSection(EmailOptions.SectionName));
 builder.Services.Configure<AccountSecurityOptions>(builder.Configuration.GetSection(AccountSecurityOptions.SectionName));

@@ -1367,6 +1367,7 @@ export function wireMessageViewport(container, dotNetReference) {
     const state = {
         isPinnedToLatest: true,
         shouldShowJumpToLatest: false,
+        isNearDocumentTop: true,
         programmaticLatest: false,
         topRequested: false,
         prependHeight: 0,
@@ -1384,13 +1385,23 @@ export function wireMessageViewport(container, dotNetReference) {
         const isPinnedToLatest = distance <= 2;
         const jumpThreshold = Math.max(240, container.clientHeight * 0.35);
         const shouldShowJumpToLatest = distance >= jumpThreshold;
-        if (isPinnedToLatest !== state.isPinnedToLatest || shouldShowJumpToLatest !== state.shouldShowJumpToLatest) {
+        const documentAnchor = container.querySelector("[data-channel-document-anchor]");
+        const documentThreshold = Math.max(120, container.clientHeight * 0.15);
+        const containerTop = container.getBoundingClientRect().top;
+        const documentTop = documentAnchor?.getBoundingClientRect().top;
+        const isNearDocumentTop = documentTop === undefined || documentTop >= containerTop - documentThreshold;
+        if (isPinnedToLatest !== state.isPinnedToLatest || shouldShowJumpToLatest !== state.shouldShowJumpToLatest ||
+            isNearDocumentTop !== state.isNearDocumentTop) {
             state.isPinnedToLatest = isPinnedToLatest;
             state.shouldShowJumpToLatest = shouldShowJumpToLatest;
-            dotNetReference.invokeMethodAsync("ViewportStateChangedAsync", isPinnedToLatest, shouldShowJumpToLatest);
+            state.isNearDocumentTop = isNearDocumentTop;
+            dotNetReference.invokeMethodAsync("ViewportStateChangedAsync", isPinnedToLatest, shouldShowJumpToLatest, isNearDocumentTop);
         }
         if (state.programmaticLatest && isPinnedToLatest) state.programmaticLatest = false;
-        if (container.scrollTop < 180 && !suppressTopRequest && !state.topRequested) {
+        const historyStart = container.querySelector("[data-message-history-start]");
+        const historyTop = historyStart?.offsetTop ?? 0;
+        const nearHistoryStart = container.scrollTop >= Math.max(0, historyTop - 180) && container.scrollTop < historyTop + 180;
+        if (nearHistoryStart && !suppressTopRequest && !state.topRequested) {
             state.topRequested = true;
             dotNetReference.invokeMethodAsync("LoadOlderFromScrollAsync").finally(() => state.topRequested = false);
         }
@@ -1456,6 +1467,14 @@ export function wireMessageViewport(container, dotNetReference) {
     messageViewports.set(container, {
         state, update, cancelProgrammaticLatest, scrollEnd, mobileViewportLayout, resizeObserver, cancelPendingAnchor
     });
+}
+
+export function refreshMessageViewport(container) {
+    messageViewports.get(container)?.update();
+}
+
+export function scrollMessageLeadingContent(container) {
+    container?.querySelector("[data-channel-document-anchor]")?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 export function unwireMessageViewport(container) {

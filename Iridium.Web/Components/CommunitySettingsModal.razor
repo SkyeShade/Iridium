@@ -477,7 +477,9 @@
         catch (Exception exception) { _error = exception.Message; }
         await InvokeAsync(StateHasChanged);
     }
-    private static string PermissionLabel(CommunityPermission permission) => string.Concat(permission.ToString().Select((character, index) => index > 0 && char.IsUpper(character) ? $" {character}" : character.ToString()));
+    private static string PermissionLabel(CommunityPermission permission) => permission == CommunityPermission.EmbedDocumentsInForumPosts
+        ? "Embed Documents in Posts"
+        : string.Concat(permission.ToString().Select((character, index) => index > 0 && char.IsUpper(character) ? $" {character}" : character.ToString()));
     private static string PermissionDescription(CommunityPermission permission) => permission switch
     {
         CommunityPermission.ManageChannels => "Create, edit, delete, move and organize channels and categories.",
@@ -485,6 +487,7 @@
         CommunityPermission.ManageExpressions => "Create, rename and delete custom emoji and future Server expression assets.",
         CommunityPermission.AddReactions => "Allows members to add new emoji reactions to messages. Members may still use reactions already present when this is denied.",
         CommunityPermission.UseExternalEmoji => "Allows members to use custom emoji from other Servers.",
+        CommunityPermission.EmbedDocumentsInForumPosts => "Allows members to attach supported documents when creating or editing Forum posts.",
         _ => $"Grants {PermissionLabel(permission).ToLowerInvariant()} across this Server."
     };
     private static string Expiration(CommunityInviteDto invite) => invite.ExpiresAt is null ? "Never expires" : $"Expires {invite.ExpiresAt.Value.ToLocalTime():g}";

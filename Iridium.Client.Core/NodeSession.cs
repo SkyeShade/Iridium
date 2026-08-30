@@ -75,6 +75,27 @@ public sealed class NodeSession(
         CancellationToken cancellationToken = default) =>
         AuthorizedClient.GetCommunityStructureAsync(communityId, cancellationToken);
 
+    public Task<ChannelEmbedDocumentDto> GetChannelEmbedDocumentAsync(Guid communityId, Guid channelId,
+        CancellationToken cancellationToken = default) =>
+        AuthorizedClient.GetChannelEmbedDocumentAsync(communityId, channelId, cancellationToken);
+
+    public Task<DownloadedDocumentMedia> DownloadChannelEmbedDocumentMediaAsync(Guid communityId, Guid channelId,
+        string mediaId, CancellationToken cancellationToken = default) =>
+        AuthorizedClient.DownloadChannelEmbedDocumentMediaAsync(communityId, channelId, mediaId, cancellationToken);
+
+    public Task<ChannelEmbedDocumentDto> GetForumPostEmbedDocumentAsync(Guid communityId, Guid channelId,
+        Guid postId, CancellationToken cancellationToken = default) =>
+        AuthorizedClient.GetForumPostEmbedDocumentAsync(communityId, channelId, postId, cancellationToken);
+
+    public Task<CommunityForumPostDto> GetForumPostAsync(Guid communityId, Guid channelId, Guid postId,
+        CancellationToken cancellationToken = default) =>
+        AuthorizedClient.GetForumPostAsync(communityId, channelId, postId, cancellationToken);
+
+    public Task<DownloadedDocumentMedia> DownloadForumPostEmbedDocumentMediaAsync(Guid communityId, Guid channelId,
+        Guid postId, string mediaId, CancellationToken cancellationToken = default) =>
+        AuthorizedClient.DownloadForumPostEmbedDocumentMediaAsync(communityId, channelId, postId, mediaId,
+            cancellationToken);
+
     public Task<AccountAvatarPresetsDto> GetAvatarPresetsAsync(CancellationToken cancellationToken = default) =>
         AuthorizedClient.GetAvatarPresetsAsync(cancellationToken);
 

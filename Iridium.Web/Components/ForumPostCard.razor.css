@@ -8,6 +8,7 @@
 .forum-post-title strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .forum-post-title :deep(svg){width:.85rem;height:.85rem;color:var(--text-muted)}
 .forum-post-tags{display:flex;gap:.25rem;flex-wrap:wrap;min-width:0;max-height:2.8rem;overflow:hidden}
+.forum-post-document{display:inline-flex;align-items:center;gap:.3rem;width:max-content;padding:.14rem .4rem;border:1px solid var(--border);border-radius:999px;background:var(--surface-hover);color:var(--text-muted);font-size:.68rem}
 .forum-post-byline{min-width:0;display:flex;align-items:baseline;gap:.25rem;overflow:hidden;white-space:nowrap;color:var(--text-secondary);font-size:.78rem}.forum-post-author{flex:0 0 auto;font-size:inherit}
 .forum-post-preview,.forum-post-copy small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .forum-post-preview{min-width:0;flex:1;color:var(--text-secondary);font-size:.78rem}

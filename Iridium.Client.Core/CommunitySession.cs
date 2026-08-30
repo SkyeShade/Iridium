@@ -177,10 +177,12 @@ public sealed class CommunitySession : IDisposable
 
     public async Task UpdateChannelAsync(Guid channelId, string name, Guid? categoryId,
         CommunityChannelKind kind = CommunityChannelKind.Text, bool? requireTag = null,
+        CommunityChannelEmbedUpdate? embed = null,
+        bool? allowDocumentEmbeds = null,
         CancellationToken cancellationToken = default)
     {
         var updated = await _nodeSession.AuthorizedClient.UpdateChannelAsync(RequireCommunity(), channelId, name,
-            categoryId, kind, requireTag, cancellationToken);
+            categoryId, kind, requireTag, embed, allowDocumentEmbeds, cancellationToken);
         ReplaceChannel(updated);
     }
 

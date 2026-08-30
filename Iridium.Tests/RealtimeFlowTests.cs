@@ -215,6 +215,27 @@ public sealed class RealtimeFlowTests
             await owner.SetCommunityMemberRolesAsync(communityA.Id, outsiderAuth.Account.Id, [permissionManagerRole.Id]);
             await owner.SyncChannelPermissionsAsync(communityA.Id, defaultChannel.Id);
             await owner.UpdateChannelAsync(communityA.Id, defaultChannel.Id, "general", defaultCategory.Id);
+            var embeddedChannel = await owner.UpdateChannelAsync(communityA.Id, defaultChannel.Id, "general",
+                defaultCategory.Id, CommunityChannelKind.Text, embed: new(
+                    CommunityChannelEmbedProvider.GoogleDocs,
+                    "https://docs.google.com/document/d/abcdefghij/edit?tab=t.0"));
+            Assert.Equal(CommunityChannelEmbedProvider.GoogleDocs, embeddedChannel.EmbedProvider);
+            Assert.Equal("https://docs.google.com/document/d/abcdefghij/view", embeddedChannel.EmbedUrl);
+            Assert.Equal(embeddedChannel.EmbedUrl, (await owner.GetCommunityStructureAsync(communityA.Id)).Channels
+                .Single(value => value.Id == defaultChannel.Id).EmbedUrl);
+            Assert.Equal(HttpStatusCode.BadRequest, (await Assert.ThrowsAsync<NodeApiException>(() =>
+                owner.UpdateChannelAsync(communityA.Id, defaultChannel.Id, "general", defaultCategory.Id,
+                    CommunityChannelKind.Text, embed: new(CommunityChannelEmbedProvider.GoogleDocs,
+                        "https://example.com/document")))).StatusCode);
+            var publishedChannel = await owner.UpdateChannelAsync(communityA.Id, defaultChannel.Id, "general",
+                defaultCategory.Id, CommunityChannelKind.Text, embed: new(
+                    CommunityChannelEmbedProvider.GoogleDocs,
+                    "https://docs.google.com/document/d/e/2PACX-abcdefghij_123/pub?embedded=true"));
+            Assert.Equal("https://docs.google.com/document/d/e/2PACX-abcdefghij_123/pub", publishedChannel.EmbedUrl);
+            var clearedEmbed = await owner.UpdateChannelAsync(communityA.Id, defaultChannel.Id, "general",
+                defaultCategory.Id, CommunityChannelKind.Text, embed: new(null, null));
+            Assert.Null(clearedEmbed.EmbedProvider);
+            Assert.Null(clearedEmbed.EmbedUrl);
 
             var firstCategory = await owner.CreateCategoryAsync(communityA.Id, "Rooms");
             var secondCategory = await owner.CreateCategoryAsync(communityA.Id, "Projects");

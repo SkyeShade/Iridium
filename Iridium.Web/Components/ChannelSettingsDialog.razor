@@ -27,9 +27,28 @@
         }
         @if (Channel is not null && _kind == CommunityChannelKind.Forum)
         {
+            <section class="compact-embed-settings">
+                <div><span><strong>Allow document embeds</strong><small>Allows permitted members to attach a supported document to Forum posts.</small></span>
+                    <SettingsSwitch Value="_allowDocumentEmbeds" ValueChanged="SetAllowDocumentEmbeds" AriaLabel="Allow document embeds" /></div>
+            </section>
             <ForumTagSettings Channel="Channel" Community="Community"
                               AllowExternalEmoji="@Has(Channel.EffectivePermissions, CommunityPermission.UseExternalEmoji)"
                               RequireTag="_requireTag" RequireTagChanged="SetRequireTag" />
+        }
+        @if (Channel is not null && _kind == CommunityChannelKind.Text)
+        {
+            <section class="compact-embed-settings">
+                <div><span><strong>Embed document</strong><small>Displays this document above the Channel's messages.</small></span>
+                    <SettingsSwitch Value="_embedEnabled" ValueChanged="SetEmbedEnabled" AriaLabel="Embed document" /></div>
+                @if (_embedEnabled)
+                {
+                    <label class="dialog-field"><span class="field-label">Provider</span><span class="compact-provider"><Icon Name="file" /> Google Docs</span></label>
+                    <label class="dialog-field"><span class="field-label">Document URL</span>
+                        <input class="compact-embed-url" type="url" value="@_embedUrl" @oninput="EmbedUrlChanged" placeholder="https://docs.google.com/document/d/.../edit" />
+                    </label>
+                    <p class="field-hint">Iridium can import Google Docs available to anyone with the link or published to the web. Google controls document access.</p>
+                }
+            </section>
         }
         @if (!string.IsNullOrWhiteSpace(_validationError)) { <p class="field-hint error">@_validationError</p> }
         @if (!string.IsNullOrWhiteSpace(Error)) { <p class="error">@Error</p> }
@@ -59,11 +78,12 @@
     private Guid? _initializedId; private bool _initializedCreate; private string _name = string.Empty;
     private string _categoryValue = string.Empty; private bool _confirmDelete; private string? _validationError;
     private CommunityChannelKind _kind = CommunityChannelKind.Text;
-    private bool _requireTag;
+    private bool _requireTag, _embedEnabled, _allowDocumentEmbeds;
+    private string _embedUrl = string.Empty;
     private Guid? DestinationId => Channel?.CategoryId ?? InitialCategoryId;
     private CommunityCategoryDto? Destination => Categories.FirstOrDefault(value => value.Id == DestinationId);
     private string DestinationName => Destination is null ? "Server root" : Breadcrumb(Destination);
-    private bool IsValid => Normalize(_name) is not null;
+    private bool IsValid => Normalize(_name) is not null && (!_embedEnabled || CommunityChannelEmbeds.TryGoogleDocs(_embedUrl, out _));
     private static bool Has(CommunityPermission value, CommunityPermission permission) =>
         (value & (CommunityPermission.Administrator | permission)) != 0;
 
@@ -75,19 +95,30 @@
         _categoryValue = DestinationId?.ToString() ?? string.Empty; _confirmDelete = ConfirmDeleteInitially;
         _kind = Channel?.Kind ?? CommunityChannelKind.Text;
         _requireTag = Channel?.RequireTag == true;
+        _allowDocumentEmbeds = Channel?.AllowDocumentEmbeds == true;
+        _embedEnabled = Channel?.EmbedProvider is not null && !string.IsNullOrWhiteSpace(Channel.EmbedUrl);
+        _embedUrl = Channel?.EmbedUrl ?? string.Empty;
         Validate();
         return Task.CompletedTask;
     }
     private void NameChanged(ChangeEventArgs args) { _name = args.Value?.ToString() ?? string.Empty; Validate(); }
-    private void Validate() => _validationError = _name.Length == 0 ? null : Normalize(_name) is null
-        ? "Use 1–100 letters, numbers, underscores, or hyphens." : null;
+    private void Validate() => _validationError = _name.Length > 0 && Normalize(_name) is null
+        ? "Use 1–100 letters, numbers, underscores, or hyphens."
+        : _embedEnabled && !CommunityChannelEmbeds.TryGoogleDocs(_embedUrl, out _)
+            ? "Enter a valid HTTPS Google Docs document URL."
+            : null;
     private Task SaveAsync()
     {
         var categoryId = Channel is null ? InitialCategoryId : Guid.TryParse(_categoryValue, out var parsed) ? parsed : null;
-        return OnSave.InvokeAsync(new(Channel?.Id, _name, categoryId, _kind, _requireTag));
+        return OnSave.InvokeAsync(new(Channel?.Id, _name, categoryId, _kind, _requireTag,
+            _embedEnabled ? CommunityChannelEmbedProvider.GoogleDocs : null,
+            _embedEnabled ? _embedUrl.Trim() : null, _allowDocumentEmbeds));
     }
     private Task DeleteAsync() { if (!_confirmDelete) { _confirmDelete = true; return Task.CompletedTask; } return OnDelete.InvokeAsync(Channel!.Id); }
     private void SetRequireTag(bool value) => _requireTag = value;
+    private void SetAllowDocumentEmbeds(bool value) => _allowDocumentEmbeds = value;
+    private void SetEmbedEnabled(bool value) { _embedEnabled = value; Validate(); }
+    private void EmbedUrlChanged(ChangeEventArgs args) { _embedUrl = args.Value?.ToString() ?? string.Empty; Validate(); }
     private string Breadcrumb(CommunityCategoryDto category)
     {
         var parts = new Stack<string>(); var current = category; var seen = new HashSet<Guid>();

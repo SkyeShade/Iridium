@@ -16,6 +16,10 @@
             <strong>@Post.Title</strong>
             @if (Post.IsLocked) { <span title="Locked"><Icon Name="lock" /></span> }
         </span>
+        @if (Post.EmbedProvider == CommunityChannelEmbedProvider.GoogleDocs)
+        {
+            <span class="forum-post-document"><Icon Name="file" Size="13" /> Google Docs</span>
+        }
         <div class="forum-post-byline">
             <strong class="forum-post-author display-name" style="@AuthorStyle">@Post.Author.DisplayName:</strong>
             @if (!string.IsNullOrWhiteSpace(Post.RootPreview))

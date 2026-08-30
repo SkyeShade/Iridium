@@ -38,6 +38,7 @@
 
 @code {
     [Parameter, EditorRequired] public required string Content { get; set; }
+    [Parameter] public EventCallback<CommunityDto> OnCommunityOpened { get; set; }
     private string? _loadedContent;
     private CommunityInviteReference? _reference;
     private CommunityInvitePreviewDto? _preview;
@@ -68,6 +69,7 @@
         {
             var result = await Resolver.JoinAsync(_reference);
             _preview = _preview! with { AlreadyMember = true, CommunityId = result.Community.Id };
+            await OnCommunityOpened.InvokeAsync(result.Community);
         }
         catch (Exception exception) { _error = exception.Message; }
         finally { _joining = false; }

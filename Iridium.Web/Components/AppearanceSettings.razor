@@ -38,11 +38,8 @@
             </div>
             <div class="appearance-toggle-setting">
                 <div><strong>Show activity status on message avatars</strong><span>Displays presence indicators beside avatars in chat history.</span></div>
-                <label class="appearance-toggle">
-                    <input type="checkbox" checked="@_preferences.ShowMessageAvatarPresence"
-                           aria-label="Show activity status on message avatars" @onchange="ChangeMessagePresenceAsync" />
-                    <span aria-hidden="true"></span>
-                </label>
+                <SettingsSwitch Value="@_preferences.ShowMessageAvatarPresence" ValueChanged="ChangeMessagePresenceAsync"
+                                AriaLabel="Show activity status on message avatars" />
             </div>
         </div>
         @if (!string.IsNullOrWhiteSpace(_error))
@@ -80,8 +77,8 @@
         await SavePartialAsync(preferences);
     }
 
-    private Task ChangeMessagePresenceAsync(ChangeEventArgs eventArgs) =>
-        _resetting || _preferences is null || eventArgs.Value is not bool enabled
+    private Task ChangeMessagePresenceAsync(bool enabled) =>
+        _resetting || _preferences is null
             ? Task.CompletedTask
             : SavePartialAsync(_preferences with { ShowMessageAvatarPresence = enabled });
 

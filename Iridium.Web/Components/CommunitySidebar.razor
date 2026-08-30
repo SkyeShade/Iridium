@@ -198,7 +198,8 @@
     {
         CommunityChannelDto? created = null;
         if (submission.ChannelId is { } id) await State.UpdateChannelAsync(id, submission.Name,
-            submission.CategoryId, submission.Kind, submission.RequireTag);
+            submission.CategoryId, submission.Kind, submission.RequireTag,
+            new(submission.EmbedProvider, submission.EmbedUrl), submission.AllowDocumentEmbeds);
         else created = await State.CreateChannelAsync(submission.Name, submission.CategoryId, submission.Kind);
         CloseChannelDialog(); if (created is { Kind: CommunityChannelKind.Text or CommunityChannelKind.Forum }) await OnChannelSelected.InvokeAsync(created);
     });
@@ -220,7 +221,8 @@
     private async Task SaveSettingsChannelAsync(ChannelSettingsSubmission submission)
     {
         await State.UpdateChannelAsync(submission.ChannelId!.Value, submission.Name, submission.CategoryId,
-            submission.Kind, submission.RequireTag);
+            submission.Kind, submission.RequireTag, new(submission.EmbedProvider, submission.EmbedUrl),
+            submission.AllowDocumentEmbeds);
         _permissionChannel = State.Channels.FirstOrDefault(value => value.Id == submission.ChannelId) ?? _permissionChannel;
     }
     private async Task SaveSettingsCategoryAsync(CategorySettingsSubmission submission)

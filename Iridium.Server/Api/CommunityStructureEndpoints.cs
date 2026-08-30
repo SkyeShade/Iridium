@@ -5,6 +5,7 @@ using Iridium.Server.Domain;
 using Iridium.Server.Persistence;
 using Iridium.Server.Security;
 using Iridium.Server.Communities;
+using Iridium.Server.Embeds;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Data.Sqlite;
 
@@ -19,7 +20,8 @@ public static partial class CommunityStructureEndpoints
         CommunityPermission.ReadMessageHistory | CommunityPermission.AttachFiles | CommunityPermission.EmbedLinks |
         CommunityPermission.AddReactions | CommunityPermission.UseExternalEmoji | CommunityPermission.MentionEveryone | CommunityPermission.ConnectVoice |
         CommunityPermission.SpeakVoice | CommunityPermission.ShareScreen | CommunityPermission.MuteMembers |
-        CommunityPermission.DeafenMembers | CommunityPermission.MoveMembers | CommunityPermission.CreateForumPosts;
+        CommunityPermission.DeafenMembers | CommunityPermission.MoveMembers | CommunityPermission.CreateForumPosts |
+        CommunityPermission.EmbedDocumentsInForumPosts;
 
     public static IEndpointRouteBuilder MapCommunityStructureEndpoints(this IEndpointRouteBuilder endpoints)
     {
@@ -31,6 +33,8 @@ public static partial class CommunityStructureEndpoints
         group.MapDelete("/categories/{categoryId:guid}", DeleteCategoryAsync);
         group.MapPost("/channels", CreateChannelAsync);
         group.MapPatch("/channels/{channelId:guid}", UpdateChannelAsync);
+        group.MapGet("/channels/{channelId:guid}/embed-document", GetChannelEmbedDocumentAsync);
+        group.MapGet("/channels/{channelId:guid}/embed-document/media/{mediaId}", GetChannelEmbedDocumentMediaAsync);
         group.MapPost("/channels/{channelId:guid}/move", MoveChannelAsync);
         group.MapDelete("/channels/{channelId:guid}", DeleteChannelAsync);
         group.MapGet("/permissions/{scopeType}/{scopeId:guid}", GetPermissionScopeAsync);
@@ -39,6 +43,45 @@ public static partial class CommunityStructureEndpoints
         group.MapPost("/permissions/{scopeType}/{scopeId:guid}/overwrites/remove", RemovePermissionOverwriteAsync);
         group.MapPost("/channels/{channelId:guid}/permissions/sync", SyncChannelPermissionsAsync);
         return endpoints;
+    }
+
+    private static async Task<IResult> GetChannelEmbedDocumentAsync(Guid communityId, Guid channelId,
+        HttpContext context, IridiumDbContext db, SessionService sessions,
+        CommunityAuthorizationService authorization, IGoogleDocsPublishedDocumentService documents,
+        CancellationToken cancellationToken)
+    {
+        var session = await sessions.GetAsync(context, db);
+        if (session is null) return Results.Unauthorized();
+        var channel = await db.CommunityChannels.AsNoTracking().SingleOrDefaultAsync(value =>
+            value.CommunityId == communityId && value.Id == channelId &&
+            value.Kind == CommunityChannelKind.Text, cancellationToken);
+        if (channel is null) return Results.NotFound();
+        var access = await authorization.GetChannelAccessAsync(communityId, channelId, session.AccountId, db);
+        if (!access.Has(CommunityPermission.ViewChannels)) return Results.NotFound();
+        if (!CommunityChannelEmbeds.TryResolve(channel.EmbedProvider, channel.EmbedUrl, out var configuration) ||
+            configuration?.FetchUrl is null)
+            return Results.Ok(new ChannelEmbedDocumentDto(ChannelEmbedDocumentStatus.Unsupported, null));
+        return Results.Ok(await documents.GetAsync(configuration, cancellationToken));
+    }
+
+    private static async Task<IResult> GetChannelEmbedDocumentMediaAsync(Guid communityId, Guid channelId,
+        string mediaId, HttpContext context, IridiumDbContext db, SessionService sessions,
+        CommunityAuthorizationService authorization, IGoogleDocsPublishedDocumentService documents,
+        CancellationToken cancellationToken)
+    {
+        var session = await sessions.GetAsync(context, db);
+        if (session is null) return Results.Unauthorized();
+        var channel = await db.CommunityChannels.AsNoTracking().SingleOrDefaultAsync(value =>
+            value.CommunityId == communityId && value.Id == channelId && value.Kind == CommunityChannelKind.Text,
+            cancellationToken);
+        if (channel is null) return Results.NotFound();
+        var access = await authorization.GetChannelAccessAsync(communityId, channelId, session.AccountId, db);
+        if (!access.Has(CommunityPermission.ViewChannels) ||
+            !CommunityChannelEmbeds.TryResolve(channel.EmbedProvider, channel.EmbedUrl, out var configuration) ||
+            configuration?.FetchUrl is null) return Results.NotFound();
+        var media = await documents.GetMediaAsync(configuration, mediaId, cancellationToken);
+        return media is null ? Results.NotFound() : Results.File(media.Bytes, media.ContentType,
+            enableRangeProcessing: false);
     }
 
     private static async Task<IResult> GetStructureAsync(Guid communityId, HttpContext context, IridiumDbContext db,
@@ -318,6 +361,40 @@ public static partial class CommunityStructureEndpoints
             if (channel.Kind != CommunityChannelKind.Forum && request.RequireTag.Value)
                 return Invalid("Only Forum Channels can require tags.");
             channel.RequireTag = channel.Kind == CommunityChannelKind.Forum && request.RequireTag.Value;
+        }
+        if (request.AllowDocumentEmbeds.HasValue)
+        {
+            if (channel.Kind != CommunityChannelKind.Forum && request.AllowDocumentEmbeds.Value)
+                return Invalid("Only Forum Channels can allow document embeds in Posts.");
+            channel.AllowDocumentEmbeds = channel.Kind == CommunityChannelKind.Forum && request.AllowDocumentEmbeds.Value;
+        }
+        if (channel.Kind != CommunityChannelKind.Forum)
+        {
+            channel.RequireTag = false;
+            channel.AllowDocumentEmbeds = false;
+        }
+        if (channel.Kind != CommunityChannelKind.Text)
+        {
+            if (request.Embed is { Provider: not null } or { Url: not null })
+                return Invalid("Only Text Channels can embed documents.");
+            channel.EmbedProvider = null;
+            channel.EmbedUrl = null;
+        }
+        else if (request.Embed is { } embed)
+        {
+            if (embed.Provider is null && string.IsNullOrWhiteSpace(embed.Url))
+            {
+                channel.EmbedProvider = null;
+                channel.EmbedUrl = null;
+            }
+            else if (embed.Provider != CommunityChannelEmbedProvider.GoogleDocs ||
+                     !CommunityChannelEmbeds.TryGoogleDocs(embed.Url, out var googleDocs))
+                return Invalid("Enter a valid Google Docs document URL.");
+            else
+            {
+                channel.EmbedProvider = CommunityChannelEmbedProvider.GoogleDocs;
+                channel.EmbedUrl = googleDocs!.CanonicalUrl ?? googleDocs.OpenUrl;
+            }
         }
         if (channel.CategoryId != request.CategoryId)
         {
@@ -769,7 +846,8 @@ public static partial class CommunityStructureEndpoints
     private static CommunityChannelDto ToDto(CommunityChannel value) =>
         new(value.Id, value.CommunityId, value.CategoryId, value.Name, value.Position, value.CreatedAt,
             Kind: value.Kind, PermissionsSyncedToCategory: value.PermissionsSyncedToCategory,
-            RequireTag: value.RequireTag);
+            RequireTag: value.RequireTag, EmbedProvider: value.EmbedProvider, EmbedUrl: value.EmbedUrl,
+            AllowDocumentEmbeds: value.AllowDocumentEmbeds);
 
     [GeneratedRegex("^[a-z0-9_-]+$", RegexOptions.CultureInvariant)]
     private static partial Regex ChannelNamePattern();

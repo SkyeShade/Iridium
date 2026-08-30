@@ -1,0 +1,15 @@
+@using Iridium.Protocol
+
+<article class="embedded-document" aria-label="Imported document">
+    @foreach (var block in Document.Blocks)
+    {
+        <EmbeddedDocumentBlock Block="block" CommunityId="CommunityId" ChannelId="ChannelId" ForumPostId="ForumPostId" />
+    }
+</article>
+
+@code {
+    [Parameter, EditorRequired] public required EmbeddedDocumentDto Document { get; set; }
+    [Parameter, EditorRequired] public Guid CommunityId { get; set; }
+    [Parameter, EditorRequired] public Guid ChannelId { get; set; }
+    [Parameter] public Guid? ForumPostId { get; set; }
+}

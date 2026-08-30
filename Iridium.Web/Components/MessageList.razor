@@ -8,6 +8,8 @@
 
 @{ var visibleMessages = DisplayMessages(); }
 <div class="message-list @(_positioning ? "positioning" : null)" role="log" aria-live="polite" @ref="_container" @onclick="CloseMessageMenus">
+    @BeforeMessages
+    <div data-message-history-start aria-hidden="true"></div>
     @if (visibleMessages.Count == 0)
     {
         <div class="message-empty"><div><Icon Name="@EmptyIcon" /></div><h2>@EmptyTitle</h2><p>@EmptyDescription</p></div>
@@ -62,6 +64,8 @@
     [Parameter] public string EmptyIcon { get; set; } = "channel";
     [Parameter] public string EmptyTitle { get; set; } = "No messages yet";
     [Parameter] public string EmptyDescription { get; set; } = "Start the conversation in this channel.";
+    [Parameter] public RenderFragment? BeforeMessages { get; set; }
+    [Parameter] public bool HasLeadingContent { get; set; }
     [Parameter, EditorRequired] public required Guid CurrentAccountId { get; set; }
     [Parameter] public bool CanManage { get; set; }
     [Parameter] public bool CanAddReactions { get; set; }
@@ -102,6 +106,7 @@
     private bool _suppressInitialPositionOnce;
     private LatestScrollBehavior _latestScrollAfterRender;
     private int _viewportGeneration;
+    private bool? _renderedHasLeadingContent;
     private Guid? _editRequestedMessageId;
     private Guid? _editingMessageId;
     private long _editRequest;
@@ -145,6 +150,11 @@
             _selfReference = DotNetObjectReference.Create(this);
             await _module.InvokeVoidAsync("wireMessageViewport", _container, _selfReference);
             await _module.InvokeVoidAsync("wireMessageLongPress", _container, _selfReference);
+        }
+        if (_renderedHasLeadingContent != HasLeadingContent)
+        {
+            _renderedHasLeadingContent = HasLeadingContent;
+            await _module.InvokeVoidAsync("refreshMessageViewport", _container);
         }
         if (_positioning)
         {
@@ -193,8 +203,8 @@
     }
 
     [JSInvokable]
-    public Task ViewportStateChangedAsync(bool isPinnedToLatest, bool shouldShowJumpToLatest) =>
-        OnViewportStateChanged.InvokeAsync(new(isPinnedToLatest, shouldShowJumpToLatest));
+    public Task ViewportStateChangedAsync(bool isPinnedToLatest, bool shouldShowJumpToLatest, bool isNearDocumentTop) =>
+        OnViewportStateChanged.InvokeAsync(new(isPinnedToLatest, shouldShowJumpToLatest, isNearDocumentTop));
 
     [JSInvokable]
     public Task OpenMessageActionsFromLongPressAsync(string messageId)
@@ -218,6 +228,12 @@
     {
         _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/chat.js");
         await _module.InvokeVoidAsync("scrollMessageBottom", _container, smooth ? "smooth" : "instant");
+    }
+
+    public async Task ScrollToLeadingContentAsync()
+    {
+        _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/chat.js");
+        await _module.InvokeVoidAsync("scrollMessageLeadingContent", _container);
     }
 
     public void PrepareUserLatestTransition(bool smooth)

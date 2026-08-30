@@ -2,6 +2,7 @@ using System.Text.Json;
 using Iridium.Protocol;
 using Iridium.Server.Configuration;
 using Iridium.Server.Domain;
+using Iridium.Server.Embeds;
 using Iridium.Server.Hubs;
 using Iridium.Server.Persistence;
 using Iridium.Server.Security;
@@ -24,8 +25,47 @@ public static class CommunityForumEndpoints
         group.MapGet("/{postId:guid}", GetAsync);
         group.MapPost("/", CreateAsync);
         group.MapPatch("/{postId:guid}", UpdateAsync);
+        group.MapGet("/{postId:guid}/embed-document", GetEmbedDocumentAsync);
+        group.MapGet("/{postId:guid}/embed-document/media/{mediaId}", GetEmbedDocumentMediaAsync);
         group.MapDelete("/{postId:guid}", DeleteAsync);
         return endpoints;
+    }
+
+    private static async Task<IResult> GetEmbedDocumentAsync(Guid communityId, Guid channelId, Guid postId,
+        HttpContext context, IridiumDbContext db, SessionService sessions,
+        CommunityAuthorizationService authorization, IGoogleDocsPublishedDocumentService documents,
+        CancellationToken cancellationToken)
+    {
+        var session = await sessions.GetAsync(context, db);
+        if (session is null) return Results.Unauthorized();
+        var post = await db.CommunityForumPosts.AsNoTracking().SingleOrDefaultAsync(value => value.Id == postId &&
+            value.CommunityId == communityId && value.ForumChannelId == channelId, cancellationToken);
+        if (post is null) return Results.NotFound();
+        var access = await authorization.GetChannelAccessAsync(communityId, channelId, session.AccountId, db);
+        if (!access.Has(CommunityPermission.ViewChannels)) return Results.NotFound();
+        if (!CommunityChannelEmbeds.TryResolve(post.EmbedProvider, post.EmbedUrl, out var configuration) ||
+            configuration?.FetchUrl is null)
+            return Results.Ok(new ChannelEmbedDocumentDto(ChannelEmbedDocumentStatus.Unsupported, null));
+        return Results.Ok(await documents.GetAsync(configuration, cancellationToken));
+    }
+
+    private static async Task<IResult> GetEmbedDocumentMediaAsync(Guid communityId, Guid channelId, Guid postId,
+        string mediaId, HttpContext context, IridiumDbContext db, SessionService sessions,
+        CommunityAuthorizationService authorization, IGoogleDocsPublishedDocumentService documents,
+        CancellationToken cancellationToken)
+    {
+        var session = await sessions.GetAsync(context, db);
+        if (session is null) return Results.Unauthorized();
+        var post = await db.CommunityForumPosts.AsNoTracking().SingleOrDefaultAsync(value => value.Id == postId &&
+            value.CommunityId == communityId && value.ForumChannelId == channelId, cancellationToken);
+        if (post is null) return Results.NotFound();
+        var access = await authorization.GetChannelAccessAsync(communityId, channelId, session.AccountId, db);
+        if (!access.Has(CommunityPermission.ViewChannels) ||
+            !CommunityChannelEmbeds.TryResolve(post.EmbedProvider, post.EmbedUrl, out var configuration) ||
+            configuration?.FetchUrl is null) return Results.NotFound();
+        var media = await documents.GetMediaAsync(configuration, mediaId, cancellationToken);
+        return media is null ? Results.NotFound() : Results.File(media.Bytes, media.ContentType,
+            enableRangeProcessing: false);
     }
 
     private static async Task<IResult> ListAsync(Guid communityId, Guid channelId, int? offset, int? limit,
@@ -73,7 +113,8 @@ public static class CommunityForumEndpoints
         var unread = await UnreadCountsAsync(posts, session.AccountId, db);
         var tagMap = await LoadPostTagsAsync(posts.Select(value => value.Id).ToArray(), db);
         return Results.Ok(new CommunityForumPostPageDto(
-            posts.Select(value => ToDto(value, unread.GetValueOrDefault(value.Id), tagMap.GetValueOrDefault(value.Id))).ToArray(),
+            posts.Select(value => ToDto(value, unread.GetValueOrDefault(value.Id),
+                tagMap.GetValueOrDefault(value.Id), includeEmbedUrl: false)).ToArray(),
             hasMore ? skip + take : null));
     }
 
@@ -102,10 +143,10 @@ public static class CommunityForumEndpoints
         var session = await sessions.GetAsync(context, db);
         if (session is null) return Results.Unauthorized();
         var access = await authorization.GetChannelAccessAsync(communityId, channelId, session.AccountId, db);
-        var forumExists = await db.CommunityChannels.AnyAsync(value => value.Id == channelId &&
+        var forum = await db.CommunityChannels.SingleOrDefaultAsync(value => value.Id == channelId &&
             value.CommunityId == communityId && value.Kind == CommunityChannelKind.Forum &&
             value.ParentForumChannelId == null);
-        if (!forumExists) return Results.NotFound();
+        if (forum is null) return Results.NotFound();
         if (!access.Has(CommunityPermission.ViewChannels) || !access.Has(CommunityPermission.SendMessages) ||
             !access.Has(CommunityPermission.CreateForumPosts)) return Forbidden();
         var title = request.Title.Trim();
@@ -113,9 +154,11 @@ public static class CommunityForumEndpoints
             return Invalid($"Post titles must contain 1 to {MaximumTitleLength} characters.");
         var requestedTags = request.TagIds?.ToArray() ?? [];
         var tagValidation = await ValidateTagSelectionAsync(channelId, requestedTags, access, db,
-            requireAtLeastOne: await db.CommunityChannels.Where(value => value.CommunityId == communityId &&
-                value.Id == channelId).Select(value => value.RequireTag).SingleAsync());
+            requireAtLeastOne: forum.RequireTag);
         if (tagValidation.Error is { } tagError) return Invalid(tagError);
+        var embedValidation = ValidateEmbedChange(request.Embed, forum.AllowDocumentEmbeds,
+            access.Has(CommunityPermission.EmbedDocumentsInForumPosts));
+        if (embedValidation.Error is { } embedError) return Invalid(embedError);
 
         var attachmentsResult = await ValidateAttachmentsAsync(request.InitialMessage.AttachmentIds,
             session.AccountId, db, nodeOptions.Value);
@@ -162,6 +205,7 @@ public static class CommunityForumEndpoints
             Id = postId, CommunityId = communityId, ForumChannelId = channelId,
             DiscussionChannelId = discussionId, RootMessageId = rootId, AuthorAccountId = session.AccountId,
             Title = title, CreatedAt = now, UpdatedAt = now, LastActivityAt = now,
+            EmbedProvider = embedValidation.Provider, EmbedUrl = embedValidation.Url,
             Community = null!, ForumChannel = null!, DiscussionChannel = discussion,
             RootMessage = root, AuthorAccount = session.Account
         };
@@ -208,6 +252,20 @@ public static class CommunityForumEndpoints
         if ((request.IsLocked.HasValue || request.IsPinned.HasValue) && !moderates) return Forbidden();
         if (request.IsLocked.HasValue) post.IsLocked = request.IsLocked.Value;
         if (request.IsPinned.HasValue) post.IsPinned = request.IsPinned.Value;
+        if (request.Embed is not null)
+        {
+            var forum = await db.CommunityChannels.AsNoTracking().SingleAsync(value => value.Id == channelId &&
+                value.CommunityId == communityId);
+            var mayEditOwn = post.AuthorAccountId == session.AccountId && forum.AllowDocumentEmbeds &&
+                             access.Has(CommunityPermission.EmbedDocumentsInForumPosts);
+            if (!moderates && !mayEditOwn) return Forbidden();
+            var removesEmbed = request.Embed is { Provider: null, Url: null };
+            var embedValidation = ValidateEmbedChange(request.Embed, forum.AllowDocumentEmbeds || removesEmbed,
+                mayEditOwn || moderates);
+            if (embedValidation.Error is { } embedError) return Invalid(embedError);
+            post.EmbedProvider = embedValidation.Provider;
+            post.EmbedUrl = embedValidation.Url;
+        }
         post.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync();
         var dto = await ToDtoAsync(post, db);
@@ -226,6 +284,7 @@ public static class CommunityForumEndpoints
             value.CommunityId == communityId && value.ForumChannelId == channelId);
         if (post is null) return Results.NotFound();
         var access = await authorization.GetChannelAccessAsync(communityId, channelId, session.AccountId, db);
+        if (!access.Has(CommunityPermission.ViewChannels)) return Results.NotFound();
         if (post.AuthorAccountId != session.AccountId && !access.Has(CommunityPermission.ManageMessages))
             return Forbidden();
         var discussion = await db.CommunityChannels.SingleAsync(value => value.Id == post.DiscussionChannelId);
@@ -262,7 +321,7 @@ public static class CommunityForumEndpoints
     }
 
     internal static CommunityForumPostDto ToDto(CommunityForumPost value, int unreadCount = 0,
-        IReadOnlyList<CommunityForumTagDto>? tags = null) => new(
+        IReadOnlyList<CommunityForumTagDto>? tags = null, bool includeEmbedUrl = true) => new(
         value.Id, value.CommunityId, value.ForumChannelId, value.DiscussionChannelId, value.RootMessageId,
         new(value.AuthorAccountId, value.AuthorAccount.Username,
             value.RootMessage.AuthorDisplayNameSnapshot ?? value.AuthorAccount.DisplayName,
@@ -272,7 +331,8 @@ public static class CommunityForumEndpoints
             HasHistoricalSnapshot: value.RootMessage.AuthorDisplayNameSnapshot is not null), value.Title,
         value.CreatedAt, value.UpdatedAt, value.LastActivityAt, value.ReplyCount, value.IsLocked, value.IsPinned,
         unreadCount, RootPreview(value.RootMessage?.Content),
-        ChannelMessageMapper.DeserializeMentions(value.RootMessage?.MentionsJson), tags ?? []);
+        ChannelMessageMapper.DeserializeMentions(value.RootMessage?.MentionsJson), tags ?? [],
+        value.EmbedProvider, includeEmbedUrl ? value.EmbedUrl : null);
 
     internal static async Task<CommunityForumPostDto> ToDtoAsync(CommunityForumPost value, IridiumDbContext db,
         int unreadCount = 0)
@@ -327,6 +387,19 @@ public static class CommunityForumEndpoints
         if (string.IsNullOrWhiteSpace(content)) return null;
         const int maximumSourceCharacters = 320;
         return content.Length <= maximumSourceCharacters ? content : content[..maximumSourceCharacters];
+    }
+
+    private static (CommunityChannelEmbedProvider? Provider, string? Url, string? Error) ValidateEmbedChange(
+        CommunityChannelEmbedUpdate? embed, bool forumAllows, bool permitted)
+    {
+        if (embed is null || embed is { Provider: null, Url: null }) return (null, null, null);
+        if (!forumAllows) return (null, null, "This Forum does not allow document embeds.");
+        if (!permitted) return (null, null, "You do not have permission to embed documents in Forum Posts.");
+        if (embed.Provider != CommunityChannelEmbedProvider.GoogleDocs ||
+            !CommunityChannelEmbeds.TryGoogleDocs(embed.Url, out var configuration))
+            return (null, null, "Enter a valid Google Docs document URL.");
+        return (CommunityChannelEmbedProvider.GoogleDocs,
+            configuration!.CanonicalUrl ?? configuration.OpenUrl, null);
     }
 
     internal static async Task PublishAsync(Guid communityId, Guid channelId, CommunityForumPostChangedEvent change,

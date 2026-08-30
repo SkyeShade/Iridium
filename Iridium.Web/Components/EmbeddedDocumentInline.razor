@@ -1,0 +1,43 @@
+@using Iridium.Protocol
+
+@switch (Inline)
+{
+    case EmbeddedDocumentTextDto text:
+        <span class="@TextColorClass(text.TextColor)">
+            @if (text.Bold && text.Italic && text.Underline) { <strong><em><u>@text.Text</u></em></strong> }
+            else if (text.Bold && text.Italic) { <strong><em>@text.Text</em></strong> }
+            else if (text.Bold && text.Underline) { <strong><u>@text.Text</u></strong> }
+            else if (text.Italic && text.Underline) { <em><u>@text.Text</u></em> }
+            else if (text.Bold) { <strong>@text.Text</strong> }
+            else if (text.Italic) { <em>@text.Text</em> }
+            else if (text.Underline) { <u>@text.Text</u> }
+            else { @text.Text }
+        </span>
+        break;
+    case EmbeddedDocumentLineBreakDto:
+        <br />
+        break;
+    case EmbeddedDocumentLinkDto link:
+        <a href="@link.Url" target="_blank" rel="noopener noreferrer">
+            @foreach (var child in link.Content) { <EmbeddedDocumentInline Inline="child" /> }
+        </a>
+        break;
+}
+
+@code {
+    [Parameter, EditorRequired] public required EmbeddedDocumentInlineDto Inline { get; set; }
+
+    private static string? TextColorClass(EmbeddedDocumentTextColor color) => color switch
+    {
+        EmbeddedDocumentTextColor.Red => "doc-text-color-red",
+        EmbeddedDocumentTextColor.Orange => "doc-text-color-orange",
+        EmbeddedDocumentTextColor.Yellow => "doc-text-color-yellow",
+        EmbeddedDocumentTextColor.Green => "doc-text-color-green",
+        EmbeddedDocumentTextColor.Teal => "doc-text-color-teal",
+        EmbeddedDocumentTextColor.Blue => "doc-text-color-blue",
+        EmbeddedDocumentTextColor.Purple => "doc-text-color-purple",
+        EmbeddedDocumentTextColor.Pink => "doc-text-color-pink",
+        EmbeddedDocumentTextColor.Gray => "doc-text-color-gray",
+        _ => null
+    };
+}

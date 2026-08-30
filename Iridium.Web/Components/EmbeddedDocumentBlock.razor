@@ -1,0 +1,112 @@
+@using Iridium.Client.Core
+@using Iridium.Protocol
+@implements IDisposable
+@inject NodeSession Session
+
+@switch (Block)
+{
+    case EmbeddedDocumentParagraphDto paragraph:
+        <p class="document-paragraph @Alignment(paragraph.Alignment)">@foreach (var inline in paragraph.Content) { <EmbeddedDocumentInline Inline="inline" /> }</p>
+        break;
+    case EmbeddedDocumentHeadingDto heading:
+        @switch (heading.Level)
+        {
+            case 1: <h1 class="document-heading @Alignment(heading.Alignment)">@Inlines(heading.Content)</h1> break;
+            case 2: <h2 class="document-heading @Alignment(heading.Alignment)">@Inlines(heading.Content)</h2> break;
+            case 3: <h3 class="document-heading @Alignment(heading.Alignment)">@Inlines(heading.Content)</h3> break;
+            case 4: <h4 class="document-heading @Alignment(heading.Alignment)">@Inlines(heading.Content)</h4> break;
+            case 5: <h5 class="document-heading @Alignment(heading.Alignment)">@Inlines(heading.Content)</h5> break;
+            default: <h6 class="document-heading @Alignment(heading.Alignment)">@Inlines(heading.Content)</h6> break;
+        }
+        break;
+    case EmbeddedDocumentImageDto image:
+        <figure class="embedded-document-image @Alignment(image.Alignment)">
+            @if (_imageSource is not null) { <img src="@_imageSource" alt="@(image.Alt ?? "")" width="@image.Width" height="@image.Height" style="@ImageStyle(image)" loading="lazy" /> }
+            else if (_imageFailed) { <span role="img" aria-label="Image unavailable"><Icon Name="file" Size="18" /> Image unavailable</span> }
+            else { <span class="loading" aria-label="Loading image"></span> }
+        </figure>
+        break;
+    case EmbeddedDocumentListDto list:
+        @if (list.Ordered)
+        {
+            <ol class="document-list">@foreach (var item in list.Items) { <li>@foreach (var child in item.Blocks) { <EmbeddedDocumentBlock Block="child" CommunityId="CommunityId" ChannelId="ChannelId" ForumPostId="ForumPostId" /> }</li> }</ol>
+        }
+        else
+        {
+            <ul class="document-list">@foreach (var item in list.Items) { <li>@foreach (var child in item.Blocks) { <EmbeddedDocumentBlock Block="child" CommunityId="CommunityId" ChannelId="ChannelId" ForumPostId="ForumPostId" /> }</li> }</ul>
+        }
+        break;
+    case EmbeddedDocumentTableDto table:
+        <div class="embedded-document-table"><table><tbody>
+            @foreach (var row in table.Rows)
+            {
+                <tr>@foreach (var cell in row.Cells)
+                {
+                    @if (cell.IsHeader) { <th colspan="@cell.ColumnSpan" rowspan="@cell.RowSpan">@Cell(cell)</th> }
+                    else { <td colspan="@cell.ColumnSpan" rowspan="@cell.RowSpan">@Cell(cell)</td> }
+                }</tr>
+            }
+        </tbody></table></div>
+        break;
+    case EmbeddedDocumentHorizontalRuleDto:
+        <hr />
+        break;
+    case EmbeddedDocumentSpacerDto spacer:
+        <div class="document-spacer" style="--document-spacer-lines:@spacer.Lines" aria-hidden="true"></div>
+        break;
+}
+
+@code {
+    [Parameter, EditorRequired] public required EmbeddedDocumentBlockDto Block { get; set; }
+    [Parameter, EditorRequired] public Guid CommunityId { get; set; }
+    [Parameter, EditorRequired] public Guid ChannelId { get; set; }
+    [Parameter] public Guid? ForumPostId { get; set; }
+    private CancellationTokenSource? _loadCancellation;
+    private string? _loadedMediaId;
+    private Guid _loadedMediaCommunityId;
+    private Guid _loadedMediaChannelId;
+    private Guid? _loadedMediaForumPostId;
+    private string? _imageSource;
+    private bool _imageFailed;
+
+    protected override void OnParametersSet()
+    {
+        if (Block is not EmbeddedDocumentImageDto image) return;
+        if (image.MediaId == _loadedMediaId && CommunityId == _loadedMediaCommunityId &&
+            ChannelId == _loadedMediaChannelId && ForumPostId == _loadedMediaForumPostId) return;
+        _loadedMediaId = image.MediaId;
+        _loadedMediaCommunityId = CommunityId;
+        _loadedMediaChannelId = ChannelId;
+        _loadedMediaForumPostId = ForumPostId;
+        _imageSource = null; _imageFailed = false;
+        _loadCancellation?.Cancel(); _loadCancellation?.Dispose(); _loadCancellation = new();
+        _ = LoadImageAsync(image.MediaId, _loadCancellation.Token);
+    }
+    private async Task LoadImageAsync(string mediaId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var media = ForumPostId is { } postId
+                ? await Session.DownloadForumPostEmbedDocumentMediaAsync(CommunityId, ChannelId, postId, mediaId, cancellationToken)
+                : await Session.DownloadChannelEmbedDocumentMediaAsync(CommunityId, ChannelId, mediaId, cancellationToken);
+            if (!cancellationToken.IsCancellationRequested && mediaId == _loadedMediaId)
+                _imageSource = $"data:{media.ContentType};base64,{Convert.ToBase64String(media.Bytes)}";
+        }
+        catch when (!cancellationToken.IsCancellationRequested) { _imageFailed = true; }
+        if (!cancellationToken.IsCancellationRequested) await InvokeAsync(StateHasChanged);
+    }
+    private RenderFragment Inlines(IReadOnlyList<EmbeddedDocumentInlineDto> values) => builder =>
+    {
+        var sequence = 0;
+        foreach (var value in values) { builder.OpenComponent<EmbeddedDocumentInline>(sequence++); builder.AddAttribute(sequence++, "Inline", value); builder.CloseComponent(); }
+    };
+    private RenderFragment Cell(EmbeddedDocumentTableCellDto cell) => builder =>
+    {
+        var sequence = 0;
+        foreach (var value in cell.Blocks) { builder.OpenComponent<EmbeddedDocumentBlock>(sequence++); builder.AddAttribute(sequence++, "Block", value); builder.AddAttribute(sequence++, "CommunityId", CommunityId); builder.AddAttribute(sequence++, "ChannelId", ChannelId); builder.AddAttribute(sequence++, "ForumPostId", ForumPostId); builder.CloseComponent(); }
+    };
+    private static string Alignment(EmbeddedDocumentTextAlignment value) => $"align-{value.ToString().ToLowerInvariant()}";
+    private static string? ImageStyle(EmbeddedDocumentImageDto image) => image.Width is { } width
+        ? $"width:{width}px" : null;
+    public void Dispose() { _loadCancellation?.Cancel(); _loadCancellation?.Dispose(); }
+}

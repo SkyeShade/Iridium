@@ -14,6 +14,9 @@ public sealed class CommunityChannel
     public DateTimeOffset CreatedAt { get; set; }
     public bool PermissionsSyncedToCategory { get; set; }
     public bool RequireTag { get; set; }
+    public bool AllowDocumentEmbeds { get; set; }
+    public CommunityChannelEmbedProvider? EmbedProvider { get; set; }
+    public string? EmbedUrl { get; set; }
     public required Community Community { get; set; }
     public CommunityCategory? Category { get; set; }
     public ICollection<ChannelMessage> Messages { get; set; } = [];

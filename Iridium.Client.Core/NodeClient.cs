@@ -346,9 +346,28 @@ public sealed class NodeClient(Uri nodeAddress)
 
     public Task<CommunityChannelDto> UpdateChannelAsync(Guid communityId, Guid channelId, string name, Guid? categoryId,
         CommunityChannelKind kind = CommunityChannelKind.Text, bool? requireTag = null,
+        CommunityChannelEmbedUpdate? embed = null,
+        bool? allowDocumentEmbeds = null,
         CancellationToken cancellationToken = default) =>
         SendAsync<CommunityChannelDto>(HttpMethod.Patch, $"api/communities/{communityId}/channels/{channelId}",
-            new UpdateChannelRequest(name, categoryId, kind, requireTag), cancellationToken);
+            new UpdateChannelRequest(name, categoryId, kind, requireTag, embed, allowDocumentEmbeds), cancellationToken);
+
+    public Task<ChannelEmbedDocumentDto> GetChannelEmbedDocumentAsync(Guid communityId, Guid channelId,
+        CancellationToken cancellationToken = default) =>
+        SendAsync<ChannelEmbedDocumentDto>(HttpMethod.Get,
+            $"api/communities/{communityId}/channels/{channelId}/embed-document", null, cancellationToken);
+
+    public async Task<DownloadedDocumentMedia> DownloadChannelEmbedDocumentMediaAsync(Guid communityId,
+        Guid channelId, string mediaId, CancellationToken cancellationToken = default)
+    {
+        using var response = await SendAsync(HttpMethod.Get,
+            $"api/communities/{communityId}/channels/{channelId}/embed-document/media/{Uri.EscapeDataString(mediaId)}",
+            null, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+            throw new NodeApiException(response.StatusCode, await ReadErrorAsync(response, cancellationToken));
+        return new(await response.Content.ReadAsByteArrayAsync(cancellationToken),
+            response.Content.Headers.ContentType?.MediaType ?? "application/octet-stream");
+    }
 
     public Task MoveChannelAsync(Guid communityId, Guid channelId, CommunitySidebarMoveRequest request, CancellationToken cancellationToken = default) =>
         SendNoContentAsync(HttpMethod.Post, $"api/communities/{communityId}/channels/{channelId}/move", request, cancellationToken);
@@ -390,6 +409,24 @@ public sealed class NodeClient(Uri nodeAddress)
         UpdateCommunityForumPostRequest request, CancellationToken cancellationToken = default) =>
         SendAsync<CommunityForumPostDto>(HttpMethod.Patch,
             $"api/communities/{communityId}/forums/{channelId}/posts/{postId}", request, cancellationToken);
+
+    public Task<ChannelEmbedDocumentDto> GetForumPostEmbedDocumentAsync(Guid communityId, Guid channelId,
+        Guid postId, CancellationToken cancellationToken = default) =>
+        SendAsync<ChannelEmbedDocumentDto>(HttpMethod.Get,
+            $"api/communities/{communityId}/forums/{channelId}/posts/{postId}/embed-document", null,
+            cancellationToken);
+
+    public async Task<DownloadedDocumentMedia> DownloadForumPostEmbedDocumentMediaAsync(Guid communityId,
+        Guid channelId, Guid postId, string mediaId, CancellationToken cancellationToken = default)
+    {
+        using var response = await SendAsync(HttpMethod.Get,
+            $"api/communities/{communityId}/forums/{channelId}/posts/{postId}/embed-document/media/{Uri.EscapeDataString(mediaId)}",
+            null, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+            throw new NodeApiException(response.StatusCode, await ReadErrorAsync(response, cancellationToken));
+        return new(await response.Content.ReadAsByteArrayAsync(cancellationToken),
+            response.Content.Headers.ContentType?.MediaType ?? "application/octet-stream");
+    }
 
     public Task DeleteForumPostAsync(Guid communityId, Guid channelId, Guid postId,
         CancellationToken cancellationToken = default) => SendNoContentAsync(HttpMethod.Delete,

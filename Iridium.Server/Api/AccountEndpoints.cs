@@ -485,7 +485,7 @@ public static partial class AccountEndpoints
                               CommunityPermission.ShareScreen | CommunityPermission.ReadMessageHistory |
                               CommunityPermission.AttachFiles | CommunityPermission.EmbedLinks |
                               CommunityPermission.AddReactions | CommunityPermission.UseExternalEmoji |
-                              CommunityPermission.CreateForumPosts });
+                              CommunityPermission.CreateForumPosts | CommunityPermission.EmbedDocumentsInForumPosts });
             logger.LogInformation("COMMUNITY CREATE Default role prepared Id={CommunityId}", community.Id);
 
             stage = "DefaultCategory";

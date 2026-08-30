@@ -28,6 +28,19 @@
                 </header>
                 <div class="forum-create-content">
                     <label class="forum-title-field"><span>Title</span><input maxlength="120" value="@_newTitle" @oninput="TitleChangedAsync" placeholder="What is this discussion about?" autofocus /></label>
+                    @if (CanAttachDocuments)
+                    {
+                        <section class="forum-document-editor">
+                            <header><span><strong>Attach document</strong><small>Optionally display a Google Docs document above this Post's discussion.</small></span>
+                                @if (!_newEmbedEnabled) { <button type="button" @onclick="() => _newEmbedEnabled = true"><Icon Name="plus" /> Add Google Docs document</button> }
+                            </header>
+                            @if (_newEmbedEnabled)
+                            {
+                                <label><span><Icon Name="file" /> Google Docs</span><input type="url" @bind="_newEmbedUrl" placeholder="https://docs.google.com/document/d/.../edit" /></label>
+                                <button type="button" class="secondary" @onclick="ClearNewDocument">Remove</button>
+                            }
+                        </section>
+                    }
                     <ForumTagPicker Tags="Forum.Tags" SelectedTagIds="_newTagIds" CanManageModerated="CanManageMessages"
                                     SelectedTagIdsChanged="NewTagsChanged" />
                     @if (Channel.RequireTag && _newTagIds.Count == 0)
@@ -96,6 +109,10 @@
                             {
                                 <button title="@(_editingTitle ? "Save title" : "Edit title")" aria-label="@(_editingTitle ? "Save title" : "Edit title")" @onclick="EditTitleAsync"><Icon Name="@(_editingTitle ? "check" : "edit")" /></button>
                                 <button title="Edit tags" aria-label="Edit tags" @onclick="BeginEditTags"><Icon Name="tag" /></button>
+                                @if (CanEditDocument(selectedPost))
+                                {
+                                    <button title="@(selectedPost.EmbedProvider is null ? "Add document" : "Edit document")" aria-label="@(selectedPost.EmbedProvider is null ? "Add document" : "Edit document")" @onclick="BeginEditDocument"><Icon Name="file" /></button>
+                                }
                                 <button class="delete-post" title="@(_confirmDelete ? "Confirm delete post" : "Delete post")" aria-label="@(_confirmDelete ? "Confirm delete Forum post" : "Delete Forum post")" @onclick="DeletePostAsync"><Icon Name="trash" /></button>
                             }
                         </header>
@@ -106,6 +123,18 @@
                                                 SelectedTagIdsChanged="EditTagsChanged" />
                                 <button type="button" @onclick="SaveEditedTagsAsync">Save Tags</button>
                                 <button type="button" @onclick="CancelEditTags">Cancel</button>
+                            </div>
+                        }
+                        @if (_editingDocument)
+                        {
+                            <div class="forum-edit-document">
+                                <label><span><Icon Name="file" /> Google Docs</span><input type="url" @bind="_documentUrlDraft" placeholder="https://docs.google.com/document/d/.../edit" /></label>
+                                <button type="button" class="primary" @onclick="SaveEditedDocumentAsync">Save Document</button>
+                                @if (selectedPost.EmbedProvider is not null)
+                                {
+                                    <button type="button" class="danger" @onclick="RemoveDocumentAsync">@(_confirmRemoveDocument ? "Confirm Remove" : "Remove")</button>
+                                }
+                                <button type="button" class="secondary" @onclick="CancelEditDocument">Cancel</button>
                             </div>
                         }
                         @if (selectedPost.IsLocked)
@@ -123,6 +152,8 @@
                                          CanSend="@(!selectedPost.IsLocked || CanManageMessages)" CanAttachFiles="CanAttachFiles"
                                          CanMentionEveryone="CanMentionEveryone" DraftConversationKind="forum"
                                          DraftConversationId="selectedPost.Id" RootMessageId="selectedPost.RootMessageId"
+                                         ForumPostId="selectedPost.Id" ForumChannelId="Channel.Id"
+                                         ForumPostEmbedProvider="selectedPost.EmbedProvider" ForumPostEmbedUrl="@selectedPost.EmbedUrl"
                                          ShowReadOnlyNotice="false" />
                         </div>
                     </section>
@@ -141,6 +172,9 @@
                           OnOpen="OpenContextPostAsync" OnMarkRead="MarkContextPostReadAsync"
                           OnToggleLock="ToggleContextPostLockedAsync" OnEditTitle="EditContextPostTitleAsync"
                           OnEditTags="EditContextPostTagsAsync" OnTogglePin="ToggleContextPostPinnedAsync"
+                          CanManageDocument="@CanEditDocument(postContext.Post)"
+                          OnEditDocument="EditContextPostDocumentAsync" OnRemoveDocument="RemoveContextPostDocumentAsync"
+                          OnOpenDocument="OpenContextPostDocumentAsync"
                           OnDelete="DeleteContextPostAsync" OnClose="ClosePostContextMenu" />
 }
 
@@ -172,12 +206,16 @@
     private CommunityForumPostDto? _selectedPost;
     private CommunityForumPostDto? _createdPost;
     private MessageComposer? _newPostComposer;
-    private bool _creating, _confirmDelete, _editingTitle, _editingTags;
+    private bool _creating, _confirmDelete, _editingTitle, _editingTags, _editingDocument;
+    private bool _newEmbedEnabled, _confirmRemoveDocument;
     private bool _newBodySendable;
     private string _titleDraft = string.Empty, _newTitle = string.Empty, _search = string.Empty;
+    private string _newEmbedUrl = string.Empty, _documentUrlDraft = string.Empty;
     private string? _error;
     private CancellationTokenSource? _titleDraftDebounce;
     private CancellationTokenSource? _filterDebounce;
+    private CancellationTokenSource? _postLoadCancellation;
+    private long _postLoadGeneration;
     private IReadOnlyList<Guid> _newTagIds = [], _editTagIds = [], _filterTagIds = [];
     private ForumPostContextRequest? _postContext;
     private ElementReference _forumSurface;
@@ -189,7 +227,10 @@
     private IReadOnlyList<CommunityForumPostDto> FilteredPosts => Forum.Posts;
     private Guid? SelectedForumPostId { get; set; }
     private bool CanPublish => !_creating && !string.IsNullOrWhiteSpace(_newTitle) && _newBodySendable &&
-        (!Channel.RequireTag || _newTagIds.Count > 0);
+        (!Channel.RequireTag || _newTagIds.Count > 0) &&
+        (!_newEmbedEnabled || CommunityChannelEmbeds.TryGoogleDocs(_newEmbedUrl, out _));
+    private bool CanAttachDocuments => Channel.AllowDocumentEmbeds &&
+        HasPermission(CommunityPermission.EmbedDocumentsInForumPosts);
     private string PinActionTitle => _selectedPost?.IsPinned == true ? "Unpin post" : "Pin post";
     private CommunityChannelDto DiscussionChannel => new(_selectedPost!.DiscussionChannelId, Community.Id, null, _selectedPost.Title, 0, _selectedPost.CreatedAt, Kind: CommunityChannelKind.Text, EffectivePermissions: Channel.EffectivePermissions);
 
@@ -214,6 +255,8 @@
         _search = string.Empty;
         _filterTagIds = [];
         _newTagIds = [];
+        _newEmbedEnabled = false;
+        _newEmbedUrl = string.Empty;
         _error = null;
         _newTitle = await Drafts.LoadAsync(CreateTitleDraftScope) ?? string.Empty;
         await OnSubViewChanged.InvokeAsync(false);
@@ -236,7 +279,14 @@
                 _ = InvokeAsync(StateHasChanged);
                 return;
             }
-            _selectedPost = refreshed ?? selected;
+            _selectedPost = refreshed is null ? selected : refreshed with
+            {
+                // List DTOs intentionally omit the URL. Preserve the open-post source unless a
+                // realtime update explicitly replaces it or clears its provider.
+                EmbedUrl = refreshed.EmbedProvider == selected.EmbedProvider && refreshed.EmbedUrl is null
+                    ? selected.EmbedUrl
+                    : refreshed.EmbedUrl
+            };
             _ = OnPostOpenChanged.InvokeAsync(_selectedPost);
             if (_selectedPost.UnreadCount > 0) _ = InvokeAsync(MarkCurrentPostReadAsync);
         }
@@ -292,8 +342,15 @@
         try
         {
             if (Channel.RequireTag && _newTagIds.Count == 0) { _error = "Select at least one tag."; return false; }
+            CommunityChannelEmbedUpdate? embed = null;
+            if (_newEmbedEnabled)
+            {
+                if (!CanAttachDocuments || !CommunityChannelEmbeds.TryGoogleDocs(_newEmbedUrl, out _))
+                { _error = "Enter a valid Google Docs document URL."; return false; }
+                embed = new(CommunityChannelEmbedProvider.GoogleDocs, _newEmbedUrl.Trim());
+            }
             _createdPost = await Forum.CreateAsync(_newTitle.Trim(), submission.Content, submission.Mentions,
-                submission.Attachments, submission.UploadAttachments, _newTagIds);
+                submission.Attachments, submission.UploadAttachments, _newTagIds, embed);
             return true;
         }
         catch (Exception exception)
@@ -312,6 +369,7 @@
         await Drafts.RemoveAsync(CreateTitleDraftScope);
         _newTitle = string.Empty;
         _newTagIds = [];
+        ClearNewDocument();
         _createdPost = null;
         await OpenPostAsync(post);
     }
@@ -319,12 +377,31 @@
     private async Task OpenPostAsync(CommunityForumPostDto post)
     {
         _postContext = null;
+        _postLoadCancellation?.Cancel();
+        _postLoadCancellation?.Dispose();
+        _postLoadCancellation = new();
+        var cancellationToken = _postLoadCancellation.Token;
+        var generation = ++_postLoadGeneration;
+        try
+        {
+            post = await Session.GetForumPostAsync(Community.Id, Channel.Id, post.Id, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return; }
+        catch (Exception exception)
+        {
+            Logger.LogWarning(exception, "Could not open Forum post {PostId}.", post.Id);
+            _error = exception.GetBaseException().Message;
+            return;
+        }
+        if (generation != _postLoadGeneration || cancellationToken.IsCancellationRequested) return;
         _selectedPost = post;
         SelectedForumPostId = post.Id;
         Mode = ForumViewMode.ViewingPost;
         _confirmDelete = false;
         _editingTitle = false;
         _editingTags = false;
+        _editingDocument = false;
+        _confirmRemoveDocument = false;
         _editTagIds = [];
         _titleDraft = post.Title;
         Forum.MarkRead(post.Id);
@@ -338,6 +415,10 @@
 
     public async Task BackToIndexAsync()
     {
+        _postLoadCancellation?.Cancel();
+        _postLoadCancellation?.Dispose();
+        _postLoadCancellation = null;
+        _postLoadGeneration++;
         _postContext = null;
         if (Mode == ForumViewMode.CreatingPost) await PersistTitleDraftAsync();
         _selectedPost = null;
@@ -347,6 +428,8 @@
         _confirmDelete = false;
         _editingTitle = false;
         _editingTags = false;
+        _editingDocument = false;
+        _confirmRemoveDocument = false;
         _editTagIds = [];
         _error = null;
         await OnPostOpenChanged.InvokeAsync(null);
@@ -419,6 +502,39 @@
         if (_selectedPost?.Id != context.Post.Id) await OpenPostAsync(context.Post);
         BeginEditTags();
     }
+    private async Task EditContextPostDocumentAsync()
+    {
+        if (_postContext is not { } context || !CanEditDocument(context.Post)) return;
+        if (_selectedPost?.Id != context.Post.Id) await OpenPostAsync(context.Post);
+        BeginEditDocument();
+    }
+    private async Task RemoveContextPostDocumentAsync()
+    {
+        if (_postContext is not { } context || !CanEditDocument(context.Post)) return;
+        if (_selectedPost?.Id != context.Post.Id) await OpenPostAsync(context.Post);
+        BeginEditDocument();
+        _confirmRemoveDocument = true;
+    }
+    private async Task OpenContextPostDocumentAsync()
+    {
+        if (_postContext?.Post is not { EmbedProvider: not null } post) return;
+        var url = post.EmbedUrl;
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            try
+            {
+                post = await Session.GetForumPostAsync(Community.Id, Channel.Id, post.Id);
+                url = post.EmbedUrl;
+            }
+            catch (Exception exception)
+            {
+                Logger.LogDebug(exception, "Could not load Forum post {PostId} document source.", post.Id);
+                return;
+            }
+        }
+        if (string.IsNullOrWhiteSpace(url)) return;
+        await JS.InvokeVoidAsync("open", url, "_blank", "noopener,noreferrer");
+    }
     private async Task DeleteContextPostAsync()
     {
         if (_postContext is not { } context || !CanEditPost(context.Post)) return;
@@ -467,6 +583,45 @@
         await OnPostOpenChanged.InvokeAsync(_selectedPost);
     }
 
+    private bool HasPermission(CommunityPermission permission) =>
+        (Channel.EffectivePermissions & (CommunityPermission.Administrator | permission)) != 0;
+    private bool CanEditDocument(CommunityForumPostDto post) => post.EmbedProvider is not null
+        ? CanManageMessages || (post.Author.AccountId == CurrentAccountId && CanAttachDocuments)
+        : Channel.AllowDocumentEmbeds && (CanManageMessages ||
+            post.Author.AccountId == CurrentAccountId && HasPermission(CommunityPermission.EmbedDocumentsInForumPosts));
+    private void ClearNewDocument() { _newEmbedEnabled = false; _newEmbedUrl = string.Empty; }
+    private void BeginEditDocument()
+    {
+        if (_selectedPost is null || !CanEditDocument(_selectedPost)) return;
+        _documentUrlDraft = _selectedPost.EmbedUrl ?? string.Empty;
+        _confirmRemoveDocument = false;
+        _editingDocument = true;
+    }
+    private void CancelEditDocument()
+    {
+        _editingDocument = false;
+        _confirmRemoveDocument = false;
+        _documentUrlDraft = string.Empty;
+    }
+    private async Task SaveEditedDocumentAsync()
+    {
+        if (_selectedPost is null || !CanEditDocument(_selectedPost) ||
+            !CommunityChannelEmbeds.TryGoogleDocs(_documentUrlDraft, out _))
+        { _error = "Enter a valid Google Docs document URL."; return; }
+        _selectedPost = await Forum.UpdateAsync(_selectedPost.Id,
+            new(Embed: new(CommunityChannelEmbedProvider.GoogleDocs, _documentUrlDraft.Trim())));
+        CancelEditDocument();
+        await OnPostOpenChanged.InvokeAsync(_selectedPost);
+    }
+    private async Task RemoveDocumentAsync()
+    {
+        if (_selectedPost is null || !CanEditDocument(_selectedPost)) return;
+        if (!_confirmRemoveDocument) { _confirmRemoveDocument = true; return; }
+        _selectedPost = await Forum.UpdateAsync(_selectedPost.Id, new(Embed: new(null, null)));
+        CancelEditDocument();
+        await OnPostOpenChanged.InvokeAsync(_selectedPost);
+    }
+
     private async Task PersistTitleDraftAsync(CancellationToken cancellationToken = default)
     {
         try
@@ -485,6 +640,8 @@
         _titleDraftDebounce?.Dispose();
         _filterDebounce?.Cancel();
         _filterDebounce?.Dispose();
+        _postLoadCancellation?.Cancel();
+        _postLoadCancellation?.Dispose();
         if (Mode == ForumViewMode.CreatingPost) await PersistTitleDraftAsync();
         if (_selectedPost is not null) await OnPostOpenChanged.InvokeAsync(null);
         if (Mode != ForumViewMode.Index) await OnSubViewChanged.InvokeAsync(false);

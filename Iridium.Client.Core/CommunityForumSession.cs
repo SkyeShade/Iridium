@@ -105,14 +105,15 @@ public sealed class CommunityForumSession(
     public async Task<CommunityForumPostDto> CreateAsync(string title, string content,
         IReadOnlyList<CommunityMentionInput>? mentions, IReadOnlyList<AttachmentDto>? attachments,
         Func<CancellationToken, Task<IReadOnlyList<AttachmentDto>>>? uploadAttachments,
-        IReadOnlyList<Guid>? tagIds = null, CancellationToken cancellationToken = default)
+        IReadOnlyList<Guid>? tagIds = null, CommunityChannelEmbedUpdate? embed = null,
+        CancellationToken cancellationToken = default)
     {
         var communityId = CommunityId ?? throw new InvalidOperationException("Open a Forum first.");
         var channelId = ChannelId ?? throw new InvalidOperationException("Open a Forum first.");
         if (uploadAttachments is not null) attachments = await uploadAttachments(cancellationToken);
         var post = await session.AuthorizedClient.CreateForumPostAsync(communityId, channelId,
             new(title, new(content, null, mentions, Guid.NewGuid(), attachments?.Select(value => value.Id).ToArray()),
-                tagIds),
+                tagIds, embed),
             cancellationToken);
         Upsert(post);
         PersistCacheSafely();

@@ -1,5 +1,7 @@
 using System.Text;
 
+using System.Text.Json.Serialization;
+
 namespace Iridium.Protocol;
 
 public sealed record ChatMessageDto(
@@ -172,13 +174,153 @@ public enum CommunityChannelKind
     Forum = 2
 }
 
+public enum CommunityChannelEmbedProvider
+{
+    GoogleDocs = 0
+}
+
+public sealed record CommunityChannelEmbedUpdate(CommunityChannelEmbedProvider? Provider, string? Url);
+
+public sealed record GoogleDocsEmbedConfiguration(string DocumentId, string OpenUrl, string FrameUrl,
+    string? PublishedUrl = null, string? CanonicalUrl = null, string? AnonymousExportUrl = null,
+    GoogleDocsInputKind InputKind = GoogleDocsInputKind.ShareLink)
+{
+    public string? FetchUrl => PublishedUrl ?? AnonymousExportUrl;
+    public GoogleDocsFetchMode FetchMode => PublishedUrl is not null
+        ? GoogleDocsFetchMode.PublishedHtml : GoogleDocsFetchMode.AnonymousExport;
+}
+
+public enum GoogleDocsInputKind { ShareLink, PublishedLink }
+public enum GoogleDocsFetchMode { AnonymousExport, PublishedHtml }
+
+public enum ChannelEmbedDocumentStatus
+{
+    Ready,
+    AuthenticationRequired,
+    NotFound,
+    Unsupported,
+    ParseFailure,
+    Timeout,
+    TemporaryFailure,
+    TooLarge
+}
+public sealed record ChannelEmbedDocumentDto(ChannelEmbedDocumentStatus Status, EmbeddedDocumentDto? Document,
+    DateTimeOffset? FetchedAt = null, bool IsStale = false);
+
+public sealed record EmbeddedDocumentDto(IReadOnlyList<EmbeddedDocumentBlockDto> Blocks);
+
+public enum EmbeddedDocumentTextAlignment { Start, Center, End, Justify }
+
+public enum EmbeddedDocumentTextColor
+{
+    Default,
+    Red,
+    Orange,
+    Yellow,
+    Green,
+    Teal,
+    Blue,
+    Purple,
+    Pink,
+    Gray
+}
+
+[JsonPolymorphic(TypeDiscriminatorPropertyName = "type")]
+[JsonDerivedType(typeof(EmbeddedDocumentParagraphDto), "paragraph")]
+[JsonDerivedType(typeof(EmbeddedDocumentHeadingDto), "heading")]
+[JsonDerivedType(typeof(EmbeddedDocumentImageDto), "image")]
+[JsonDerivedType(typeof(EmbeddedDocumentListDto), "list")]
+[JsonDerivedType(typeof(EmbeddedDocumentTableDto), "table")]
+[JsonDerivedType(typeof(EmbeddedDocumentHorizontalRuleDto), "horizontalRule")]
+[JsonDerivedType(typeof(EmbeddedDocumentSpacerDto), "spacer")]
+public abstract record EmbeddedDocumentBlockDto;
+
+public sealed record EmbeddedDocumentParagraphDto(IReadOnlyList<EmbeddedDocumentInlineDto> Content,
+    EmbeddedDocumentTextAlignment Alignment = EmbeddedDocumentTextAlignment.Start) : EmbeddedDocumentBlockDto;
+public sealed record EmbeddedDocumentHeadingDto(int Level, IReadOnlyList<EmbeddedDocumentInlineDto> Content,
+    EmbeddedDocumentTextAlignment Alignment = EmbeddedDocumentTextAlignment.Start) : EmbeddedDocumentBlockDto;
+public sealed record EmbeddedDocumentImageDto(string MediaId, string? Alt, int? Width = null, int? Height = null,
+    EmbeddedDocumentTextAlignment Alignment = EmbeddedDocumentTextAlignment.Center) :
+    EmbeddedDocumentBlockDto;
+public sealed record EmbeddedDocumentListDto(bool Ordered, IReadOnlyList<EmbeddedDocumentListItemDto> Items) :
+    EmbeddedDocumentBlockDto;
+public sealed record EmbeddedDocumentListItemDto(IReadOnlyList<EmbeddedDocumentBlockDto> Blocks);
+public sealed record EmbeddedDocumentTableDto(IReadOnlyList<EmbeddedDocumentTableRowDto> Rows) : EmbeddedDocumentBlockDto;
+public sealed record EmbeddedDocumentTableRowDto(IReadOnlyList<EmbeddedDocumentTableCellDto> Cells);
+public sealed record EmbeddedDocumentTableCellDto(bool IsHeader, int ColumnSpan, int RowSpan,
+    IReadOnlyList<EmbeddedDocumentBlockDto> Blocks);
+public sealed record EmbeddedDocumentHorizontalRuleDto : EmbeddedDocumentBlockDto;
+public sealed record EmbeddedDocumentSpacerDto(int Lines = 1) : EmbeddedDocumentBlockDto;
+
+[JsonPolymorphic(TypeDiscriminatorPropertyName = "type")]
+[JsonDerivedType(typeof(EmbeddedDocumentTextDto), "text")]
+[JsonDerivedType(typeof(EmbeddedDocumentLineBreakDto), "lineBreak")]
+[JsonDerivedType(typeof(EmbeddedDocumentLinkDto), "link")]
+public abstract record EmbeddedDocumentInlineDto;
+
+public sealed record EmbeddedDocumentTextDto(string Text, bool Bold = false, bool Italic = false,
+    bool Underline = false, EmbeddedDocumentTextColor TextColor = EmbeddedDocumentTextColor.Default) :
+    EmbeddedDocumentInlineDto;
+public sealed record EmbeddedDocumentLineBreakDto : EmbeddedDocumentInlineDto;
+public sealed record EmbeddedDocumentLinkDto(string Url, IReadOnlyList<EmbeddedDocumentInlineDto> Content) :
+    EmbeddedDocumentInlineDto;
+
+public static class CommunityChannelEmbeds
+{
+    public static bool TryGoogleDocs(string? value, out GoogleDocsEmbedConfiguration? configuration)
+    {
+        configuration = null;
+        if (string.IsNullOrWhiteSpace(value) || !Uri.TryCreate(value.Trim(), UriKind.Absolute, out var uri) ||
+            !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(uri.Host, "docs.google.com", StringComparison.OrdinalIgnoreCase) ||
+            !uri.IsDefaultPort) return false;
+        var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length == 5 && segments[0] == "document" && segments[1] == "d" &&
+            segments[2] == "e" && IsSafeGoogleDocumentId(segments[3]) && segments[4] == "pub")
+        {
+            var publishedId = segments[3];
+            var publishedUrl = $"https://docs.google.com/document/d/e/{publishedId}/pub";
+            configuration = new(publishedId, publishedUrl, $"{publishedUrl}?embedded=true", publishedUrl, publishedUrl,
+                InputKind: GoogleDocsInputKind.PublishedLink);
+            return true;
+        }
+        if (segments.Length != 4 || segments[0] != "document" || segments[1] != "d" ||
+            !IsSafeGoogleDocumentId(segments[2]) || segments[3] is not ("edit" or "view" or "preview" or "pub")) return false;
+        var id = segments[2];
+        var openUrl = $"https://docs.google.com/document/d/{id}/view";
+        if (segments[3] == "pub")
+        {
+            var publishedUrl = $"https://docs.google.com/document/d/{id}/pub";
+            configuration = new(id, openUrl, $"{publishedUrl}?embedded=true", publishedUrl, publishedUrl,
+                InputKind: GoogleDocsInputKind.PublishedLink);
+        }
+        else configuration = new(id, openUrl, $"https://docs.google.com/document/d/{id}/preview",
+            CanonicalUrl: openUrl,
+            AnonymousExportUrl: $"https://docs.google.com/document/d/{id}/export?format=html");
+        return true;
+    }
+
+    private static bool IsSafeGoogleDocumentId(string value) => value.Length is >= 10 and <= 200 &&
+        value.All(character => char.IsAsciiLetterOrDigit(character) || character is '_' or '-');
+
+    public static bool TryResolve(CommunityChannelEmbedProvider? provider, string? url,
+        out GoogleDocsEmbedConfiguration? configuration)
+    {
+        configuration = null;
+        return provider == CommunityChannelEmbedProvider.GoogleDocs && TryGoogleDocs(url, out configuration);
+    }
+}
+
 public sealed record CommunityChannelDto(Guid Id, Guid CommunityId, Guid? CategoryId, string Name, int Position,
     DateTimeOffset CreatedAt, int UnreadCount = 0, int MentionCount = 0,
     CommunityChannelKind Kind = CommunityChannelKind.Text,
     CommunityPermission EffectivePermissions = CommunityPermission.None,
     bool PermissionsSyncedToCategory = false,
     bool IsPrivate = false,
-    bool RequireTag = false);
+    bool RequireTag = false,
+    CommunityChannelEmbedProvider? EmbedProvider = null,
+    string? EmbedUrl = null,
+    bool AllowDocumentEmbeds = false);
 public sealed record CommunityStructureDto(
     Guid CommunityId,
     bool CanManage,
@@ -199,7 +341,8 @@ public sealed record CommunitySidebarMoveRequest(
 public sealed record CreateChannelRequest(string Name, Guid? CategoryId,
     CommunityChannelKind Kind = CommunityChannelKind.Text);
 public sealed record UpdateChannelRequest(string Name, Guid? CategoryId,
-    CommunityChannelKind Kind = CommunityChannelKind.Text, bool? RequireTag = null);
+    CommunityChannelKind Kind = CommunityChannelKind.Text, bool? RequireTag = null,
+    CommunityChannelEmbedUpdate? Embed = null, bool? AllowDocumentEmbeds = null);
 
 public static class CommunityForumTagLimits
 {
@@ -239,12 +382,15 @@ public sealed record CommunityForumPostDto(
     int UnreadCount = 0,
     string? RootPreview = null,
     IReadOnlyList<CommunityMentionDto>? RootMentions = null,
-    IReadOnlyList<CommunityForumTagDto>? Tags = null);
+    IReadOnlyList<CommunityForumTagDto>? Tags = null,
+    CommunityChannelEmbedProvider? EmbedProvider = null,
+    string? EmbedUrl = null);
 
 public sealed record CommunityForumPostPageDto(IReadOnlyList<CommunityForumPostDto> Posts, int? NextOffset);
 public sealed record CreateCommunityForumPostRequest(string Title, SendChannelMessageRequest InitialMessage,
-    IReadOnlyList<Guid>? TagIds = null);
-public sealed record UpdateCommunityForumPostRequest(string? Title = null, bool? IsLocked = null, bool? IsPinned = null);
+    IReadOnlyList<Guid>? TagIds = null, CommunityChannelEmbedUpdate? Embed = null);
+public sealed record UpdateCommunityForumPostRequest(string? Title = null, bool? IsLocked = null,
+    bool? IsPinned = null, CommunityChannelEmbedUpdate? Embed = null);
 public sealed record CommunityForumPostChangedEvent(Guid CommunityId, Guid ForumChannelId,
     CommunityForumPostDto? Post, Guid PostId, string Change, Guid? ActorAccountId = null);
 

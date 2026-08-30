@@ -1,3 +1,5 @@
+using Iridium.Protocol;
+
 namespace Iridium.Server.Domain;
 
 public sealed class CommunityForumPost
@@ -15,6 +17,8 @@ public sealed class CommunityForumPost
     public int ReplyCount { get; set; }
     public bool IsLocked { get; set; }
     public bool IsPinned { get; set; }
+    public CommunityChannelEmbedProvider? EmbedProvider { get; set; }
+    public string? EmbedUrl { get; set; }
     public required Community Community { get; set; }
     public required CommunityChannel ForumChannel { get; set; }
     public required CommunityChannel DiscussionChannel { get; set; }

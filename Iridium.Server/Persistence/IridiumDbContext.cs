@@ -224,6 +224,8 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
         channel.Property(value => value.Kind).HasDefaultValue(Iridium.Protocol.CommunityChannelKind.Text);
         channel.Property(value => value.PermissionsSyncedToCategory).HasDefaultValue(false);
         channel.Property(value => value.RequireTag).HasDefaultValue(false);
+        channel.Property(value => value.AllowDocumentEmbeds).HasDefaultValue(false);
+        channel.Property(value => value.EmbedUrl).HasMaxLength(320);
         channel.HasIndex(value => new { value.CommunityId, value.ParentForumChannelId });
         channel.HasIndex(value => new { value.CommunityId, value.CategoryId, value.Position });
         channel.HasOne(value => value.Community).WithMany(value => value.Channels).HasForeignKey(value => value.CommunityId);
@@ -235,6 +237,7 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
         var forumPost = modelBuilder.Entity<CommunityForumPost>();
         forumPost.HasKey(value => value.Id);
         forumPost.Property(value => value.Title).HasMaxLength(120);
+        forumPost.Property(value => value.EmbedUrl).HasMaxLength(320);
         forumPost.Property(value => value.CreatedAt)
             .HasConversion(value => value.UtcTicks, value => new DateTimeOffset(value, TimeSpan.Zero));
         forumPost.Property(value => value.UpdatedAt)

@@ -19,6 +19,18 @@
             <button role="menuitem" @onclick="EditTitleAsync"><Icon Name="edit" /><span>Edit Title</span></button>
             <button role="menuitem" @onclick="EditTagsAsync"><Icon Name="tag" /><span>Edit Tags</span></button>
         }
+        @if (CanManageDocument)
+        {
+            <button role="menuitem" @onclick="EditDocumentAsync"><Icon Name="file" /><span>@(Post.EmbedProvider is null ? "Add Document" : "Edit Document")</span></button>
+            @if (Post.EmbedProvider is not null)
+            {
+                <button role="menuitem" @onclick="RemoveDocumentAsync"><Icon Name="close" /><span>Remove Document</span></button>
+            }
+        }
+        @if (Post.EmbedProvider is not null)
+        {
+            <button role="menuitem" @onclick="OpenDocumentAsync"><Icon Name="open" /><span>Open Document</span></button>
+        }
         @if (CanManage)
         {
             <div class="separator" role="separator"></div>
@@ -41,11 +53,15 @@
     [Parameter] public bool CanEdit { get; set; }
     [Parameter] public bool CanManage { get; set; }
     [Parameter] public bool CanDelete { get; set; }
+    [Parameter] public bool CanManageDocument { get; set; }
     [Parameter] public EventCallback OnOpen { get; set; }
     [Parameter] public EventCallback OnMarkRead { get; set; }
     [Parameter] public EventCallback OnToggleLock { get; set; }
     [Parameter] public EventCallback OnEditTitle { get; set; }
     [Parameter] public EventCallback OnEditTags { get; set; }
+    [Parameter] public EventCallback OnEditDocument { get; set; }
+    [Parameter] public EventCallback OnRemoveDocument { get; set; }
+    [Parameter] public EventCallback OnOpenDocument { get; set; }
     [Parameter] public EventCallback OnTogglePin { get; set; }
     [Parameter] public EventCallback OnDelete { get; set; }
     [Parameter] public EventCallback OnClose { get; set; }
@@ -65,6 +81,9 @@
     private Task ToggleLockAsync() => InvokeAndCloseAsync(OnToggleLock);
     private Task EditTitleAsync() => InvokeAndCloseAsync(OnEditTitle);
     private Task EditTagsAsync() => InvokeAndCloseAsync(OnEditTags);
+    private Task EditDocumentAsync() => InvokeAndCloseAsync(OnEditDocument);
+    private Task RemoveDocumentAsync() => InvokeAndCloseAsync(OnRemoveDocument);
+    private Task OpenDocumentAsync() => InvokeAndCloseAsync(OnOpenDocument);
     private Task TogglePinAsync() => InvokeAndCloseAsync(OnTogglePin);
     private async Task DeleteAsync()
     {

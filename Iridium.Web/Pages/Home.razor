@@ -345,7 +345,7 @@ else
     {
         <div class="route-invite-backdrop">
             <div class="route-invite" role="dialog" aria-modal="true" aria-label="Community invite">
-                <InviteEmbed Content="@Navigation.Uri" />
+                <InviteEmbed Content="@Navigation.Uri" OnCommunityOpened="OpenCommunityFromInviteAsync" />
             </div>
         </div>
     }
@@ -845,6 +845,12 @@ else
         await SelectCommunity(community, focusRestoredChannel: ShouldAutoFocusNavigation,
             mobilePanelSource: community is not null ? "CommunityClick" : null);
     }
+    private async Task OpenCommunityFromInviteAsync(CommunityDto community)
+    {
+        await SelectCommunityFromNavigationAsync(community);
+        InviteToken = null;
+        Navigation.NavigateTo(Navigation.BaseUri, replace: true);
+    }
     private async Task SelectChannelAsync(CommunityChannelDto? channel, bool requestComposerFocus = false,
         Guid? searchTargetMessageId = null, string? mobilePanelSource = null)
     {
@@ -1264,7 +1270,11 @@ else
             _ => "You were removed from that Server." };
         StateHasChanged();
     });
-    private void OnCommunityJoined(CommunityDto community) => _ = InvokeAsync(() => SelectCommunity(community));
+    private void OnCommunityJoined(CommunityDto community)
+    {
+        if (!string.IsNullOrWhiteSpace(InviteToken)) return;
+        _ = InvokeAsync(() => SelectCommunity(community));
+    }
     private void OnCommunityStateChanged() => _ = InvokeAsync(async () =>
     {
         if (_selectedCommunity?.Id != CommunityState.CommunityId) return;

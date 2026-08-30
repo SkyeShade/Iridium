@@ -15,6 +15,138 @@ public sealed class ForumIntegrationCollection
 [Collection(ForumIntegrationCollection.Name)]
 public sealed class ForumFlowTests
 {
+    [Fact(Timeout = 90_000)]
+    public async Task PrivateForumUsesChannelOverwritesAcrossSidebarPostsTagsDocumentsSearchAndRealtime()
+    {
+        var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
+        var project = Path.Combine(root, "Iridium.Server", "Iridium.Server.csproj");
+        var temp = Path.Combine(Path.GetTempPath(), $"iridium-private-forum-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(temp);
+        var address = new Uri($"http://127.0.0.1:{FreePort()}/");
+        var configuration = new DirectoryInfo(AppContext.BaseDirectory).Parent?.Name ?? "Debug";
+        using var server = StartServer(project, address, Path.Combine(temp, "private-forum.db"),
+            Path.Combine(temp, "objects"), configuration);
+        var output = server.StandardOutput.ReadToEndAsync();
+        var error = server.StandardError.ReadToEndAsync();
+        try
+        {
+            await WaitForServerAsync(address, server, output, error);
+            var owner = new NodeClient(address);
+            var ownerAuth = await owner.RegisterAsync(new("private-forum-owner", "Owner", "test-password"));
+            var selectedMember = new NodeClient(address);
+            var selectedAuth = await selectedMember.RegisterAsync(new("private-forum-selected", "Selected", "test-password"));
+            var roleMember = new NodeClient(address);
+            var roleAuth = await roleMember.RegisterAsync(new("private-forum-role", "Role Member", "test-password"));
+            var hiddenMember = new NodeClient(address);
+            var hiddenAuth = await hiddenMember.RegisterAsync(new("private-forum-hidden", "Hidden", "test-password"));
+            var community = await owner.CreateCommunityAsync(new("Private Forum Server", null));
+            var invite = await owner.CreateCommunityInviteAsync(community.Id, new(null, null));
+            var token = CommunityInviteLink.Find(invite.InviteUrl!)!.Token;
+            await selectedMember.JoinCommunityInviteAsync(token);
+            await roleMember.JoinCommunityInviteAsync(token);
+            await hiddenMember.JoinCommunityInviteAsync(token);
+
+            var category = await owner.CreateCategoryAsync(community.Id, "staff");
+            var forum = await owner.CreateChannelAsync(community.Id, "planning", category.Id,
+                CommunityChannelKind.Forum);
+            forum = await owner.UpdateChannelAsync(community.Id, forum.Id, forum.Name, forum.CategoryId,
+                forum.Kind, allowDocumentEmbeds: true);
+            var tag = await owner.CreateForumTagAsync(community.Id, forum.Id, new("Internal"));
+            const string marker = "private-forum-search-marker-4c86";
+            const string documentUrl = "https://docs.google.com/document/d/19BxwGUDoc2UhZxe3kBPQ6SPpibLU3Fv9m_S2Sj-KGbs/edit";
+            var hiddenAuthorsPost = await hiddenMember.CreateForumPostAsync(community.Id, forum.Id,
+                new("Secret plan", new(marker, null, ClientMessageId: Guid.NewGuid()), [tag.Id],
+                    new(CommunityChannelEmbedProvider.GoogleDocs, documentUrl)));
+
+            await using var selectedHub = Connection(address, selectedAuth.AccessToken);
+            await using var hiddenHub = Connection(address, hiddenAuth.AccessToken);
+            var selectedPostChanged = new TaskCompletionSource<CommunityForumPostChangedEvent>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var hiddenPostChanged = new TaskCompletionSource<CommunityForumPostChangedEvent>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            selectedHub.On<CommunityForumPostChangedEvent>(CommunityForumHubContract.PostChanged,
+                value => selectedPostChanged.TrySetResult(value));
+            hiddenHub.On<CommunityForumPostChangedEvent>(CommunityForumHubContract.PostChanged,
+                value => hiddenPostChanged.TrySetResult(value));
+            await selectedHub.StartAsync();
+            await hiddenHub.StartAsync();
+
+            await owner.SetPermissionOverwriteAsync(community.Id, PermissionOverwriteScopeType.Category,
+                category.Id, new(PermissionOverwriteTargetType.Everyone, null, CommunityPermission.None,
+                    CommunityPermission.ViewChannels));
+            Assert.DoesNotContain((await hiddenMember.GetCommunityStructureAsync(community.Id)).Channels,
+                value => value.Id == forum.Id);
+            await AssertNotFound(() => hiddenMember.GetForumPostsAsync(community.Id, forum.Id));
+            await AssertNotFound(() => hiddenMember.QueryForumPostsAsync(community.Id, forum.Id, marker, []));
+            await AssertNotFound(() => hiddenMember.GetForumPostAsync(community.Id, forum.Id, hiddenAuthorsPost.Id));
+            await AssertNotFound(() => hiddenMember.GetForumTagsAsync(community.Id, forum.Id));
+            await AssertNotFound(() => hiddenMember.GetForumPostEmbedDocumentAsync(
+                community.Id, forum.Id, hiddenAuthorsPost.Id));
+            await AssertNotFound(() => hiddenMember.DeleteForumPostAsync(
+                community.Id, forum.Id, hiddenAuthorsPost.Id));
+            Assert.DoesNotContain((await hiddenMember.SearchCommunityMessagesAsync(
+                community.Id, marker, null, null)).Results, value => value.Content.Contains(marker));
+            Assert.Contains((await owner.GetCommunityStructureAsync(community.Id)).Channels,
+                value => value.Id == forum.Id);
+            Assert.Equal(hiddenAuthorsPost.Id,
+                (await owner.GetForumPostAsync(community.Id, forum.Id, hiddenAuthorsPost.Id)).Id);
+
+            forum = await owner.UpdateChannelAsync(community.Id, forum.Id, forum.Name, null, forum.Kind,
+                allowDocumentEmbeds: forum.AllowDocumentEmbeds);
+            var allowedRole = await owner.CreateCommunityRoleAsync(community.Id,
+                new("Forum Access", CommunityPermission.None, "#45B97C"));
+            await owner.SetCommunityMemberRolesAsync(community.Id, roleAuth.Account.Id, [allowedRole.Id]);
+            await owner.ReplacePermissionOverwritesAsync(community.Id, PermissionOverwriteScopeType.Channel,
+                forum.Id, new([
+                    new(PermissionOverwriteTargetType.Everyone, null, CommunityPermission.None,
+                        CommunityPermission.ViewChannels),
+                    new(PermissionOverwriteTargetType.Member, selectedAuth.Account.Id,
+                        CommunityPermission.ViewChannels, CommunityPermission.None),
+                    new(PermissionOverwriteTargetType.Role, allowedRole.Id,
+                        CommunityPermission.ViewChannels, CommunityPermission.None)
+                ]));
+            Assert.False((await owner.GetPermissionScopeAsync(community.Id,
+                PermissionOverwriteScopeType.Channel, forum.Id)).PermissionsSyncedToCategory);
+            foreach (var client in new[] { selectedMember, roleMember })
+            {
+                Assert.Contains((await client.GetCommunityStructureAsync(community.Id)).Channels,
+                    value => value.Id == forum.Id);
+                Assert.Equal(hiddenAuthorsPost.Id,
+                    (await client.GetForumPostAsync(community.Id, forum.Id, hiddenAuthorsPost.Id)).Id);
+                Assert.Contains(await client.GetForumTagsAsync(community.Id, forum.Id), value => value.Id == tag.Id);
+                Assert.Contains((await client.SearchCommunityMessagesAsync(community.Id, marker, null, null)).Results,
+                    value => value.Content.Contains(marker));
+            }
+            _ = await selectedMember.GetForumPostEmbedDocumentAsync(
+                community.Id, forum.Id, hiddenAuthorsPost.Id);
+
+            var visiblePost = await owner.CreateForumPostAsync(community.Id, forum.Id,
+                new("Visible to selected viewers", new("authorized event", null,
+                    ClientMessageId: Guid.NewGuid())));
+            Assert.Equal(visiblePost.Id,
+                (await selectedPostChanged.Task.WaitAsync(TimeSpan.FromSeconds(15))).PostId);
+            Assert.NotSame(hiddenPostChanged.Task,
+                await Task.WhenAny(hiddenPostChanged.Task, Task.Delay(TimeSpan.FromMilliseconds(750))));
+
+            await owner.ReplacePermissionOverwritesAsync(community.Id, PermissionOverwriteScopeType.Channel,
+                forum.Id, new([]));
+            Assert.Contains((await hiddenMember.GetCommunityStructureAsync(community.Id)).Channels,
+                value => value.Id == forum.Id);
+            Assert.Equal(hiddenAuthorsPost.Id,
+                (await hiddenMember.GetForumPostAsync(community.Id, forum.Id, hiddenAuthorsPost.Id)).Id);
+        }
+        finally
+        {
+            if (!server.HasExited) server.Kill(entireProcessTree: true);
+            await server.WaitForExitAsync();
+            for (var attempt = 0; attempt < 20; attempt++)
+            {
+                try { Directory.Delete(temp, true); break; }
+                catch (IOException) when (attempt < 19) { await Task.Delay(100); }
+            }
+        }
+    }
+
     [Fact(Timeout = 60_000)]
     public async Task ForumTagsEnforceScopeModerationRequiredLimitFilteringAndCascade()
     {
@@ -103,6 +235,53 @@ public sealed class ForumFlowTests
             var unauthorizedDefinition = await Assert.ThrowsAsync<NodeApiException>(() => member.CreateForumTagAsync(
                 community.Id, forum.Id, new("Member tag")));
             Assert.Equal(System.Net.HttpStatusCode.Forbidden, unauthorizedDefinition.StatusCode);
+
+            const string documentUrl = "https://docs.google.com/document/d/19BxwGUDoc2UhZxe3kBPQ6SPpibLU3Fv9m_S2Sj-KGbs/edit?usp=sharing";
+            var disabledEmbed = await Assert.ThrowsAsync<NodeApiException>(() => member.CreateForumPostAsync(
+                community.Id, forum.Id, new("Document disabled", new("body", null,
+                    ClientMessageId: Guid.NewGuid()), Embed: new(CommunityChannelEmbedProvider.GoogleDocs, documentUrl))));
+            Assert.Equal(System.Net.HttpStatusCode.BadRequest, disabledEmbed.StatusCode);
+            forum = await owner.UpdateChannelAsync(community.Id, forum.Id, forum.Name, forum.CategoryId,
+                forum.Kind, allowDocumentEmbeds: true);
+            Assert.True(forum.AllowDocumentEmbeds);
+            var documentPost = await member.CreateForumPostAsync(community.Id, forum.Id,
+                new("Character document", new("Discuss the document", null, ClientMessageId: Guid.NewGuid()),
+                    Embed: new(CommunityChannelEmbedProvider.GoogleDocs, documentUrl)));
+            Assert.Equal(CommunityChannelEmbedProvider.GoogleDocs, documentPost.EmbedProvider);
+            Assert.Contains("/document/d/19BxwGUDoc2UhZxe3kBPQ6SPpibLU3Fv9m_S2Sj-KGbs/", documentPost.EmbedUrl);
+            var documentSummary = Assert.Single((await member.QueryForumPostsAsync(
+                community.Id, forum.Id, "Character document", [])).Posts);
+            Assert.Equal(CommunityChannelEmbedProvider.GoogleDocs, documentSummary.EmbedProvider);
+            Assert.Null(documentSummary.EmbedUrl);
+            var reloadedDocumentPost = await member.GetForumPostAsync(community.Id, forum.Id, documentPost.Id);
+            Assert.Equal(CommunityChannelEmbedProvider.GoogleDocs, reloadedDocumentPost.EmbedProvider);
+            Assert.Equal(documentPost.EmbedUrl, reloadedDocumentPost.EmbedUrl);
+            const string replacementUrl = "https://docs.google.com/document/d/1ReplacementDocumentIdentity1234567890/view";
+            documentPost = await member.UpdateForumPostAsync(community.Id, forum.Id, documentPost.Id,
+                new(Embed: new(CommunityChannelEmbedProvider.GoogleDocs, replacementUrl)));
+            Assert.Contains("1ReplacementDocumentIdentity1234567890", documentPost.EmbedUrl);
+            await owner.SetPermissionOverwriteAsync(community.Id, PermissionOverwriteScopeType.Channel, forum.Id,
+                new(PermissionOverwriteTargetType.Everyone, null, CommunityPermission.None,
+                    CommunityPermission.EmbedDocumentsInForumPosts));
+            var permissionDenied = await Assert.ThrowsAsync<NodeApiException>(() => member.UpdateForumPostAsync(
+                community.Id, forum.Id, documentPost.Id, new(Embed: new(null, null))));
+            Assert.Equal(System.Net.HttpStatusCode.Forbidden, permissionDenied.StatusCode);
+            var stillAttached = await owner.GetForumPostAsync(community.Id, forum.Id, documentPost.Id);
+            Assert.Equal(CommunityChannelEmbedProvider.GoogleDocs, stillAttached.EmbedProvider);
+            var documentChanged = new TaskCompletionSource<CommunityForumPostChangedEvent>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            memberHub.On<CommunityForumPostChangedEvent>(CommunityForumHubContract.PostChanged, value =>
+            {
+                if (value.PostId == documentPost.Id && value.Change == "updated")
+                    documentChanged.TrySetResult(value);
+            });
+            var moderatorRemoved = await owner.UpdateForumPostAsync(community.Id, forum.Id, documentPost.Id,
+                new(Embed: new(null, null)));
+            Assert.Null(moderatorRemoved.EmbedProvider);
+            Assert.Null(moderatorRemoved.EmbedUrl);
+            Assert.Null((await documentChanged.Task.WaitAsync(TimeSpan.FromSeconds(15))).Post!.EmbedProvider);
+            await owner.SetPermissionOverwriteAsync(community.Id, PermissionOverwriteScopeType.Channel, forum.Id,
+                new(PermissionOverwriteTargetType.Everyone, null, CommunityPermission.None, CommunityPermission.None));
 
             forum = await owner.UpdateChannelAsync(community.Id, forum.Id, forum.Name, forum.CategoryId,
                 forum.Kind, requireTag: true);
@@ -609,6 +788,12 @@ public sealed class ForumFlowTests
 
     private static int Occurrences(string source, string value) =>
         source.Split(value, StringSplitOptions.None).Length - 1;
+
+    private static async Task AssertNotFound(Func<Task> action)
+    {
+        var error = await Assert.ThrowsAsync<NodeApiException>(action);
+        Assert.Equal(System.Net.HttpStatusCode.NotFound, error.StatusCode);
+    }
 
     private static CommunityForumPostDto Post(string title, string preview, string author, bool pinned = false) => new(
         Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(),

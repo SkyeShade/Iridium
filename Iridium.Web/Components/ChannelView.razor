@@ -32,10 +32,45 @@
                      RootMessageId="RootMessageId"
                      WindowRevision="Messaging.WindowRevision" ReconciliationRevision="Messaging.RecentReconciliationRevision" FollowLatest="_isPinnedToLatest"
                      TargetMessageId="@(Messaging.WindowMode == MessageWindowMode.SearchTarget ? _loadedTargetMessageId : null)"
-                     OnLoadOlder="LoadOlderAsync" OnViewportStateChanged="ViewportStateChanged" />
+                     HasLeadingContent="@HasDocumentEmbed"
+                     OnLoadOlder="LoadOlderAsync" OnViewportStateChanged="ViewportStateChanged">
+            <BeforeMessages>
+                @if (DocumentEmbed is { } embed)
+                {
+                    <div class="channel-document-anchor" data-channel-document-anchor aria-hidden="true"></div>
+                    <section class="channel-document" aria-label="Google Docs document">
+                        <header><span><Icon Name="file" /> Document <small>Google Docs</small></span>
+                            <a href="@embed.OpenUrl" target="_blank" rel="noopener noreferrer">Open in Google Docs <Icon Name="open" Size="14" /></a>
+                        </header>
+                        @if (_embedDocumentLoading)
+                        {
+                            <div class="channel-document-loading"><span></span><span></span><span></span></div>
+                        }
+                        else if (_embedDocument is { Status: ChannelEmbedDocumentStatus.Ready, Document: { } document })
+                        {
+                            <div class="channel-document-flow">
+                                @if (_embedDocument.IsStale) { <div class="channel-document-stale">Showing the last available version.</div> }
+                                <EmbeddedDocumentView @key="DocumentStateKey" Document="document" CommunityId="Community.Id" ChannelId="@(ForumChannelId ?? Channel.Id)" ForumPostId="ForumPostId" />
+                            </div>
+                        }
+                        else
+                        {
+                            <div class="channel-document-fallback"><Icon Name="file" Size="28" /><strong>@DocumentFailureTitle</strong>
+                                <span>@DocumentFailureDetail</span>
+                                <a href="@embed.OpenUrl" target="_blank" rel="noopener noreferrer">Open in Google Docs</a></div>
+                        }
+                    </section>
+                    <div class="channel-document-separator" role="separator"><span>@(ForumPostId.HasValue ? "Discussion" : "Messages")</span></div>
+                }
+            </BeforeMessages>
+        </MessageList>
+        @if (ShowJumpToDocument)
+        {
+            <div class="channel-jump-document"><button @onclick="JumpToDocumentAsync"><span aria-hidden="true">↑</span> Jump to document</button></div>
+        }
         @if (ShowJumpToLatest)
         {
-            <button class="jump-latest" @onclick="JumpToLatestAsync">Jump to Latest</button>
+            <div class="channel-jump-latest"><button @onclick="JumpToLatestAsync"><span aria-hidden="true">↓</span> Jump to Latest</button></div>
         }
     </div>
     @if (CanSend)
@@ -85,6 +120,10 @@
     [Parameter] public long FocusRequest { get; set; }
     [Parameter] public EventCallback<long> OnFocusConsumed { get; set; }
     [Parameter] public bool IsMobileLayout { get; set; }
+    [Parameter] public Guid? ForumPostId { get; set; }
+    [Parameter] public Guid? ForumChannelId { get; set; }
+    [Parameter] public CommunityChannelEmbedProvider? ForumPostEmbedProvider { get; set; }
+    [Parameter] public string? ForumPostEmbedUrl { get; set; }
     private Guid? _loadedChannelId;
     private ChannelMessageDto? _replyTo;
     private readonly Dictionary<Guid, OptimisticCommunityAuthorPresentation> _optimisticCommunityPresentations = [];
@@ -98,6 +137,16 @@
     private Guid? _loadedTargetMessageId;
     private bool _isPinnedToLatest = true;
     private bool _shouldShowJumpToLatest;
+    private bool _nearDocumentTop = true;
+    private bool _embedDocumentLoading;
+    private ChannelEmbedDocumentDto? _embedDocument;
+    private long _embedDocumentLoadGeneration;
+    private CancellationTokenSource? _embedDocumentLoadCancellation;
+    private string? _loadedEmbedUrl;
+    private Guid? _loadedEmbedChannelId;
+    private Guid? _loadedEmbedAccountId;
+    private Guid? _loadedEmbedForumPostId;
+    private CommunityChannelEmbedProvider? _loadedEmbedProvider;
     private bool _loading;
     private bool _sending;
     private bool _disposed;
@@ -106,11 +155,70 @@
     private long _historyLoadGeneration;
     private string? _error;
     private IReadOnlyList<ChannelMessageDto> VisibleMessages => Messaging.MessagesFor(Community.Id, Channel.Id);
+    private CommunityChannelEmbedProvider? ActiveEmbedProvider => ForumPostId.HasValue ? ForumPostEmbedProvider : Channel.EmbedProvider;
+    private string? ActiveEmbedUrl => ForumPostId.HasValue ? ForumPostEmbedUrl : Channel.EmbedUrl;
+    private GoogleDocsEmbedConfiguration? DocumentEmbed => Channel.Kind == CommunityChannelKind.Text &&
+        CommunityChannelEmbeds.TryResolve(ActiveEmbedProvider, ActiveEmbedUrl, out var value) ? value : null;
+    private bool HasDocumentEmbed => DocumentEmbed is not null;
+    private string DocumentStateKey => $"{Community.Id:N}:{(ForumChannelId ?? Channel.Id):N}:" +
+        $"{ForumPostId?.ToString("N") ?? "channel"}:{ActiveEmbedProvider}:{ActiveEmbedUrl}";
+    private string DocumentFailureTitle => _embedDocument?.Status switch
+    {
+        ChannelEmbedDocumentStatus.AuthenticationRequired => "This Google Doc is not anonymously accessible.",
+        ChannelEmbedDocumentStatus.NotFound => "This Google Doc could not be found.",
+        ChannelEmbedDocumentStatus.TooLarge => "This Google Doc is too large to import.",
+        ChannelEmbedDocumentStatus.ParseFailure => "This Google Doc could not be parsed.",
+        ChannelEmbedDocumentStatus.Timeout => "Importing this Google Doc timed out.",
+        ChannelEmbedDocumentStatus.TemporaryFailure => "This Google Doc is temporarily unavailable.",
+        ChannelEmbedDocumentStatus.Unsupported => "This Google Docs response is not supported.",
+        _ => "This document cannot be displayed directly in Iridium."
+    };
+    private string DocumentFailureDetail => _embedDocument?.Status switch
+    {
+        ChannelEmbedDocumentStatus.AuthenticationRequired =>
+            "This Google Doc isn't available to the Iridium Node without signing in. Set General access to ‘Anyone with the link’ or publish it to the web.",
+        ChannelEmbedDocumentStatus.NotFound => "Check that the document still exists and that its link is correct.",
+        ChannelEmbedDocumentStatus.ParseFailure => "Google returned document HTML, but its structure could not be normalized safely.",
+        ChannelEmbedDocumentStatus.Timeout => "The Iridium Node could not download the document within the safe time limit. Try again shortly.",
+        ChannelEmbedDocumentStatus.TemporaryFailure => "Iridium will try the document source again shortly.",
+        ChannelEmbedDocumentStatus.TooLarge => "This document is too large to import safely.",
+        _ => "The Google document response could not be imported. You can still open it in Google Docs."
+    };
 
     protected override void OnInitialized() => Messaging.Changed += MessagesChanged;
 
     protected override void OnParametersSet()
     {
+        if (_loadedEmbedChannelId != Channel.Id || _loadedEmbedAccountId != CurrentAccountId ||
+            _loadedEmbedForumPostId != ForumPostId || _loadedEmbedProvider != ActiveEmbedProvider ||
+            !string.Equals(_loadedEmbedUrl, ActiveEmbedUrl, StringComparison.Ordinal))
+        {
+            _embedDocumentLoadCancellation?.Cancel();
+            _embedDocumentLoadCancellation?.Dispose();
+            _embedDocumentLoadCancellation = null;
+            _loadedEmbedChannelId = Channel.Id;
+            _loadedEmbedAccountId = CurrentAccountId;
+            _loadedEmbedForumPostId = ForumPostId;
+            _loadedEmbedProvider = ActiveEmbedProvider;
+            _loadedEmbedUrl = ActiveEmbedUrl;
+            _embedDocument = null;
+            _embedDocumentLoading = false;
+            _nearDocumentTop = true;
+            var embedGeneration = ++_embedDocumentLoadGeneration;
+            if (HostEnvironment.IsDevelopment() && ForumPostId is { } diagnosticPostId)
+                Logger.LogInformation("ForumDocument: PostId={PostId} HasDocument={HasDocument} Provider={Provider} " +
+                    "SourceResolved={SourceResolved} RequestStarted=false", diagnosticPostId,
+                    ActiveEmbedProvider is not null, ActiveEmbedProvider, HasDocumentEmbed);
+            if (HasDocumentEmbed)
+            {
+                if (HostEnvironment.IsDevelopment() && ForumPostId is { } postId)
+                    Logger.LogInformation("ForumDocument: PostId={PostId} HasDocument=true Provider={Provider} " +
+                        "SourceResolved=true RequestStarted=true", postId, ActiveEmbedProvider);
+                _embedDocumentLoadCancellation = new();
+                _ = LoadEmbedDocumentAsync(Community.Id, Channel.Id, ForumPostId, embedGeneration,
+                    _embedDocumentLoadCancellation.Token);
+            }
+        }
         if (IsMobileLayout)
         {
             _focusAfterRender = false;
@@ -356,12 +464,49 @@
     private Task EditLastOwnMessageAsync() => _messageList?.BeginEditLatestOwnAsync() ?? Task.CompletedTask;
 
     private bool ShowJumpToLatest => _shouldShowJumpToLatest || Messaging.WindowMode == MessageWindowMode.SearchTarget;
+    private bool ShowJumpToDocument => HasDocumentEmbed && !_nearDocumentTop;
     private Task LoadOlderAsync() => Messaging.LoadOlderAsync();
     private void ViewportStateChanged(MessageViewportState state)
     {
         _isPinnedToLatest = state.IsPinnedToLatest;
         _shouldShowJumpToLatest = state.ShouldShowJumpToLatest;
+        _nearDocumentTop = state.IsNearDocumentTop;
         _ = RenderAsync();
+    }
+    private Task JumpToDocumentAsync() => _messageList?.ScrollToLeadingContentAsync() ?? Task.CompletedTask;
+    private async Task LoadEmbedDocumentAsync(Guid communityId, Guid channelId, Guid? forumPostId, long generation,
+        CancellationToken cancellationToken)
+    {
+        _embedDocumentLoading = true;
+        await RenderAsync();
+        try
+        {
+            var document = forumPostId is { } postId && ForumChannelId is { } forumChannelId
+                ? await Session.GetForumPostEmbedDocumentAsync(communityId, forumChannelId, postId, cancellationToken)
+                : await Session.GetChannelEmbedDocumentAsync(communityId, channelId, cancellationToken);
+            if (_disposed || cancellationToken.IsCancellationRequested || generation != _embedDocumentLoadGeneration ||
+                Community.Id != communityId || Channel.Id != channelId || ForumPostId != forumPostId) return;
+            _embedDocument = document;
+            if (HostEnvironment.IsDevelopment() && forumPostId is { } loadedPostId)
+                Logger.LogInformation("ForumDocument: PostId={PostId} HasDocument=true Provider={Provider} " +
+                    "SourceResolved=true RequestStarted=true Result={Result}", loadedPostId, ActiveEmbedProvider,
+                    document.Status);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+        catch (Exception exception)
+        {
+            Logger.LogWarning(exception, "Embedded document loading failed for channel {ChannelId}.", channelId);
+            if (!_disposed && !cancellationToken.IsCancellationRequested && generation == _embedDocumentLoadGeneration)
+                _embedDocument = new(ChannelEmbedDocumentStatus.TemporaryFailure, null);
+        }
+        finally
+        {
+            if (!_disposed && !cancellationToken.IsCancellationRequested && generation == _embedDocumentLoadGeneration)
+            {
+                _embedDocumentLoading = false;
+                await RenderAsync();
+            }
+        }
     }
     private async Task JumpToLatestAsync()
     {
@@ -413,6 +558,8 @@
     public void Dispose()
     {
         _disposed = true;
+        _embedDocumentLoadCancellation?.Cancel();
+        _embedDocumentLoadCancellation?.Dispose();
         _ = Messaging.StopLocalTypingAsync(new(TypingConversationKind.CommunityChannel, Channel.Id, Community.Id));
         Messaging.Changed -= MessagesChanged;
     }

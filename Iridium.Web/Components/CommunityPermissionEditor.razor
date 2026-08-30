@@ -11,7 +11,10 @@
         <div class="scope-settings-nav-inner">
             <small>@SettingsTitle.ToUpperInvariant()</small>
             <button class="@(_section == SettingsSection.Overview ? "active" : null)" @onclick="() => SetSection(SettingsSection.Overview)">Overview</button>
-            <button class="@(_section == SettingsSection.Permissions ? "active" : null)" @onclick="() => SetSection(SettingsSection.Permissions)">Permissions</button>
+            @if (CanManageScopePermissions)
+            {
+                <button class="@(_section == SettingsSection.Permissions ? "active" : null)" @onclick="() => SetSection(SettingsSection.Permissions)">Permissions</button>
+            }
             <div class="scope-settings-nav-separator"></div>
             <button class="destructive" @onclick="OpenDeleteConfirmation"><Icon Name="trash" Size="15" /> Delete @(IsChannel ? "Channel" : "Category")</button>
         </div>
@@ -37,11 +40,64 @@
                             { <option value="@category.Id">@category.Name</option> }
                         </select>
                     </label>
+                    @if (CanManageScopePermissions)
+                    {
+                        <section class="private-scope-card">
+                            <div><strong>Private Channel</strong><span>Only selected members and roles will be able to view this channel.</span></div>
+                            <SettingsSwitch Value="_private" ValueChanged="SetPrivate" AriaLabel="Private Channel" />
+                        </section>
+                        @if (_private)
+                        {
+                            <section class="private-access-panel">
+                                <header><div><strong>Who can access this channel?</strong><span>Choose the roles and members who may see this channel.</span></div><button class="primary compact" @onclick="OpenAccessPicker"><Icon Name="plus" /> Add members or roles</button></header>
+                                <div class="access-group"><small>OWNER</small>
+                                    @if (Owner is { } owner)
+                                    { <div class="access-entry"><ProfileAvatar AccountId="owner.AccountId" DisplayName="owner.DisplayName" Size="tiny" Surface="base" /><span><strong>@owner.DisplayName</strong><small>Server Owner</small></span><Icon Name="lock" Size="13" /></div> }
+                                </div>
+                                @foreach (var access in PrivateAccessEntries)
+                                {
+                                    <div class="access-entry">
+                                        @if (access.Kind == "Member") { <ProfileAvatar AccountId="access.Id" DisplayName="access.Label" Size="tiny" Surface="base" /> }
+                                        else { <span class="role-dot" style="background:@access.Color"></span> }
+                                        <span><strong style="color:@access.Color">@access.Label</strong><small>@access.Kind</small></span>
+                                        <button class="icon-button" title="Remove access" @onclick="() => RemovePrivateAccess(access.Key)"><Icon Name="close" Size="14" /></button>
+                                    </div>
+                                }
+                            </section>
+                        }
+                    }
                     @if (Channel!.Kind == CommunityChannelKind.Forum)
                     {
+                        <section class="channel-embed-settings">
+                            <div class="channel-embed-toggle-row">
+                                <span><strong>Allow document embeds</strong><small>Allows permitted members to attach a supported document to Forum posts.</small></span>
+                                <SettingsSwitch Value="_allowDocumentEmbeds" ValueChanged="SetAllowDocumentEmbeds" AriaLabel="Allow document embeds" />
+                            </div>
+                        </section>
                         <ForumTagSettings Channel="Channel" Community="Community"
                                           AllowExternalEmoji="@CanUseExternalEmoji"
                                           RequireTag="_requireTag" RequireTagChanged="RequireTagChanged" />
+                    }
+                    else if (Channel.Kind == CommunityChannelKind.Text)
+                    {
+                        <section class="channel-embed-settings">
+                            <div class="channel-embed-toggle-row">
+                                <span><strong>Embed document</strong><small>Displays this document above the Channel's messages.</small></span>
+                                <SettingsSwitch Value="_embedEnabled" ValueChanged="SetEmbedEnabled" AriaLabel="Embed document" />
+                            </div>
+                            @if (_embedEnabled)
+                            {
+                                <label class="settings-field"><span>Provider</span>
+                                    <div class="scope-type-readonly"><Icon Name="file" /> Google Docs</div>
+                                </label>
+                                <label class="settings-field"><span>Document URL</span>
+                                    <input type="url" value="@_embedUrl" @oninput="EmbedUrlChanged"
+                                           placeholder="https://docs.google.com/document/d/.../edit" aria-describedby="embed-url-help" />
+                                </label>
+                                <p id="embed-url-help" class="channel-embed-help">Use an HTTPS Google Docs URL available to anyone with the link or published to the web. Google still controls document access.</p>
+                                @if (!string.IsNullOrWhiteSpace(_embedError)) { <p class="permission-error">@_embedError</p> }
+                            }
+                        </section>
                     }
                 }
                 <p class="settings-help">Changes remain local until you press Save Changes.</p>
@@ -52,28 +108,31 @@
                 @if (_loading) { <div class="permission-loading">Loading permissions...</div> }
                 else
                 {
-                    <section class="private-scope-card">
-                        <div><strong>Private @(IsChannel ? "Channel" : "Category")</strong><span>Only selected roles and members can view this @(IsChannel ? "channel" : "category").</span></div>
-                        <button type="button" class="iridium-toggle @(_private ? "on" : null)" role="switch" aria-checked="@_private" @onclick="TogglePrivate"><span></span></button>
-                    </section>
-                    @if (_private)
+                    @if (!IsChannel)
                     {
-                        <section class="private-access-panel">
-                            <header><div><strong>Who can access this @(IsChannel ? "channel" : "category")?</strong><span>Choose the roles and members who may see this @(IsChannel ? "channel" : "category").</span></div><button class="primary compact" @onclick="OpenAccessPicker"><Icon Name="plus" /> Add members or roles</button></header>
-                            <div class="access-group"><small>OWNER</small>
-                                @if (Owner is { } owner)
-                                { <div class="access-entry"><ProfileAvatar AccountId="owner.AccountId" DisplayName="owner.DisplayName" Size="tiny" Surface="base" /><span><strong>@owner.DisplayName</strong><small>Server Owner</small></span><Icon Name="lock" Size="13" /></div> }
-                            </div>
-                            @foreach (var access in PrivateAccessEntries)
-                            {
-                                <div class="access-entry">
-                                    @if (access.Kind == "Member") { <ProfileAvatar AccountId="access.Id" DisplayName="access.Label" Size="tiny" Surface="base" /> }
-                                    else { <span class="role-dot" style="background:@access.Color"></span> }
-                                    <span><strong style="color:@access.Color">@access.Label</strong><small>@access.Kind</small></span>
-                                    <button class="icon-button" title="Remove access" @onclick="() => RemovePrivateAccess(access.Key)"><Icon Name="close" Size="14" /></button>
-                                </div>
-                            }
+                        <section class="private-scope-card">
+                            <div><strong>Private Category</strong><span>Only selected members and roles will be able to view this category.</span></div>
+                            <SettingsSwitch Value="_private" ValueChanged="SetPrivate" AriaLabel="Private Category" />
                         </section>
+                        @if (_private)
+                        {
+                            <section class="private-access-panel">
+                                <header><div><strong>Who can access this category?</strong><span>Choose the roles and members who may see this category.</span></div><button class="primary compact" @onclick="OpenAccessPicker"><Icon Name="plus" /> Add members or roles</button></header>
+                                <div class="access-group"><small>OWNER</small>
+                                    @if (Owner is { } owner)
+                                    { <div class="access-entry"><ProfileAvatar AccountId="owner.AccountId" DisplayName="owner.DisplayName" Size="tiny" Surface="base" /><span><strong>@owner.DisplayName</strong><small>Server Owner</small></span><Icon Name="lock" Size="13" /></div> }
+                                </div>
+                                @foreach (var access in PrivateAccessEntries)
+                                {
+                                    <div class="access-entry">
+                                        @if (access.Kind == "Member") { <ProfileAvatar AccountId="access.Id" DisplayName="access.Label" Size="tiny" Surface="base" /> }
+                                        else { <span class="role-dot" style="background:@access.Color"></span> }
+                                        <span><strong style="color:@access.Color">@access.Label</strong><small>@access.Kind</small></span>
+                                        <button class="icon-button" title="Remove access" @onclick="() => RemovePrivateAccess(access.Key)"><Icon Name="close" Size="14" /></button>
+                                    </div>
+                                }
+                            </section>
+                        }
                     }
                     @if (IsChannel && _scope?.PermissionsSyncedToCategory == true)
                     { <div class="sync-note"><Icon Name="lock" /> <span>Permissions are synced with @ParentCategoryName. Saving a change will make this channel independent.</span></div> }
@@ -198,10 +257,10 @@
     private enum SettingsSection { Overview, Permissions }
     private SettingsSection _section; private PermissionOverwriteScopeDto? _scope;
     private bool _loading = true, _busy, _pickerOpen, _pickerForAccess, _confirmClose, _confirmDelete;
-    private bool _permissionsDirty, _overviewDirty, _requireTag; private string _selected = EveryoneKey, _search = "", _pickerTab = "Roles";
+    private bool _permissionsDirty, _overviewDirty, _requireTag, _embedEnabled, _allowDocumentEmbeds; private string _selected = EveryoneKey, _search = "", _pickerTab = "Roles";
     private bool _serverStateChanged, _disposed;
     private long _deferredRealtimeRevision;
-    private string _name = "", _categoryValue = ""; private string? _error;
+    private string _name = "", _categoryValue = "", _embedUrl = ""; private string? _error, _embedError;
     private string? _targetContextKey; private double _targetContextX, _targetContextY;
     private readonly Dictionary<string, PermissionOverwriteDto> _drafts = [];
     private readonly Dictionary<string, PermissionOverwriteDto> _savedDrafts = [];
@@ -216,8 +275,16 @@
     private string ParentCategoryName => State.Categories.FirstOrDefault(value => value.Id == Channel?.CategoryId)?.Name ?? "parent category";
     private bool CanUseExternalEmoji => State.IsOwner ||
         (Channel!.EffectivePermissions & (CommunityPermission.Administrator | CommunityPermission.UseExternalEmoji)) != 0;
+    private CommunityPermission CurrentScopePermissions => Channel is { } channel
+        ? State.Channels.FirstOrDefault(value => value.Id == channel.Id)?.EffectivePermissions ?? channel.EffectivePermissions
+        : Category is { } category
+            ? State.Categories.FirstOrDefault(value => value.Id == category.Id)?.EffectivePermissions ?? category.EffectivePermissions
+            : CommunityPermission.None;
+    private bool CanManageScopePermissions => State.IsOwner ||
+        ((CurrentScopePermissions &
+          (CommunityPermission.Administrator | CommunityPermission.ManagePermissions)) != 0);
 
-    private static readonly CommunityPermission[] TextPermissions = [CommunityPermission.SendMessages, CommunityPermission.CreateForumPosts, CommunityPermission.ReadMessageHistory, CommunityPermission.ManageMessages, CommunityPermission.AttachFiles, CommunityPermission.EmbedLinks, CommunityPermission.AddReactions, CommunityPermission.UseExternalEmoji, CommunityPermission.MentionEveryone];
+    private static readonly CommunityPermission[] TextPermissions = [CommunityPermission.SendMessages, CommunityPermission.CreateForumPosts, CommunityPermission.EmbedDocumentsInForumPosts, CommunityPermission.ReadMessageHistory, CommunityPermission.ManageMessages, CommunityPermission.AttachFiles, CommunityPermission.EmbedLinks, CommunityPermission.AddReactions, CommunityPermission.UseExternalEmoji, CommunityPermission.MentionEveryone];
     private static readonly CommunityPermission[] VoicePermissions = [CommunityPermission.ConnectVoice, CommunityPermission.SpeakVoice, CommunityPermission.ShareScreen, CommunityPermission.MuteMembers, CommunityPermission.DeafenMembers, CommunityPermission.MoveMembers];
     private IEnumerable<(string Name, IReadOnlyList<CommunityPermission> Permissions)> PermissionGroups { get { yield return ("General", CommunityPermissionCatalog.GeneralOverwritePermissions); if (Channel?.Kind is CommunityChannelKind.Text or CommunityChannelKind.Forum) yield return ("Text", TextPermissions); if (Channel?.Kind == CommunityChannelKind.Voice) yield return ("Voice", VoicePermissions); if (Category is not null) { yield return ("Text", TextPermissions); yield return ("Voice", VoicePermissions); } } }
     private IEnumerable<(string Key,string Label,string Kind)> Subjects => _drafts.Keys.Where(value => value != EveryoneKey).Select(Describe).OrderBy(value => value.Kind).ThenBy(value => value.Label);
@@ -239,11 +306,26 @@
     protected override async Task OnInitializedAsync()
     {
         State.Changed += OnCommunityStateChanged;
-        _section = Enum.TryParse<SettingsSection>(InitialSection, true, out var parsed) ? parsed : SettingsSection.Overview;
+        _section = Enum.TryParse<SettingsSection>(InitialSection, true, out var parsed) &&
+                   (parsed != SettingsSection.Permissions || CanManageScopePermissions)
+            ? parsed : SettingsSection.Overview;
         _confirmDelete = string.Equals(InitialSection, "Delete", StringComparison.OrdinalIgnoreCase);
         _name = ScopeName; _categoryValue = Channel?.CategoryId?.ToString() ?? "";
         _requireTag = Channel?.RequireTag == true;
-        try { if (State.Management is null) await State.LoadManagementAsync(); await LoadPermissionsAsync(); }
+        _allowDocumentEmbeds = Channel?.AllowDocumentEmbeds == true;
+        _embedEnabled = Channel?.EmbedProvider is not null && !string.IsNullOrWhiteSpace(Channel.EmbedUrl);
+        _embedUrl = Channel?.EmbedUrl ?? "";
+        try
+        {
+            if (CanManageScopePermissions)
+            {
+                if (State.Management is null) await State.LoadManagementAsync();
+                await LoadPermissionsAsync();
+            }
+            else
+                _drafts[EveryoneKey] = new(PermissionOverwriteTargetType.Everyone, null,
+                    CommunityPermission.None, CommunityPermission.None);
+        }
         catch (Exception exception) { _error = exception.Message; }
         finally { _loading = false; }
     }
@@ -281,8 +363,8 @@
         }
         _section = value;
     }
-    private void NameChanged(ChangeEventArgs args){_name=args.Value?.ToString()??"";_overviewDirty=_name!=ScopeName||_categoryValue!=(Channel?.CategoryId?.ToString()??"");}
-    private void CategoryChanged(ChangeEventArgs args){_categoryValue=args.Value?.ToString()??"";_overviewDirty=_name!=ScopeName||_categoryValue!=(Channel?.CategoryId?.ToString()??"");}
+    private void NameChanged(ChangeEventArgs args){_name=args.Value?.ToString()??"";RecalculateOverviewDirty();}
+    private void CategoryChanged(ChangeEventArgs args){_categoryValue=args.Value?.ToString()??"";RecalculateOverviewDirty();}
     private void Select(string key)=>_selected=key;
     private PermissionOverwriteValue Value(CommunityPermission permission)
     {
@@ -308,11 +390,23 @@
         }
         _permissionsDirty = true;
     }
+    private void SetPrivate(bool value) { if (value != _private) TogglePrivate(); }
     private void OpenSubjectPicker(){_pickerForAccess=false;_pickerOpen=true;_search="";}
     private void OpenAccessPicker(){_pickerForAccess=true;_pickerOpen=true;_search="";}
     private void ClosePicker(){_pickerOpen=false;}
     private void SearchChanged(ChangeEventArgs args)=>_search=args.Value?.ToString()??"";
-    private void RequireTagChanged(bool value) { _requireTag = value; _overviewDirty = true; }
+    private void RequireTagChanged(bool value) { _requireTag = value; RecalculateOverviewDirty(); }
+    private void SetAllowDocumentEmbeds(bool value) { _allowDocumentEmbeds = value; RecalculateOverviewDirty(); }
+    private void SetEmbedEnabled(bool value) { _embedEnabled = value; _embedError = null; RecalculateOverviewDirty(); }
+    private void EmbedUrlChanged(ChangeEventArgs args) { _embedUrl = args.Value?.ToString() ?? ""; _embedError = null; RecalculateOverviewDirty(); }
+    private void RecalculateOverviewDirty()
+    {
+        var originallyEnabled = Channel?.EmbedProvider is not null && !string.IsNullOrWhiteSpace(Channel.EmbedUrl);
+        _overviewDirty = _name != ScopeName || _categoryValue != (Channel?.CategoryId?.ToString() ?? "") ||
+                         _requireTag != (Channel?.RequireTag == true) || _embedEnabled != originallyEnabled ||
+                         _allowDocumentEmbeds != (Channel?.AllowDocumentEmbeds == true) ||
+                         (_embedEnabled && !string.Equals(_embedUrl.Trim(), Channel?.EmbedUrl, StringComparison.Ordinal));
+    }
     private void SelectRolesTab() => _pickerTab = "Roles";
     private void SelectMembersTab() => _pickerTab = "Members";
     private void AddSubject(string key){var(type,id)=ParseKey(key);if(!_drafts.TryGetValue(key,out var row))row=new(type,id,CommunityPermission.None,CommunityPermission.None);if(_pickerForAccess)row=row with{Allow=row.Allow|CommunityPermission.ViewChannels,Deny=row.Deny&~CommunityPermission.ViewChannels};_drafts[key]=row;_selected=key;_permissionsDirty=true;_pickerOpen=false;}
@@ -335,6 +429,12 @@
     private void RemovePrivateAccess(string key){var row=_drafts[key];_drafts[key]=row with{Allow=row.Allow&~CommunityPermission.ViewChannels};_permissionsDirty=true;}
     private async Task SaveAsync()
     {
+        if (_overviewDirty && IsChannel && Channel!.Kind == CommunityChannelKind.Text && _embedEnabled &&
+            !CommunityChannelEmbeds.TryGoogleDocs(_embedUrl, out _))
+        {
+            _embedError = "Enter a valid HTTPS Google Docs document URL.";
+            return;
+        }
         _busy = true;
         _error = null;
         try
@@ -344,7 +444,9 @@
                 if (IsChannel)
                 {
                     Guid? category = Guid.TryParse(_categoryValue, out var id) ? id : null;
-                    await OnSaveChannel.InvokeAsync(new(Channel!.Id, _name, category, Channel.Kind, _requireTag));
+                    await OnSaveChannel.InvokeAsync(new(Channel!.Id, _name, category, Channel.Kind, _requireTag,
+                        _embedEnabled ? CommunityChannelEmbedProvider.GoogleDocs : null,
+                        _embedEnabled ? _embedUrl.Trim() : null, _allowDocumentEmbeds));
                 }
                 else await OnSaveCategory.InvokeAsync(new(Category!.Id, _name, Category.ParentCategoryId));
                 _overviewDirty = false;
@@ -376,6 +478,11 @@
     {
         _name = ScopeName;
         _categoryValue = Channel?.CategoryId?.ToString() ?? "";
+        _requireTag = Channel?.RequireTag == true;
+        _allowDocumentEmbeds = Channel?.AllowDocumentEmbeds == true;
+        _embedEnabled = Channel?.EmbedProvider is not null && !string.IsNullOrWhiteSpace(Channel.EmbedUrl);
+        _embedUrl = Channel?.EmbedUrl ?? "";
+        _embedError = null;
         _overviewDirty = false;
         if (_serverStateChanged)
         {
@@ -423,6 +530,7 @@
     private void OnCommunityStateChanged() => _ = InvokeAsync(async () =>
     {
         if (_disposed) return;
+        if (!CanManageScopePermissions) { StateHasChanged(); return; }
         var revision = State.AppliedRevision;
         if (_busy || IsDirty)
         {
@@ -477,8 +585,8 @@
     }
     private static string Key(PermissionOverwriteTargetType type,Guid? id)=>type==PermissionOverwriteTargetType.Everyone?EveryoneKey:$"{type.ToString().ToLowerInvariant()}:{id}";
     private static (PermissionOverwriteTargetType Type,Guid? Id) ParseKey(string key){if(key==EveryoneKey)return(PermissionOverwriteTargetType.Everyone,null);var parts=key.Split(':',2);return(Enum.Parse<PermissionOverwriteTargetType>(parts[0],true),Guid.Parse(parts[1]));}
-    private static string Label(CommunityPermission permission)=>string.Concat(permission.ToString().Select((c,i)=>i>0&&char.IsUpper(c)?$" {c}":c.ToString()));
-    private static string Description(CommunityPermission permission)=>permission switch{CommunityPermission.ManageChannels=>"Allows editing channel or category settings.",CommunityPermission.ManagePermissions=>"Allows editing permission overwrites.",CommunityPermission.SendMessages=>"Allows sending messages in text channels.",CommunityPermission.ReadMessageHistory=>"Allows loading messages sent previously.",CommunityPermission.AddReactions=>"Allows members to add new emoji reactions to messages. Members may still use reactions already present when this is denied.",CommunityPermission.UseExternalEmoji=>"Allows members to use custom emoji from other Servers.",CommunityPermission.ConnectVoice=>"Allows joining voice channels.",CommunityPermission.SpeakVoice=>"Allows transmitting microphone audio.",CommunityPermission.ShareScreen=>"Allows publishing a screen stream.",_=>$"Controls {Label(permission).ToLowerInvariant()} in this scope."};
+    private static string Label(CommunityPermission permission)=>permission == CommunityPermission.EmbedDocumentsInForumPosts ? "Embed Documents in Posts" : string.Concat(permission.ToString().Select((c,i)=>i>0&&char.IsUpper(c)?$" {c}":c.ToString()));
+    private static string Description(CommunityPermission permission)=>permission switch{CommunityPermission.ManageChannels=>"Allows editing channel or category settings.",CommunityPermission.ManagePermissions=>"Allows editing permission overwrites.",CommunityPermission.SendMessages=>"Allows sending messages in text channels.",CommunityPermission.EmbedDocumentsInForumPosts=>"Allows members to attach supported documents when creating or editing Forum posts.",CommunityPermission.ReadMessageHistory=>"Allows loading messages sent previously.",CommunityPermission.AddReactions=>"Allows members to add new emoji reactions to messages. Members may still use reactions already present when this is denied.",CommunityPermission.UseExternalEmoji=>"Allows members to use custom emoji from other Servers.",CommunityPermission.ConnectVoice=>"Allows joining voice channels.",CommunityPermission.SpeakVoice=>"Allows transmitting microphone audio.",CommunityPermission.ShareScreen=>"Allows publishing a screen stream.",_=>$"Controls {Label(permission).ToLowerInvariant()} in this scope."};
     public void Dispose()
     {
         _disposed = true;

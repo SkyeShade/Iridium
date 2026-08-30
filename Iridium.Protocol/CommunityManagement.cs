@@ -28,11 +28,13 @@ public enum CommunityPermission : long
     ManageExpressions = 1L << 21,
     CreateForumPosts = 1L << 22,
     UseExternalEmoji = 1L << 23,
+    EmbedDocumentsInForumPosts = 1L << 24,
     Administrator = 1L << 62,
     All = ViewChannels | SendMessages | ManageMessages | ManageChannels | ManageCommunity |
           ManageRoles | CreateInvites | KickMembers | BanMembers | MentionEveryone | ConnectVoice | SpeakVoice |
           ShareScreen | ManagePermissions | ReadMessageHistory | AttachFiles | EmbedLinks | AddReactions |
-          MuteMembers | DeafenMembers | MoveMembers | ManageExpressions | CreateForumPosts | UseExternalEmoji
+          MuteMembers | DeafenMembers | MoveMembers | ManageExpressions | CreateForumPosts | UseExternalEmoji |
+          EmbedDocumentsInForumPosts
 }
 
 public enum PermissionOverwriteScopeType { Category, Channel }

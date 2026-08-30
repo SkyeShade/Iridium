@@ -80,8 +80,8 @@ public sealed class CommunityPermissionOverwriteTests
                 CommunityPermission.SendMessages };
         var category = new CommunityCategory { Id = Guid.NewGuid(), CommunityId = community.Id, Community = community,
             Name = "private", Position = 0 };
-        var synced = Channel(community, category, "synced", true);
-        var custom = Channel(community, category, "custom", false);
+        var synced = Channel(community, category, "synced", true, CommunityChannelKind.Forum);
+        var custom = Channel(community, category, "custom", false, CommunityChannelKind.Forum);
         db.AddRange(owner, member, community, membership, everyone, category, synced, custom,
             Row(community, PermissionOverwriteScopeType.Category, category.Id, CommunityPermission.None,
                 CommunityPermission.ViewChannels),
@@ -114,7 +114,7 @@ public sealed class CommunityPermissionOverwriteTests
             Name = "Admin", Permissions = CommunityPermission.Administrator };
         var assignment = new CommunityMemberRole { CommunityId = community.Id, AccountId = admin.Id,
             RoleId = role.Id, Member = membership, Role = role };
-        var channel = Channel(community, null, "hidden", false);
+        var channel = Channel(community, null, "hidden", false, CommunityChannelKind.Forum);
         db.AddRange(owner, admin, community, membership, role, assignment, channel,
             Row(community, PermissionOverwriteScopeType.Channel, channel.Id, CommunityPermission.None,
                 CommunityPermission.ViewChannels));
@@ -147,9 +147,11 @@ public sealed class CommunityPermissionOverwriteTests
             Name = "Moderator", Permissions = CommunityPermission.None };
         var assignment = new CommunityMemberRole { CommunityId = community.Id, AccountId = moderator.Id,
             RoleId = moderatorRole.Id, Member = moderatorMember, Role = moderatorRole };
-        var channel = Channel(community, null, "staff", false);
+        var channel = Channel(community, null, "staff", false, CommunityChannelKind.Forum);
+        var discussion = Channel(community, null, "forum-post", false);
+        discussion.ParentForumChannelId = channel.Id;
         db.AddRange(owner, moderator, alice, bob, community, moderatorMember, aliceMember, bobMember, everyone,
-            moderatorRole, assignment, channel,
+            moderatorRole, assignment, channel, discussion,
             Row(community, PermissionOverwriteScopeType.Channel, channel.Id,
                 PermissionOverwriteTargetType.Everyone, null, CommunityPermission.None, CommunityPermission.ViewChannels),
             Row(community, PermissionOverwriteScopeType.Channel, channel.Id,
@@ -168,15 +170,20 @@ public sealed class CommunityPermissionOverwriteTests
         Assert.True(aliceAccess.Has(CommunityPermission.SendMessages));
         Assert.False((await authorization.GetChannelAccessAsync(community.Id, channel.Id, bob.Id, db))
             .Has(CommunityPermission.ViewChannels));
+        Assert.True((await authorization.GetChannelAccessAsync(community.Id, discussion.Id, alice.Id, db))
+            .Has(CommunityPermission.ViewChannels));
+        Assert.False((await authorization.GetChannelAccessAsync(community.Id, discussion.Id, bob.Id, db))
+            .Has(CommunityPermission.ViewChannels));
         Assert.True((await authorization.GetChannelAccessAsync(community.Id, channel.Id, owner.Id, db))
             .Has(CommunityPermission.ViewChannels));
     }
 
     private static NodeAccount Account(string name) => new() { Id = Guid.NewGuid(), Username = name,
         DisplayName = name, PasswordHash = "test", CreatedAt = DateTimeOffset.UtcNow };
-    private static CommunityChannel Channel(Community community, CommunityCategory? category, string name, bool synced) =>
+    private static CommunityChannel Channel(Community community, CommunityCategory? category, string name, bool synced,
+        CommunityChannelKind kind = CommunityChannelKind.Text) =>
         new() { Id = Guid.NewGuid(), CommunityId = community.Id, Community = community, Category = category,
-            CategoryId = category?.Id, Name = name, Kind = CommunityChannelKind.Text, Position = 0,
+            CategoryId = category?.Id, Name = name, Kind = kind, Position = 0,
             CreatedAt = DateTimeOffset.UtcNow, PermissionsSyncedToCategory = synced };
     private static CommunityMember Member(Community community, NodeAccount account) => new()
     {

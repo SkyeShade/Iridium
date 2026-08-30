@@ -7,7 +7,7 @@ namespace Iridium.Tests;
 public sealed class CommunityForumSchemaCompatibilityTests
 {
     [Fact]
-    public async Task PreForumTagDatabaseUpgradesBeforeEntityMigrationAndIsIdempotent()
+    public async Task PreForumTagAndEmbedDatabaseUpgradesBeforeEntityMigrationAndIsIdempotent()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -34,6 +34,20 @@ public sealed class CommunityForumSchemaCompatibilityTests
                     Position INTEGER NOT NULL,
                     CreatedAt TEXT NOT NULL,
                     PRIMARY KEY (CommunityId, Id));
+                CREATE TABLE CommunityForumPosts (
+                    Id TEXT NOT NULL PRIMARY KEY,
+                    CommunityId TEXT NOT NULL,
+                    ForumChannelId TEXT NOT NULL,
+                    DiscussionChannelId TEXT NOT NULL,
+                    RootMessageId TEXT NOT NULL,
+                    AuthorAccountId TEXT NOT NULL,
+                    Title TEXT NOT NULL,
+                    CreatedAt INTEGER NOT NULL,
+                    UpdatedAt INTEGER NOT NULL,
+                    LastActivityAt INTEGER NOT NULL,
+                    ReplyCount INTEGER NOT NULL DEFAULT 0,
+                    IsLocked INTEGER NOT NULL DEFAULT 0,
+                    IsPinned INTEGER NOT NULL DEFAULT 0);
                 INSERT INTO Communities (Id) VALUES ('AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA');
                 INSERT INTO CommunityChannels
                     (CommunityId, Id, CategoryId, ParentForumChannelId, Name, Kind,
@@ -42,6 +56,17 @@ public sealed class CommunityForumSchemaCompatibilityTests
                     ('AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA',
                      'BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB', NULL, NULL,
                      'existing-forum', 2, 0, 9, '2026-01-01 00:00:00+00:00');
+                INSERT INTO CommunityForumPosts
+                    (Id, CommunityId, ForumChannelId, DiscussionChannelId, RootMessageId, AuthorAccountId,
+                     Title, CreatedAt, UpdatedAt, LastActivityAt)
+                VALUES
+                    ('CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC',
+                     'AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA',
+                     'BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB',
+                     'DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD',
+                     'EEEEEEEE-EEEE-EEEE-EEEE-EEEEEEEEEEEE',
+                     'FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF',
+                     'existing-post', 1, 1, 1);
                 """;
             await setup.ExecuteNonQueryAsync();
         }
@@ -57,10 +82,19 @@ public sealed class CommunityForumSchemaCompatibilityTests
 
         var channel = await db.CommunityChannels.SingleAsync();
         Assert.False(channel.RequireTag);
+        Assert.False(channel.AllowDocumentEmbeds);
+        Assert.Null(channel.EmbedProvider);
+        Assert.Null(channel.EmbedUrl);
         Assert.Equal(0, channel.Position);
+        var post = await db.CommunityForumPosts.SingleAsync();
+        Assert.Null(post.EmbedProvider);
+        Assert.Null(post.EmbedUrl);
 
         var channelColumns = await ReadNamesAsync(connection, "PRAGMA table_info('CommunityChannels');", 1);
         Assert.Contains("RequireTag", channelColumns);
+        Assert.Contains("EmbedProvider", channelColumns);
+        Assert.Contains("EmbedUrl", channelColumns);
+        Assert.Contains("AllowDocumentEmbeds", channelColumns);
         Assert.Equal(1L, await ScalarAsync(connection,
             "SELECT [notnull] FROM pragma_table_info('CommunityChannels') WHERE name = 'RequireTag';"));
         Assert.Equal("0", await ScalarTextAsync(connection,
@@ -68,6 +102,8 @@ public sealed class CommunityForumSchemaCompatibilityTests
 
         Assert.Equal(1L, await TableExistsAsync(connection, "CommunityForumTags"));
         Assert.Equal(1L, await TableExistsAsync(connection, "CommunityForumPostTags"));
+        var postColumns = await ReadNamesAsync(connection, "PRAGMA table_info('CommunityForumPosts');", 1);
+        AssertContains(postColumns, "EmbedProvider", "EmbedUrl");
 
         var tagColumns = await ReadNamesAsync(connection, "PRAGMA table_info('CommunityForumTags');", 1);
         AssertContains(tagColumns, "Id", "CommunityId", "ChannelId", "Name", "EmojiKind", "StandardEmoji",
@@ -86,7 +122,7 @@ public sealed class CommunityForumSchemaCompatibilityTests
     }
 
     [Fact]
-    public async Task FreshDatabaseIncludesForumTagSchemaWithoutCompatibilityAlter()
+    public async Task FreshDatabaseIncludesForumTagAndEmbedSchemaWithoutCompatibilityAlter()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -97,6 +133,11 @@ public sealed class CommunityForumSchemaCompatibilityTests
 
         var columns = await ReadNamesAsync(connection, "PRAGMA table_info('CommunityChannels');", 1);
         Assert.Contains("RequireTag", columns);
+        Assert.Contains("EmbedProvider", columns);
+        Assert.Contains("EmbedUrl", columns);
+        Assert.Contains("AllowDocumentEmbeds", columns);
+        var postColumns = await ReadNamesAsync(connection, "PRAGMA table_info('CommunityForumPosts');", 1);
+        AssertContains(postColumns, "EmbedProvider", "EmbedUrl");
         Assert.Equal(1L, await TableExistsAsync(connection, "CommunityForumTags"));
         Assert.Equal(1L, await TableExistsAsync(connection, "CommunityForumPostTags"));
     }
