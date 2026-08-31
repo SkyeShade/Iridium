@@ -35,7 +35,10 @@ builder.Services.AddScoped<CommunityVoicePermissionEnforcer>();
 builder.Services.AddSingleton<ProfileRealtimePublisher>();
 builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<GoogleDocsDocumentParser>();
-builder.Services.AddHttpClient<IGoogleDocsPublishedDocumentService, GoogleDocsPublishedDocumentService>()
+builder.Services.AddSingleton<GoogleSheetsHtmlParser>();
+builder.Services.AddSingleton<GoogleSheetsXlsxParser>();
+builder.Services.AddSingleton(GoogleDocsImportSettings.Default);
+builder.Services.AddHttpClient(GoogleDocsPublishedDocumentService.HttpClientName)
     .ConfigureHttpClient(client =>
     {
         // Source and media requests use separate linked cancellation windows in the provider.
@@ -47,6 +50,9 @@ builder.Services.AddHttpClient<IGoogleDocsPublishedDocumentService, GoogleDocsPu
         AllowAutoRedirect = false,
         AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
     });
+builder.Services.AddSingleton<IGoogleDocsPublishedDocumentService, GoogleDocsPublishedDocumentService>();
+builder.Services.AddSingleton<GoogleSheetsPublishedService>();
+builder.Services.AddSingleton<IEmbeddedContentService, EmbeddedContentService>();
 builder.Services.Configure<NodeOptions>(builder.Configuration.GetSection(NodeOptions.SectionName));
 builder.Services.Configure<EmailOptions>(builder.Configuration.GetSection(EmailOptions.SectionName));
 builder.Services.Configure<AccountSecurityOptions>(builder.Configuration.GetSection(AccountSecurityOptions.SectionName));
@@ -187,6 +193,7 @@ app.MapCommunityForumEndpoints();
 app.MapCommunityForumTagEndpoints();
 app.MapMessageEndpoints();
 app.MapDirectMessageEndpoints();
+app.MapMessageDocumentEndpoints();
 app.MapCommunityManagementEndpoints();
 app.MapAttachmentEndpoints();
 app.MapAvatarPresetEndpoints();

@@ -32,8 +32,8 @@ public static class CommunityForumEndpoints
     }
 
     private static async Task<IResult> GetEmbedDocumentAsync(Guid communityId, Guid channelId, Guid postId,
-        HttpContext context, IridiumDbContext db, SessionService sessions,
-        CommunityAuthorizationService authorization, IGoogleDocsPublishedDocumentService documents,
+        bool? refresh, HttpContext context, IridiumDbContext db, SessionService sessions,
+        CommunityAuthorizationService authorization, IEmbeddedContentService documents,
         CancellationToken cancellationToken)
     {
         var session = await sessions.GetAsync(context, db);
@@ -43,15 +43,17 @@ public static class CommunityForumEndpoints
         if (post is null) return Results.NotFound();
         var access = await authorization.GetChannelAccessAsync(communityId, channelId, session.AccountId, db);
         if (!access.Has(CommunityPermission.ViewChannels)) return Results.NotFound();
-        if (!CommunityChannelEmbeds.TryResolve(post.EmbedProvider, post.EmbedUrl, out var configuration) ||
-            configuration?.FetchUrl is null)
+        if (!CommunityChannelEmbeds.TryResolveContent(post.EmbedUrl, out var configuration) ||
+            configuration is null)
             return Results.Ok(new ChannelEmbedDocumentDto(ChannelEmbedDocumentStatus.Unsupported, null));
-        return Results.Ok(await documents.GetAsync(configuration, cancellationToken));
+        return Results.Ok(refresh == true
+            ? await documents.RefreshAsync(configuration, cancellationToken)
+            : await documents.GetAsync(configuration, cancellationToken));
     }
 
     private static async Task<IResult> GetEmbedDocumentMediaAsync(Guid communityId, Guid channelId, Guid postId,
         string mediaId, HttpContext context, IridiumDbContext db, SessionService sessions,
-        CommunityAuthorizationService authorization, IGoogleDocsPublishedDocumentService documents,
+        CommunityAuthorizationService authorization, IEmbeddedContentService documents,
         CancellationToken cancellationToken)
     {
         var session = await sessions.GetAsync(context, db);
@@ -61,8 +63,8 @@ public static class CommunityForumEndpoints
         if (post is null) return Results.NotFound();
         var access = await authorization.GetChannelAccessAsync(communityId, channelId, session.AccountId, db);
         if (!access.Has(CommunityPermission.ViewChannels) ||
-            !CommunityChannelEmbeds.TryResolve(post.EmbedProvider, post.EmbedUrl, out var configuration) ||
-            configuration?.FetchUrl is null) return Results.NotFound();
+            !CommunityChannelEmbeds.TryResolveContent(post.EmbedUrl, out var configuration) ||
+            configuration is null) return Results.NotFound();
         var media = await documents.GetMediaAsync(configuration, mediaId, cancellationToken);
         return media is null ? Results.NotFound() : Results.File(media.Bytes, media.ContentType,
             enableRangeProcessing: false);
@@ -395,11 +397,10 @@ public static class CommunityForumEndpoints
         if (embed is null || embed is { Provider: null, Url: null }) return (null, null, null);
         if (!forumAllows) return (null, null, "This Forum does not allow document embeds.");
         if (!permitted) return (null, null, "You do not have permission to embed documents in Forum Posts.");
-        if (embed.Provider != CommunityChannelEmbedProvider.GoogleDocs ||
-            !CommunityChannelEmbeds.TryGoogleDocs(embed.Url, out var configuration))
-            return (null, null, "Enter a valid Google Docs document URL.");
-        return (CommunityChannelEmbedProvider.GoogleDocs,
-            configuration!.CanonicalUrl ?? configuration.OpenUrl, null);
+        if (!CommunityChannelEmbeds.TryResolveContent(embed.Url, out var configuration) ||
+            configuration is null)
+            return (null, null, "Enter a valid Google Docs or Google Sheets URL.");
+        return (configuration.Provider, configuration.OpenUrl, null);
     }
 
     internal static async Task PublishAsync(Guid communityId, Guid channelId, CommunityForumPostChangedEvent change,

@@ -1,0 +1,123 @@
+@using Iridium.Client.Core
+@using Iridium.Protocol
+@implements IDisposable
+@inject NodeSession Session
+@inject ILogger<MessageDocumentPreview> Logger
+
+<section class="message-document-preview @(Source.Provider == CommunityChannelEmbedProvider.GoogleSheets ? "sheet-preview" : "document-preview") @(_expanded ? "expanded" : "collapsed")" aria-label="@Source.ProviderName preview">
+    <header>
+        <span class="document-label"><Icon Name="file" Size="16" /><strong>@Source.ContentName</strong><small>@Source.ProviderName</small></span>
+        <span class="document-actions">
+            <button type="button" disabled="@_refreshing" @onclick="RefreshAsync">@(_refreshing ? "Refreshing…" : "Refresh")</button>
+            <a href="@Source.OpenUrl" target="_blank" rel="noopener noreferrer">Open in @Source.ProviderName <span aria-hidden="true">↗</span></a>
+        </span>
+    </header>
+    <div class="message-document-body">
+        @if (_loading)
+        {
+            <div class="message-document-state"><span class="loading" aria-hidden="true"></span>Loading document…</div>
+        }
+        else if (_document is { Status: ChannelEmbedDocumentStatus.Ready, Document: { } document })
+        {
+            @if (_document.IsStale) { <div class="message-document-stale">Showing the last available version.</div> }
+            <EmbeddedDocumentView Document="document" CommunityId="CommunityId" ChannelId="ChannelId"
+                                  MessageId="MessageId" DocumentId="@Source.RequestIdentity" />
+        }
+        else if (_document is { Status: ChannelEmbedDocumentStatus.Ready, Sheet: { } sheet })
+        {
+            @if (_document.IsStale) { <div class="message-document-stale">Showing the last available version.</div> }
+            <EmbeddedSheetView Sheet="sheet" CommunityId="CommunityId" ChannelId="ChannelId"
+                               MessageId="MessageId" DocumentId="@Source.RequestIdentity" />
+        }
+        else
+        {
+            <div class="message-document-state unavailable">
+                <strong>This @Source.ProviderName item couldn't be loaded.</strong>
+                <a href="@Source.OpenUrl" target="_blank" rel="noopener noreferrer">Open in @Source.ProviderName</a>
+            </div>
+        }
+    </div>
+    <footer>
+        <button type="button" aria-expanded="@_expanded" @onclick="ToggleExpanded">
+            @(_expanded ? "Collapse document" : "Expand document")
+        </button>
+    </footer>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public Guid MessageId { get; set; }
+    [Parameter, EditorRequired] public Guid CommunityId { get; set; }
+    [Parameter, EditorRequired] public Guid ChannelId { get; set; }
+    [Parameter, EditorRequired] public required EmbeddedContentConfiguration Source { get; set; }
+    private string? _sourceKey;
+    private ChannelEmbedDocumentDto? _document;
+    private CancellationTokenSource? _loadCancellation;
+    private bool _loading;
+    private bool _refreshing;
+    private bool _expanded;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var key = $"{MessageId:N}:{Source.CacheIdentity}";
+        if (key == _sourceKey) return;
+        _sourceKey = key;
+        _expanded = false;
+        _document = null;
+        _loading = true;
+        _loadCancellation?.Cancel();
+        _loadCancellation?.Dispose();
+        var cancellation = _loadCancellation = new();
+        try
+        {
+            _document = CommunityId == Guid.Empty
+                ? await Session.GetDirectMessageEmbedDocumentAsync(ChannelId, MessageId, Source.RequestIdentity,
+                    cancellation.Token)
+                : await Session.GetCommunityMessageEmbedDocumentAsync(CommunityId, ChannelId, MessageId,
+                    Source.RequestIdentity, cancellation.Token);
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+        catch (Exception exception)
+        {
+            Logger.LogWarning(exception, "Message document {DocumentId} could not be loaded for message {MessageId}.",
+                Source.RequestIdentity, MessageId);
+            if (!cancellation.IsCancellationRequested)
+                _document = new(ChannelEmbedDocumentStatus.TemporaryFailure, null);
+        }
+        finally
+        {
+            if (!cancellation.IsCancellationRequested) _loading = false;
+        }
+    }
+
+    private void ToggleExpanded() => _expanded = !_expanded;
+
+    private async Task RefreshAsync()
+    {
+        if (_refreshing) return;
+        var sourceKey = _sourceKey;
+        var cancellationToken = _loadCancellation?.Token ?? CancellationToken.None;
+        _refreshing = true;
+        try
+        {
+            var document = CommunityId == Guid.Empty
+                ? await Session.RefreshDirectMessageEmbedDocumentAsync(ChannelId, MessageId, Source.RequestIdentity,
+                    cancellationToken)
+                : await Session.RefreshCommunityMessageEmbedDocumentAsync(CommunityId, ChannelId, MessageId,
+                    Source.RequestIdentity, cancellationToken);
+            if (!cancellationToken.IsCancellationRequested && sourceKey == _sourceKey) _document = document;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+        catch (Exception exception)
+        {
+            Logger.LogWarning(exception, "Message document {DocumentId} could not be refreshed for message {MessageId}.",
+                Source.RequestIdentity, MessageId);
+        }
+        finally { if (sourceKey == _sourceKey) _refreshing = false; }
+    }
+
+    public void Dispose()
+    {
+        _loadCancellation?.Cancel();
+        _loadCancellation?.Dispose();
+    }
+}

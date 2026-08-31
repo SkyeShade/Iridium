@@ -357,11 +357,65 @@ public sealed class NodeClient(Uri nodeAddress)
         SendAsync<ChannelEmbedDocumentDto>(HttpMethod.Get,
             $"api/communities/{communityId}/channels/{channelId}/embed-document", null, cancellationToken);
 
+    public Task<ChannelEmbedDocumentDto> RefreshChannelEmbedDocumentAsync(Guid communityId, Guid channelId,
+        CancellationToken cancellationToken = default) =>
+        SendAsync<ChannelEmbedDocumentDto>(HttpMethod.Get,
+            $"api/communities/{communityId}/channels/{channelId}/embed-document?refresh=true", null, cancellationToken);
+
     public async Task<DownloadedDocumentMedia> DownloadChannelEmbedDocumentMediaAsync(Guid communityId,
         Guid channelId, string mediaId, CancellationToken cancellationToken = default)
     {
         using var response = await SendAsync(HttpMethod.Get,
             $"api/communities/{communityId}/channels/{channelId}/embed-document/media/{Uri.EscapeDataString(mediaId)}",
+            null, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+            throw new NodeApiException(response.StatusCode, await ReadErrorAsync(response, cancellationToken));
+        return new(await response.Content.ReadAsByteArrayAsync(cancellationToken),
+            response.Content.Headers.ContentType?.MediaType ?? "application/octet-stream");
+    }
+
+    public Task<ChannelEmbedDocumentDto> GetCommunityMessageEmbedDocumentAsync(Guid communityId, Guid channelId,
+        Guid messageId, string documentId, CancellationToken cancellationToken = default) =>
+        SendAsync<ChannelEmbedDocumentDto>(HttpMethod.Get,
+            $"api/communities/{communityId}/channels/{channelId}/messages/{messageId}/embed-documents/{Uri.EscapeDataString(documentId)}",
+            null, cancellationToken);
+
+    public Task<ChannelEmbedDocumentDto> RefreshCommunityMessageEmbedDocumentAsync(Guid communityId,
+        Guid channelId, Guid messageId, string documentId, CancellationToken cancellationToken = default) =>
+        SendAsync<ChannelEmbedDocumentDto>(HttpMethod.Get,
+            $"api/communities/{communityId}/channels/{channelId}/messages/{messageId}/embed-documents/{Uri.EscapeDataString(documentId)}?refresh=true",
+            null, cancellationToken);
+
+    public async Task<DownloadedDocumentMedia> DownloadCommunityMessageEmbedDocumentMediaAsync(Guid communityId,
+        Guid channelId, Guid messageId, string documentId, string mediaId,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await SendAsync(HttpMethod.Get,
+            $"api/communities/{communityId}/channels/{channelId}/messages/{messageId}/embed-documents/{Uri.EscapeDataString(documentId)}/media/{Uri.EscapeDataString(mediaId)}",
+            null, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+            throw new NodeApiException(response.StatusCode, await ReadErrorAsync(response, cancellationToken));
+        return new(await response.Content.ReadAsByteArrayAsync(cancellationToken),
+            response.Content.Headers.ContentType?.MediaType ?? "application/octet-stream");
+    }
+
+    public Task<ChannelEmbedDocumentDto> GetDirectMessageEmbedDocumentAsync(Guid conversationId, Guid messageId,
+        string documentId, CancellationToken cancellationToken = default) =>
+        SendAsync<ChannelEmbedDocumentDto>(HttpMethod.Get,
+            $"api/direct-messages/{conversationId}/messages/{messageId}/embed-documents/{Uri.EscapeDataString(documentId)}",
+            null, cancellationToken);
+
+    public Task<ChannelEmbedDocumentDto> RefreshDirectMessageEmbedDocumentAsync(Guid conversationId,
+        Guid messageId, string documentId, CancellationToken cancellationToken = default) =>
+        SendAsync<ChannelEmbedDocumentDto>(HttpMethod.Get,
+            $"api/direct-messages/{conversationId}/messages/{messageId}/embed-documents/{Uri.EscapeDataString(documentId)}?refresh=true",
+            null, cancellationToken);
+
+    public async Task<DownloadedDocumentMedia> DownloadDirectMessageEmbedDocumentMediaAsync(Guid conversationId,
+        Guid messageId, string documentId, string mediaId, CancellationToken cancellationToken = default)
+    {
+        using var response = await SendAsync(HttpMethod.Get,
+            $"api/direct-messages/{conversationId}/messages/{messageId}/embed-documents/{Uri.EscapeDataString(documentId)}/media/{Uri.EscapeDataString(mediaId)}",
             null, cancellationToken);
         if (!response.IsSuccessStatusCode)
             throw new NodeApiException(response.StatusCode, await ReadErrorAsync(response, cancellationToken));
@@ -414,6 +468,12 @@ public sealed class NodeClient(Uri nodeAddress)
         Guid postId, CancellationToken cancellationToken = default) =>
         SendAsync<ChannelEmbedDocumentDto>(HttpMethod.Get,
             $"api/communities/{communityId}/forums/{channelId}/posts/{postId}/embed-document", null,
+            cancellationToken);
+
+    public Task<ChannelEmbedDocumentDto> RefreshForumPostEmbedDocumentAsync(Guid communityId, Guid channelId,
+        Guid postId, CancellationToken cancellationToken = default) =>
+        SendAsync<ChannelEmbedDocumentDto>(HttpMethod.Get,
+            $"api/communities/{communityId}/forums/{channelId}/posts/{postId}/embed-document?refresh=true", null,
             cancellationToken);
 
     public async Task<DownloadedDocumentMedia> DownloadForumPostEmbedDocumentMediaAsync(Guid communityId,

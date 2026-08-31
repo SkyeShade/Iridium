@@ -159,11 +159,16 @@ public sealed class CommunityChannelEmbedTests
         Assert.Contains("input:checked+span::after", canonicalSwitchStyles);
         Assert.Contains("translateX", canonicalSwitchStyles);
         Assert.Contains("input:focus-visible+span", canonicalSwitchStyles);
-        Assert.Contains("CommunityChannelEmbeds.TryGoogleDocs", fullSettings);
-        Assert.Contains("CommunityChannelEmbeds.TryGoogleDocs", compactSettings);
-        Assert.Contains("_embedEnabled ? CommunityChannelEmbedProvider.GoogleDocs : null", fullSettings);
-        Assert.Contains("_embedEnabled ? CommunityChannelEmbedProvider.GoogleDocs : null", compactSettings);
-        Assert.Contains("channel.EmbedUrl = googleDocs!.CanonicalUrl ?? googleDocs.OpenUrl", endpoint);
+        Assert.Contains("CommunityChannelEmbeds.TryResolveContent", fullSettings);
+        Assert.Contains("CommunityChannelEmbeds.TryResolveContent", compactSettings);
+        Assert.DoesNotContain("<span>Provider</span>", fullSettings);
+        Assert.DoesNotContain("field-label\">Provider", compactSettings);
+        Assert.Contains("DetectedEmbed", fullSettings);
+        Assert.Contains("DetectedEmbed", compactSettings);
+        Assert.Contains("embed?.Provider, embed?.OpenUrl", fullSettings);
+        Assert.Contains("embed?.Provider, embed?.OpenUrl", compactSettings);
+        Assert.Contains("TryResolveContent(embed.Url", endpoint);
+        Assert.Contains("channel.EmbedUrl = content.OpenUrl", endpoint);
         Assert.Contains("channel.EmbedProvider = null", endpoint);
         Assert.Contains("Only Text Channels can embed documents", endpoint);
     }

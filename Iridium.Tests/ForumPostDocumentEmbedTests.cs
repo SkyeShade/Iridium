@@ -39,14 +39,14 @@ public sealed class ForumPostDocumentEmbedTests
         Assert.Contains("OperationCanceledException", channelView);
         Assert.Contains("EmbeddedDocumentView", channelView);
         Assert.Contains("DownloadForumPostEmbedDocumentMediaAsync", block);
-        Assert.Contains("Post.EmbedProvider == CommunityChannelEmbedProvider.GoogleDocs", card);
+        Assert.Contains("Post.EmbedProvider is { } provider", card);
     }
 
     [Fact]
     public void ForumEndpointsReuseTheGoogleDocsProviderService()
     {
         var endpoint = Source("Iridium.Server", "Api", "CommunityForumEndpoints.cs");
-        Assert.Contains("IGoogleDocsPublishedDocumentService documents", endpoint);
+        Assert.Contains("IEmbeddedContentService documents", endpoint);
         Assert.Contains("documents.GetAsync(configuration", endpoint);
         Assert.Contains("documents.GetMediaAsync(configuration", endpoint);
         Assert.DoesNotContain("new GoogleDocsDocumentParser", endpoint);

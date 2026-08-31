@@ -38,9 +38,10 @@
                 @if (DocumentEmbed is { } embed)
                 {
                     <div class="channel-document-anchor" data-channel-document-anchor aria-hidden="true"></div>
-                    <section class="channel-document" aria-label="Google Docs document">
-                        <header><span><Icon Name="file" /> Document <small>Google Docs</small></span>
-                            <a href="@embed.OpenUrl" target="_blank" rel="noopener noreferrer">Open in Google Docs <Icon Name="open" Size="14" /></a>
+                    <section class="channel-document" aria-label="@embed.ProviderName content">
+                        <header><span><Icon Name="file" /> @embed.ContentName <small>@embed.ProviderName</small></span>
+                            <span class="channel-document-actions"><button type="button" disabled="@_embedDocumentRefreshing" @onclick="RefreshEmbedDocumentAsync">@(_embedDocumentRefreshing ? "Refreshing…" : "Refresh")</button>
+                            <a href="@embed.OpenUrl" target="_blank" rel="noopener noreferrer">Open in @embed.ProviderName <Icon Name="open" Size="14" /></a></span>
                         </header>
                         @if (_embedDocumentLoading)
                         {
@@ -53,11 +54,20 @@
                                 <EmbeddedDocumentView @key="DocumentStateKey" Document="document" CommunityId="Community.Id" ChannelId="@(ForumChannelId ?? Channel.Id)" ForumPostId="ForumPostId" />
                             </div>
                         }
+                        else if (_embedDocument is { Status: ChannelEmbedDocumentStatus.Ready, Sheet: { } sheet })
+                        {
+                            <div class="channel-document-flow sheet-flow">
+                                @if (_embedDocument.IsStale) { <div class="channel-document-stale">Showing the last available version.</div> }
+                                <EmbeddedSheetView @key="DocumentStateKey" Sheet="sheet" CommunityId="Community.Id"
+                                                   ChannelId="@(ForumChannelId ?? Channel.Id)" ForumPostId="ForumPostId"
+                                                   DocumentId="@embed.RequestIdentity" />
+                            </div>
+                        }
                         else
                         {
                             <div class="channel-document-fallback"><Icon Name="file" Size="28" /><strong>@DocumentFailureTitle</strong>
                                 <span>@DocumentFailureDetail</span>
-                                <a href="@embed.OpenUrl" target="_blank" rel="noopener noreferrer">Open in Google Docs</a></div>
+                                <a href="@embed.OpenUrl" target="_blank" rel="noopener noreferrer">Open in @embed.ProviderName</a></div>
                         }
                     </section>
                     <div class="channel-document-separator" role="separator"><span>@(ForumPostId.HasValue ? "Discussion" : "Messages")</span></div>
@@ -139,6 +149,7 @@
     private bool _shouldShowJumpToLatest;
     private bool _nearDocumentTop = true;
     private bool _embedDocumentLoading;
+    private bool _embedDocumentRefreshing;
     private ChannelEmbedDocumentDto? _embedDocument;
     private long _embedDocumentLoadGeneration;
     private CancellationTokenSource? _embedDocumentLoadCancellation;
@@ -157,8 +168,8 @@
     private IReadOnlyList<ChannelMessageDto> VisibleMessages => Messaging.MessagesFor(Community.Id, Channel.Id);
     private CommunityChannelEmbedProvider? ActiveEmbedProvider => ForumPostId.HasValue ? ForumPostEmbedProvider : Channel.EmbedProvider;
     private string? ActiveEmbedUrl => ForumPostId.HasValue ? ForumPostEmbedUrl : Channel.EmbedUrl;
-    private GoogleDocsEmbedConfiguration? DocumentEmbed => Channel.Kind == CommunityChannelKind.Text &&
-        CommunityChannelEmbeds.TryResolve(ActiveEmbedProvider, ActiveEmbedUrl, out var value) ? value : null;
+    private EmbeddedContentConfiguration? DocumentEmbed => Channel.Kind == CommunityChannelKind.Text &&
+        CommunityChannelEmbeds.TryResolveContent(ActiveEmbedUrl, out var value) ? value : null;
     private bool HasDocumentEmbed => DocumentEmbed is not null;
     private string DocumentStateKey => $"{Community.Id:N}:{(ForumChannelId ?? Channel.Id):N}:" +
         $"{ForumPostId?.ToString("N") ?? "channel"}:{ActiveEmbedProvider}:{ActiveEmbedUrl}";
@@ -203,6 +214,7 @@
             _loadedEmbedUrl = ActiveEmbedUrl;
             _embedDocument = null;
             _embedDocumentLoading = false;
+            _embedDocumentRefreshing = false;
             _nearDocumentTop = true;
             var embedGeneration = ++_embedDocumentLoadGeneration;
             if (HostEnvironment.IsDevelopment() && ForumPostId is { } diagnosticPostId)
@@ -475,15 +487,20 @@
     }
     private Task JumpToDocumentAsync() => _messageList?.ScrollToLeadingContentAsync() ?? Task.CompletedTask;
     private async Task LoadEmbedDocumentAsync(Guid communityId, Guid channelId, Guid? forumPostId, long generation,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool forceRefresh = false)
     {
-        _embedDocumentLoading = true;
+        if (forceRefresh) _embedDocumentRefreshing = true;
+        else _embedDocumentLoading = true;
         await RenderAsync();
         try
         {
             var document = forumPostId is { } postId && ForumChannelId is { } forumChannelId
-                ? await Session.GetForumPostEmbedDocumentAsync(communityId, forumChannelId, postId, cancellationToken)
-                : await Session.GetChannelEmbedDocumentAsync(communityId, channelId, cancellationToken);
+                ? forceRefresh
+                    ? await Session.RefreshForumPostEmbedDocumentAsync(communityId, forumChannelId, postId, cancellationToken)
+                    : await Session.GetForumPostEmbedDocumentAsync(communityId, forumChannelId, postId, cancellationToken)
+                : forceRefresh
+                    ? await Session.RefreshChannelEmbedDocumentAsync(communityId, channelId, cancellationToken)
+                    : await Session.GetChannelEmbedDocumentAsync(communityId, channelId, cancellationToken);
             if (_disposed || cancellationToken.IsCancellationRequested || generation != _embedDocumentLoadGeneration ||
                 Community.Id != communityId || Channel.Id != channelId || ForumPostId != forumPostId) return;
             _embedDocument = document;
@@ -496,17 +513,28 @@
         catch (Exception exception)
         {
             Logger.LogWarning(exception, "Embedded document loading failed for channel {ChannelId}.", channelId);
-            if (!_disposed && !cancellationToken.IsCancellationRequested && generation == _embedDocumentLoadGeneration)
+            if (!forceRefresh && !_disposed && !cancellationToken.IsCancellationRequested && generation == _embedDocumentLoadGeneration)
                 _embedDocument = new(ChannelEmbedDocumentStatus.TemporaryFailure, null);
         }
         finally
         {
             if (!_disposed && !cancellationToken.IsCancellationRequested && generation == _embedDocumentLoadGeneration)
             {
-                _embedDocumentLoading = false;
+                if (forceRefresh) _embedDocumentRefreshing = false;
+                else _embedDocumentLoading = false;
                 await RenderAsync();
             }
         }
+    }
+    private async Task RefreshEmbedDocumentAsync()
+    {
+        if (_embedDocumentRefreshing || !HasDocumentEmbed) return;
+        _embedDocumentLoadCancellation?.Cancel();
+        _embedDocumentLoadCancellation?.Dispose();
+        _embedDocumentLoadCancellation = new();
+        var generation = ++_embedDocumentLoadGeneration;
+        await LoadEmbedDocumentAsync(Community.Id, Channel.Id, ForumPostId, generation,
+            _embedDocumentLoadCancellation.Token, forceRefresh: true);
     }
     private async Task JumpToLatestAsync()
     {

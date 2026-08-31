@@ -1,0 +1,107 @@
+@using Iridium.Protocol
+
+<article class="embedded-sheet" aria-label="Imported spreadsheet">
+    @if (Sheet.Tabs.Count > 1)
+    {
+        <nav class="sheet-tabs" aria-label="Spreadsheet tabs">
+            @foreach (var tab in Sheet.Tabs)
+            {
+                <button type="button" class="@(tab.Id == _selectedTabId ? "selected" : null)"
+                        @onclick="() => _selectedTabId = tab.Id">@tab.Name</button>
+            }
+        </nav>
+    }
+    @if (SelectedTab is { } selected)
+    {
+        <div class="sheet-overflow">
+            <div class="sheet-canvas" style="--sheet-source-width:@(SourceWidth(selected))px">
+            <table><colgroup>
+                @foreach (var width in selected.ColumnWidths) { <col style="width:@(width)px" /> }
+            </colgroup><tbody>
+                @foreach (var row in selected.Rows)
+                {
+                    <tr style="@(row.Height is { } height ? $"height:{height}px" : null)">
+                        @foreach (var cell in row.Cells)
+                        {
+                            <td rowspan="@cell.RowSpan" colspan="@cell.ColumnSpan" class="@CellClass(cell)"
+                                style="@CellStyle(cell)">
+                                @if (cell.Link is { } link) { <a href="@link" target="_blank" rel="noopener noreferrer">@cell.DisplayValue</a> }
+                                else { @cell.DisplayValue }
+                            </td>
+                        }
+                    </tr>
+                }
+            </tbody></table>
+            @foreach (var image in selected.Images ?? [])
+            {
+                <div class="sheet-floating-image" style="@ImagePosition(selected, image)">
+                    <EmbeddedDocumentBlock Block="@ImageBlock(image)" CommunityId="CommunityId" ChannelId="ChannelId"
+                                           ForumPostId="ForumPostId" MessageId="MessageId" DocumentId="DocumentId" />
+                </div>
+            }
+            </div>
+        </div>
+    }
+</article>
+
+@code {
+    [Parameter, EditorRequired] public required EmbeddedSheetDto Sheet { get; set; }
+    [Parameter, EditorRequired] public Guid CommunityId { get; set; }
+    [Parameter, EditorRequired] public Guid ChannelId { get; set; }
+    [Parameter] public Guid? ForumPostId { get; set; }
+    [Parameter] public Guid? MessageId { get; set; }
+    [Parameter] public string? DocumentId { get; set; }
+    private string? _selectedTabId;
+    private EmbeddedSheetTabDto? SelectedTab => Sheet.Tabs.FirstOrDefault(tab => tab.Id == _selectedTabId) ?? Sheet.Tabs.FirstOrDefault();
+    protected override void OnParametersSet()
+    {
+        if (!Sheet.Tabs.Any(tab => tab.Id == _selectedTabId)) _selectedTabId = Sheet.DefaultTabId ?? Sheet.Tabs.FirstOrDefault()?.Id;
+    }
+    private static string CellClass(EmbeddedSheetCellDto cell) => string.Join(' ',
+        $"sheet-h-{cell.HorizontalAlignment.ToString().ToLowerInvariant()}",
+        $"sheet-v-{cell.VerticalAlignment.ToString().ToLowerInvariant()}",
+        $"sheet-fg-{cell.ForegroundColor.ToString().ToLowerInvariant()}",
+        $"sheet-bg-{cell.BackgroundColor.ToString().ToLowerInvariant()}",
+        $"sheet-bt-{cell.TopBorder.ToString().ToLowerInvariant()}",
+        $"sheet-br-{cell.RightBorder.ToString().ToLowerInvariant()}",
+        $"sheet-bb-{cell.BottomBorder.ToString().ToLowerInvariant()}",
+        $"sheet-bl-{cell.LeftBorder.ToString().ToLowerInvariant()}",
+        cell.Bold ? "sheet-bold" : null, cell.Italic ? "sheet-italic" : null,
+        cell.Underline ? "sheet-underline" : null, cell.IsCheckbox ? "sheet-checkbox" : null,
+        cell.WrapText == true ? "sheet-wrap" : "sheet-nowrap",
+        $"sheet-font-{cell.FontSize.ToString().ToLowerInvariant()}");
+    private static int SourceWidth(EmbeddedSheetTabDto tab) => Math.Max(1, tab.ColumnWidths.Sum());
+    private static string CellStyle(EmbeddedSheetCellDto cell)
+    {
+        var values = new List<string>(6);
+        var hasContent = !string.IsNullOrWhiteSpace(cell.DisplayValue) || cell.IsCheckbox;
+        var background = EmbeddedSheetColors.Background(cell.BackgroundHex, hasContent,
+            cell.RowSpan > 1 || cell.ColumnSpan > 1);
+        var backgroundTransformed = background is not null && !string.Equals(background, cell.BackgroundHex,
+            StringComparison.OrdinalIgnoreCase);
+        if (background is not null) values.Add($"background-color:{background}");
+        if (EmbeddedSheetColors.Foreground(cell.ForegroundHex, background, backgroundTransformed) is { } foreground)
+            values.Add($"color:{foreground}");
+        if (EmbeddedSheetFonts.Family(cell.FontFamily) is { } family) values.Add($"font-family:{family}");
+        if (EmbeddedSheetFonts.Size(cell.FontSizePx) is { } size) values.Add($"font-size:{size}px");
+        if (EmbeddedSheetFonts.Weight(cell.FontWeight) is { } weight) values.Add($"font-weight:{weight}");
+        AddBorder(values, "top", cell.TopBorder, cell.TopBorderColor);
+        AddBorder(values, "right", cell.RightBorder, cell.RightBorderColor);
+        AddBorder(values, "bottom", cell.BottomBorder, cell.BottomBorderColor);
+        AddBorder(values, "left", cell.LeftBorder, cell.LeftBorderColor);
+        return string.Join(';', values);
+    }
+    private static EmbeddedDocumentImageDto ImageBlock(EmbeddedSheetImageDto image) =>
+        new(image.MediaId, image.Alt, image.Width, image.Height);
+    private static string ImagePosition(EmbeddedSheetTabDto tab, EmbeddedSheetImageDto image)
+    {
+        var left = tab.ColumnWidths.Take(Math.Max(0, image.AnchorColumn)).Sum() + image.OffsetX;
+        var top = tab.Rows.Take(Math.Max(0, image.AnchorRow)).Sum(row => row.Height ?? 21) + image.OffsetY;
+        return $"left:{left}px;top:{top}px;width:{image.Width}px;height:{image.Height}px";
+    }
+    private static void AddBorder(List<string> values, string side, EmbeddedSheetBorderStyle style, string? color)
+    {
+        if (style == EmbeddedSheetBorderStyle.None || EmbeddedSheetColors.Border(color) is not { } safe) return;
+        values.Add($"border-{side}-color:{safe}");
+    }
+}

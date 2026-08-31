@@ -31,12 +31,13 @@
                     @if (CanAttachDocuments)
                     {
                         <section class="forum-document-editor">
-                            <header><span><strong>Attach document</strong><small>Optionally display a Google Docs document above this Post's discussion.</small></span>
-                                @if (!_newEmbedEnabled) { <button type="button" @onclick="() => _newEmbedEnabled = true"><Icon Name="plus" /> Add Google Docs document</button> }
+                            <header><span><strong>Attach document</strong><small>Optionally display a Google Doc or Sheet above this Post's discussion.</small></span>
+                                @if (!_newEmbedEnabled) { <button type="button" @onclick="() => _newEmbedEnabled = true"><Icon Name="plus" /> Add document</button> }
                             </header>
                             @if (_newEmbedEnabled)
                             {
-                                <label><span><Icon Name="file" /> Google Docs</span><input type="url" @bind="_newEmbedUrl" placeholder="https://docs.google.com/document/d/.../edit" /></label>
+                                <label><span>Google URL</span><input type="url" value="@_newEmbedUrl" @oninput="NewEmbedUrlChanged" placeholder="https://docs.google.com/..." /></label>
+                                @if (NewEmbedContent is { } detected) { <small><Icon Name="file" /> Detected: @ProviderName(detected.Provider)</small> }
                                 <button type="button" class="secondary" @onclick="ClearNewDocument">Remove</button>
                             }
                         </section>
@@ -128,7 +129,8 @@
                         @if (_editingDocument)
                         {
                             <div class="forum-edit-document">
-                                <label><span><Icon Name="file" /> Google Docs</span><input type="url" @bind="_documentUrlDraft" placeholder="https://docs.google.com/document/d/.../edit" /></label>
+                                <label><span>Google URL</span><input type="url" value="@_documentUrlDraft" @oninput="DocumentUrlChanged" placeholder="https://docs.google.com/..." /></label>
+                                @if (EditedEmbedContent is { } detected) { <small><Icon Name="file" /> Detected: @ProviderName(detected.Provider)</small> }
                                 <button type="button" class="primary" @onclick="SaveEditedDocumentAsync">Save Document</button>
                                 @if (selectedPost.EmbedProvider is not null)
                                 {
@@ -228,7 +230,10 @@
     private Guid? SelectedForumPostId { get; set; }
     private bool CanPublish => !_creating && !string.IsNullOrWhiteSpace(_newTitle) && _newBodySendable &&
         (!Channel.RequireTag || _newTagIds.Count > 0) &&
-        (!_newEmbedEnabled || CommunityChannelEmbeds.TryGoogleDocs(_newEmbedUrl, out _));
+        (!_newEmbedEnabled || NewEmbedContent is not null);
+    private EmbeddedContentConfiguration? NewEmbedContent => CommunityChannelEmbeds.TryResolveContent(_newEmbedUrl, out var value) ? value : null;
+    private EmbeddedContentConfiguration? EditedEmbedContent => CommunityChannelEmbeds.TryResolveContent(_documentUrlDraft, out var value) ? value : null;
+    private static string ProviderName(CommunityChannelEmbedProvider provider) => provider == CommunityChannelEmbedProvider.GoogleSheets ? "Google Sheets" : "Google Docs";
     private bool CanAttachDocuments => Channel.AllowDocumentEmbeds &&
         HasPermission(CommunityPermission.EmbedDocumentsInForumPosts);
     private string PinActionTitle => _selectedPost?.IsPinned == true ? "Unpin post" : "Pin post";
@@ -345,9 +350,9 @@
             CommunityChannelEmbedUpdate? embed = null;
             if (_newEmbedEnabled)
             {
-                if (!CanAttachDocuments || !CommunityChannelEmbeds.TryGoogleDocs(_newEmbedUrl, out _))
-                { _error = "Enter a valid Google Docs document URL."; return false; }
-                embed = new(CommunityChannelEmbedProvider.GoogleDocs, _newEmbedUrl.Trim());
+                if (!CanAttachDocuments || NewEmbedContent is not { } detected)
+                { _error = "Enter a valid Google Docs or Google Sheets URL."; return false; }
+                embed = new(detected.Provider, detected.OpenUrl);
             }
             _createdPost = await Forum.CreateAsync(_newTitle.Trim(), submission.Content, submission.Mentions,
                 submission.Attachments, submission.UploadAttachments, _newTagIds, embed);
@@ -589,6 +594,8 @@
         ? CanManageMessages || (post.Author.AccountId == CurrentAccountId && CanAttachDocuments)
         : Channel.AllowDocumentEmbeds && (CanManageMessages ||
             post.Author.AccountId == CurrentAccountId && HasPermission(CommunityPermission.EmbedDocumentsInForumPosts));
+    private void NewEmbedUrlChanged(ChangeEventArgs args) => _newEmbedUrl = args.Value?.ToString() ?? string.Empty;
+    private void DocumentUrlChanged(ChangeEventArgs args) => _documentUrlDraft = args.Value?.ToString() ?? string.Empty;
     private void ClearNewDocument() { _newEmbedEnabled = false; _newEmbedUrl = string.Empty; }
     private void BeginEditDocument()
     {
@@ -605,11 +612,10 @@
     }
     private async Task SaveEditedDocumentAsync()
     {
-        if (_selectedPost is null || !CanEditDocument(_selectedPost) ||
-            !CommunityChannelEmbeds.TryGoogleDocs(_documentUrlDraft, out _))
-        { _error = "Enter a valid Google Docs document URL."; return; }
+        if (_selectedPost is null || !CanEditDocument(_selectedPost) || EditedEmbedContent is not { } detected)
+        { _error = "Enter a valid Google Docs or Google Sheets URL."; return; }
         _selectedPost = await Forum.UpdateAsync(_selectedPost.Id,
-            new(Embed: new(CommunityChannelEmbedProvider.GoogleDocs, _documentUrlDraft.Trim())));
+            new(Embed: new(detected.Provider, detected.OpenUrl)));
         CancelEditDocument();
         await OnPostOpenChanged.InvokeAsync(_selectedPost);
     }

@@ -29,11 +29,11 @@
     case EmbeddedDocumentListDto list:
         @if (list.Ordered)
         {
-            <ol class="document-list">@foreach (var item in list.Items) { <li>@foreach (var child in item.Blocks) { <EmbeddedDocumentBlock Block="child" CommunityId="CommunityId" ChannelId="ChannelId" ForumPostId="ForumPostId" /> }</li> }</ol>
+            <ol class="document-list">@foreach (var item in list.Items) { <li>@foreach (var child in item.Blocks) { <EmbeddedDocumentBlock Block="child" CommunityId="CommunityId" ChannelId="ChannelId" ForumPostId="ForumPostId" MessageId="MessageId" DocumentId="@DocumentId" /> }</li> }</ol>
         }
         else
         {
-            <ul class="document-list">@foreach (var item in list.Items) { <li>@foreach (var child in item.Blocks) { <EmbeddedDocumentBlock Block="child" CommunityId="CommunityId" ChannelId="ChannelId" ForumPostId="ForumPostId" /> }</li> }</ul>
+            <ul class="document-list">@foreach (var item in list.Items) { <li>@foreach (var child in item.Blocks) { <EmbeddedDocumentBlock Block="child" CommunityId="CommunityId" ChannelId="ChannelId" ForumPostId="ForumPostId" MessageId="MessageId" DocumentId="@DocumentId" /> }</li> }</ul>
         }
         break;
     case EmbeddedDocumentTableDto table:
@@ -61,11 +61,15 @@
     [Parameter, EditorRequired] public Guid CommunityId { get; set; }
     [Parameter, EditorRequired] public Guid ChannelId { get; set; }
     [Parameter] public Guid? ForumPostId { get; set; }
+    [Parameter] public Guid? MessageId { get; set; }
+    [Parameter] public string? DocumentId { get; set; }
     private CancellationTokenSource? _loadCancellation;
     private string? _loadedMediaId;
     private Guid _loadedMediaCommunityId;
     private Guid _loadedMediaChannelId;
     private Guid? _loadedMediaForumPostId;
+    private Guid? _loadedMediaMessageId;
+    private string? _loadedMediaDocumentId;
     private string? _imageSource;
     private bool _imageFailed;
 
@@ -73,11 +77,14 @@
     {
         if (Block is not EmbeddedDocumentImageDto image) return;
         if (image.MediaId == _loadedMediaId && CommunityId == _loadedMediaCommunityId &&
-            ChannelId == _loadedMediaChannelId && ForumPostId == _loadedMediaForumPostId) return;
+            ChannelId == _loadedMediaChannelId && ForumPostId == _loadedMediaForumPostId &&
+            MessageId == _loadedMediaMessageId && DocumentId == _loadedMediaDocumentId) return;
         _loadedMediaId = image.MediaId;
         _loadedMediaCommunityId = CommunityId;
         _loadedMediaChannelId = ChannelId;
         _loadedMediaForumPostId = ForumPostId;
+        _loadedMediaMessageId = MessageId;
+        _loadedMediaDocumentId = DocumentId;
         _imageSource = null; _imageFailed = false;
         _loadCancellation?.Cancel(); _loadCancellation?.Dispose(); _loadCancellation = new();
         _ = LoadImageAsync(image.MediaId, _loadCancellation.Token);
@@ -86,9 +93,17 @@
     {
         try
         {
-            var media = ForumPostId is { } postId
-                ? await Session.DownloadForumPostEmbedDocumentMediaAsync(CommunityId, ChannelId, postId, mediaId, cancellationToken)
-                : await Session.DownloadChannelEmbedDocumentMediaAsync(CommunityId, ChannelId, mediaId, cancellationToken);
+            var media = MessageId is { } messageId && DocumentId is { } documentId
+                ? CommunityId == Guid.Empty
+                    ? await Session.DownloadDirectMessageEmbedDocumentMediaAsync(ChannelId, messageId, documentId,
+                        mediaId, cancellationToken)
+                    : await Session.DownloadCommunityMessageEmbedDocumentMediaAsync(CommunityId, ChannelId,
+                        messageId, documentId, mediaId, cancellationToken)
+                : ForumPostId is { } postId
+                    ? await Session.DownloadForumPostEmbedDocumentMediaAsync(CommunityId, ChannelId, postId,
+                        mediaId, cancellationToken)
+                    : await Session.DownloadChannelEmbedDocumentMediaAsync(CommunityId, ChannelId, mediaId,
+                        cancellationToken);
             if (!cancellationToken.IsCancellationRequested && mediaId == _loadedMediaId)
                 _imageSource = $"data:{media.ContentType};base64,{Convert.ToBase64String(media.Bytes)}";
         }
@@ -103,7 +118,7 @@
     private RenderFragment Cell(EmbeddedDocumentTableCellDto cell) => builder =>
     {
         var sequence = 0;
-        foreach (var value in cell.Blocks) { builder.OpenComponent<EmbeddedDocumentBlock>(sequence++); builder.AddAttribute(sequence++, "Block", value); builder.AddAttribute(sequence++, "CommunityId", CommunityId); builder.AddAttribute(sequence++, "ChannelId", ChannelId); builder.AddAttribute(sequence++, "ForumPostId", ForumPostId); builder.CloseComponent(); }
+        foreach (var value in cell.Blocks) { builder.OpenComponent<EmbeddedDocumentBlock>(sequence++); builder.AddAttribute(sequence++, "Block", value); builder.AddAttribute(sequence++, "CommunityId", CommunityId); builder.AddAttribute(sequence++, "ChannelId", ChannelId); builder.AddAttribute(sequence++, "ForumPostId", ForumPostId); builder.AddAttribute(sequence++, "MessageId", MessageId); builder.AddAttribute(sequence++, "DocumentId", DocumentId); builder.CloseComponent(); }
     };
     private static string Alignment(EmbeddedDocumentTextAlignment value) => $"align-{value.ToString().ToLowerInvariant()}";
     private static string? ImageStyle(EmbeddedDocumentImageDto image) => image.Width is { } width

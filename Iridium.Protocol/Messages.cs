@@ -1,6 +1,7 @@
 using System.Text;
 
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 
 namespace Iridium.Protocol;
 
@@ -176,7 +177,8 @@ public enum CommunityChannelKind
 
 public enum CommunityChannelEmbedProvider
 {
-    GoogleDocs = 0
+    GoogleDocs = 0,
+    GoogleSheets = 1
 }
 
 public sealed record CommunityChannelEmbedUpdate(CommunityChannelEmbedProvider? Provider, string? Url);
@@ -193,6 +195,22 @@ public sealed record GoogleDocsEmbedConfiguration(string DocumentId, string Open
 public enum GoogleDocsInputKind { ShareLink, PublishedLink }
 public enum GoogleDocsFetchMode { AnonymousExport, PublishedHtml }
 
+public sealed record EmbeddedContentConfiguration(CommunityChannelEmbedProvider Provider, string SourceId,
+    string OpenUrl, string FetchUrl, string? TabId = null)
+{
+    public string CacheIdentity => $"{Provider}:{SourceId}:{TabId ?? "default"}";
+    public string RequestIdentity => TabId is null ? SourceId : $"{SourceId}~{TabId}";
+    public string ProviderName => Provider == CommunityChannelEmbedProvider.GoogleSheets ? "Google Sheets" : "Google Docs";
+    public string ContentName => Provider == CommunityChannelEmbedProvider.GoogleSheets ? "Spreadsheet" : "Document";
+}
+
+public sealed record GoogleSheetsEmbedConfiguration(string SpreadsheetId, string? Gid, string OpenUrl,
+    string FetchUrl)
+{
+    public EmbeddedContentConfiguration ToContent() => new(CommunityChannelEmbedProvider.GoogleSheets,
+        SpreadsheetId, OpenUrl, FetchUrl, Gid);
+}
+
 public enum ChannelEmbedDocumentStatus
 {
     Ready,
@@ -205,7 +223,37 @@ public enum ChannelEmbedDocumentStatus
     TooLarge
 }
 public sealed record ChannelEmbedDocumentDto(ChannelEmbedDocumentStatus Status, EmbeddedDocumentDto? Document,
-    DateTimeOffset? FetchedAt = null, bool IsStale = false);
+    DateTimeOffset? FetchedAt = null, bool IsStale = false, string? ContentVersion = null,
+    EmbeddedSheetDto? Sheet = null);
+
+public sealed record EmbeddedSheetDto(string SpreadsheetId, string? Title,
+    IReadOnlyList<EmbeddedSheetTabDto> Tabs, string? DefaultTabId);
+public sealed record EmbeddedSheetTabDto(string Id, string Name, IReadOnlyList<EmbeddedSheetRowDto> Rows,
+    IReadOnlyList<int> ColumnWidths, IReadOnlyList<EmbeddedSheetImageDto>? Images = null);
+public sealed record EmbeddedSheetRowDto(int? Height, IReadOnlyList<EmbeddedSheetCellDto> Cells, int Index = 0);
+public sealed record EmbeddedSheetCellDto(int Row, int Column, string DisplayValue, int RowSpan = 1,
+    int ColumnSpan = 1, bool Bold = false, bool Italic = false, bool Underline = false,
+    EmbeddedDocumentTextAlignment HorizontalAlignment = EmbeddedDocumentTextAlignment.Start,
+    EmbeddedSheetVerticalAlignment VerticalAlignment = EmbeddedSheetVerticalAlignment.Middle,
+    EmbeddedDocumentTextColor ForegroundColor = EmbeddedDocumentTextColor.Default,
+    EmbeddedSheetCellColor BackgroundColor = EmbeddedSheetCellColor.Default,
+    EmbeddedSheetBorderStyle TopBorder = EmbeddedSheetBorderStyle.None,
+    EmbeddedSheetBorderStyle RightBorder = EmbeddedSheetBorderStyle.None,
+    EmbeddedSheetBorderStyle BottomBorder = EmbeddedSheetBorderStyle.None,
+    EmbeddedSheetBorderStyle LeftBorder = EmbeddedSheetBorderStyle.None,
+    string? Link = null, bool IsCheckbox = false, bool? CheckboxValue = null,
+    EmbeddedSheetFontSize FontSize = EmbeddedSheetFontSize.Normal,
+    string? ForegroundHex = null, string? BackgroundHex = null,
+    string? TopBorderColor = null, string? RightBorderColor = null,
+    string? BottomBorderColor = null, string? LeftBorderColor = null,
+    string? RawValue = null, string? FontFamily = null, double? FontSizePx = null,
+    int? FontWeight = null, bool? WrapText = null);
+public sealed record EmbeddedSheetImageDto(string MediaId, int AnchorRow, int AnchorColumn,
+    int OffsetX, int OffsetY, int Width, int Height, string? Alt = null);
+public enum EmbeddedSheetVerticalAlignment { Top, Middle, Bottom }
+public enum EmbeddedSheetFontSize { Small, Normal, Medium, Large, Heading }
+public enum EmbeddedSheetCellColor { Default, Light, Dark, Red, Orange, Yellow, Green, Teal, Blue, Purple, Pink, Gray }
+public enum EmbeddedSheetBorderStyle { None, Thin, Medium, Thick, Dashed, Dotted }
 
 public sealed record EmbeddedDocumentDto(IReadOnlyList<EmbeddedDocumentBlockDto> Blocks);
 
@@ -267,6 +315,51 @@ public sealed record EmbeddedDocumentLinkDto(string Url, IReadOnlyList<EmbeddedD
 
 public static class CommunityChannelEmbeds
 {
+    public const int MaximumMessageDocumentPreviews = 3;
+    private static readonly Regex GoogleDocsUrl = new(
+        @"https://docs\.google\.com/[^\s<>\]\)]+", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
+        TimeSpan.FromMilliseconds(100));
+
+    public static IReadOnlyList<GoogleDocsEmbedConfiguration> FindGoogleDocs(string? content,
+        int maximum = MaximumMessageDocumentPreviews)
+    {
+        if (string.IsNullOrWhiteSpace(content) || maximum <= 0) return [];
+        var limit = Math.Min(maximum, MaximumMessageDocumentPreviews);
+        var found = new List<GoogleDocsEmbedConfiguration>(limit);
+        var documentIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (Match match in GoogleDocsUrl.Matches(content))
+        {
+            var candidate = match.Value.TrimEnd('.', ',', ';', ':', '!', '?', '\'', '"');
+            if (!TryGoogleDocs(candidate, out var configuration) || configuration is null ||
+                !documentIds.Add(configuration.DocumentId)) continue;
+            found.Add(configuration);
+            if (found.Count == limit) break;
+        }
+        return found;
+    }
+
+    public static IReadOnlyList<EmbeddedContentConfiguration> FindSupportedContent(string? content,
+        int maximum = MaximumMessageDocumentPreviews)
+    {
+        if (string.IsNullOrWhiteSpace(content) || maximum <= 0) return [];
+        var limit = Math.Min(maximum, MaximumMessageDocumentPreviews);
+        var found = new List<EmbeddedContentConfiguration>(limit);
+        var identities = new HashSet<string>(StringComparer.Ordinal);
+        foreach (Match match in GoogleDocsUrl.Matches(content))
+        {
+            var candidate = match.Value.TrimEnd('.', ',', ';', ':', '!', '?', '\'', '"');
+            EmbeddedContentConfiguration? source = null;
+            if (TryGoogleDocs(candidate, out var document) && document is not null)
+                source = new(CommunityChannelEmbedProvider.GoogleDocs, document.DocumentId, document.OpenUrl,
+                    document.FetchUrl!);
+            else if (TryGoogleSheets(candidate, out var sheet) && sheet is not null) source = sheet.ToContent();
+            if (source is null || !identities.Add(source.CacheIdentity)) continue;
+            found.Add(source);
+            if (found.Count == limit) break;
+        }
+        return found;
+    }
+
     public static bool TryGoogleDocs(string? value, out GoogleDocsEmbedConfiguration? configuration)
     {
         configuration = null;
@@ -302,6 +395,70 @@ public static class CommunityChannelEmbeds
 
     private static bool IsSafeGoogleDocumentId(string value) => value.Length is >= 10 and <= 200 &&
         value.All(character => char.IsAsciiLetterOrDigit(character) || character is '_' or '-');
+
+    public static bool TryGoogleSheets(string? value, out GoogleSheetsEmbedConfiguration? configuration)
+    {
+        configuration = null;
+        if (string.IsNullOrWhiteSpace(value) || !Uri.TryCreate(value.Trim(), UriKind.Absolute, out var uri) ||
+            uri.Scheme != Uri.UriSchemeHttps || !uri.IsDefaultPort ||
+            !string.Equals(uri.Host, "docs.google.com", StringComparison.OrdinalIgnoreCase)) return false;
+        var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        var gid = QueryValue(uri.Query, "gid") ?? QueryValue(uri.Fragment, "gid");
+        if (gid is not null && (gid.Length is < 1 or > 20 || !gid.All(char.IsAsciiDigit))) return false;
+        if (segments.Length == 5 && segments[0] == "spreadsheets" && segments[1] == "d" &&
+            segments[2] == "e" && IsSafeGoogleDocumentId(segments[3]) && segments[4] == "pubhtml")
+        {
+            var publishedId = segments[3];
+            var published = $"https://docs.google.com/spreadsheets/d/e/{publishedId}/pubhtml";
+            if (gid is not null) published += $"?gid={gid}";
+            configuration = new(publishedId, gid, published, published);
+            return true;
+        }
+        if (segments.Length != 4 || segments[0] != "spreadsheets" || segments[1] != "d" ||
+            !IsSafeGoogleDocumentId(segments[2]) || segments[3] is not ("edit" or "view" or "preview")) return false;
+        var id = segments[2];
+        var suffix = gid is null ? string.Empty : $"?gid={gid}";
+        // Anonymous XLSX export preserves workbook layout and final calculated values without exposing editor HTML.
+        // The selected gid remains presentation state; one workbook import contains all visible tabs.
+        var fetchUrl = $"https://docs.google.com/spreadsheets/d/{id}/export?format=xlsx";
+        configuration = new(id, gid, $"https://docs.google.com/spreadsheets/d/{id}/view{suffix}", fetchUrl);
+        return true;
+    }
+
+    private static string? QueryValue(string query, string key)
+    {
+        foreach (var pair in query.TrimStart('?', '#').Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var parts = pair.Split('=', 2);
+            if (parts.Length == 2 && string.Equals(parts[0], key, StringComparison.OrdinalIgnoreCase))
+                try { return Uri.UnescapeDataString(parts[1]); }
+                catch (UriFormatException) { return null; }
+        }
+        return null;
+    }
+
+    public static bool TryResolveContent(CommunityChannelEmbedProvider? provider, string? url,
+        out EmbeddedContentConfiguration? configuration)
+    {
+        configuration = null;
+        if (provider == CommunityChannelEmbedProvider.GoogleDocs && TryGoogleDocs(url, out var document) &&
+            document?.FetchUrl is { } documentFetch)
+            configuration = new(provider.Value, document.DocumentId, document.OpenUrl, documentFetch);
+        else if (provider == CommunityChannelEmbedProvider.GoogleSheets && TryGoogleSheets(url, out var sheet) &&
+                 sheet is not null) configuration = sheet.ToContent();
+        return configuration is not null;
+    }
+
+    public static bool TryResolveContent(string? url, out EmbeddedContentConfiguration? configuration)
+    {
+        configuration = null;
+        if (TryGoogleDocs(url, out var document) && document?.FetchUrl is { } documentFetch)
+            configuration = new(CommunityChannelEmbedProvider.GoogleDocs, document.DocumentId,
+                document.OpenUrl, documentFetch);
+        else if (TryGoogleSheets(url, out var sheet) && sheet is not null)
+            configuration = sheet.ToContent();
+        return configuration is not null;
+    }
 
     public static bool TryResolve(CommunityChannelEmbedProvider? provider, string? url,
         out GoogleDocsEmbedConfiguration? configuration)

@@ -82,19 +82,17 @@
                     {
                         <section class="channel-embed-settings">
                             <div class="channel-embed-toggle-row">
-                                <span><strong>Embed document</strong><small>Displays this document above the Channel's messages.</small></span>
-                                <SettingsSwitch Value="_embedEnabled" ValueChanged="SetEmbedEnabled" AriaLabel="Embed document" />
+                                <span><strong>Embedded content</strong><small>Displays this content above the Channel's messages.</small></span>
+                                <SettingsSwitch Value="_embedEnabled" ValueChanged="SetEmbedEnabled" AriaLabel="Embedded content" />
                             </div>
                             @if (_embedEnabled)
                             {
-                                <label class="settings-field"><span>Provider</span>
-                                    <div class="scope-type-readonly"><Icon Name="file" /> Google Docs</div>
-                                </label>
-                                <label class="settings-field"><span>Document URL</span>
+                                <label class="settings-field"><span>Google URL</span>
                                     <input type="url" value="@_embedUrl" @oninput="EmbedUrlChanged"
-                                           placeholder="https://docs.google.com/document/d/.../edit" aria-describedby="embed-url-help" />
+                                           placeholder="https://docs.google.com/..." aria-describedby="embed-url-help" />
                                 </label>
-                                <p id="embed-url-help" class="channel-embed-help">Use an HTTPS Google Docs URL available to anyone with the link or published to the web. Google still controls document access.</p>
+                                @if (DetectedEmbed is { } detected) { <p class="channel-embed-help"><Icon Name="file" /> Detected: @ProviderName(detected.Provider)</p> }
+                                <p id="embed-url-help" class="channel-embed-help">Paste an anonymously accessible Google Docs or Google Sheets link.</p>
                                 @if (!string.IsNullOrWhiteSpace(_embedError)) { <p class="permission-error">@_embedError</p> }
                             }
                         </section>
@@ -283,6 +281,8 @@
     private bool CanManageScopePermissions => State.IsOwner ||
         ((CurrentScopePermissions &
           (CommunityPermission.Administrator | CommunityPermission.ManagePermissions)) != 0);
+    private EmbeddedContentConfiguration? DetectedEmbed => CommunityChannelEmbeds.TryResolveContent(_embedUrl, out var value) ? value : null;
+    private static string ProviderName(CommunityChannelEmbedProvider provider) => provider == CommunityChannelEmbedProvider.GoogleSheets ? "Google Sheets" : "Google Docs";
 
     private static readonly CommunityPermission[] TextPermissions = [CommunityPermission.SendMessages, CommunityPermission.CreateForumPosts, CommunityPermission.EmbedDocumentsInForumPosts, CommunityPermission.ReadMessageHistory, CommunityPermission.ManageMessages, CommunityPermission.AttachFiles, CommunityPermission.EmbedLinks, CommunityPermission.AddReactions, CommunityPermission.UseExternalEmoji, CommunityPermission.MentionEveryone];
     private static readonly CommunityPermission[] VoicePermissions = [CommunityPermission.ConnectVoice, CommunityPermission.SpeakVoice, CommunityPermission.ShareScreen, CommunityPermission.MuteMembers, CommunityPermission.DeafenMembers, CommunityPermission.MoveMembers];
@@ -405,7 +405,7 @@
         _overviewDirty = _name != ScopeName || _categoryValue != (Channel?.CategoryId?.ToString() ?? "") ||
                          _requireTag != (Channel?.RequireTag == true) || _embedEnabled != originallyEnabled ||
                          _allowDocumentEmbeds != (Channel?.AllowDocumentEmbeds == true) ||
-                         (_embedEnabled && !string.Equals(_embedUrl.Trim(), Channel?.EmbedUrl, StringComparison.Ordinal));
+                         (_embedEnabled && (DetectedEmbed?.Provider != Channel?.EmbedProvider || !string.Equals(_embedUrl.Trim(), Channel?.EmbedUrl, StringComparison.Ordinal)));
     }
     private void SelectRolesTab() => _pickerTab = "Roles";
     private void SelectMembersTab() => _pickerTab = "Members";
@@ -430,9 +430,9 @@
     private async Task SaveAsync()
     {
         if (_overviewDirty && IsChannel && Channel!.Kind == CommunityChannelKind.Text && _embedEnabled &&
-            !CommunityChannelEmbeds.TryGoogleDocs(_embedUrl, out _))
+            DetectedEmbed is null)
         {
-            _embedError = "Enter a valid HTTPS Google Docs document URL.";
+            _embedError = "Enter a Google Docs or Google Sheets link.";
             return;
         }
         _busy = true;
@@ -444,9 +444,9 @@
                 if (IsChannel)
                 {
                     Guid? category = Guid.TryParse(_categoryValue, out var id) ? id : null;
+                    var embed = _embedEnabled ? DetectedEmbed : null;
                     await OnSaveChannel.InvokeAsync(new(Channel!.Id, _name, category, Channel.Kind, _requireTag,
-                        _embedEnabled ? CommunityChannelEmbedProvider.GoogleDocs : null,
-                        _embedEnabled ? _embedUrl.Trim() : null, _allowDocumentEmbeds));
+                        embed?.Provider, embed?.OpenUrl, _allowDocumentEmbeds));
                 }
                 else await OnSaveCategory.InvokeAsync(new(Category!.Id, _name, Category.ParentCategoryId));
                 _overviewDirty = false;

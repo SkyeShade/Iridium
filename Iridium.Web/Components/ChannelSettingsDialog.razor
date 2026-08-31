@@ -38,15 +38,15 @@
         @if (Channel is not null && _kind == CommunityChannelKind.Text)
         {
             <section class="compact-embed-settings">
-                <div><span><strong>Embed document</strong><small>Displays this document above the Channel's messages.</small></span>
-                    <SettingsSwitch Value="_embedEnabled" ValueChanged="SetEmbedEnabled" AriaLabel="Embed document" /></div>
+                <div><span><strong>Embedded content</strong><small>Displays this content above the Channel's messages.</small></span>
+                    <SettingsSwitch Value="_embedEnabled" ValueChanged="SetEmbedEnabled" AriaLabel="Embedded content" /></div>
                 @if (_embedEnabled)
                 {
-                    <label class="dialog-field"><span class="field-label">Provider</span><span class="compact-provider"><Icon Name="file" /> Google Docs</span></label>
-                    <label class="dialog-field"><span class="field-label">Document URL</span>
-                        <input class="compact-embed-url" type="url" value="@_embedUrl" @oninput="EmbedUrlChanged" placeholder="https://docs.google.com/document/d/.../edit" />
+                    <label class="dialog-field"><span class="field-label">Google URL</span>
+                        <input class="compact-embed-url" type="url" value="@_embedUrl" @oninput="EmbedUrlChanged" placeholder="https://docs.google.com/..." />
                     </label>
-                    <p class="field-hint">Iridium can import Google Docs available to anyone with the link or published to the web. Google controls document access.</p>
+                    @if (DetectedEmbed is { } detected) { <p class="field-hint"><Icon Name="file" /> Detected: @ProviderName(detected.Provider)</p> }
+                    <p class="field-hint">Paste an anonymously accessible Google Docs or Google Sheets link.</p>
                 }
             </section>
         }
@@ -83,7 +83,9 @@
     private Guid? DestinationId => Channel?.CategoryId ?? InitialCategoryId;
     private CommunityCategoryDto? Destination => Categories.FirstOrDefault(value => value.Id == DestinationId);
     private string DestinationName => Destination is null ? "Server root" : Breadcrumb(Destination);
-    private bool IsValid => Normalize(_name) is not null && (!_embedEnabled || CommunityChannelEmbeds.TryGoogleDocs(_embedUrl, out _));
+    private EmbeddedContentConfiguration? DetectedEmbed => CommunityChannelEmbeds.TryResolveContent(_embedUrl, out var value) ? value : null;
+    private bool IsValid => Normalize(_name) is not null && (!_embedEnabled || DetectedEmbed is not null);
+    private static string ProviderName(CommunityChannelEmbedProvider provider) => provider == CommunityChannelEmbedProvider.GoogleSheets ? "Google Sheets" : "Google Docs";
     private static bool Has(CommunityPermission value, CommunityPermission permission) =>
         (value & (CommunityPermission.Administrator | permission)) != 0;
 
@@ -104,15 +106,15 @@
     private void NameChanged(ChangeEventArgs args) { _name = args.Value?.ToString() ?? string.Empty; Validate(); }
     private void Validate() => _validationError = _name.Length > 0 && Normalize(_name) is null
         ? "Use 1–100 letters, numbers, underscores, or hyphens."
-        : _embedEnabled && !CommunityChannelEmbeds.TryGoogleDocs(_embedUrl, out _)
-            ? "Enter a valid HTTPS Google Docs document URL."
+        : _embedEnabled && DetectedEmbed is null
+            ? "Enter a Google Docs or Google Sheets link."
             : null;
     private Task SaveAsync()
     {
         var categoryId = Channel is null ? InitialCategoryId : Guid.TryParse(_categoryValue, out var parsed) ? parsed : null;
+        var embed = _embedEnabled ? DetectedEmbed : null;
         return OnSave.InvokeAsync(new(Channel?.Id, _name, categoryId, _kind, _requireTag,
-            _embedEnabled ? CommunityChannelEmbedProvider.GoogleDocs : null,
-            _embedEnabled ? _embedUrl.Trim() : null, _allowDocumentEmbeds));
+            embed?.Provider, embed?.OpenUrl, _allowDocumentEmbeds));
     }
     private Task DeleteAsync() { if (!_confirmDelete) { _confirmDelete = true; return Task.CompletedTask; } return OnDelete.InvokeAsync(Channel!.Id); }
     private void SetRequireTag(bool value) => _requireTag = value;

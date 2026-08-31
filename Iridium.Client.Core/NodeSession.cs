@@ -79,13 +79,52 @@ public sealed class NodeSession(
         CancellationToken cancellationToken = default) =>
         AuthorizedClient.GetChannelEmbedDocumentAsync(communityId, channelId, cancellationToken);
 
+    public Task<ChannelEmbedDocumentDto> RefreshChannelEmbedDocumentAsync(Guid communityId, Guid channelId,
+        CancellationToken cancellationToken = default) =>
+        AuthorizedClient.RefreshChannelEmbedDocumentAsync(communityId, channelId, cancellationToken);
+
     public Task<DownloadedDocumentMedia> DownloadChannelEmbedDocumentMediaAsync(Guid communityId, Guid channelId,
         string mediaId, CancellationToken cancellationToken = default) =>
         AuthorizedClient.DownloadChannelEmbedDocumentMediaAsync(communityId, channelId, mediaId, cancellationToken);
 
+    public Task<ChannelEmbedDocumentDto> GetCommunityMessageEmbedDocumentAsync(Guid communityId, Guid channelId,
+        Guid messageId, string documentId, CancellationToken cancellationToken = default) =>
+        AuthorizedClient.GetCommunityMessageEmbedDocumentAsync(communityId, channelId, messageId, documentId,
+            cancellationToken);
+
+    public Task<ChannelEmbedDocumentDto> RefreshCommunityMessageEmbedDocumentAsync(Guid communityId,
+        Guid channelId, Guid messageId, string documentId, CancellationToken cancellationToken = default) =>
+        AuthorizedClient.RefreshCommunityMessageEmbedDocumentAsync(communityId, channelId, messageId, documentId,
+            cancellationToken);
+
+    public Task<DownloadedDocumentMedia> DownloadCommunityMessageEmbedDocumentMediaAsync(Guid communityId,
+        Guid channelId, Guid messageId, string documentId, string mediaId,
+        CancellationToken cancellationToken = default) =>
+        AuthorizedClient.DownloadCommunityMessageEmbedDocumentMediaAsync(communityId, channelId, messageId,
+            documentId, mediaId, cancellationToken);
+
+    public Task<ChannelEmbedDocumentDto> GetDirectMessageEmbedDocumentAsync(Guid conversationId, Guid messageId,
+        string documentId, CancellationToken cancellationToken = default) =>
+        AuthorizedClient.GetDirectMessageEmbedDocumentAsync(conversationId, messageId, documentId,
+            cancellationToken);
+
+    public Task<ChannelEmbedDocumentDto> RefreshDirectMessageEmbedDocumentAsync(Guid conversationId,
+        Guid messageId, string documentId, CancellationToken cancellationToken = default) =>
+        AuthorizedClient.RefreshDirectMessageEmbedDocumentAsync(conversationId, messageId, documentId,
+            cancellationToken);
+
+    public Task<DownloadedDocumentMedia> DownloadDirectMessageEmbedDocumentMediaAsync(Guid conversationId,
+        Guid messageId, string documentId, string mediaId, CancellationToken cancellationToken = default) =>
+        AuthorizedClient.DownloadDirectMessageEmbedDocumentMediaAsync(conversationId, messageId, documentId,
+            mediaId, cancellationToken);
+
     public Task<ChannelEmbedDocumentDto> GetForumPostEmbedDocumentAsync(Guid communityId, Guid channelId,
         Guid postId, CancellationToken cancellationToken = default) =>
         AuthorizedClient.GetForumPostEmbedDocumentAsync(communityId, channelId, postId, cancellationToken);
+
+    public Task<ChannelEmbedDocumentDto> RefreshForumPostEmbedDocumentAsync(Guid communityId, Guid channelId,
+        Guid postId, CancellationToken cancellationToken = default) =>
+        AuthorizedClient.RefreshForumPostEmbedDocumentAsync(communityId, channelId, postId, cancellationToken);
 
     public Task<CommunityForumPostDto> GetForumPostAsync(Guid communityId, Guid channelId, Guid postId,
         CancellationToken cancellationToken = default) =>

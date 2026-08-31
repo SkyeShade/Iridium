@@ -16,9 +16,9 @@
             <strong>@Post.Title</strong>
             @if (Post.IsLocked) { <span title="Locked"><Icon Name="lock" /></span> }
         </span>
-        @if (Post.EmbedProvider == CommunityChannelEmbedProvider.GoogleDocs)
+        @if (Post.EmbedProvider is { } provider)
         {
-            <span class="forum-post-document"><Icon Name="file" Size="13" /> Google Docs</span>
+            <span class="forum-post-document"><Icon Name="file" Size="13" /> @(provider == CommunityChannelEmbedProvider.GoogleSheets ? "Google Sheets" : "Google Docs")</span>
         }
         <div class="forum-post-byline">
             <strong class="forum-post-author display-name" style="@AuthorStyle">@Post.Author.DisplayName:</strong>

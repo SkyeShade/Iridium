@@ -3,6 +3,7 @@ using System.Text.Json;
 using Iridium.Protocol;
 using Iridium.Server.Embeds;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Iridium.Tests;
@@ -272,27 +273,203 @@ public sealed class GoogleDocsPublishedDocumentServiceTests
             Assert.Equal(ChannelEmbedDocumentStatus.Ready, first.Status);
             Assert.IsType<EmbeddedDocumentHeadingDto>(Assert.Single(first.Document!.Blocks));
             Assert.Equal(first, second);
+            Assert.False(string.IsNullOrWhiteSpace(first.ContentVersion));
             Assert.Equal(1, handler.RequestCount);
             Assert.Equal(PublishedUrl, handler.LastRequestUri?.AbsoluteUri);
         }
     }
 
     [Fact]
-    public async Task SameDocumentIdentityFromChannelAndForumHostUsesOneProviderCacheEntry()
+    public async Task SameDocumentIdentityFromChannelForumAndMessageHostsUsesOneProviderCacheEntry()
     {
         Assert.True(CommunityChannelEmbeds.TryGoogleDocs(
             "https://docs.google.com/document/d/abc_DEF-123456/edit?usp=sharing", out var channelSource));
         Assert.True(CommunityChannelEmbeds.TryGoogleDocs(
             "https://docs.google.com/document/d/abc_DEF-123456/view", out var forumPostSource));
+        var messageSource = Assert.Single(CommunityChannelEmbeds.FindGoogleDocs(
+            "https://docs.google.com/document/d/abc_DEF-123456/edit?usp=sharing"));
         var handler = new StubHandler(_ => Html("<html><body><p>Shared host document</p></body></html>"));
         var service = Create(handler, out var cache, out var http);
         using (http) using (cache)
         {
             var channelDocument = await service.GetAsync(channelSource!);
             var forumPostDocument = await service.GetAsync(forumPostSource!);
+            var messageDocument = await service.GetAsync(messageSource);
             Assert.Equal(ChannelEmbedDocumentStatus.Ready, channelDocument.Status);
             Assert.Same(channelDocument, forumPostDocument);
+            Assert.Same(channelDocument, messageDocument);
+            Assert.Equal(channelDocument.ContentVersion, messageDocument.ContentVersion);
             Assert.Equal(1, handler.RequestCount);
+        }
+    }
+
+    [Fact]
+    public async Task ConcurrentHostsShareOneInFlightProviderImport()
+    {
+        var handler = new DelayedStubHandler(Html("<html><body><p>Shared in flight</p></body></html>"));
+        var service = Create(handler, out var cache, out var http);
+        using (http) using (cache)
+        {
+            var channel = service.GetAsync(SharedConfiguration());
+            await handler.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            var message = service.GetAsync(SharedConfiguration());
+            handler.Release.TrySetResult();
+            var results = await Task.WhenAll(channel, message);
+            Assert.All(results, result => Assert.Equal(ChannelEmbedDocumentStatus.Ready, result.Status));
+            Assert.Equal(1, handler.RequestCount);
+        }
+    }
+
+    [Fact]
+    public async Task SlowSourceBelowConfiguredTimeoutSucceeds()
+    {
+        var handler = new AsyncStubHandler(async cancellationToken =>
+        {
+            await Task.Delay(40, cancellationToken);
+            return Html("<body><p>Slow but valid</p></body>");
+        });
+        var service = Create(handler, out var cache, out var http, sourceTimeout: TimeSpan.FromSeconds(1));
+        using (http) using (cache)
+            Assert.Equal(ChannelEmbedDocumentStatus.Ready,
+                (await service.GetAsync(SharedConfiguration())).Status);
+    }
+
+    [Fact]
+    public async Task SourcePastConfiguredTimeoutReturnsExplicitTimeout()
+    {
+        var handler = new AsyncStubHandler(async cancellationToken =>
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return Html("<body><p>Never reached</p></body>");
+        });
+        var service = Create(handler, out var cache, out var http, sourceTimeout: TimeSpan.FromMilliseconds(40));
+        using (http) using (cache)
+            Assert.Equal(ChannelEmbedDocumentStatus.Timeout,
+                (await service.GetAsync(SharedConfiguration())).Status);
+    }
+
+    [Fact]
+    public async Task CallerCancellationStopsWaitingButSharedImportWarmsCache()
+    {
+        var handler = new DelayedStubHandler(Html("<body><p>Cache survives caller</p></body>"));
+        var service = Create(handler, out var cache, out var http);
+        using (http) using (cache)
+        {
+            using var caller = new CancellationTokenSource();
+            var abandoned = service.GetAsync(SharedConfiguration(), caller.Token);
+            await handler.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            caller.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => abandoned);
+
+            var waitingViewer = service.GetAsync(SharedConfiguration());
+            handler.Release.TrySetResult();
+            Assert.Equal(ChannelEmbedDocumentStatus.Ready, (await waitingViewer).Status);
+            Assert.Equal(ChannelEmbedDocumentStatus.Ready,
+                (await service.GetAsync(SharedConfiguration())).Status);
+            Assert.Equal(1, handler.RequestCount);
+        }
+    }
+
+    [Fact]
+    public async Task ApplicationShutdownCancelsSharedImport()
+    {
+        var handler = new AsyncStubHandler(async cancellationToken =>
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return Html("<body><p>Never reached</p></body>");
+        });
+        var lifetime = new TestHostApplicationLifetime();
+        var service = Create(handler, out var cache, out var http, lifetime: lifetime);
+        using (http) using (cache)
+        {
+            var import = service.GetAsync(SharedConfiguration());
+            await handler.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            lifetime.StopApplication();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => import);
+        }
+    }
+
+    [Fact]
+    public async Task ExpiredFreshEntryKeepsLastGoodDocumentWhenRefreshFails()
+    {
+        var handler = new SequenceStubHandler([
+            () => Html("<body><p>Last good</p></body>"),
+            () => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+        ]);
+        var service = Create(handler, out var cache, out var http);
+        using (http) using (cache)
+        {
+            var first = await service.GetAsync(SharedConfiguration());
+            cache.Remove("google-doc:AnonymousExport:abc_DEF-123456");
+            var stale = await service.GetAsync(SharedConfiguration());
+            Assert.Equal(ChannelEmbedDocumentStatus.Ready, stale.Status);
+            Assert.True(stale.IsStale);
+            Assert.Equal(first.Document, stale.Document);
+            Assert.Equal(2, handler.RequestCount);
+        }
+    }
+
+    [Fact]
+    public async Task ManualRefreshForcesRevalidationAndChangedContentGetsNewVersion()
+    {
+        var handler = new SequenceStubHandler([
+            () => Html("<body><p>Version one</p></body>"),
+            () => Html("<body><p>Version two</p></body>")
+        ]);
+        var service = Create(handler, out var cache, out var http);
+        using (http) using (cache)
+        {
+            var first = await service.GetAsync(SharedConfiguration());
+            var refreshed = await service.RefreshAsync(SharedConfiguration());
+            Assert.Equal(ChannelEmbedDocumentStatus.Ready, refreshed.Status);
+            Assert.NotEqual(first.ContentVersion, refreshed.ContentVersion);
+            Assert.Contains("Version two", JsonSerializer.Serialize(refreshed.Document));
+            Assert.Equal(2, handler.RequestCount);
+        }
+    }
+
+    [Fact]
+    public async Task UnchangedRefreshRenewsFreshnessWithoutChangingContentVersion()
+    {
+        const string html = "<body><p>Unchanged</p></body>";
+        var handler = new SequenceStubHandler([() => Html(html), () => Html(html)]);
+        var service = Create(handler, out var cache, out var http);
+        using (http) using (cache)
+        {
+            var first = await service.GetAsync(SharedConfiguration());
+            var refreshed = await service.RefreshAsync(SharedConfiguration());
+            Assert.Equal(first.ContentVersion, refreshed.ContentVersion);
+            Assert.Equal(first.Document, refreshed.Document);
+            Assert.False(refreshed.IsStale);
+            Assert.Equal(2, handler.RequestCount);
+        }
+    }
+
+    [Fact]
+    public async Task ConcurrentStaleReadersReturnLastGoodAndLaunchOneRefresh()
+    {
+        var handler = new RevalidatingStubHandler();
+        var service = Create(handler, out var cache, out var http);
+        using (http) using (cache)
+        {
+            var first = await service.GetAsync(SharedConfiguration());
+            cache.Remove("google-doc:AnonymousExport:abc_DEF-123456");
+            var staleResults = await Task.WhenAll(Enumerable.Range(0, 10)
+                .Select(_ => service.GetAsync(SharedConfiguration())));
+            Assert.All(staleResults, value => Assert.True(value.IsStale));
+            await handler.RefreshStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(2, handler.RequestCount);
+            handler.ReleaseRefresh.TrySetResult();
+            ChannelEmbedDocumentDto? fresh = null;
+            for (var attempt = 0; attempt < 100 && fresh is null; attempt++)
+            {
+                cache.TryGetValue("google-doc:AnonymousExport:abc_DEF-123456", out fresh);
+                if (fresh is null) await Task.Delay(10);
+            }
+            Assert.NotNull(fresh);
+            Assert.False(fresh.IsStale);
+            Assert.NotEqual(first.ContentVersion, fresh.ContentVersion);
+            Assert.Equal(2, handler.RequestCount);
         }
     }
 
@@ -424,11 +601,12 @@ public sealed class GoogleDocsPublishedDocumentServiceTests
                 Assert.Null(result.Document);
             }
         }
-        var timeout = new StubHandler(_ => throw new TaskCanceledException("timeout"));
-        var timeoutService = Create(timeout, out var timeoutCache, out var timeoutHttp);
-        using (timeoutHttp) using (timeoutCache)
-            Assert.Equal(ChannelEmbedDocumentStatus.Timeout,
-                (await timeoutService.GetAsync(PublishedConfiguration())).Status);
+        var unexpectedCancellation = new StubHandler(_ => throw new TaskCanceledException("transport aborted"));
+        var cancellationService = Create(unexpectedCancellation, out var cancellationCache,
+            out var cancellationHttp);
+        using (cancellationHttp) using (cancellationCache)
+            Assert.Equal(ChannelEmbedDocumentStatus.TemporaryFailure,
+                (await cancellationService.GetAsync(PublishedConfiguration())).Status);
     }
 
     private static GoogleDocsParseResult Parse(string source) => new GoogleDocsDocumentParser().Parse(source,
@@ -444,11 +622,15 @@ public sealed class GoogleDocsPublishedDocumentServiceTests
     { Content = new StringContent(value) { Headers = { ContentType = new("text/html") } } };
     private static HttpResponseMessage Image(byte[] value, string contentType) => new(HttpStatusCode.OK)
     { Content = new ByteArrayContent(value) { Headers = { ContentType = new(contentType) } } };
-    private static GoogleDocsPublishedDocumentService Create(StubHandler handler, out MemoryCache cache, out HttpClient http)
+    private static GoogleDocsPublishedDocumentService Create(HttpMessageHandler handler, out MemoryCache cache,
+        out HttpClient http, TimeSpan? sourceTimeout = null, TestHostApplicationLifetime? lifetime = null)
     {
-        cache = new(new MemoryCacheOptions()); http = new(handler) { Timeout = TimeSpan.FromSeconds(1) };
-        return new(http, cache, TimeProvider.System, new GoogleDocsDocumentParser(),
-            NullLogger<GoogleDocsPublishedDocumentService>.Instance);
+        cache = new(new MemoryCacheOptions());
+        http = new(handler) { Timeout = Timeout.InfiniteTimeSpan };
+        return new(new SingleHttpClientFactory(http), cache, TimeProvider.System, new GoogleDocsDocumentParser(),
+            NullLogger<GoogleDocsPublishedDocumentService>.Instance, lifetime ?? new(),
+            new(sourceTimeout ?? GoogleDocsPublishedDocumentService.SourceFetchTimeout,
+                GoogleDocsPublishedDocumentService.MediaFetchTimeout));
     }
     private static HttpResponseMessage OversizedResponse()
     {
@@ -468,5 +650,69 @@ public sealed class GoogleDocsPublishedDocumentServiceTests
         public Uri? LastRequestUri { get; private set; }
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         { RequestCount++; LastRequestUri = request.RequestUri; return Task.FromResult(response(request)); }
+    }
+    private sealed class DelayedStubHandler(HttpResponseMessage response) : HttpMessageHandler
+    {
+        public int RequestCount { get; private set; }
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            RequestCount++;
+            Started.TrySetResult();
+            await Release.Task.WaitAsync(cancellationToken);
+            return response;
+        }
+    }
+    private sealed class AsyncStubHandler(Func<CancellationToken, Task<HttpResponseMessage>> response) : HttpMessageHandler
+    {
+        public int RequestCount { get; private set; }
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            RequestCount++;
+            Started.TrySetResult();
+            return response(cancellationToken);
+        }
+    }
+    private sealed class SequenceStubHandler(Queue<Func<HttpResponseMessage>> responses) : HttpMessageHandler
+    {
+        public SequenceStubHandler(IEnumerable<Func<HttpResponseMessage>> responses) : this(new(responses)) { }
+        public int RequestCount { get; private set; }
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            RequestCount++;
+            return Task.FromResult(responses.Dequeue()());
+        }
+    }
+    private sealed class RevalidatingStubHandler : HttpMessageHandler
+    {
+        public int RequestCount { get; private set; }
+        public TaskCompletionSource RefreshStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ReleaseRefresh { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            RequestCount++;
+            if (RequestCount == 1) return Html("<body><p>Last good</p></body>");
+            RefreshStarted.TrySetResult();
+            await ReleaseRefresh.Task.WaitAsync(cancellationToken);
+            return Html("<body><p>Refreshed</p></body>");
+        }
+    }
+    private sealed class SingleHttpClientFactory(HttpClient client) : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => client;
+    }
+    private sealed class TestHostApplicationLifetime : IHostApplicationLifetime
+    {
+        private readonly CancellationTokenSource _stopping = new();
+        public CancellationToken ApplicationStarted => CancellationToken.None;
+        public CancellationToken ApplicationStopping => _stopping.Token;
+        public CancellationToken ApplicationStopped => CancellationToken.None;
+        public void StopApplication() => _stopping.Cancel();
     }
 }

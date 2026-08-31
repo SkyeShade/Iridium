@@ -1,0 +1,28 @@
+.embedded-sheet {
+    display: block;
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+    margin: 0;
+    color: var(--text-primary);
+    background: var(--surface-panel);
+}
+.sheet-tabs { display:flex; width:100%; gap:.25rem; padding:.45rem .55rem; border-bottom:1px solid var(--border); overflow-x:auto; background:var(--surface-raised); }
+.sheet-tabs button { min-height:2rem; padding:.3rem .65rem; border:1px solid transparent; border-radius:var(--radius-sm); color:var(--text-muted); background:transparent; white-space:nowrap; cursor:pointer; }
+.sheet-tabs button.selected { border-color:var(--border); color:var(--text-strong); background:var(--surface-panel); }
+.sheet-overflow { display:block; width:100%; max-width:100%; min-width:0; overflow-x:auto; overflow-y:visible; overscroll-behavior-x:contain; }
+.sheet-canvas { position:relative; width:max(100%,var(--sheet-source-width)); min-width:var(--sheet-source-width); }
+.sheet-overflow table { width:max(100%,var(--sheet-source-width)); min-width:var(--sheet-source-width); max-width:none; border-collapse:collapse; table-layout:fixed; }
+.sheet-floating-image { position:absolute; z-index:2; overflow:hidden; pointer-events:none; }
+.sheet-floating-image :deep(.embedded-document-image) { width:100%; height:100%; margin:0; }
+.sheet-floating-image :deep(img) { width:100%!important; height:100%; object-fit:contain; }
+.sheet-overflow td { box-sizing:border-box; min-width:0; padding:.26rem .42rem; border:1px solid color-mix(in srgb,var(--border) 75%,transparent); vertical-align:middle; overflow-wrap:normal; word-break:normal; line-height:1.22; }
+.sheet-nowrap { white-space:nowrap; overflow:hidden; }.sheet-wrap { white-space:pre-wrap; overflow-wrap:normal; word-break:normal; }
+.sheet-overflow a { color:inherit; text-decoration:underline; }
+.sheet-bold { font-weight:750; }.sheet-italic { font-style:italic; }.sheet-underline { text-decoration:underline; }.sheet-checkbox { font-size:1rem; }
+.sheet-font-small { font-size:.72rem; }.sheet-font-normal { font-size:.82rem; }.sheet-font-medium { font-size:.95rem; }.sheet-font-large { font-size:1.12rem; }.sheet-font-heading { font-size:1.38rem; line-height:1.14!important; }
+.sheet-h-center { text-align:center; }.sheet-h-end { text-align:right; }.sheet-h-justify { text-align:justify; }.sheet-v-top { vertical-align:top!important; }.sheet-v-bottom { vertical-align:bottom!important; }
+.sheet-fg-red { color:#ff8178; }.sheet-fg-orange { color:#f5a85b; }.sheet-fg-yellow { color:#e9c75f; }.sheet-fg-green { color:#75c991; }.sheet-fg-teal { color:#62c7bd; }.sheet-fg-blue { color:#78aef5; }.sheet-fg-purple { color:#bd93f9; }.sheet-fg-pink { color:#ed83b5; }.sheet-fg-gray { color:var(--text-muted); }
+.sheet-bg-light { background:#f4f5f7; color:#202124; }.sheet-bg-dark { background:#25272d; color:#f1f3f4; }.sheet-bg-red { background:#5b292c; }.sheet-bg-orange { background:#5b3b22; }.sheet-bg-yellow { background:#554b20; }.sheet-bg-green { background:#244a32; }.sheet-bg-teal { background:#214846; }.sheet-bg-blue { background:#263d5d; }.sheet-bg-purple { background:#44305e; }.sheet-bg-pink { background:#583047; }.sheet-bg-gray { background:#3a3d45; }
+.sheet-bt-thin { border-top-width:1px!important; }.sheet-bt-medium { border-top-width:2px!important; }.sheet-bt-thick { border-top-width:3px!important; }.sheet-br-medium { border-right-width:2px!important; }.sheet-br-thick { border-right-width:3px!important; }.sheet-bb-medium { border-bottom-width:2px!important; }.sheet-bb-thick { border-bottom-width:3px!important; }.sheet-bl-medium { border-left-width:2px!important; }.sheet-bl-thick { border-left-width:3px!important; }
+.sheet-bt-dashed { border-top-style:dashed!important; }.sheet-br-dashed { border-right-style:dashed!important; }.sheet-bb-dashed { border-bottom-style:dashed!important; }.sheet-bl-dashed { border-left-style:dashed!important; }.sheet-bt-dotted { border-top-style:dotted!important; }.sheet-br-dotted { border-right-style:dotted!important; }.sheet-bb-dotted { border-bottom-style:dotted!important; }.sheet-bl-dotted { border-left-style:dotted!important; }

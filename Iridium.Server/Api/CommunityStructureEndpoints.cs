@@ -46,8 +46,8 @@ public static partial class CommunityStructureEndpoints
     }
 
     private static async Task<IResult> GetChannelEmbedDocumentAsync(Guid communityId, Guid channelId,
-        HttpContext context, IridiumDbContext db, SessionService sessions,
-        CommunityAuthorizationService authorization, IGoogleDocsPublishedDocumentService documents,
+        bool? refresh, HttpContext context, IridiumDbContext db, SessionService sessions,
+        CommunityAuthorizationService authorization, IEmbeddedContentService documents,
         CancellationToken cancellationToken)
     {
         var session = await sessions.GetAsync(context, db);
@@ -58,15 +58,17 @@ public static partial class CommunityStructureEndpoints
         if (channel is null) return Results.NotFound();
         var access = await authorization.GetChannelAccessAsync(communityId, channelId, session.AccountId, db);
         if (!access.Has(CommunityPermission.ViewChannels)) return Results.NotFound();
-        if (!CommunityChannelEmbeds.TryResolve(channel.EmbedProvider, channel.EmbedUrl, out var configuration) ||
-            configuration?.FetchUrl is null)
+        if (!CommunityChannelEmbeds.TryResolveContent(channel.EmbedUrl, out var configuration) ||
+            configuration is null)
             return Results.Ok(new ChannelEmbedDocumentDto(ChannelEmbedDocumentStatus.Unsupported, null));
-        return Results.Ok(await documents.GetAsync(configuration, cancellationToken));
+        return Results.Ok(refresh == true
+            ? await documents.RefreshAsync(configuration, cancellationToken)
+            : await documents.GetAsync(configuration, cancellationToken));
     }
 
     private static async Task<IResult> GetChannelEmbedDocumentMediaAsync(Guid communityId, Guid channelId,
         string mediaId, HttpContext context, IridiumDbContext db, SessionService sessions,
-        CommunityAuthorizationService authorization, IGoogleDocsPublishedDocumentService documents,
+        CommunityAuthorizationService authorization, IEmbeddedContentService documents,
         CancellationToken cancellationToken)
     {
         var session = await sessions.GetAsync(context, db);
@@ -77,8 +79,8 @@ public static partial class CommunityStructureEndpoints
         if (channel is null) return Results.NotFound();
         var access = await authorization.GetChannelAccessAsync(communityId, channelId, session.AccountId, db);
         if (!access.Has(CommunityPermission.ViewChannels) ||
-            !CommunityChannelEmbeds.TryResolve(channel.EmbedProvider, channel.EmbedUrl, out var configuration) ||
-            configuration?.FetchUrl is null) return Results.NotFound();
+            !CommunityChannelEmbeds.TryResolveContent(channel.EmbedUrl, out var configuration) ||
+            configuration is null) return Results.NotFound();
         var media = await documents.GetMediaAsync(configuration, mediaId, cancellationToken);
         return media is null ? Results.NotFound() : Results.File(media.Bytes, media.ContentType,
             enableRangeProcessing: false);
@@ -387,13 +389,13 @@ public static partial class CommunityStructureEndpoints
                 channel.EmbedProvider = null;
                 channel.EmbedUrl = null;
             }
-            else if (embed.Provider != CommunityChannelEmbedProvider.GoogleDocs ||
-                     !CommunityChannelEmbeds.TryGoogleDocs(embed.Url, out var googleDocs))
-                return Invalid("Enter a valid Google Docs document URL.");
+            else if (!CommunityChannelEmbeds.TryResolveContent(embed.Url, out var content) ||
+                     content is null)
+                return Invalid("Enter a valid Google Docs or Google Sheets URL.");
             else
             {
-                channel.EmbedProvider = CommunityChannelEmbedProvider.GoogleDocs;
-                channel.EmbedUrl = googleDocs!.CanonicalUrl ?? googleDocs.OpenUrl;
+                channel.EmbedProvider = content.Provider;
+                channel.EmbedUrl = content.OpenUrl;
             }
         }
         if (channel.CategoryId != request.CategoryId)

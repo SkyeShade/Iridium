@@ -1,0 +1,22 @@
+@using Iridium.Protocol
+
+@if (Documents.Count > 0)
+{
+    <div class="message-document-embeds">
+        @foreach (var document in Documents)
+        {
+            <MessageDocumentPreview @key="PreviewKey(document)" MessageId="MessageId"
+                                    CommunityId="CommunityId" ChannelId="ChannelId" Source="document" />
+        }
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public Guid MessageId { get; set; }
+    [Parameter, EditorRequired] public Guid CommunityId { get; set; }
+    [Parameter, EditorRequired] public Guid ChannelId { get; set; }
+    [Parameter, EditorRequired] public required string Content { get; set; }
+    private IReadOnlyList<EmbeddedContentConfiguration> Documents =>
+        CommunityChannelEmbeds.FindSupportedContent(Content);
+    private string PreviewKey(EmbeddedContentConfiguration document) => $"{MessageId:N}:{document.CacheIdentity}";
+}

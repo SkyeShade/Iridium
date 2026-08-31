@@ -76,6 +76,11 @@
                 @if (Message.EditedAt is not null) { <span class="edited" title="Edited @Message.EditedAt.Value.ToLocalTime().ToString("g")">(edited)</span> }
                 <InviteEmbed Content="@Message.Content" />
                 <MessageExternalEmbeds Content="@Message.Content" />
+                @if (!Message.IsDeleted && Message.DeliveryState == MessageDeliveryState.Confirmed)
+                {
+                    <MessageDocumentEmbeds MessageId="Message.Id" CommunityId="Message.CommunityId"
+                                           ChannelId="Message.ChannelId" Content="@Message.Content" />
+                }
                 @if (Message.Forwarded is { } forwarded)
                 {
                     <ForwardedMessageBlock Snapshot="forwarded" OnOpenSource="OnOpenForwardSource" />
