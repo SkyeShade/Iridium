@@ -13,11 +13,12 @@ public static partial class EmbeddedSheetFonts
         {
             "arial" => "Arial, sans-serif",
             "roboto" => "Roboto, Arial, sans-serif",
+            "lexend deca" => "\"Lexend Deca\", var(--font-sans, Arial, sans-serif)",
             "times new roman" => "\"Times New Roman\", serif",
             "georgia" => "Georgia, serif",
             "courier new" => "\"Courier New\", monospace",
             "consolas" => "Consolas, monospace",
-            _ => $"\"{family}\", var(--font-family, sans-serif)"
+            _ => $"\"{family}\", var(--font-sans, Arial, sans-serif)"
         };
     }
 

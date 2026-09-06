@@ -259,13 +259,15 @@ public sealed class GoogleSheetsPublishedService
     {
         try
         {
-            var url = $"https://docs.google.com/spreadsheets/d/{source.SourceId}/gviz/tq?tqx=out:json&headers=0&sheet={Uri.EscapeDataString(tabName)}";
+            // The gviz JSON table removes fully empty rows, so its array indexes are not absolute sheet
+            // coordinates. The standard CSV export retains those rows and provides Google's visible values.
+            var url = $"https://docs.google.com/spreadsheets/d/{source.SourceId}/export?format=csv&sheet={Uri.EscapeDataString(tabName)}";
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.Accept.ParseAdd("application/json,text/javascript,application/javascript,text/plain");
+            request.Headers.Accept.ParseAdd("text/csv,text/plain");
             using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             if (!response.IsSuccessStatusCode || response.Content.Headers.ContentLength is > MaximumResponseBytes ||
                 await ReadAsync(response.Content, cancellationToken) is not { } downloaded) return null;
-            return FormattedValues(downloaded.Text);
+            return FormattedCsvValues(downloaded.Text);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -304,6 +306,48 @@ public sealed class GoogleSheetsPublishedService
             }
         }
         catch (JsonException) { }
+        return result;
+    }
+
+    public static IReadOnlyDictionary<(int Row, int Column), string> FormattedCsvValues(string source)
+    {
+        var result = new Dictionary<(int, int), string>();
+        var value = new StringBuilder();
+        var row = 0;
+        var column = 0;
+        var quoted = false;
+
+        void CommitCell()
+        {
+            if (value.Length > 0) result[(row, column)] = value.ToString();
+            value.Clear();
+            column++;
+        }
+
+        for (var index = 0; index < source.Length; index++)
+        {
+            var character = source[index];
+            if (quoted)
+            {
+                if (character == '"' && index + 1 < source.Length && source[index + 1] == '"')
+                { value.Append('"'); index++; }
+                else if (character == '"') quoted = false;
+                else value.Append(character);
+                continue;
+            }
+            if (character == '"') { quoted = true; continue; }
+            if (character == ',') { CommitCell(); continue; }
+            if (character is '\r' or '\n')
+            {
+                CommitCell();
+                if (character == '\r' && index + 1 < source.Length && source[index + 1] == '\n') index++;
+                row++;
+                column = 0;
+                continue;
+            }
+            value.Append(character);
+        }
+        if (value.Length > 0 || column > 0) CommitCell();
         return result;
     }
 

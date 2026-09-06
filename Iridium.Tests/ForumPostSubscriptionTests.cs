@@ -53,8 +53,8 @@ public sealed class ForumPostSubscriptionTests
         var shared = Source("Iridium.Web", "wwwroot", "css", "app.css");
 
         Assert.Contains("forum-post-child-compact", markup);
-        Assert.Contains("last-child-post", markup);
-        Assert.Contains("min-height: 2.35rem", styles);
+        Assert.Contains("forum-post-child-tree", markup);
+        Assert.Contains("min-height: var(--forum-child-row-height)", styles);
         Assert.Contains("min-height: 2.25rem", styles);
         Assert.Contains("font-size: .82rem", styles);
         Assert.Contains("border-radius: .42rem", shared);
@@ -78,9 +78,32 @@ public sealed class ForumPostSubscriptionTests
         Assert.True(hover >= 0 && selected > hover && selectedHover > selected);
         Assert.Contains("var(--surface-hover)", shared);
         Assert.Contains("var(--surface-active)", shared);
-        Assert.Contains("border-left: 1px solid color-mix(in srgb, var(--text-faint) 42%, transparent)", styles);
-        Assert.Contains("border-top: 1px solid color-mix(in srgb, var(--text-faint) 42%, transparent)", styles);
+        Assert.Contains(".forum-post-child-tree::before", styles);
+        Assert.Contains("bottom: calc(var(--forum-child-row-height) / 2)", styles);
+        Assert.Contains("background: color-mix(in srgb, var(--text-faint) 42%, transparent)", styles);
         Assert.Contains("width: .52rem", styles);
+        Assert.DoesNotContain("border-left:", styles);
+        Assert.DoesNotContain(".last-child-post", styles);
+        Assert.Contains("@key=\"post.Id\"", Source("Iridium.Web", "Components", "ForumPostSidebarChildren.razor"));
+    }
+
+    [Fact]
+    public void ForumConnectorTreeUsesOneSharedTrunkForOneOrManyStableChildren()
+    {
+        var markup = Source("Iridium.Web", "Components", "ForumPostSidebarChildren.razor");
+        var styles = Source("Iridium.Web", "Components", "ForumPostSidebarChildren.razor.css");
+        var tree = markup.IndexOf("class=\"forum-post-child-tree\"", StringComparison.Ordinal);
+        var loop = markup.IndexOf("@foreach (var post in VisiblePosts)", StringComparison.Ordinal);
+        var branch = markup.IndexOf("class=\"tree-branch\"", StringComparison.Ordinal);
+        var surface = markup.IndexOf("sidebar-nav-surface forum-post-nav-surface", StringComparison.Ordinal);
+
+        Assert.True(tree >= 0 && loop > tree && branch > loop && surface > branch);
+        Assert.Contains("@if (VisiblePosts.Count > 0)", markup);
+        Assert.Equal(1, styles.Split(".forum-post-child-tree::before", StringSplitOptions.None).Length - 1);
+        Assert.DoesNotContain(".tree-branch::after", styles);
+        Assert.DoesNotContain("nth-child", styles);
+        Assert.Contains("bottom: calc(var(--forum-child-row-height) / 2)", styles);
+        Assert.Contains(".forum-post-children { display: none; }", styles);
     }
 
     [Fact]

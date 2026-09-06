@@ -1,18 +1,26 @@
 @foreach (var row in Rows)
 {
-    <tr @key="row.Key" style="@row.HeightStyle">
+    <tr @key="row.Key" class="@row.CssClass" style="@row.HeightStyle">
         @foreach (var cell in row.Cells)
         {
             <td @key="cell.Key" rowspan="@cell.Cell.RowSpan" colspan="@cell.Cell.ColumnSpan"
                 class="@cell.CssClass" style="@cell.Style">
-                @if (cell.Cell.Link is { } link)
-                {
-                    <a href="@link" target="_blank" rel="noopener noreferrer">@cell.Cell.DisplayValue</a>
-                }
-                else
-                {
-                    @cell.Cell.DisplayValue
-                }
+                <span class="sheet-cell-content">
+                    @if (cell.Cell.IsCheckbox)
+                    {
+                        <span class="sheet-checkbox-glyph" role="checkbox"
+                              aria-checked="@(cell.Cell.CheckboxValue == true ? "true" : "false")"
+                              aria-readonly="true">@(cell.Cell.CheckboxValue == true ? "☑" : "☐")</span>
+                    }
+                    else if (cell.Cell.Link is { } link)
+                    {
+                        <a href="@link" target="_blank" rel="noopener noreferrer">@cell.Cell.DisplayValue</a>
+                    }
+                    else
+                    {
+                        @cell.Cell.DisplayValue
+                    }
+                </span>
             </td>
         }
     </tr>

@@ -220,6 +220,7 @@ public sealed partial class GoogleSheetsHtmlParser
         var match = Regex.Match(style, $@"border-{side}\s*:\s*([^;]+)");
         if (!match.Success || match.Groups[1].Value.Contains("none")) return EmbeddedSheetBorderStyle.None;
         var value = match.Groups[1].Value;
+        if (value.Contains("double")) return EmbeddedSheetBorderStyle.Double;
         if (value.Contains("dashed")) return EmbeddedSheetBorderStyle.Dashed;
         if (value.Contains("dotted")) return EmbeddedSheetBorderStyle.Dotted;
         if (Regex.IsMatch(value, @"(?:3|4|5|6|7|8|9)px")) return EmbeddedSheetBorderStyle.Thick;

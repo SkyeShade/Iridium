@@ -153,7 +153,8 @@ public sealed class MessageDocumentPreviewTests
         var javascript = Source("Iridium.Web", "wwwroot", "js", "chat.js");
 
         Assert.Contains("SheetCellRenderModel", sheet);
-        Assert.Contains("CellClass(cell), CellStyle(cell)", sheet);
+        Assert.Contains("EmbeddedSheetCellPresentation.CssClass(cell)", sheet);
+        Assert.Contains("EmbeddedSheetCellPresentation.Style(cell, CellHeight(_renderTab, cell))", sheet);
         Assert.Contains("columnOffsets", sheet);
         Assert.Contains("rowOffsets", sheet);
         Assert.DoesNotContain("ImagePosition(selected, image)", sheet);

@@ -1,23 +1,28 @@
 @using Iridium.Protocol
 
 <div class="forum-post-children" style="--forum-depth:@Depth" aria-label="Followed posts in @Forum.Name">
-    @foreach (var post in VisiblePosts)
+    @if (VisiblePosts.Count > 0)
     {
-        <button @key="post.Id" type="button" class="forum-post-child forum-post-child-compact sidebar-nav-row @(post.Id == VisiblePosts[^1].Id ? "last-child-post" : null) @(SelectedPostId == post.Id ? "selected is-active" : null) @(post.UnreadCount > 0 ? "unread" : null)"
-                @onclick="() => OnSelect.InvokeAsync(post)" title="@post.Title">
-            @if (post.UnreadCount > 0 && SelectedPostId != post.Id)
+        <div class="forum-post-child-tree">
+            @foreach (var post in VisiblePosts)
             {
-                <span class="forum-post-unread" aria-label="Unread replies"></span>
+                <button @key="post.Id" type="button" class="forum-post-child forum-post-child-compact sidebar-nav-row @(SelectedPostId == post.Id ? "selected is-active" : null) @(post.UnreadCount > 0 ? "unread" : null)"
+                        @onclick="() => OnSelect.InvokeAsync(post)" title="@post.Title">
+                    @if (post.UnreadCount > 0 && SelectedPostId != post.Id)
+                    {
+                        <span class="forum-post-unread" aria-label="Unread replies"></span>
+                    }
+                    <span class="tree-branch" aria-hidden="true"></span>
+                    <span class="sidebar-nav-surface forum-post-nav-surface">
+                        <span class="forum-post-title">@post.Title</span>
+                    </span>
+                    @if (post.MentionCount > 0)
+                    {
+                        <span class="forum-post-mentions" aria-label="@($"{post.MentionCount} unread mentions")">@(post.MentionCount > 99 ? "99+" : post.MentionCount)</span>
+                    }
+                </button>
             }
-            <span class="tree-branch" aria-hidden="true"></span>
-            <span class="sidebar-nav-surface forum-post-nav-surface">
-                <span class="forum-post-title">@post.Title</span>
-            </span>
-            @if (post.MentionCount > 0)
-            {
-                <span class="forum-post-mentions" aria-label="@($"{post.MentionCount} unread mentions")">@(post.MentionCount > 99 ? "99+" : post.MentionCount)</span>
-            }
-        </button>
+        </div>
     }
     @if (Posts.Count > SidebarLimit)
     {

@@ -12,7 +12,7 @@ public static class EmbeddedSheetColors
     {
         if (!TryParse(source, out var color)) return null;
         var (hue, saturation, lightness) = ToHsl(color);
-        if (!hasContent && !isMerged && saturation <= .08 && lightness >= .88)
+        if (!hasContent && !isMerged && saturation <= .04 && lightness >= .96)
             return StructuralBackground;
         return ToHex(color);
     }
@@ -37,8 +37,6 @@ public static class EmbeddedSheetColors
     public static string? Border(string? source)
     {
         if (!TryParse(source, out var color)) return null;
-        var (_, saturation, lightness) = ToHsl(color);
-        if (saturation <= .08 && lightness >= .9) return "#7C8492";
         return ToHex(color);
     }
 

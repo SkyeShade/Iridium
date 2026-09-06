@@ -1,0 +1,45 @@
+.sheet-row-compact td { padding:0 2px; }
+.sheet-row-spacious td { padding:2px 4px; }
+td { box-sizing:border-box; min-width:0; padding:1px 3px; border:1px solid transparent; overflow:hidden; overflow-wrap:normal; word-break:normal; line-height:1.15; }
+.sheet-gridlines td { border-color:color-mix(in srgb,var(--border) 75%,transparent); }
+.sheet-cell-content { display:block; max-width:100%; max-height:var(--sheet-cell-height); overflow:hidden; text-align:inherit; }
+.sheet-nowrap,.sheet-nowrap .sheet-cell-content { white-space:nowrap; text-overflow:clip; }
+.sheet-wrap,.sheet-wrap .sheet-cell-content { white-space:pre-wrap; overflow-wrap:break-word; word-break:normal; }
+a { display:block; max-width:100%; overflow:hidden; color:inherit; text-align:inherit; text-decoration:underline; text-overflow:inherit; }
+.sheet-bold { font-weight:750; }
+.sheet-italic { font-style:italic; }
+.sheet-underline { text-decoration:underline; }
+.sheet-checkbox,.sheet-numeric { padding-inline:1px; }
+.sheet-checkbox-glyph { display:inline-grid; width:.82rem; height:.82rem; place-items:center; font-size:.72rem; line-height:1; vertical-align:middle; }
+.sheet-font-small { font-size:.72rem; }
+.sheet-font-normal { font-size:.82rem; }
+.sheet-font-medium { font-size:.95rem; }
+.sheet-font-large { font-size:1.12rem; }
+.sheet-font-heading { font-size:1.38rem; line-height:1.14; }
+.sheet-h-start { text-align:left; }
+.sheet-h-center { text-align:center; }
+.sheet-h-end { text-align:right; }
+.sheet-h-justify { text-align:justify; }
+.sheet-v-top { vertical-align:top; }
+.sheet-v-middle { vertical-align:middle; }
+.sheet-v-bottom { vertical-align:bottom; }
+.sheet-fg-red { color:#ff8178; }
+.sheet-fg-orange { color:#f5a85b; }
+.sheet-fg-yellow { color:#e9c75f; }
+.sheet-fg-green { color:#75c991; }
+.sheet-fg-teal { color:#62c7bd; }
+.sheet-fg-blue { color:#78aef5; }
+.sheet-fg-purple { color:#bd93f9; }
+.sheet-fg-pink { color:#ed83b5; }
+.sheet-fg-gray { color:var(--text-muted); }
+.sheet-bg-light { background:#f4f5f7; color:#202124; }
+.sheet-bg-dark { background:#25272d; color:#f1f3f4; }
+.sheet-bg-red { background:#5b292c; }
+.sheet-bg-orange { background:#5b3b22; }
+.sheet-bg-yellow { background:#554b20; }
+.sheet-bg-green { background:#244a32; }
+.sheet-bg-teal { background:#214846; }
+.sheet-bg-blue { background:#263d5d; }
+.sheet-bg-purple { background:#44305e; }
+.sheet-bg-pink { background:#583047; }
+.sheet-bg-gray { background:#3a3d45; }

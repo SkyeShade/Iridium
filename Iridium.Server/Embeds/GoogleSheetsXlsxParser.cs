@@ -13,6 +13,9 @@ public sealed class GoogleSheetsXlsxParser
     private static readonly XNamespace PackageRelationships = "http://schemas.openxmlformats.org/package/2006/relationships";
     private static readonly XNamespace SpreadsheetDrawing = "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing";
     private static readonly XNamespace Drawing = "http://schemas.openxmlformats.org/drawingml/2006/main";
+    private const double CssPixelsPerPoint = 96d / 72d;
+    private const int GoogleDefaultColumnWidth = 100;
+    private const int GoogleDefaultRowHeight = 21;
 
     public EmbeddedSheetDto? Parse(byte[] source, EmbeddedContentConfiguration configuration)
         => ParseWithMedia(source, configuration)?.Sheet;
@@ -55,6 +58,11 @@ public sealed class GoogleSheetsXlsxParser
         var raw = new Dictionary<(int Row, int Column), RawCell>();
         var rowHeights = new Dictionary<int, int>();
         var rowStyles = new Dictionary<int, int>();
+        var sheetFormat = worksheet.Root?.Element(Main + "sheetFormatPr");
+        var defaultRowHeight = AttributeDouble(sheetFormat, "defaultRowHeight") is { } defaultHeight
+            ? PointHeight(defaultHeight) : GoogleDefaultRowHeight;
+        var defaultColumnWidth = AttributeDouble(sheetFormat, "defaultColWidth") is { } defaultWidth
+            ? ExcelWidth(defaultWidth) : GoogleDefaultColumnWidth;
         var maxRow = -1;
         var maxColumn = -1;
         foreach (var row in worksheet.Descendants(Main + "row"))
@@ -63,7 +71,7 @@ public sealed class GoogleSheetsXlsxParser
             if (rowIndex >= GoogleSheetsHtmlParser.MaximumRows) throw new GoogleSheetsTooLargeException();
             maxRow = Math.Max(maxRow, rowIndex);
             if (AttributeDouble(row, "ht") is { } height)
-                rowHeights[rowIndex] = Math.Clamp((int)Math.Round(height * 96d / 72d), 12, 400);
+                rowHeights[rowIndex] = PointHeight(height);
             if (AttributeInt(row, "s", -1) is >= 0 and var rowStyle) rowStyles[rowIndex] = rowStyle;
             var inferredColumn = 0;
             foreach (var cell in row.Elements(Main + "c"))
@@ -73,9 +81,11 @@ public sealed class GoogleSheetsXlsxParser
                 inferredColumn = coordinate.Column + 1;
                 if (coordinate.Column >= GoogleSheetsHtmlParser.MaximumColumns) throw new GoogleSheetsTooLargeException();
                 maxColumn = Math.Max(maxColumn, coordinate.Column);
-                var style = AttributeInt(cell, "s", rowStyles.GetValueOrDefault(rowIndex));
-                var parsed = CellValue(cell, strings, styles.Format(style));
-                raw[coordinate] = new(parsed.Display, parsed.Raw, style);
+                var styleValue = AttributeInt(cell, "s", -1);
+                int? explicitStyle = styleValue >= 0 ? styleValue : null;
+                var effectiveStyle = explicitStyle ?? rowStyles.GetValueOrDefault(rowIndex);
+                var parsed = CellValue(cell, strings, styles.Format(effectiveStyle));
+                raw[coordinate] = new(parsed.Display, parsed.Raw, explicitStyle, parsed.IsNumeric);
                 if (raw.Count > GoogleSheetsHtmlParser.MaximumCells) throw new GoogleSheetsTooLargeException();
             }
         }
@@ -103,7 +113,7 @@ public sealed class GoogleSheetsXlsxParser
         {
             var first = Math.Max(0, AttributeInt(column, "min", 1) - 1);
             var last = Math.Min(GoogleSheetsHtmlParser.MaximumColumns - 1, AttributeInt(column, "max", first + 1) - 1);
-            var width = AttributeDouble(column, "width") is { } value ? ExcelWidth(value) : 100;
+            var width = AttributeDouble(column, "width") is { } value ? ExcelWidth(value) : defaultColumnWidth;
             var style = AttributeInt(column, "style", -1);
             for (var index = first; index <= last; index++)
             {
@@ -125,29 +135,71 @@ public sealed class GoogleSheetsXlsxParser
             {
                 if (covered.Contains((rowIndex, columnIndex))) continue;
                 raw.TryGetValue((rowIndex, columnIndex), out var value);
-                var styleIndex = value.Style != 0 ? value.Style :
-                    rowStyles.TryGetValue(rowIndex, out var rowStyle) ? rowStyle : columnStyles.GetValueOrDefault(columnIndex);
+                var styleIndex = value.Style ?? (rowStyles.TryGetValue(rowIndex, out var rowStyle)
+                    ? rowStyle : columnStyles.GetValueOrDefault(columnIndex));
                 var style = styles.Cell(styleIndex);
                 var span = merges.GetValueOrDefault((rowIndex, columnIndex), (Rows: 1, Columns: 1));
+                var perimeter = span == (1, 1) ? new WorkbookStyles.BorderSet(style.Top, style.Right, style.Bottom, style.Left) :
+                    MergedPerimeter(rowIndex, columnIndex, span, raw, rowStyles, columnStyles, styles);
                 var checkbox = string.Equals(value.Value, "TRUE", StringComparison.OrdinalIgnoreCase) ||
                                string.Equals(value.Value, "FALSE", StringComparison.OrdinalIgnoreCase);
                 bool? checkedValue = checkbox ? string.Equals(value.Value, "TRUE", StringComparison.OrdinalIgnoreCase) : null;
+                var horizontal = style.Horizontal ?? (checkbox ? EmbeddedDocumentTextAlignment.Center :
+                    value.IsNumeric ? EmbeddedDocumentTextAlignment.End : EmbeddedDocumentTextAlignment.Start);
                 cells.Add(new(rowIndex, columnIndex, checkbox ? checkedValue == true ? "☑" : "☐" : value.Value ?? string.Empty,
-                    span.Rows, span.Columns, style.Bold, style.Italic, style.Underline, style.Horizontal, style.Vertical,
-                    EmbeddedDocumentTextColor.Default, EmbeddedSheetCellColor.Default, style.Top.Style, style.Right.Style,
-                    style.Bottom.Style, style.Left.Style, hyperlinks.GetValueOrDefault((rowIndex, columnIndex)), checkbox,
-                    checkedValue, style.FontSize, style.Foreground, style.Background, style.Top.Color, style.Right.Color,
-                    style.Bottom.Color, style.Left.Color, value.RawValue, style.FontFamily, style.FontSizePx,
-                    style.FontWeight, style.WrapText));
+                    span.Rows, span.Columns, style.Bold, style.Italic, style.Underline, horizontal, style.Vertical,
+                    EmbeddedDocumentTextColor.Default, EmbeddedSheetCellColor.Default, perimeter.Top.Style, perimeter.Right.Style,
+                    perimeter.Bottom.Style, perimeter.Left.Style, hyperlinks.GetValueOrDefault((rowIndex, columnIndex)), checkbox,
+                    checkedValue, style.FontSize, style.Foreground, style.Background, perimeter.Top.Color, perimeter.Right.Color,
+                    perimeter.Bottom.Color, perimeter.Left.Color, value.RawValue, style.FontFamily, style.FontSizePx,
+                    style.FontWeight, style.WrapText, style.IndentLevel, styleIndex));
             }
-            rows.Add(new(rowHeights.GetValueOrDefault(rowIndex, 21), cells, rowIndex));
+            rows.Add(new(rowHeights.GetValueOrDefault(rowIndex, defaultRowHeight), cells, rowIndex));
         }
-        var widths = Enumerable.Range(0, maxColumn + 1).Select(index => columnWidths.GetValueOrDefault(index, 100)).ToArray();
-        return new(id, name, rows, widths, Images(archive, path, worksheet, media));
+        var widths = Enumerable.Range(0, maxColumn + 1)
+            .Select(index => columnWidths.GetValueOrDefault(index, defaultColumnWidth)).ToArray();
+        var showGridLines = !string.Equals((string?)worksheet.Descendants(Main + "sheetView").FirstOrDefault()?
+            .Attribute("showGridLines"), "0", StringComparison.OrdinalIgnoreCase);
+        return new(id, name, rows, widths, Images(archive, path, worksheet, media, widths,
+            rows.Select(row => row.Height ?? defaultRowHeight).ToArray()), showGridLines);
     }
 
+    private static WorkbookStyles.BorderSet MergedPerimeter(int row, int column, (int Rows, int Columns) span,
+        IReadOnlyDictionary<(int Row, int Column), RawCell> raw, IReadOnlyDictionary<int, int> rowStyles,
+        IReadOnlyDictionary<int, int> columnStyles, WorkbookStyles styles)
+    {
+        WorkbookStyles.CellStyle Cell(int targetRow, int targetColumn)
+        {
+            raw.TryGetValue((targetRow, targetColumn), out var value);
+            var styleIndex = value.Style ?? (rowStyles.TryGetValue(targetRow, out var rowStyle)
+                ? rowStyle : columnStyles.GetValueOrDefault(targetColumn));
+            return styles.Cell(styleIndex);
+        }
+
+        var lastRow = row + span.Rows - 1;
+        var lastColumn = column + span.Columns - 1;
+        return new(
+            Strongest(Enumerable.Range(column, span.Columns).Select(target => Cell(row, target).Top)),
+            Strongest(Enumerable.Range(row, span.Rows).Select(target => Cell(target, lastColumn).Right)),
+            Strongest(Enumerable.Range(column, span.Columns).Select(target => Cell(lastRow, target).Bottom)),
+            Strongest(Enumerable.Range(row, span.Rows).Select(target => Cell(target, column).Left)));
+    }
+
+    private static WorkbookStyles.BorderEdge Strongest(IEnumerable<WorkbookStyles.BorderEdge> edges) =>
+        edges.OrderByDescending(edge => edge.Style switch
+        {
+            EmbeddedSheetBorderStyle.Double => 6,
+            EmbeddedSheetBorderStyle.Thick => 5,
+            EmbeddedSheetBorderStyle.Medium => 4,
+            EmbeddedSheetBorderStyle.Dashed => 3,
+            EmbeddedSheetBorderStyle.Dotted => 2,
+            EmbeddedSheetBorderStyle.Thin => 1,
+            _ => 0
+        }).FirstOrDefault() ?? WorkbookStyles.BorderEdge.Default;
+
     private static IReadOnlyList<EmbeddedSheetImageDto> Images(ZipArchive archive, string sheetPath,
-        XDocument worksheet, Dictionary<string, EmbeddedDocumentMedia> media)
+        XDocument worksheet, Dictionary<string, EmbeddedDocumentMedia> media,
+        IReadOnlyList<int> columnWidths, IReadOnlyList<int> rowHeights)
     {
         var result = new List<EmbeddedSheetImageDto>();
         var sheetRelations = PartRelationships(archive, sheetPath);
@@ -171,15 +223,27 @@ public sealed class GoogleSheetsXlsxParser
                 media.TryAdd(mediaId, new(bytes, contentType));
                 var extent = anchor.Element(SpreadsheetDrawing + "ext");
                 var to = anchor.Element(SpreadsheetDrawing + "to");
-                var width = Emu((long?)extent?.Attribute("cx")) ?? Math.Max(80, (CoordinatePart(to, "col") - CoordinatePart(from, "col")) * 100);
-                var height = Emu((long?)extent?.Attribute("cy")) ?? Math.Max(80, (CoordinatePart(to, "row") - CoordinatePart(from, "row")) * 21);
-                result.Add(new(mediaId, CoordinatePart(from, "row"), CoordinatePart(from, "col"),
-                    Emu(LongPart(from, "colOff")) ?? 0, Emu(LongPart(from, "rowOff")) ?? 0,
+                var fromColumn = CoordinatePart(from, "col");
+                var fromRow = CoordinatePart(from, "row");
+                var offsetX = Emu(LongPart(from, "colOff")) ?? 0;
+                var offsetY = Emu(LongPart(from, "rowOff")) ?? 0;
+                var width = Emu((long?)extent?.Attribute("cx")) ?? AnchorSpan(columnWidths, fromColumn,
+                    CoordinatePart(to, "col"), offsetX, Emu(LongPart(to, "colOff")) ?? 0);
+                var height = Emu((long?)extent?.Attribute("cy")) ?? AnchorSpan(rowHeights, fromRow,
+                    CoordinatePart(to, "row"), offsetY, Emu(LongPart(to, "rowOff")) ?? 0);
+                result.Add(new(mediaId, fromRow, fromColumn, offsetX, offsetY,
                     Math.Clamp(width, 16, 2400), Math.Clamp(height, 16, 2400),
                     (string?)anchor.Descendants(SpreadsheetDrawing + "cNvPr").FirstOrDefault()?.Attribute("descr")));
             }
         }
         return result;
+    }
+
+    private static int AnchorSpan(IReadOnlyList<int> sizes, int from, int to, int fromOffset, int toOffset)
+    {
+        var start = Math.Clamp(from, 0, sizes.Count);
+        var end = Math.Clamp(to, start, sizes.Count);
+        return Math.Max(1, sizes.Skip(start).Take(end - start).Sum() + toOffset - fromOffset);
     }
 
     private static Dictionary<string, string> PartRelationships(ZipArchive archive, string partPath)
@@ -228,24 +292,40 @@ public sealed class GoogleSheetsXlsxParser
         return result;
     }
 
-    private static (string Display, string? Raw) CellValue(XElement cell, IReadOnlyList<string> strings, string? format)
+    private static (string Display, string? Raw, bool IsNumeric) CellValue(XElement cell,
+        IReadOnlyList<string> strings, string? format)
     {
         var type = (string?)cell.Attribute("t");
         var raw = (string?)cell.Element(Main + "v") ?? string.Concat(cell.Descendants(Main + "t").Select(value => value.Value));
-        if (type == "s" && int.TryParse(raw, out var index) && index >= 0 && index < strings.Count) return (strings[index], raw);
-        if (type == "b") return (raw == "1" ? "TRUE" : "FALSE", raw);
-        if (type is "str" or "inlineStr" || string.IsNullOrEmpty(raw)) return (raw ?? string.Empty, raw);
-        return (FormatNumber(raw, format), raw);
+        if (type == "s" && int.TryParse(raw, out var index) && index >= 0 && index < strings.Count)
+            return (strings[index], raw, false);
+        if (type == "b") return (raw == "1" ? "TRUE" : "FALSE", raw, false);
+        if (type is "str" or "inlineStr" || string.IsNullOrEmpty(raw)) return (raw ?? string.Empty, raw, false);
+        return (FormatNumber(raw, format), raw, double.TryParse(raw, NumberStyles.Float,
+            CultureInfo.InvariantCulture, out _));
     }
 
     private static string FormatNumber(string value, string? format)
     {
         if (!double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var number)) return value;
-        if (format?.Contains('%') == true) return (number * 100).ToString("0.##", CultureInfo.InvariantCulture) + "%";
-        if (format?.Contains('+') == true && number > 0) return "+" + number.ToString("0.##", CultureInfo.InvariantCulture);
-        var decimalPlaces = format is null ? -1 : format.Split(';')[0].Split('.').ElementAtOrDefault(1)?.TakeWhile(character => character is '0' or '#').Count() ?? 0;
-        if (decimalPlaces > 0) return number.ToString($"0.{new string('#', Math.Min(decimalPlaces, 8))}", CultureInfo.InvariantCulture);
-        return Math.Abs(number % 1) < .0000001 ? number.ToString("0", CultureInfo.InvariantCulture) : number.ToString("0.########", CultureInfo.InvariantCulture);
+        if (string.IsNullOrWhiteSpace(format) || string.Equals(format, "General", StringComparison.OrdinalIgnoreCase))
+            return Math.Abs(number % 1) < .0000001 ? number.ToString("0", CultureInfo.InvariantCulture) :
+                number.ToString("0.########", CultureInfo.InvariantCulture);
+        if (format.StartsWith("date:", StringComparison.Ordinal))
+        {
+            try { return DateTime.FromOADate(number).ToString(format[5..], CultureInfo.InvariantCulture); }
+            catch (ArgumentException) { return value; }
+        }
+        try
+        {
+            // Excel and .NET share the common numeric placeholders used by Sheets exports, including
+            // zero-decimal rounding, optional decimals, grouping, percentages, literals, and sections.
+            return number.ToString(format, CultureInfo.InvariantCulture);
+        }
+        catch (FormatException)
+        {
+            return number.ToString("0.########", CultureInfo.InvariantCulture);
+        }
     }
 
     private static IReadOnlyList<string> SharedStrings(ZipArchive archive) => Xml(archive, "xl/sharedStrings.xml")?
@@ -270,11 +350,19 @@ public sealed class GoogleSheetsXlsxParser
     }
     private static int AttributeInt(XElement value, string name, int fallback) =>
         int.TryParse((string?)value.Attribute(name), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) ? parsed : fallback;
-    private static double? AttributeDouble(XElement value, string name) =>
-        double.TryParse((string?)value.Attribute(name), NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed) ? parsed : null;
-    private static int ExcelWidth(double width) => Math.Clamp((int)Math.Round(width * 7 + 5), 24, 600);
+    private static double? AttributeDouble(XElement? value, string name) =>
+        double.TryParse((string?)value?.Attribute(name), NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed) ? parsed : null;
+    private static int PointHeight(double points) => Math.Clamp((int)Math.Round(points * CssPixelsPerPoint), 1, 1000);
+    private static int ExcelWidth(double width)
+    {
+        const double maximumDigitWidth = 7d;
+        var pixels = width < 1d
+            ? (int)Math.Floor(width * (maximumDigitWidth + 5d) + .5d)
+            : (int)Math.Floor(((256d * width + Math.Floor(128d / maximumDigitWidth)) / 256d) * maximumDigitWidth) + 5;
+        return Math.Clamp(pixels, 1, 2000);
+    }
     private static string? SafeLink(string? value) => Uri.TryCreate(value, UriKind.Absolute, out var uri) && uri.Scheme is "https" or "http" ? uri.AbsoluteUri : null;
-    private readonly record struct RawCell(string? Value, string? RawValue, int Style);
+    private readonly record struct RawCell(string? Value, string? RawValue, int? Style, bool IsNumeric);
 
     private sealed class WorkbookStyles
     {
@@ -290,7 +378,7 @@ public sealed class GoogleSheetsXlsxParser
             var fonts = document.Root.Element(Main + "fonts")?.Elements(Main + "font").Select(Font).ToArray() ?? [FontStyle.Default];
             var fills = document.Root.Element(Main + "fills")?.Elements(Main + "fill").Select(Fill).ToArray() ?? [null];
             var borders = document.Root.Element(Main + "borders")?.Elements(Main + "border").Select(Border).ToArray() ?? [BorderSet.Default];
-            var formats = new string?[512];
+            var formats = BuiltInFormats();
             foreach (var format in document.Descendants(Main + "numFmt"))
                 if (AttributeInt(format, "numFmtId", -1) is >= 0 and < 512 and var id) formats[id] = (string?)format.Attribute("formatCode");
             var cells = document.Root.Element(Main + "cellXfs")?.Elements(Main + "xf").Select(value =>
@@ -301,14 +389,29 @@ public sealed class GoogleSheetsXlsxParser
                 var alignment = value.Element(Main + "alignment");
                 return new CellStyle(font.Bold, font.Italic, font.Underline, FontScale(font.Size), font.Color,
                     background, Horizontal(alignment), Vertical(alignment), border.Top, border.Right, border.Bottom,
-                    border.Left, AttributeInt(value, "numFmtId", 0), font.Family, font.Size * 96d / 72d,
-                    font.Bold ? 700 : 400, (bool?)alignment?.Attribute("wrapText"));
+                    border.Left, AttributeInt(value, "numFmtId", 0), font.Family, font.Size * CssPixelsPerPoint,
+                    font.Bold ? 700 : 400, (bool?)alignment?.Attribute("wrapText"),
+                    Math.Clamp(AttributeInt(alignment ?? new XElement("alignment"), "indent", 0), 0, 15));
             }).ToArray() ?? [CellStyle.Default];
             return new(cells, formats);
         }
 
-        private static FontStyle Font(XElement value) => new(value.Element(Main + "b") is not null,
-            value.Element(Main + "i") is not null, value.Element(Main + "u") is not null,
+        private static string?[] BuiltInFormats()
+        {
+            var formats = new string?[512];
+            formats[1] = "0"; formats[2] = "0.00"; formats[3] = "#,##0"; formats[4] = "#,##0.00";
+            formats[9] = "0%"; formats[10] = "0.00%"; formats[11] = "0.00E+00";
+            formats[14] = "date:MM-dd-yy"; formats[15] = "date:d-MMM-yy";
+            formats[16] = "date:d-MMM"; formats[17] = "date:MMM-yy";
+            formats[18] = "date:h:mm tt"; formats[19] = "date:h:mm:ss tt";
+            formats[20] = "date:H:mm"; formats[21] = "date:H:mm:ss"; formats[22] = "date:MM-dd-yy H:mm";
+            formats[37] = "#,##0;(#,##0)"; formats[38] = "#,##0;(#,##0)";
+            formats[39] = "#,##0.00;(#,##0.00)"; formats[40] = "#,##0.00;(#,##0.00)";
+            return formats;
+        }
+
+        private static FontStyle Font(XElement value) => new(BooleanElement(value.Element(Main + "b")),
+            BooleanElement(value.Element(Main + "i")), BooleanElement(value.Element(Main + "u")),
             AttributeDouble(value.Element(Main + "sz") ?? new XElement("none"), "val") ?? 10,
             Rgb(value.Element(Main + "color")), (string?)value.Element(Main + "name")?.Attribute("val"));
         private static string? Fill(XElement value)
@@ -318,19 +421,31 @@ public sealed class GoogleSheetsXlsxParser
         }
         private static BorderSet Border(XElement value) => new(Edge(value.Element(Main + "top")),
             Edge(value.Element(Main + "right")), Edge(value.Element(Main + "bottom")), Edge(value.Element(Main + "left")));
-        private static BorderEdge Edge(XElement? value) => new((string?)value?.Attribute("style") switch
+        private static BorderEdge Edge(XElement? value)
         {
-            null or "none" => EmbeddedSheetBorderStyle.None,
-            "medium" or "mediumDashed" => EmbeddedSheetBorderStyle.Medium,
-            "thick" or "double" => EmbeddedSheetBorderStyle.Thick,
-            "dashed" or "dashDot" or "dashDotDot" => EmbeddedSheetBorderStyle.Dashed,
-            "dotted" => EmbeddedSheetBorderStyle.Dotted,
-            _ => EmbeddedSheetBorderStyle.Thin
-        }, Rgb(value?.Element(Main + "color")));
-        private static EmbeddedDocumentTextAlignment Horizontal(XElement? value) => (string?)value?.Attribute("horizontal") switch
-        { "center" or "centerContinuous" => EmbeddedDocumentTextAlignment.Center, "right" => EmbeddedDocumentTextAlignment.End, "justify" => EmbeddedDocumentTextAlignment.Justify, _ => EmbeddedDocumentTextAlignment.Start };
+            var style = (string?)value?.Attribute("style") switch
+            {
+                null or "none" => EmbeddedSheetBorderStyle.None,
+                "medium" or "mediumDashed" => EmbeddedSheetBorderStyle.Medium,
+                "thick" => EmbeddedSheetBorderStyle.Thick,
+                "double" => EmbeddedSheetBorderStyle.Double,
+                "dashed" or "dashDot" or "dashDotDot" => EmbeddedSheetBorderStyle.Dashed,
+                "dotted" => EmbeddedSheetBorderStyle.Dotted,
+                _ => EmbeddedSheetBorderStyle.Thin
+            };
+            return new(style, style == EmbeddedSheetBorderStyle.None ? null :
+                Rgb(value?.Element(Main + "color")) ?? "#000000");
+        }
+        private static EmbeddedDocumentTextAlignment? Horizontal(XElement? value) => (string?)value?.Attribute("horizontal") switch
+        { "center" or "centerContinuous" => EmbeddedDocumentTextAlignment.Center,
+            "right" => EmbeddedDocumentTextAlignment.End, "left" => EmbeddedDocumentTextAlignment.Start,
+            "justify" => EmbeddedDocumentTextAlignment.Justify, _ => null };
         private static EmbeddedSheetVerticalAlignment Vertical(XElement? value) => (string?)value?.Attribute("vertical") switch
-        { "top" => EmbeddedSheetVerticalAlignment.Top, "bottom" => EmbeddedSheetVerticalAlignment.Bottom, _ => EmbeddedSheetVerticalAlignment.Middle };
+        { "top" => EmbeddedSheetVerticalAlignment.Top, "center" => EmbeddedSheetVerticalAlignment.Middle,
+            _ => EmbeddedSheetVerticalAlignment.Bottom };
+        private static bool BooleanElement(XElement? value) => value is not null &&
+            !string.Equals((string?)value.Attribute("val"), "0", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals((string?)value.Attribute("val"), "false", StringComparison.OrdinalIgnoreCase);
         private static EmbeddedSheetFontSize FontScale(double size) => size switch
         { <= 9 => EmbeddedSheetFontSize.Small, <= 11 => EmbeddedSheetFontSize.Normal, <= 14 => EmbeddedSheetFontSize.Medium, <= 18 => EmbeddedSheetFontSize.Large, _ => EmbeddedSheetFontSize.Heading };
         private static string? Rgb(XElement? value)
@@ -342,19 +457,20 @@ public sealed class GoogleSheetsXlsxParser
         private sealed record FontStyle(bool Bold, bool Italic, bool Underline, double Size, string? Color,
             string? Family)
         { public static readonly FontStyle Default = new(false, false, false, 10, null, null); }
-        private sealed record BorderSet(BorderEdge Top, BorderEdge Right, BorderEdge Bottom, BorderEdge Left)
+        public sealed record BorderSet(BorderEdge Top, BorderEdge Right, BorderEdge Bottom, BorderEdge Left)
         { public static readonly BorderSet Default = new(BorderEdge.Default, BorderEdge.Default, BorderEdge.Default, BorderEdge.Default); }
         public sealed record BorderEdge(EmbeddedSheetBorderStyle Style, string? Color)
         { public static readonly BorderEdge Default = new(EmbeddedSheetBorderStyle.None, null); }
         public sealed record CellStyle(bool Bold, bool Italic, bool Underline, EmbeddedSheetFontSize FontSize,
-            string? Foreground, string? Background, EmbeddedDocumentTextAlignment Horizontal,
+            string? Foreground, string? Background, EmbeddedDocumentTextAlignment? Horizontal,
             EmbeddedSheetVerticalAlignment Vertical, BorderEdge Top, BorderEdge Right, BorderEdge Bottom,
             BorderEdge Left, int NumberFormatId, string? FontFamily, double? FontSizePx, int? FontWeight,
-            bool? WrapText)
+            bool? WrapText, int IndentLevel)
         {
             public static readonly CellStyle Default = new(false, false, false, EmbeddedSheetFontSize.Normal,
-                null, null, EmbeddedDocumentTextAlignment.Start, EmbeddedSheetVerticalAlignment.Middle,
-                BorderEdge.Default, BorderEdge.Default, BorderEdge.Default, BorderEdge.Default, 0, null, null, null, null);
+                null, null, null, EmbeddedSheetVerticalAlignment.Bottom,
+                BorderEdge.Default, BorderEdge.Default, BorderEdge.Default, BorderEdge.Default, 0, null, null, null,
+                null, 0);
         }
     }
 }

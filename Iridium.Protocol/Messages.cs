@@ -229,7 +229,8 @@ public sealed record ChannelEmbedDocumentDto(ChannelEmbedDocumentStatus Status, 
 public sealed record EmbeddedSheetDto(string SpreadsheetId, string? Title,
     IReadOnlyList<EmbeddedSheetTabDto> Tabs, string? DefaultTabId);
 public sealed record EmbeddedSheetTabDto(string Id, string Name, IReadOnlyList<EmbeddedSheetRowDto> Rows,
-    IReadOnlyList<int> ColumnWidths, IReadOnlyList<EmbeddedSheetImageDto>? Images = null);
+    IReadOnlyList<int> ColumnWidths, IReadOnlyList<EmbeddedSheetImageDto>? Images = null,
+    bool ShowGridLines = true);
 public sealed record EmbeddedSheetRowDto(int? Height, IReadOnlyList<EmbeddedSheetCellDto> Cells, int Index = 0);
 public sealed record EmbeddedSheetCellDto(int Row, int Column, string DisplayValue, int RowSpan = 1,
     int ColumnSpan = 1, bool Bold = false, bool Italic = false, bool Underline = false,
@@ -247,13 +248,13 @@ public sealed record EmbeddedSheetCellDto(int Row, int Column, string DisplayVal
     string? TopBorderColor = null, string? RightBorderColor = null,
     string? BottomBorderColor = null, string? LeftBorderColor = null,
     string? RawValue = null, string? FontFamily = null, double? FontSizePx = null,
-    int? FontWeight = null, bool? WrapText = null);
+    int? FontWeight = null, bool? WrapText = null, int IndentLevel = 0, int SourceStyleId = 0);
 public sealed record EmbeddedSheetImageDto(string MediaId, int AnchorRow, int AnchorColumn,
     int OffsetX, int OffsetY, int Width, int Height, string? Alt = null);
 public enum EmbeddedSheetVerticalAlignment { Top, Middle, Bottom }
 public enum EmbeddedSheetFontSize { Small, Normal, Medium, Large, Heading }
 public enum EmbeddedSheetCellColor { Default, Light, Dark, Red, Orange, Yellow, Green, Teal, Blue, Purple, Pink, Gray }
-public enum EmbeddedSheetBorderStyle { None, Thin, Medium, Thick, Dashed, Dotted }
+public enum EmbeddedSheetBorderStyle { None, Thin, Medium, Thick, Double, Dashed, Dotted }
 
 public sealed record EmbeddedDocumentDto(IReadOnlyList<EmbeddedDocumentBlockDto> Blocks);
 
