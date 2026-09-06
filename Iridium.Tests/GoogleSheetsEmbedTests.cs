@@ -396,6 +396,28 @@ public sealed class GoogleSheetsEmbedTests
     }
 
     [Fact]
+    public void XlsxParserResolvesRgbArgbThemeTintAndIndexedSolidFillsWithoutNeutralizingBlue()
+    {
+        var tab = Assert.Single(new GoogleSheetsXlsxParser().Parse(FillColorWorkbook(), SheetSource("0"))!.Tabs);
+        var cells = tab.Rows.SelectMany(row => row.Cells).ToDictionary(cell => cell.DisplayValue);
+
+        Assert.Equal("#4285F4", cells["Mana Flow: Affective"].BackgroundHex);
+        Assert.Equal("#4285F4", cells["Infra Flow: Calm"].BackgroundHex);
+        Assert.Equal("#71A3F7", cells["The God of Speed"].BackgroundHex);
+        Assert.Equal("#1A73E8", cells["Otherworldly Echo"].BackgroundHex);
+        Assert.Equal("#64B5F6", cells["Alert"].BackgroundHex);
+        Assert.Equal("#0000FF", cells["Hybridic Evolution"].BackgroundHex);
+        Assert.Equal("#FFFFFF", cells[string.Empty].BackgroundHex);
+        Assert.Equal("#FFFFFF", cells["Mana Flow: Affective"].ForegroundHex);
+
+        var blueStyle = EmbeddedSheetCellPresentation.Style(cells["Mana Flow: Affective"], 21);
+        Assert.Contains("background-color:#4285F4", blueStyle);
+        Assert.Contains("color:#FFFFFF", blueStyle);
+        Assert.Equal("#64B5F6", EmbeddedSheetColors.Background("#64B5F6", hasContent: true, isMerged: false));
+        Assert.Equal("#292D35", EmbeddedSheetColors.Background("#FFFFFF", hasContent: false, isMerged: false));
+    }
+
+    [Fact]
     public void RepresentativeRpRegionsRetainSourceCoordinatesAndMergedDimensions()
     {
         var tab = Assert.Single(new GoogleSheetsXlsxParser()
@@ -643,6 +665,71 @@ public sealed class GoogleSheetsEmbedTests
                 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rImage" Target="../media/image1.png"/></Relationships>
                 """);
             Entry(archive, "xl/media/image1.png", [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+        }
+        return stream.ToArray();
+    }
+    private static byte[] FillColorWorkbook()
+    {
+        using var stream = new MemoryStream();
+        using (var archive = new ZipArchive(stream, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            Entry(archive, "xl/workbook.xml", """
+                <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Talents" sheetId="1" r:id="rSheet"/></sheets></workbook>
+                """);
+            Entry(archive, "xl/_rels/workbook.xml.rels", """
+                <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+                  <Relationship Id="rSheet" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+                  <Relationship Id="rTheme" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/>
+                </Relationships>
+                """);
+            Entry(archive, "xl/theme/theme1.xml", """
+                <a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Talents"><a:themeElements><a:clrScheme name="Talents">
+                  <a:dk1><a:srgbClr val="000000"/></a:dk1><a:lt1><a:srgbClr val="FFFFFF"/></a:lt1>
+                  <a:dk2><a:srgbClr val="1F1F1F"/></a:dk2><a:lt2><a:srgbClr val="F2F2F2"/></a:lt2>
+                  <a:accent1><a:srgbClr val="4285F4"/></a:accent1>
+                </a:clrScheme></a:themeElements></a:theme>
+                """);
+            Entry(archive, "xl/styles.xml", """
+                <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                  <fonts><font><sz val="10"/></font><font><sz val="10"/><color rgb="FFFFFFFF"/></font></fonts>
+                  <fills>
+                    <fill><patternFill patternType="none"/></fill>
+                    <fill><patternFill patternType="solid"><fgColor rgb="4285F4"/><bgColor indexed="64"/></patternFill></fill>
+                    <fill><patternFill patternType="solid"><fgColor rgb="FF4285F4"/></patternFill></fill>
+                    <fill><patternFill patternType="solid"><fgColor theme="4" tint="0.25"/></patternFill></fill>
+                    <fill><patternFill patternType="solid"><fgColor indexed="4"/></patternFill></fill>
+                    <fill><patternFill patternType="solid"><fgColor rgb="FF64B5F6"/></patternFill></fill>
+                    <fill><patternFill patternType="solid"><fgColor rgb="FFFFFFFF"/></patternFill></fill>
+                    <fill><patternFill patternType="solid"><fgColor indexed="12"/></patternFill></fill>
+                  </fills>
+                  <borders><border/></borders>
+                  <cellXfs>
+                    <xf fontId="0" fillId="0" borderId="0" numFmtId="0"/>
+                    <xf fontId="1" fillId="1" borderId="0" numFmtId="0"/>
+                    <xf fontId="0" fillId="2" borderId="0" numFmtId="0"/>
+                    <xf fontId="0" fillId="3" borderId="0" numFmtId="0"/>
+                    <xf fontId="0" fillId="4" borderId="0" numFmtId="0"/>
+                    <xf fontId="0" fillId="5" borderId="0" numFmtId="0"/>
+                    <xf fontId="0" fillId="6" borderId="0" numFmtId="0"/>
+                    <xf fontId="0" fillId="7" borderId="0" numFmtId="0"/>
+                  </cellXfs>
+                  <colors><indexedColors>
+                    <rgbColor rgb="FF000000"/><rgbColor rgb="FFFFFFFF"/><rgbColor rgb="FFFF0000"/>
+                    <rgbColor rgb="FF00FF00"/><rgbColor rgb="FF1A73E8"/>
+                  </indexedColors></colors>
+                </styleSheet>
+                """);
+            Entry(archive, "xl/worksheets/sheet1.xml", """
+                <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>
+                  <row r="1"><c r="A1" s="1" t="inlineStr"><is><t>Mana Flow: Affective</t></is></c></row>
+                  <row r="2"><c r="A2" s="2" t="inlineStr"><is><t>Infra Flow: Calm</t></is></c></row>
+                  <row r="3"><c r="A3" s="3" t="inlineStr"><is><t>The God of Speed</t></is></c></row>
+                  <row r="4"><c r="A4" s="4" t="inlineStr"><is><t>Otherworldly Echo</t></is></c></row>
+                  <row r="5"><c r="A5" s="5" t="inlineStr"><is><t>Alert</t></is></c></row>
+                  <row r="6"><c r="A6" s="6"/></row>
+                  <row r="7"><c r="A7" s="7" t="inlineStr"><is><t>Hybridic Evolution</t></is></c></row>
+                </sheetData></worksheet>
+                """);
         }
         return stream.ToArray();
     }

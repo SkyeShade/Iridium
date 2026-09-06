@@ -33,7 +33,11 @@ public sealed class GoogleSheetsXlsxParser
             .ToDictionary(value => (string)value.Attribute("Id")!, value => NormalizeTarget((string)value.Attribute("Target")!),
                 StringComparer.Ordinal) ?? [];
         var strings = SharedStrings(archive);
-        var styles = WorkbookStyles.Read(Xml(archive, "xl/styles.xml"));
+        var themeTarget = relations.Root?.Elements(PackageRelationships + "Relationship")
+            .FirstOrDefault(value => ((string?)value.Attribute("Type"))?.EndsWith("/theme",
+                StringComparison.OrdinalIgnoreCase) == true)?.Attribute("Target")?.Value;
+        var theme = Xml(archive, themeTarget is null ? "xl/theme/theme1.xml" : NormalizeTarget(themeTarget));
+        var styles = WorkbookStyles.Read(Xml(archive, "xl/styles.xml"), theme);
         var tabs = new List<EmbeddedSheetTabDto>();
         var media = new Dictionary<string, EmbeddedDocumentMedia>(StringComparer.Ordinal);
         foreach (var sheet in workbook.Descendants(Main + "sheet").Take(GoogleSheetsHtmlParser.MaximumTabs))
@@ -372,11 +376,15 @@ public sealed class GoogleSheetsXlsxParser
         public CellStyle Cell(int index) => index >= 0 && index < _cells.Length ? _cells[index] : CellStyle.Default;
         public string? Format(int index) => Cell(index).NumberFormatId is var id && id >= 0 && id < _formats.Length ? _formats[id] : null;
 
-        public static WorkbookStyles Read(XDocument? document)
+        public static WorkbookStyles Read(XDocument? document, XDocument? theme)
         {
             if (document?.Root is null) return new([CellStyle.Default], []);
-            var fonts = document.Root.Element(Main + "fonts")?.Elements(Main + "font").Select(Font).ToArray() ?? [FontStyle.Default];
-            var fills = document.Root.Element(Main + "fills")?.Elements(Main + "fill").Select(Fill).ToArray() ?? [null];
+            var themeColors = ThemeColors(theme);
+            var indexedColors = IndexedColors(document);
+            var fonts = document.Root.Element(Main + "fonts")?.Elements(Main + "font")
+                .Select(value => Font(value, themeColors, indexedColors)).ToArray() ?? [FontStyle.Default];
+            var fills = document.Root.Element(Main + "fills")?.Elements(Main + "fill")
+                .Select(value => Fill(value, themeColors, indexedColors)).ToArray() ?? ["#FFFFFF"];
             var borders = document.Root.Element(Main + "borders")?.Elements(Main + "border").Select(Border).ToArray() ?? [BorderSet.Default];
             var formats = BuiltInFormats();
             foreach (var format in document.Descendants(Main + "numFmt"))
@@ -384,7 +392,7 @@ public sealed class GoogleSheetsXlsxParser
             var cells = document.Root.Element(Main + "cellXfs")?.Elements(Main + "xf").Select(value =>
             {
                 var font = fonts.ElementAtOrDefault(AttributeInt(value, "fontId", 0)) ?? FontStyle.Default;
-                var background = fills.ElementAtOrDefault(AttributeInt(value, "fillId", 0)) ?? "#FFFFFF";
+                var background = fills.ElementAtOrDefault(AttributeInt(value, "fillId", 0));
                 var border = borders.ElementAtOrDefault(AttributeInt(value, "borderId", 0)) ?? BorderSet.Default;
                 var alignment = value.Element(Main + "alignment");
                 return new CellStyle(font.Bold, font.Italic, font.Underline, FontScale(font.Size), font.Color,
@@ -410,14 +418,99 @@ public sealed class GoogleSheetsXlsxParser
             return formats;
         }
 
-        private static FontStyle Font(XElement value) => new(BooleanElement(value.Element(Main + "b")),
+        private static FontStyle Font(XElement value, IReadOnlyDictionary<int, string> themeColors,
+            IReadOnlyList<string?> indexedColors) => new(BooleanElement(value.Element(Main + "b")),
             BooleanElement(value.Element(Main + "i")), BooleanElement(value.Element(Main + "u")),
             AttributeDouble(value.Element(Main + "sz") ?? new XElement("none"), "val") ?? 10,
-            Rgb(value.Element(Main + "color")), (string?)value.Element(Main + "name")?.Attribute("val"));
-        private static string? Fill(XElement value)
+            Color(value.Element(Main + "color"), themeColors, indexedColors),
+            (string?)value.Element(Main + "name")?.Attribute("val"));
+        private static string? Fill(XElement value, IReadOnlyDictionary<int, string> themeColors,
+            IReadOnlyList<string?> indexedColors)
         {
             var pattern = value.Element(Main + "patternFill");
-            return (string?)pattern?.Attribute("patternType") == "solid" ? Rgb(pattern.Element(Main + "fgColor")) : null;
+            return (string?)pattern?.Attribute("patternType") == "solid"
+                ? Color(pattern.Element(Main + "fgColor"), themeColors, indexedColors)
+                : "#FFFFFF";
+        }
+
+        private static IReadOnlyDictionary<int, string> ThemeColors(XDocument? theme)
+        {
+            var result = new Dictionary<int, string>();
+            var scheme = theme?.Descendants(Drawing + "clrScheme").FirstOrDefault();
+            if (scheme is null) return result;
+            var index = 0;
+            foreach (var slot in scheme.Elements())
+            {
+                var definition = slot.Elements().FirstOrDefault();
+                var value = definition?.Name.LocalName == "sysClr"
+                    ? (string?)definition.Attribute("lastClr")
+                    : (string?)definition?.Attribute("val");
+                if (NormalizeRgb(value) is { } color) result[index] = color;
+                index++;
+            }
+            return result;
+        }
+
+        private static IReadOnlyList<string?> IndexedColors(XDocument styles)
+        {
+            var result = StandardIndexedColors.ToArray();
+            var custom = styles.Root?.Element(Main + "colors")?.Element(Main + "indexedColors")?
+                .Elements(Main + "rgbColor").ToArray();
+            if (custom is null) return result;
+            for (var index = 0; index < custom.Length && index < result.Length; index++)
+                result[index] = NormalizeRgb((string?)custom[index].Attribute("rgb"));
+            return result;
+        }
+
+        private static string? Color(XElement? value, IReadOnlyDictionary<int, string> themeColors,
+            IReadOnlyList<string?> indexedColors)
+        {
+            if (NormalizeRgb((string?)value?.Attribute("rgb")) is { } rgb) return rgb;
+            if (AttributeInt(value ?? new XElement("color"), "theme", -1) is >= 0 and var themeIndex &&
+                themeColors.TryGetValue(themeIndex, out var themed))
+                return ApplyTint(themed, AttributeDouble(value, "tint") ?? 0);
+            var indexed = AttributeInt(value ?? new XElement("color"), "indexed", -1);
+            return indexed >= 0 && indexed < indexedColors.Count ? indexedColors[indexed] : null;
+        }
+
+        private static string? NormalizeRgb(string? value)
+        {
+            var rgb = value?.Trim().TrimStart('#');
+            if (rgb is { Length: 8 }) rgb = rgb[2..];
+            return rgb is { Length: 6 } && rgb.All(Uri.IsHexDigit) ? $"#{rgb.ToUpperInvariant()}" : null;
+        }
+
+        private static string ApplyTint(string source, double tint)
+        {
+            tint = Math.Clamp(tint, -1, 1);
+            var r = int.Parse(source.AsSpan(1, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture) / 255d;
+            var g = int.Parse(source.AsSpan(3, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture) / 255d;
+            var b = int.Parse(source.AsSpan(5, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture) / 255d;
+            var max = Math.Max(r, Math.Max(g, b));
+            var min = Math.Min(r, Math.Min(g, b));
+            var lightness = (max + min) / 2;
+            var delta = max - min;
+            var saturation = delta == 0 ? 0 : delta / (1 - Math.Abs(2 * lightness - 1));
+            var hue = delta == 0 ? 0 : max == r ? 60 * (((g - b) / delta) % 6) :
+                max == g ? 60 * ((b - r) / delta + 2) : 60 * ((r - g) / delta + 4);
+            if (hue < 0) hue += 360;
+            lightness = tint < 0 ? lightness * (1 + tint) : lightness + (1 - lightness) * tint;
+            static double Channel(double p, double q, double t)
+            {
+                if (t < 0) t += 1;
+                if (t > 1) t -= 1;
+                return t < 1d / 6 ? p + (q - p) * 6 * t : t < .5 ? q :
+                    t < 2d / 3 ? p + (q - p) * (2d / 3 - t) * 6 : p;
+            }
+            var h = hue / 360;
+            var q = lightness < .5 ? lightness * (1 + saturation) :
+                lightness + saturation - lightness * saturation;
+            var p = 2 * lightness - q;
+            var red = saturation == 0 ? lightness : Channel(p, q, h + 1d / 3);
+            var green = saturation == 0 ? lightness : Channel(p, q, h);
+            var blue = saturation == 0 ? lightness : Channel(p, q, h - 1d / 3);
+            static int Byte(double channel) => Math.Clamp((int)Math.Round(channel * 255), 0, 255);
+            return $"#{Byte(red):X2}{Byte(green):X2}{Byte(blue):X2}";
         }
         private static BorderSet Border(XElement value) => new(Edge(value.Element(Main + "top")),
             Edge(value.Element(Main + "right")), Edge(value.Element(Main + "bottom")), Edge(value.Element(Main + "left")));
@@ -450,10 +543,20 @@ public sealed class GoogleSheetsXlsxParser
         { <= 9 => EmbeddedSheetFontSize.Small, <= 11 => EmbeddedSheetFontSize.Normal, <= 14 => EmbeddedSheetFontSize.Medium, <= 18 => EmbeddedSheetFontSize.Large, _ => EmbeddedSheetFontSize.Heading };
         private static string? Rgb(XElement? value)
         {
-            var rgb = ((string?)value?.Attribute("rgb"))?.TrimStart('#');
-            if (rgb is { Length: 8 }) rgb = rgb[2..];
-            return rgb is { Length: 6 } && rgb.All(Uri.IsHexDigit) ? $"#{rgb.ToUpperInvariant()}" : null;
+            return NormalizeRgb((string?)value?.Attribute("rgb"));
         }
+
+        private static readonly string?[] StandardIndexedColors =
+        [
+            "#000000", "#FFFFFF", "#FF0000", "#00FF00", "#0000FF", "#FFFF00", "#FF00FF", "#00FFFF",
+            "#000000", "#FFFFFF", "#FF0000", "#00FF00", "#0000FF", "#FFFF00", "#FF00FF", "#00FFFF",
+            "#800000", "#008000", "#000080", "#808000", "#800080", "#008080", "#C0C0C0", "#808080",
+            "#9999FF", "#993366", "#FFFFCC", "#CCFFFF", "#660066", "#FF8080", "#0066CC", "#CCCCFF",
+            "#000080", "#FF00FF", "#FFFF00", "#00FFFF", "#800080", "#800000", "#008080", "#0000FF",
+            "#00CCFF", "#CCFFFF", "#CCFFCC", "#FFFF99", "#99CCFF", "#FF99CC", "#CC99FF", "#FFCC99",
+            "#3366FF", "#33CCCC", "#99CC00", "#FFCC00", "#FF9900", "#FF6600", "#666699", "#969696",
+            "#003366", "#339966", "#003300", "#333300", "#993300", "#993366", "#333399", "#333333"
+        ];
         private sealed record FontStyle(bool Bold, bool Italic, bool Underline, double Size, string? Color,
             string? Family)
         { public static readonly FontStyle Default = new(false, false, false, 10, null, null); }
