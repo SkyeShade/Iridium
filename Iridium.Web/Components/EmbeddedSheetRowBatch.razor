@@ -1,0 +1,35 @@
+@foreach (var row in Rows)
+{
+    <tr @key="row.Key" style="@row.HeightStyle">
+        @foreach (var cell in row.Cells)
+        {
+            <td @key="cell.Key" rowspan="@cell.Cell.RowSpan" colspan="@cell.Cell.ColumnSpan"
+                class="@cell.CssClass" style="@cell.Style">
+                @if (cell.Cell.Link is { } link)
+                {
+                    <a href="@link" target="_blank" rel="noopener noreferrer">@cell.Cell.DisplayValue</a>
+                }
+                else
+                {
+                    @cell.Cell.DisplayValue
+                }
+            </td>
+        }
+    </tr>
+}
+
+@code {
+    [Parameter, EditorRequired]
+    public required IReadOnlyList<EmbeddedSheetView.SheetRowRenderModel> Rows { get; set; }
+
+    private IReadOnlyList<EmbeddedSheetView.SheetRowRenderModel>? _renderedRows;
+    private bool _shouldRender = true;
+
+    protected override void OnParametersSet()
+    {
+        _shouldRender = !ReferenceEquals(_renderedRows, Rows);
+        _renderedRows = Rows;
+    }
+
+    protected override bool ShouldRender() => _shouldRender;
+}

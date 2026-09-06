@@ -1,9 +1,9 @@
 @using Iridium.Protocol
 
-@if (Documents.Count > 0)
+@if (_documents.Count > 0)
 {
     <div class="message-document-embeds">
-        @foreach (var document in Documents)
+        @foreach (var document in _documents)
         {
             <MessageDocumentPreview @key="PreviewKey(document)" MessageId="MessageId"
                                     CommunityId="CommunityId" ChannelId="ChannelId" Source="document" />
@@ -16,7 +16,18 @@
     [Parameter, EditorRequired] public Guid CommunityId { get; set; }
     [Parameter, EditorRequired] public Guid ChannelId { get; set; }
     [Parameter, EditorRequired] public required string Content { get; set; }
-    private IReadOnlyList<EmbeddedContentConfiguration> Documents =>
-        CommunityChannelEmbeds.FindSupportedContent(Content);
+    private IReadOnlyList<EmbeddedContentConfiguration> _documents = [];
+    private EmbedHostIdentity _renderedIdentity;
+    private bool _shouldRender = true;
+    protected override void OnParametersSet()
+    {
+        var identity = new EmbedHostIdentity(MessageId, CommunityId, ChannelId, Content);
+        _shouldRender = identity != _renderedIdentity;
+        if (!_shouldRender) return;
+        _renderedIdentity = identity;
+        _documents = CommunityChannelEmbeds.FindSupportedContent(Content);
+    }
+    protected override bool ShouldRender() => _shouldRender;
     private string PreviewKey(EmbeddedContentConfiguration document) => $"{MessageId:N}:{document.CacheIdentity}";
+    private readonly record struct EmbedHostIdentity(Guid MessageId, Guid CommunityId, Guid ChannelId, string Content);
 }

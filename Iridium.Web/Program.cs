@@ -82,5 +82,7 @@ builder.Services.AddSingleton<IExternalEmbedProvider, YouTubeEmbedProvider>();
 builder.Services.AddSingleton<ExternalEmbedResolver>();
 builder.Services.AddScoped<ICategoryCollapseStore>(sp => sp.GetRequiredService<BrowserClientStorage>());
 builder.Services.AddScoped<ILastCommunityChannelStore>(sp => sp.GetRequiredService<BrowserClientStorage>());
+builder.Services.AddScoped<ICommunityMemberListPreferenceStore>(sp => sp.GetRequiredService<BrowserClientStorage>());
+builder.Services.AddScoped<IForumPostCollapseStore>(sp => sp.GetRequiredService<BrowserClientStorage>());
 
 await builder.Build().RunAsync();

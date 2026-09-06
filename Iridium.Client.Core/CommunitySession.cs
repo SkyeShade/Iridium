@@ -9,6 +9,7 @@ public sealed class CommunitySession : IDisposable
     private readonly ILogger<CommunitySession>? _logger;
     private readonly List<CommunityCategoryDto> _categories = [];
     private readonly List<CommunityChannelDto> _channels = [];
+    private readonly List<CommunityForumPostDto> _followedForumPosts = [];
     private readonly object _realtimeGate = new();
     private long _requestedRevision;
     private long _appliedRevision;
@@ -23,6 +24,7 @@ public sealed class CommunitySession : IDisposable
         _logger = logger;
         nodeSession.CommunityChanged += OnCommunityChanged;
         nodeSession.RealtimeReconnected += OnRealtimeReconnected;
+        nodeSession.CommunityForumPostChanged += OnForumPostChanged;
     }
 
     public event Action? Changed;
@@ -36,6 +38,7 @@ public sealed class CommunitySession : IDisposable
     public CommunityManagementDto? Management { get; private set; }
     public IReadOnlyList<CommunityCategoryDto> Categories => _categories;
     public IReadOnlyList<CommunityChannelDto> Channels => _channels;
+    public IReadOnlyList<CommunityForumPostDto> FollowedForumPosts => _followedForumPosts;
     public long AppliedRevision { get { lock (_realtimeGate) return _appliedRevision; } }
 
     public async Task LoadAsync(Guid communityId, CancellationToken cancellationToken = default)
@@ -46,7 +49,12 @@ public sealed class CommunitySession : IDisposable
             if (CommunityId != communityId) _generation++;
             generation = _generation;
         }
-        var structure = await _nodeSession.AuthorizedClient.GetCommunityStructureAsync(communityId, cancellationToken);
+        var structureTask = _nodeSession.AuthorizedClient.GetCommunityStructureAsync(communityId, cancellationToken);
+        var followedTask = _nodeSession.AuthorizedClient.GetCommunityFollowedForumPostsAsync(
+            communityId, 100, cancellationToken);
+        await Task.WhenAll(structureTask, followedTask);
+        var structure = await structureTask;
+        var followed = await followedTask;
         lock (_realtimeGate)
             if (generation != _generation) return;
         CommunityId = communityId;
@@ -55,6 +63,7 @@ public sealed class CommunitySession : IDisposable
         IsOwner = structure.IsOwner;
         CanManagePermissions = structure.CanManagePermissions;
         Replace(structure);
+        ReplaceFollowed(followed.Posts);
     }
 
     public bool HasPermission(CommunityPermission permission) =>
@@ -294,6 +303,13 @@ public sealed class CommunitySession : IDisposable
         if (index >= 0) _channels[index] = _channels[index] with { UnreadCount = Math.Max(1, _channels[index].UnreadCount + 1) };
     }
 
+    public void MarkForumPostRead(Guid postId)
+    {
+        var index = _followedForumPosts.FindIndex(value => value.Id == postId);
+        if (index >= 0) _followedForumPosts[index] = _followedForumPosts[index] with
+        { UnreadCount = 0, MentionCount = 0 };
+    }
+
     public CommunityChannelDto? FirstOrderedChannel()
     {
         return FirstIn(null);
@@ -335,6 +351,7 @@ public sealed class CommunitySession : IDisposable
         Management = null;
         _categories.Clear();
         _channels.Clear();
+        _followedForumPosts.Clear();
         lock (_realtimeGate)
         {
             _requestedRevision = 0;
@@ -366,6 +383,25 @@ public sealed class CommunitySession : IDisposable
     private void OnRealtimeReconnected()
     {
         if (CommunityId is not null) QueueRealtimeRefresh(0, refreshManagement: true);
+    }
+
+    private void OnForumPostChanged(CommunityForumPostChangedEvent change)
+    {
+        if (CommunityId != change.CommunityId) return;
+        if (change.Post is null || change.Change == "deleted" || !change.Post.IsFollowed)
+            _followedForumPosts.RemoveAll(value => value.Id == change.PostId);
+        else
+        {
+            var existing = _followedForumPosts.FirstOrDefault(value => value.Id == change.PostId);
+            var post = (change.Change is "activity" or "created") &&
+                       change.ActorAccountId != _nodeSession.Account?.Id
+                ? change.Post with { UnreadCount = Math.Max(1, (existing?.UnreadCount ?? 0) + 1) }
+                : change.Post with { UnreadCount = existing?.UnreadCount ?? change.Post.UnreadCount };
+            _followedForumPosts.RemoveAll(value => value.Id == post.Id);
+            _followedForumPosts.Add(post);
+            SortFollowed();
+        }
+        Changed?.Invoke();
     }
 
     private void QueueRealtimeRefresh(long revision, bool refreshManagement)
@@ -411,6 +447,7 @@ public sealed class CommunitySession : IDisposable
                     "CommunityReloadStarted CommunityId={CommunityId} CurrentRevision={CurrentRevision} IncomingRevision={IncomingRevision}",
                     communityId, AppliedRevision, targetRevision);
                 var structure = await _nodeSession.AuthorizedClient.GetCommunityStructureAsync(communityId);
+                var followed = await _nodeSession.AuthorizedClient.GetCommunityFollowedForumPostsAsync(communityId, 100);
                 var management = reloadManagement
                     ? await _nodeSession.AuthorizedClient.GetCommunityManagementAsync(communityId)
                     : null;
@@ -426,6 +463,7 @@ public sealed class CommunitySession : IDisposable
                     IsOwner = structure.IsOwner;
                     CanManagePermissions = structure.CanManagePermissions;
                     Replace(structure);
+                    ReplaceFollowed(followed.Posts);
                     if (management is not null)
                     {
                         Management = management;
@@ -469,6 +507,7 @@ public sealed class CommunitySession : IDisposable
     {
         _nodeSession.CommunityChanged -= OnCommunityChanged;
         _nodeSession.RealtimeReconnected -= OnRealtimeReconnected;
+        _nodeSession.CommunityForumPostChanged -= OnForumPostChanged;
     }
 
     private static bool RequiresManagementRefresh(string change) =>
@@ -481,6 +520,10 @@ public sealed class CommunitySession : IDisposable
     private async Task ReloadAsync(CancellationToken cancellationToken) => await LoadAsync(RequireCommunity(), cancellationToken);
     private Guid RequireCommunity() => CommunityId ?? throw new InvalidOperationException("Select a Server first.");
     private void Replace(CommunityStructureDto structure) { _categories.Clear(); _categories.AddRange(structure.Categories); _channels.Clear(); _channels.AddRange(structure.Channels); Sort(); }
+    private void ReplaceFollowed(IEnumerable<CommunityForumPostDto> posts)
+    { _followedForumPosts.Clear(); _followedForumPosts.AddRange(posts); SortFollowed(); }
+    private void SortFollowed() => _followedForumPosts.Sort((left, right) =>
+    { var pinned = right.IsPinned.CompareTo(left.IsPinned); return pinned != 0 ? pinned : right.LastActivityAt.CompareTo(left.LastActivityAt); });
     private void ReplaceCategory(CommunityCategoryDto value) { _categories.RemoveAll(item => item.Id == value.Id); _categories.Add(value); Sort(); }
     private void ReplaceChannel(CommunityChannelDto value) { _channels.RemoveAll(item => item.Id == value.Id); _channels.Add(value); Sort(); }
     private void Sort() { _categories.Sort((a,b) => a.Position != b.Position ? a.Position.CompareTo(b.Position) : string.Compare(a.Name,b.Name,StringComparison.OrdinalIgnoreCase)); _channels.Sort((a,b) => a.Position != b.Position ? a.Position.CompareTo(b.Position) : string.Compare(a.Name,b.Name,StringComparison.OrdinalIgnoreCase)); }

@@ -390,13 +390,14 @@ public sealed class GoogleSheetsEmbedTests
     {
         var root = Root();
         var view = File.ReadAllText(Path.Combine(root, "Iridium.Web", "Components", "EmbeddedSheetView.razor"));
+        var rowBatch = File.ReadAllText(Path.Combine(root, "Iridium.Web", "Components", "EmbeddedSheetRowBatch.razor"));
         var css = File.ReadAllText(Path.Combine(root, "Iridium.Web", "Components", "EmbeddedSheetView.razor.css"));
         var preview = File.ReadAllText(Path.Combine(root, "Iridium.Web", "Components", "MessageDocumentPreview.razor"));
         var previewCss = File.ReadAllText(Path.Combine(root, "Iridium.Web", "Components", "MessageDocumentPreview.razor.css"));
         var embedsCss = File.ReadAllText(Path.Combine(root, "Iridium.Web", "Components", "MessageDocumentEmbeds.razor.css"));
         var channelCss = File.ReadAllText(Path.Combine(root, "Iridium.Web", "Components", "ChannelView.razor.css"));
         Assert.Contains("<colgroup>", view);
-        Assert.Contains("rowspan=\"@cell.RowSpan\" colspan=\"@cell.ColumnSpan\"", view);
+        Assert.Contains("rowspan=\"@cell.Cell.RowSpan\" colspan=\"@cell.Cell.ColumnSpan\"", rowBatch);
         Assert.Contains("--sheet-source-width", view);
         Assert.Contains("width:max(100%,var(--sheet-source-width))", css);
         Assert.Contains("overflow-wrap:normal", css);
@@ -443,8 +444,14 @@ public sealed class GoogleSheetsEmbedTests
         var block = File.ReadAllText(Path.Combine(root, "Iridium.Web", "Components", "EmbeddedDocumentBlock.razor"));
         Assert.Contains("DocumentId=\"@Source.RequestIdentity\"", preview);
         var view = File.ReadAllText(Path.Combine(root, "Iridium.Web", "Components", "EmbeddedDocumentView.razor"));
+        var documentBatch = File.ReadAllText(Path.Combine(root, "Iridium.Web", "Components", "EmbeddedDocumentBlockBatch.razor"));
+        var sheetView = File.ReadAllText(Path.Combine(root, "Iridium.Web", "Components", "EmbeddedSheetView.razor"));
+        Assert.Contains("DocumentId=\"@DocumentId\"", documentBatch);
         Assert.Contains("DocumentId=\"@DocumentId\"", view);
+        Assert.Contains("DocumentId=\"@DocumentId\"", sheetView);
         Assert.DoesNotContain("DocumentId=\"DocumentId\"", view);
+        Assert.DoesNotContain("DocumentId=\"DocumentId\"", documentBatch);
+        Assert.DoesNotContain("DocumentId=\"DocumentId\"", sheetView);
         Assert.Contains("DocumentId=\"@DocumentId\"", block);
         Assert.DoesNotContain("DocumentId=\"DocumentId\"", block);
         Assert.Contains("DownloadCommunityMessageEmbedDocumentMediaAsync", block);

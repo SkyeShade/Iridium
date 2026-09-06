@@ -102,6 +102,7 @@ public sealed class CommunityForumSchemaCompatibilityTests
 
         Assert.Equal(1L, await TableExistsAsync(connection, "CommunityForumTags"));
         Assert.Equal(1L, await TableExistsAsync(connection, "CommunityForumPostTags"));
+        Assert.Equal(1L, await TableExistsAsync(connection, "ForumPostSubscriptions"));
         var postColumns = await ReadNamesAsync(connection, "PRAGMA table_info('CommunityForumPosts');", 1);
         AssertContains(postColumns, "EmbedProvider", "EmbedUrl");
 
@@ -116,6 +117,9 @@ public sealed class CommunityForumSchemaCompatibilityTests
             "IX_CommunityForumTags_ChannelId_SortOrder");
         var assignmentIndexes = await ReadNamesAsync(connection, "PRAGMA index_list('CommunityForumPostTags');", 1);
         AssertContains(assignmentIndexes, "IX_CommunityForumPostTags_PostId", "IX_CommunityForumPostTags_TagId");
+        var subscriptionIndexes = await ReadNamesAsync(connection, "PRAGMA index_list('ForumPostSubscriptions');", 1);
+        AssertContains(subscriptionIndexes, "IX_ForumPostSubscriptions_AccountId",
+            "IX_ForumPostSubscriptions_ForumPostId");
 
         Assert.Equal(2, (await ReadNamesAsync(connection,
             "PRAGMA foreign_key_list('CommunityForumPostTags');", 2)).Count);
@@ -140,6 +144,7 @@ public sealed class CommunityForumSchemaCompatibilityTests
         AssertContains(postColumns, "EmbedProvider", "EmbedUrl");
         Assert.Equal(1L, await TableExistsAsync(connection, "CommunityForumTags"));
         Assert.Equal(1L, await TableExistsAsync(connection, "CommunityForumPostTags"));
+        Assert.Equal(1L, await TableExistsAsync(connection, "ForumPostSubscriptions"));
     }
 
     private static async Task<HashSet<string>> ReadNamesAsync(SqliteConnection connection, string sql, int ordinal)

@@ -6,6 +6,7 @@
     margin: 0;
     color: var(--text-primary);
     background: var(--surface-panel);
+    contain: layout paint style;
 }
 .sheet-tabs { display:flex; width:100%; gap:.25rem; padding:.45rem .55rem; border-bottom:1px solid var(--border); overflow-x:auto; background:var(--surface-raised); }
 .sheet-tabs button { min-height:2rem; padding:.3rem .65rem; border:1px solid transparent; border-radius:var(--radius-sm); color:var(--text-muted); background:transparent; white-space:nowrap; cursor:pointer; }
@@ -19,6 +20,7 @@
 .sheet-overflow td { box-sizing:border-box; min-width:0; padding:.26rem .42rem; border:1px solid color-mix(in srgb,var(--border) 75%,transparent); vertical-align:middle; overflow-wrap:normal; word-break:normal; line-height:1.22; }
 .sheet-nowrap { white-space:nowrap; overflow:hidden; }.sheet-wrap { white-space:pre-wrap; overflow-wrap:normal; word-break:normal; }
 .sheet-overflow a { color:inherit; text-decoration:underline; }
+.sheet-render-progress { position:sticky; bottom:0; padding:.35rem .55rem; color:var(--text-muted); background:color-mix(in srgb,var(--surface-raised) 92%,transparent); font-size:.68rem; }
 .sheet-bold { font-weight:750; }.sheet-italic { font-style:italic; }.sheet-underline { text-decoration:underline; }.sheet-checkbox { font-size:1rem; }
 .sheet-font-small { font-size:.72rem; }.sheet-font-normal { font-size:.82rem; }.sheet-font-medium { font-size:.95rem; }.sheet-font-large { font-size:1.12rem; }.sheet-font-heading { font-size:1.38rem; line-height:1.14!important; }
 .sheet-h-center { text-align:center; }.sheet-h-end { text-align:right; }.sheet-h-justify { text-align:justify; }.sheet-v-top { vertical-align:top!important; }.sheet-v-bottom { vertical-align:bottom!important; }

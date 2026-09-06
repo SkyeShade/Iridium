@@ -4,7 +4,10 @@
 @inject IJSRuntime JS
 
 <section class="member-sidebar">
-    <header><MessageSearch CommunityId="Management.Community.Id" ContextName="@Management.Community.Name"
+    <header><button type="button" class="member-list-toggle @(MemberListVisible ? "active" : null)" title="@MemberListToggleLabel"
+                    aria-label="@MemberListToggleLabel" aria-pressed="@MemberListVisible"
+                    @onclick="ToggleMemberListAsync"><Icon Name="friends" /></button>
+        <MessageSearch CommunityId="Management.Community.Id" ContextName="@Management.Community.Name"
                            Channels="Channels" Members="Management.Members" Roles="Management.Roles" NodeAuthority="@NodeAuthority"
                            OnResultSelected="OnSearchResultSelected" /></header>
     <div class="member-groups">
@@ -58,12 +61,16 @@
     [Parameter] public EventCallback<CommunityMemberRolesChange> OnMemberRolesChanged { get; set; }
     [Parameter] public IReadOnlyList<CommunityChannelDto> Channels { get; set; } = [];
     [Parameter] public EventCallback<MessageSearchResultDto> OnSearchResultSelected { get; set; }
+    [Parameter] public bool MemberListVisible { get; set; } = true;
+    [Parameter] public EventCallback<bool> OnMemberListVisibilityChanged { get; set; }
     private CommunityMemberDto? _profileMember;
     private double _profileX;
     private double _profileY;
     private CommunityMemberDto? _contextMember;
     private double _contextX;
     private double _contextY;
+    private string MemberListToggleLabel => MemberListVisible ? "Hide member list" : "Show member list";
+    private Task ToggleMemberListAsync() => OnMemberListVisibilityChanged.InvokeAsync(!MemberListVisible);
 
     private IReadOnlyList<MemberGroup> Groups
     {

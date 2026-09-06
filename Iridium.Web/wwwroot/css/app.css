@@ -124,3 +124,33 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 #blazor-error-ui .dismiss { position: absolute; right: .6rem; cursor: pointer; }
 .blazor-error-boundary { padding: 1rem; color: white; background: #7d3030; }
 .loading-progress { position: absolute; width: 5rem; height: 5rem; inset: 35vh 0 auto; margin: auto; }.loading-progress circle { fill: none; stroke: var(--surface-raised); stroke-width: .6rem; transform-origin: 50% 50%; transform: rotate(-90deg); }.loading-progress circle:last-child { stroke: var(--accent); stroke-dasharray: calc(3.141 * var(--blazor-load-percentage, 0%) * .8),500%; }.loading-progress-text { position: absolute; inset: calc(35vh + 2rem) 0 auto; text-align: center; }.loading-progress-text::after { content: var(--blazor-load-percentage-text, "Loading"); }
+
+/* Shared desktop Community sidebar interaction: the row retains its broad hit target while
+   only the icon/name/action surface receives hover and active paint. */
+@media (min-width:861px) {
+    .sidebar-nav-row > .sidebar-nav-surface {
+        box-sizing: border-box;
+        min-width: 0;
+        width: auto;
+        max-width: none;
+        display: flex;
+        align-items: center;
+        flex: 1 1 0;
+        border-radius: .42rem;
+        color: inherit;
+        background: transparent;
+        transition: color 100ms ease, background 100ms ease;
+    }
+    .sidebar-nav-row:hover > .sidebar-nav-surface {
+        color: var(--text);
+        background: color-mix(in srgb, var(--surface-hover) 72%, transparent);
+    }
+    .sidebar-nav-row.is-active > .sidebar-nav-surface {
+        color: var(--text-strong);
+        background: color-mix(in srgb, var(--surface-active) 88%, var(--accent) 12%);
+    }
+    .sidebar-nav-row.is-active:hover > .sidebar-nav-surface {
+        color: var(--text-strong);
+        background: color-mix(in srgb, var(--surface-active) 82%, var(--accent) 18%);
+    }
+}

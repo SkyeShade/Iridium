@@ -46,6 +46,7 @@ public sealed class ChannelMessagingSession(
     private bool _loadingOlder;
     private long _conversationLoadGeneration;
     private long _hotAccessRevision;
+    private DateTimeOffset _lastOptimisticCreatedAt;
     private MessageHistoryCacheScope? _channelStateScope;
     private MessageHistoryCacheScope? _directStateScope;
     private readonly Dictionary<MessageHistoryCacheScope, ChannelHotState> _channelHotStates = [];
@@ -91,7 +92,16 @@ public sealed class ChannelMessagingSession(
         ThrowIfDisposed();
         var generation = Interlocked.Increment(ref _conversationLoadGeneration);
         CancelHistoryRequests();
-        await _lifecycleGate.WaitAsync(cancellationToken);
+        using var loadCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken, _historyCancellation.Token);
+        var loadToken = loadCancellation.Token;
+        try { await _lifecycleGate.WaitAsync(loadToken); }
+        catch (OperationCanceledException) when (loadToken.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            logger.LogDebug("Canceled queued stale channel load for {ChannelId}; generation={Generation}.",
+                channelId, generation);
+            return;
+        }
         try
         {
             if (!IsCurrentLoad(generation)) return;
@@ -101,7 +111,7 @@ public sealed class ChannelMessagingSession(
             var previousCommunityId = CommunityId;
             var previousChannelId = ChannelId;
             var previousConversationId = DirectConversationId;
-            await StopLocalTypingAsync(cancellationToken: cancellationToken);
+            await StopLocalTypingAsync(cancellationToken: loadToken);
             ClearDirectState();
 
             var scope = ChannelScope(channelId);
@@ -110,14 +120,14 @@ public sealed class ChannelMessagingSession(
             logger.LogDebug("Conversation switch to channel {ChannelId}; generation={Generation}, hot={Hot}.",
                 channelId, generation, hot);
 
-            await LeaveChannelAsync(previousCommunityId, previousChannelId, cancellationToken);
-            await LeaveDirectConversationAsync(previousConversationId, cancellationToken);
+            await LeaveChannelAsync(previousCommunityId, previousChannelId, loadToken);
+            await LeaveDirectConversationAsync(previousConversationId, loadToken);
             if (!IsCurrentChannelLoad(generation, scope)) return;
 
             MessageHistoryPage<ChannelMessageDto>? cached = null;
             if (!hot)
             {
-                cached = await GetCachedChannelSafelyAsync(scope, cancellationToken);
+                cached = await GetCachedChannelSafelyAsync(scope, loadToken);
                 if (!IsCurrentChannelLoad(generation, scope))
                 {
                     logger.LogDebug("Discarded stale channel cache result for {ChannelId}; generation={Generation}.",
@@ -132,12 +142,12 @@ public sealed class ChannelMessagingSession(
                 }
             }
 
-            await EnsureConnectionAsync(cancellationToken);
+            await EnsureConnectionAsync(loadToken);
             if (!IsCurrentChannelLoad(generation, scope)) return;
-            await _connection!.InvokeAsync(ChatHubContract.JoinChannel, communityId, channelId, cancellationToken);
+            await _connection!.InvokeAsync(ChatHubContract.JoinChannel, communityId, channelId, loadToken);
             if (!IsCurrentChannelLoad(generation, scope)) return;
             var history = await nodeSession.AuthorizedClient.GetChannelMessagePageAsync(
-                communityId, channelId, cancellationToken: cancellationToken);
+                communityId, channelId, cancellationToken: loadToken);
             if (!IsCurrentChannelLoad(generation, scope))
             {
                 logger.LogDebug("Discarded stale server channel history for {ChannelId}; generation={Generation}.",
@@ -153,9 +163,11 @@ public sealed class ChannelMessagingSession(
                 communityId, channelId, _connectedNode);
             NotifyChanged();
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (loadToken.IsCancellationRequested)
         {
-            throw;
+            if (cancellationToken.IsCancellationRequested) throw;
+            logger.LogDebug("Canceled stale channel load for {ChannelId}; generation={Generation}.",
+                channelId, generation);
         }
         catch (Exception exception)
         {
@@ -182,7 +194,16 @@ public sealed class ChannelMessagingSession(
         ThrowIfDisposed();
         var generation = Interlocked.Increment(ref _conversationLoadGeneration);
         CancelHistoryRequests();
-        await _lifecycleGate.WaitAsync(cancellationToken);
+        using var loadCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken, _historyCancellation.Token);
+        var loadToken = loadCancellation.Token;
+        try { await _lifecycleGate.WaitAsync(loadToken); }
+        catch (OperationCanceledException) when (loadToken.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            logger.LogDebug("Canceled queued stale Direct Message load for {ConversationId}; generation={Generation}.",
+                conversationId, generation);
+            return;
+        }
         try
         {
             if (!IsCurrentLoad(generation)) return;
@@ -191,20 +212,20 @@ public sealed class ChannelMessagingSession(
             var previousCommunityId = CommunityId;
             var previousChannelId = ChannelId;
             var previousConversationId = DirectConversationId;
-            await StopLocalTypingAsync(cancellationToken: cancellationToken);
+            await StopLocalTypingAsync(cancellationToken: loadToken);
             ClearChannelState();
             var scope = DirectScope(conversationId);
             var hot = AttachDirectState(conversationId, scope);
             NotifyChanged();
             logger.LogDebug("Conversation switch to Direct Message {ConversationId}; generation={Generation}, hot={Hot}.",
                 conversationId, generation, hot);
-            await LeaveChannelAsync(previousCommunityId, previousChannelId, cancellationToken);
-            await LeaveDirectConversationAsync(previousConversationId, cancellationToken);
+            await LeaveChannelAsync(previousCommunityId, previousChannelId, loadToken);
+            await LeaveDirectConversationAsync(previousConversationId, loadToken);
             if (!IsCurrentDirectLoad(generation, scope)) return;
             MessageHistoryPage<DirectMessageDto>? cached = null;
             if (!hot)
             {
-                cached = await GetCachedDirectSafelyAsync(scope, cancellationToken);
+                cached = await GetCachedDirectSafelyAsync(scope, loadToken);
                 if (!IsCurrentDirectLoad(generation, scope))
                 {
                     logger.LogDebug("Discarded stale Direct Message cache result for {ConversationId}; generation={Generation}.",
@@ -218,11 +239,11 @@ public sealed class ChannelMessagingSession(
                     NotifyChanged();
                 }
             }
-            await EnsureConnectionAsync(cancellationToken);
+            await EnsureConnectionAsync(loadToken);
             if (!IsCurrentDirectLoad(generation, scope)) return;
-            await _connection!.InvokeAsync(DirectMessageHubContract.JoinConversation, conversationId, cancellationToken);
+            await _connection!.InvokeAsync(DirectMessageHubContract.JoinConversation, conversationId, loadToken);
             if (!IsCurrentDirectLoad(generation, scope)) return;
-            var history = await nodeSession.AuthorizedClient.GetDirectMessagePageAsync(conversationId, cancellationToken: cancellationToken);
+            var history = await nodeSession.AuthorizedClient.GetDirectMessagePageAsync(conversationId, cancellationToken: loadToken);
             if (!IsCurrentDirectLoad(generation, scope))
             {
                 logger.LogDebug("Discarded stale server Direct Message history for {ConversationId}; generation={Generation}.",
@@ -233,9 +254,15 @@ public sealed class ChannelMessagingSession(
             RecentReconciliationRevision++;
             SaveActiveHotStates();
             CacheSafely(_historyCache.ReconcileRecentDirectAsync(scope, history), "reconcile Direct Message history");
-            await nodeSession.MarkDirectConversationReadAsync(conversationId, cancellationToken);
+            await nodeSession.MarkDirectConversationReadAsync(conversationId, loadToken);
             _directReady = true;
             NotifyChanged();
+        }
+        catch (OperationCanceledException) when (loadToken.IsCancellationRequested)
+        {
+            if (cancellationToken.IsCancellationRequested) throw;
+            logger.LogDebug("Canceled stale Direct Message load for {ConversationId}; generation={Generation}.",
+                conversationId, generation);
         }
         catch (Exception exception)
         {
@@ -419,7 +446,7 @@ public sealed class ChannelMessagingSession(
         var clientMessageId = Guid.NewGuid();
         var pending = new DirectMessageDto(
             clientMessageId, conversationId,
-            new(account.Id, account.Username, account.DisplayName), content, DateTimeOffset.UtcNow,
+            new(account.Id, account.Username, account.DisplayName), content, NextOptimisticCreatedAt(),
             null, false, DirectReply(replyToMessageId), clientMessageId, MessageDeliveryState.Pending,
             Attachments: attachments);
         var reloadLatest = AddOptimisticDirect(pending);
@@ -430,7 +457,6 @@ public sealed class ChannelMessagingSession(
     private async Task CompleteDirectSendAsync(
         DirectMessageDto pending, bool reloadLatest = false, CancellationToken cancellationToken = default)
     {
-        await _lifecycleGate.WaitAsync(cancellationToken);
         try
         {
             if (pending.ClientMessageId is { } clientId && _directAttachmentUploads.TryGetValue(clientId, out var upload))
@@ -438,6 +464,9 @@ public sealed class ChannelMessagingSession(
                 pending = pending with { Attachments = await upload(cancellationToken) };
                 if (DirectConversationId == pending.ConversationId) UpsertDirect(pending);
             }
+            await ConnectAsync(cancellationToken);
+            if (nodeSession.Account?.Id != pending.Author.AccountId)
+                throw new InvalidOperationException("The active account changed before this message could be sent.");
             var result = await RequireConnection().InvokeAsync<DirectMessageDto>(
                 DirectMessageHubContract.SendMessage, pending.ConversationId,
                 new SendDirectMessageRequest(pending.Content, pending.ReplyTo?.MessageId, pending.ClientMessageId,
@@ -460,7 +489,6 @@ public sealed class ChannelMessagingSession(
             logger.LogError(exception, "Direct Message {ClientMessageId} failed to send.", pending.ClientMessageId);
             MarkDirectFailed(pending.ConversationId, pending.ClientMessageId!.Value, exception);
         }
-        finally { _lifecycleGate.Release(); }
     }
 
     public Task RetryDirectAsync(Guid clientMessageId, CancellationToken cancellationToken = default)
@@ -600,7 +628,7 @@ public sealed class ChannelMessagingSession(
         var clientMessageId = Guid.NewGuid();
         var pending = new ChannelMessageDto(
             clientMessageId, communityId, channelId,
-            optimisticAuthor ?? new(account.Id, account.Username, account.DisplayName), content, DateTimeOffset.UtcNow,
+            optimisticAuthor ?? new(account.Id, account.Username, account.DisplayName), content, NextOptimisticCreatedAt(),
             null, false, ChannelReply(replyToMessageId), OptimisticMentions(content, mentions),
             clientMessageId, MessageDeliveryState.Pending, Attachments: attachments);
         var reloadLatest = AddOptimisticChannel(pending);
@@ -611,46 +639,41 @@ public sealed class ChannelMessagingSession(
     private async Task CompleteChannelSendAsync(
         ChannelMessageDto pending, bool reloadLatest = false, CancellationToken cancellationToken = default)
     {
-        await _lifecycleGate.WaitAsync(cancellationToken);
         try
         {
-            try
+            if (pending.ClientMessageId is { } clientId && _channelAttachmentUploads.TryGetValue(clientId, out var upload))
             {
-                if (pending.ClientMessageId is { } clientId && _channelAttachmentUploads.TryGetValue(clientId, out var upload))
-                {
-                    pending = pending with { Attachments = await upload(cancellationToken) };
-                    if (CommunityId == pending.CommunityId && ChannelId == pending.ChannelId) Upsert(pending);
-                }
-                var result = await RequireConnection().InvokeAsync<ChannelMessageDto>(
-                    ChatHubContract.SendMessage,
-                    pending.CommunityId,
-                    pending.ChannelId,
-                    new SendChannelMessageRequest(pending.Content, pending.ReplyTo?.MessageId,
-                        pending.Mentions?.Select(value => new CommunityMentionInput(value.Kind, value.TargetId, value.Start, value.Length)).ToArray(),
-                        pending.ClientMessageId, pending.Attachments?.Select(value => value.Id).ToArray()),
-                    cancellationToken);
-                if (CommunityId == pending.CommunityId && ChannelId == pending.ChannelId) Upsert(result);
-                CacheSafely(_historyCache.UpsertChannelAsync(ChannelScope(pending.ChannelId), [result]),
-                    "cache confirmed channel message");
-                if (pending.ClientMessageId is { } completedId) _channelAttachmentUploads.Remove(completedId);
-                if (reloadLatest && CommunityId == pending.CommunityId && ChannelId == pending.ChannelId)
-                {
-                    var page = await nodeSession.AuthorizedClient.GetChannelMessagePageAsync(
-                        pending.CommunityId, pending.ChannelId, cancellationToken: cancellationToken);
-                    ApplyChannelPage(page, replace: true);
-                    NotifyChanged();
-                }
+                pending = pending with { Attachments = await upload(cancellationToken) };
+                if (CommunityId == pending.CommunityId && ChannelId == pending.ChannelId) Upsert(pending);
             }
-            catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+            await ConnectAsync(cancellationToken);
+            if (nodeSession.Account?.Id != pending.Author.AccountId)
+                throw new InvalidOperationException("The active account changed before this message could be sent.");
+            var result = await RequireConnection().InvokeAsync<ChannelMessageDto>(
+                ChatHubContract.SendMessage,
+                pending.CommunityId,
+                pending.ChannelId,
+                new SendChannelMessageRequest(pending.Content, pending.ReplyTo?.MessageId,
+                    pending.Mentions?.Select(value => new CommunityMentionInput(value.Kind, value.TargetId, value.Start, value.Length)).ToArray(),
+                    pending.ClientMessageId, pending.Attachments?.Select(value => value.Id).ToArray()),
+                cancellationToken);
+            if (CommunityId == pending.CommunityId && ChannelId == pending.ChannelId) Upsert(result);
+            CacheSafely(_historyCache.UpsertChannelAsync(ChannelScope(pending.ChannelId), [result]),
+                "cache confirmed channel message");
+            if (pending.ClientMessageId is { } completedId) _channelAttachmentUploads.Remove(completedId);
+            if (reloadLatest && CommunityId == pending.CommunityId && ChannelId == pending.ChannelId)
             {
-                logger.LogError(exception, "Realtime send failed in Community {CommunityId} channel {ChannelId}.",
-                    pending.CommunityId, pending.ChannelId);
-                MarkChannelFailed(pending.CommunityId, pending.ChannelId, pending.ClientMessageId!.Value, exception);
+                var page = await nodeSession.AuthorizedClient.GetChannelMessagePageAsync(
+                    pending.CommunityId, pending.ChannelId, cancellationToken: cancellationToken);
+                ApplyChannelPage(page, replace: true);
+                NotifyChanged();
             }
         }
-        finally
+        catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
-            _lifecycleGate.Release();
+            logger.LogError(exception, "Realtime send failed in Community {CommunityId} channel {ChannelId}.",
+                pending.CommunityId, pending.ChannelId);
+            MarkChannelFailed(pending.CommunityId, pending.ChannelId, pending.ClientMessageId!.Value, exception);
         }
     }
 
@@ -873,6 +896,9 @@ public sealed class ChannelMessagingSession(
             mention => ReceiveSafely(CommunityMentionHubContract.Received, () => nodeSession.ApplyCommunityMention(mention))));
         _handlerRegistrations.Add(connection.On<CommunityChannelActivityEvent>(CommunityHubContract.ChannelActivity,
             activity => _ = ApplyCommunityActivitySafelyAsync(activity)));
+        _handlerRegistrations.Add(connection.On<CommunityForumPostChangedEvent>(CommunityForumHubContract.PostChanged,
+            change => ReceiveSafely(CommunityForumHubContract.PostChanged,
+                () => nodeSession.ApplyCommunityForumPostChanged(change))));
         _handlerRegistrations.Add(connection.On<ProfileUpdatedEvent>(ProfileHubContract.Updated,
             change => ReceiveSafely(ProfileHubContract.Updated, () => nodeSession.ApplyProfileUpdated(change))));
         logger.LogInformation("Shared realtime connection to {NodeAddress} is active for messaging.", client.NodeAddress);
@@ -1705,6 +1731,17 @@ public sealed class ChannelMessagingSession(
         if (deleted.CommunityId != CommunityId || deleted.ChannelId != ChannelId) return;
         MessageTimeline.ApplyDeletion(_messages, deleted.MessageId);
         NotifyChanged();
+    }
+
+    private DateTimeOffset NextOptimisticCreatedAt()
+    {
+        lock (_messageSync)
+        {
+            var now = DateTimeOffset.UtcNow;
+            if (now <= _lastOptimisticCreatedAt) now = _lastOptimisticCreatedAt.AddTicks(1);
+            _lastOptimisticCreatedAt = now;
+            return now;
+        }
     }
 
     private void ReceiveReactionChanged(MessageReactionChangedEvent changed)

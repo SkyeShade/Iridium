@@ -23,7 +23,8 @@ public sealed record MessageSearchResultDto(
     string? ChannelName,
     MessageAuthorDto Author,
     string Content,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    Guid? ForumPostId = null);
 
 public sealed record MessageSearchPageDto(
     IReadOnlyList<MessageSearchResultDto> Results,

@@ -22,6 +22,7 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
     public DbSet<CommunityForumPost> CommunityForumPosts => Set<CommunityForumPost>();
     public DbSet<CommunityForumTag> CommunityForumTags => Set<CommunityForumTag>();
     public DbSet<CommunityForumPostTag> CommunityForumPostTags => Set<CommunityForumPostTag>();
+    public DbSet<ForumPostSubscription> ForumPostSubscriptions => Set<ForumPostSubscription>();
     public DbSet<CommunityPermissionOverwrite> CommunityPermissionOverwrites => Set<CommunityPermissionOverwrite>();
     public DbSet<ChannelMessage> ChannelMessages => Set<ChannelMessage>();
     public DbSet<CommunityChannelReadState> CommunityChannelReadStates => Set<CommunityChannelReadState>();
@@ -283,6 +284,18 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
             .HasForeignKey(value => value.PostId).OnDelete(DeleteBehavior.Cascade);
         forumPostTag.HasOne(value => value.Tag).WithMany(value => value.PostAssignments)
             .HasForeignKey(value => value.TagId).OnDelete(DeleteBehavior.Cascade);
+
+        var forumSubscription = modelBuilder.Entity<ForumPostSubscription>();
+        forumSubscription.HasKey(value => new { value.ForumPostId, value.AccountId });
+        forumSubscription.Property(value => value.JoinedAt)
+            .HasConversion(value => value.UtcTicks, value => new DateTimeOffset(value, TimeSpan.Zero));
+        forumSubscription.Property(value => value.NotificationLevel);
+        forumSubscription.HasIndex(value => value.AccountId);
+        forumSubscription.HasIndex(value => value.ForumPostId);
+        forumSubscription.HasOne(value => value.ForumPost).WithMany(value => value.Subscriptions)
+            .HasForeignKey(value => value.ForumPostId).OnDelete(DeleteBehavior.Cascade);
+        forumSubscription.HasOne(value => value.Account).WithMany()
+            .HasForeignKey(value => value.AccountId).OnDelete(DeleteBehavior.Cascade);
 
         var overwrite = modelBuilder.Entity<CommunityPermissionOverwrite>();
         overwrite.HasKey(value => value.Id);

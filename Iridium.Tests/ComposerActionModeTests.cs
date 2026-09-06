@@ -111,6 +111,64 @@ public sealed class ComposerActionModeTests
     }
 
     [Fact]
+    public void ComposerKeyboardUsesResponsiveModeAndKeepsNewlineAndImeSemanticsSeparateFromSend()
+    {
+        var composer = Source("Iridium.Web", "Components", "MessageComposer.razor");
+        var channel = Source("Iridium.Web", "Components", "ChannelView.razor");
+        var direct = Source("Iridium.Web", "Components", "DirectMessageView.razor");
+        var forum = Source("Iridium.Web", "Components", "ForumChannelView.razor");
+        var javascript = Source("Iridium.Web", "wwwroot", "js", "chat.js");
+        var keyboardStart = javascript.IndexOf("const keydown = async event =>", javascript.IndexOf(
+            "export function wireComposer", StringComparison.Ordinal), StringComparison.Ordinal);
+        var keyboardEnd = javascript.IndexOf("const input = async () =>", keyboardStart, StringComparison.Ordinal);
+        var keyboard = javascript[keyboardStart..keyboardEnd];
+
+        Assert.Contains("IsMobileLayout", composer);
+        Assert.Contains("setComposerMobileLayout", composer);
+        Assert.Contains("IsMobileLayout=\"IsMobileLayout\" OptimisticSubmission=\"true\"", channel);
+        Assert.Contains("IsMobileLayout=\"IsMobileLayout\" OptimisticSubmission=\"true\"", direct);
+        Assert.Contains("IsMobileLayout=\"IsMobileLayout\"", forum);
+        Assert.Contains("event.isComposing || event.keyCode === 229", keyboard);
+        Assert.Contains("event.key === \"Enter\" && (state.isMobileLayout || event.shiftKey)", keyboard);
+        Assert.Contains("document.createTextNode(\"\\n\")", keyboard);
+        Assert.Contains("event.key !== \"Enter\" || event.shiftKey || event.repeat", keyboard);
+        Assert.True(keyboard.IndexOf("state.isMobileLayout || event.shiftKey", StringComparison.Ordinal) <
+                    keyboard.IndexOf("const mentionMenu", StringComparison.Ordinal));
+        Assert.True(keyboard.IndexOf("event.isComposing", StringComparison.Ordinal) <
+                    keyboard.IndexOf("event.preventDefault()", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void OptimisticComposerSendDoesNotWaitForNetworkCleanupOrBlockTheNextDraft()
+    {
+        var composer = Source("Iridium.Web", "Components", "MessageComposer.razor");
+        var channel = Source("Iridium.Web", "Components", "ChannelView.razor");
+        var direct = Source("Iridium.Web", "Components", "DirectMessageView.razor");
+        var session = Source("Iridium.Client.Core", "ChannelMessagingSession.cs");
+        var submit = Slice(composer, "public async Task SubmitFromKeyboardAsync()",
+            "private async Task CompleteOptimisticSubmissionCleanupAsync()");
+        var channelSend = Slice(channel, "private Task<bool> SendMessageAsync", "private async Task<bool> EditMessageAsync");
+        var directSend = Slice(direct, "private Task<bool> SendMessageAsync", "private async Task<bool> EditMessageAsync");
+
+        Assert.True(submit.IndexOf("_content = string.Empty", StringComparison.Ordinal) <
+                    submit.IndexOf("CompleteOptimisticSubmissionCleanupAsync", StringComparison.Ordinal));
+        Assert.True(submit.IndexOf("clearComposer", StringComparison.Ordinal) <
+                    submit.IndexOf("CompleteOptimisticSubmissionCleanupAsync", StringComparison.Ordinal));
+        Assert.Contains("exclusiveSubmission = !OptimisticSubmission", submit);
+        Assert.Contains("exclusiveSubmission && _submitting", submit);
+        Assert.Contains("Messaging.QueueMessage", channelSend);
+        Assert.DoesNotContain("await ", channelSend);
+        Assert.DoesNotContain("_sending", channelSend);
+        Assert.Contains("Messaging.QueueDirectMessage", directSend);
+        Assert.DoesNotContain("await ", directSend);
+        Assert.DoesNotContain("_sending", directSend);
+        Assert.Contains("MarkChannelFailed", session);
+        Assert.Contains("CanRetry = failure.CanRetry", session);
+        Assert.Contains("RetryAsync", session);
+        Assert.Contains("NextOptimisticCreatedAt", session);
+    }
+
+    [Fact]
     public void SuccessfulQuickAvatarSelectionsReuseDesktopOneShotComposerFocus()
     {
         var composer = Source("Iridium.Web", "Components", "MessageComposer.razor");
@@ -206,6 +264,13 @@ public sealed class ComposerActionModeTests
         0, 0, 1, updatedAt, updatedAt);
 
     private static string Source(params string[] parts) => File.ReadAllText(Path.Combine([Root, .. parts]));
+    private static string Slice(string source, string start, string end)
+    {
+        var from = source.IndexOf(start, StringComparison.Ordinal);
+        var to = source.IndexOf(end, from, StringComparison.Ordinal);
+        Assert.True(from >= 0 && to > from);
+        return source[from..to];
+    }
 
     private sealed class MemoryStore : IComposerActionModeStore
     {

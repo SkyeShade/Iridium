@@ -1,4 +1,46 @@
 const composerHandlers = new WeakMap();
+const deferredContentObservers = new WeakMap();
+
+export function observeDeferredContent(element, dotNetReference) {
+    if (!element || deferredContentObservers.has(element)) return;
+    if (typeof IntersectionObserver === "undefined") {
+        void dotNetReference.invokeMethodAsync("DeferredContentVisibleAsync");
+        return;
+    }
+    const observer = new IntersectionObserver(entries => {
+        if (!entries.some(entry => entry.isIntersecting)) return;
+        observer.disconnect();
+        deferredContentObservers.delete(element);
+        void dotNetReference.invokeMethodAsync("DeferredContentVisibleAsync");
+    }, { rootMargin: "600px 0px" });
+    observer.observe(element);
+    deferredContentObservers.set(element, observer);
+}
+
+export function unobserveDeferredContent(element) {
+    const observer = element ? deferredContentObservers.get(element) : null;
+    observer?.disconnect();
+    if (element) deferredContentObservers.delete(element);
+}
+
+export function nextDocumentRenderFrame() {
+    return new Promise(resolve => requestAnimationFrame(timestamp => resolve(timestamp)));
+}
+
+export function measureDocumentRender(element) {
+    if (!element) return { layoutDurationMs: 0, domRows: 0, domCells: 0, domBlocks: 0, width: 0, height: 0 };
+    const started = performance.now();
+    const bounds = element.getBoundingClientRect();
+    const result = {
+        layoutDurationMs: performance.now() - started,
+        domRows: element.querySelectorAll("tbody > tr").length,
+        domCells: element.querySelectorAll("td,th").length,
+        domBlocks: element.querySelectorAll(".document-render-batch > *").length,
+        width: bounds.width,
+        height: bounds.height
+    };
+    return result;
+}
 const composerActionButtonHandlers = new WeakMap();
 const messageLongPressHandlers = new WeakMap();
 const forumPostLongPressHandlers = new WeakMap();
@@ -731,11 +773,11 @@ export function unwireMarkdownSourceEditor(editor) {
     markdownSourceEditorHandlers.delete(editor);
 }
 
-export function wireComposer(textarea, dotNetReference, composerRoot) {
+export function wireComposer(textarea, dotNetReference, composerRoot, isMobileLayout = false) {
     if (!textarea || composerHandlers.has(textarea)) return;
-    let submitting = false;
-    const state = {};
+    const state = { isMobileLayout: Boolean(isMobileLayout) };
     const keydown = async event => {
+        if (event.isComposing || event.keyCode === 229) return;
         const selection = window.getSelection();
         if (selection?.isCollapsed && textarea.contains(selection.focusNode)) {
             const caret = composerSelectionOffset(textarea), snapshot = composerSnapshot(textarea);
@@ -751,6 +793,13 @@ export function wireComposer(textarea, dotNetReference, composerRoot) {
             if (event.key === "ArrowLeft" && before) { event.preventDefault(); setComposerCaret(textarea, before.start); return; }
             if (event.key === "ArrowRight" && after) { event.preventDefault(); setComposerCaret(textarea, after.start + 1); return; }
         }
+        if (event.key === "Enter" && (state.isMobileLayout || event.shiftKey)) {
+            event.preventDefault();
+            const caret = composerSelectionOffset(textarea);
+            replaceComposerRange(textarea, caret, caret, document.createTextNode("\n"));
+            await dotNetReference.invokeMethodAsync("ComposerDocumentChangedAsync", composerSnapshot(textarea));
+            return;
+        }
         const mentionMenu = textarea.closest(".composer-shell")?.querySelector(".mention-suggestions");
         if (mentionMenu && ["ArrowDown", "ArrowUp", "Enter", "Tab", "Escape"].includes(event.key)) {
             event.preventDefault();
@@ -765,24 +814,14 @@ export function wireComposer(textarea, dotNetReference, composerRoot) {
                 return;
             }
         }
-        if (event.key === "Enter" && event.shiftKey && !event.isComposing) {
-            event.preventDefault();
-            const caret = composerSelectionOffset(textarea);
-            replaceComposerRange(textarea, caret, caret, document.createTextNode("\n"));
-            await dotNetReference.invokeMethodAsync("ComposerDocumentChangedAsync", composerSnapshot(textarea));
-            return;
-        }
-        if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) return;
+        if (event.key !== "Enter" || event.shiftKey || event.repeat) return;
         event.preventDefault();
-        if (submitting) return;
-        submitting = true;
         try {
             await dotNetReference.invokeMethodAsync("SubmitFromKeyboardAsync");
             textarea.focus({ preventScroll: true });
         } catch (error) {
             console.error("Iridium message submission failed in the client.", error);
         } finally {
-            submitting = false;
             requestAnimationFrame(() => resizeComposer(textarea));
         }
     };
@@ -881,6 +920,11 @@ export function wireComposer(textarea, dotNetReference, composerRoot) {
     dropRegion?.addEventListener("dragleave", dragleave);
     dropRegion?.addEventListener("drop", drop);
     resizeComposer(textarea);
+}
+
+export function setComposerMobileLayout(textarea, isMobileLayout) {
+    const state = textarea ? composerHandlers.get(textarea) : null;
+    if (state) state.isMobileLayout = Boolean(isMobileLayout);
 }
 
 export function unwireComposer(textarea) {

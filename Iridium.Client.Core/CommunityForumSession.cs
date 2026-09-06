@@ -132,6 +132,36 @@ public sealed class CommunityForumSession(
         return post;
     }
 
+    public async Task<CommunityForumPostDto> FollowAsync(Guid postId,
+        CancellationToken cancellationToken = default)
+    {
+        await session.AuthorizedClient.FollowForumPostAsync(CommunityId!.Value, ChannelId!.Value, postId,
+            cancellationToken);
+        var post = await session.AuthorizedClient.GetForumPostAsync(CommunityId.Value, ChannelId.Value, postId,
+            cancellationToken);
+        Upsert(post); Notify(); return post;
+    }
+
+    public async Task<CommunityForumPostDto> UnfollowAsync(Guid postId,
+        CancellationToken cancellationToken = default)
+    {
+        await session.AuthorizedClient.UnfollowForumPostAsync(CommunityId!.Value, ChannelId!.Value, postId,
+            cancellationToken);
+        var post = await session.AuthorizedClient.GetForumPostAsync(CommunityId.Value, ChannelId.Value, postId,
+            cancellationToken);
+        Upsert(post); Notify(); return post;
+    }
+
+    public async Task<CommunityForumPostDto> SetNotificationLevelAsync(Guid postId,
+        ForumPostNotificationLevel level, CancellationToken cancellationToken = default)
+    {
+        await session.AuthorizedClient.UpdateForumPostNotificationAsync(CommunityId!.Value, ChannelId!.Value,
+            postId, level, cancellationToken);
+        var post = await session.AuthorizedClient.GetForumPostAsync(CommunityId.Value, ChannelId.Value, postId,
+            cancellationToken);
+        Upsert(post); Notify(); return post;
+    }
+
     public async Task DeleteAsync(Guid postId, CancellationToken cancellationToken = default)
     {
         await session.AuthorizedClient.DeleteForumPostAsync(CommunityId!.Value, ChannelId!.Value, postId,
@@ -208,7 +238,8 @@ public sealed class CommunityForumSession(
         else
         {
             var existing = _posts.FirstOrDefault(value => value.Id == change.PostId);
-            var post = change.Change is "activity" or "created" && change.ActorAccountId != session.Account?.Id
+            var post = change.Post.IsFollowed && (change.Change is "activity" or "created") &&
+                       change.ActorAccountId != session.Account?.Id
                 ? change.Post with { UnreadCount = Math.Max(1, (existing?.UnreadCount ?? 0) + 1) }
                 : change.Post with { UnreadCount = existing?.UnreadCount ?? change.Post.UnreadCount };
             if (MatchesCurrentFilter(post)) Upsert(post);

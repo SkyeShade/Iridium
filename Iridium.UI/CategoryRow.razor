@@ -10,7 +10,7 @@
         <button type="button" class="category-toggle" @onclick="ToggleAsync">
             @if (Category.IsPrivate) { <span class="private-lock" title="Private category"><Icon Name="lock" Size="11" /></span> }
             <span class="category-name">@Category.Name</span>
-            <span class="chevron @(Collapsed ? "collapsed" : null)"><Icon Name="chevron" /></span>
+            <SidebarDisclosureChevron Collapsed="Collapsed" />
         </button>
         @if (CanManage)
         {

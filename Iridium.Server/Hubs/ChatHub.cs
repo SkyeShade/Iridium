@@ -374,6 +374,14 @@ public sealed class ChatHub(
         await ValidateCommunityEmojiUseAsync(content, session.AccountId, communityId, channelId);
         var (mentions, recipients) = await ValidateMentionsAsync(
             communityId, channelId, session.AccountId, content, request.Mentions);
+        if (forumPost is not null && recipients.Count > 0)
+        {
+            var mutedRecipients = await db.ForumPostSubscriptions.AsNoTracking().Where(value =>
+                    value.ForumPostId == forumPost.Id && recipients.Contains(value.AccountId) &&
+                    value.NotificationLevel == ForumPostNotificationLevel.Muted)
+                .Select(value => value.AccountId).ToListAsync();
+            recipients.ExceptWith(mutedRecipients);
+        }
 
         ChannelMessage? reply = null;
         if (request.ReplyToMessageId is { } replyId)
@@ -399,6 +407,7 @@ public sealed class ChatHub(
             ReplyToMessage = reply,
             MentionsJson = mentions.Count == 0 ? null : JsonSerializer.Serialize(mentions)
         };
+        await using var sendTransaction = await db.Database.BeginTransactionAsync();
         await historicalAuthors.CaptureAsync(message, communityId, session.AccountId);
         foreach (var attachment in attachments)
         {
@@ -422,19 +431,32 @@ public sealed class ChatHub(
         }
         if (forumPost is not null)
         {
+            await db.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT OR IGNORE INTO ForumPostSubscriptions
+                    (ForumPostId, AccountId, JoinedAt, NotificationLevel)
+                VALUES ({forumPost.Id}, {session.AccountId}, {message.CreatedAt.UtcTicks},
+                    {(int)ForumPostNotificationLevel.MentionsOnly})
+                """);
             forumPost.ReplyCount++;
             forumPost.LastActivityAt = message.CreatedAt;
             forumPost.UpdatedAt = message.CreatedAt;
         }
         await db.SaveChangesAsync();
+        await sendTransaction.CommitAsync();
         var result = await ChannelMessageMapper.ResolveCommunityProfileAsync(ChannelMessageMapper.ToDto(message), db);
         await BroadcastTypingStoppedAsync(new(TypingConversationKind.CommunityChannel, channelId, communityId),
             CurrentTypingSessionId,
             session.AccountId, session.Account.DisplayName);
         await Clients.Group(GroupName(communityId, channelId)).SendAsync(ChatHubContract.MessageCreated, result);
-        var communityRecipients = await db.CommunityMembers
-            .Where(value => value.CommunityId == communityId && value.AccountId != session.AccountId)
-            .Select(value => value.AccountId).ToListAsync();
+        var communityRecipients = forumPost is null
+            ? await db.CommunityMembers.Where(value => value.CommunityId == communityId &&
+                    value.AccountId != session.AccountId).Select(value => value.AccountId).ToListAsync()
+            : await db.ForumPostSubscriptions.Where(value => value.ForumPostId == forumPost.Id &&
+                    value.AccountId != session.AccountId &&
+                    value.NotificationLevel == ForumPostNotificationLevel.AllMessages)
+                .Select(value => value.AccountId).ToListAsync();
+        if (forumPost is not null) communityRecipients.AddRange(recipients);
+        communityRecipients = communityRecipients.Distinct().ToList();
         foreach (var recipient in communityRecipients.ToArray())
             if (!await authorization.HasChannelPermissionAsync(communityId, channelId, recipient,
                     CommunityPermission.ViewChannels, db)) communityRecipients.Remove(recipient);
@@ -682,7 +704,10 @@ public sealed class ChatHub(
         message.Content = ValidContent(request.Content, allowEmpty: message.ForwardedMessageSnapshotId is not null,
             communityId: communityId);
         await ValidateCommunityEmojiUseAsync(message.Content, accountId, communityId, channelId);
-        message.MentionsJson = null;
+        var editedMentionInputs = await ResolveEditedMentionsAsync(communityId, channelId, accountId, message.Content);
+        var (editedMentions, _) = await ValidateMentionsAsync(
+            communityId, channelId, accountId, message.Content, editedMentionInputs);
+        message.MentionsJson = editedMentions.Count == 0 ? null : JsonSerializer.Serialize(editedMentions);
         message.EditedAt = DateTimeOffset.UtcNow;
         if (rootForumPost is not null) rootForumPost.UpdatedAt = message.EditedAt.Value;
         await db.SaveChangesAsync();
@@ -1163,7 +1188,8 @@ public sealed class ChatHub(
                     CommunityPermission.ViewChannels, db))
                 await Clients.Group(AccountGroup(accountId)).SendAsync(CommunityForumHubContract.PostChanged,
                     new CommunityForumPostChangedEvent(post.CommunityId, post.ForumChannelId,
-                        await CommunityForumEndpoints.ToDtoAsync(post, db), post.Id, change, actorAccountId));
+                        await CommunityForumEndpoints.ToDtoAsync(post, db, accountId: accountId), post.Id, change,
+                        actorAccountId));
     }
 
     private async Task RequireChannelAsync(
@@ -1271,6 +1297,26 @@ public sealed class ChatHub(
         }
 
         return (result, recipients);
+    }
+
+    private async Task<IReadOnlyList<CommunityMentionInput>> ResolveEditedMentionsAsync(
+        Guid communityId, Guid channelId, Guid accountId, string content)
+    {
+        var access = await authorization.GetChannelAccessAsync(communityId, channelId, accountId, db);
+        var members = await db.CommunityMembers.AsNoTracking().Where(value => value.CommunityId == communityId)
+            .Select(value => new { value.AccountId, value.Account.DisplayName }).ToListAsync();
+        var roles = await db.CommunityRoles.AsNoTracking().Where(value => value.CommunityId == communityId)
+            .Select(value => new { value.Id, value.Name, value.IsDefault, value.IsMentionable }).ToListAsync();
+        var mayMentionEveryone = access.Has(CommunityPermission.MentionEveryone);
+        var targets = members.Select(value => new CommunityMentionTextTarget(
+                CommunityMentionKind.Account, value.AccountId, $"@{value.DisplayName}"))
+            .Concat(roles.Where(value => !value.IsDefault && (value.IsMentionable || mayMentionEveryone))
+                .Select(value => new CommunityMentionTextTarget(
+                    CommunityMentionKind.Role, value.Id, $"@{value.Name.TrimStart('@')}")))
+            .ToList();
+        if (mayMentionEveryone)
+            targets.Add(new(CommunityMentionKind.Everyone, null, "@everyone"));
+        return CommunityMentionTextResolver.Resolve(content, targets);
     }
 
     private async Task<Guid> RequireAccountAsync() => (await RequireSessionAsync()).AccountId;

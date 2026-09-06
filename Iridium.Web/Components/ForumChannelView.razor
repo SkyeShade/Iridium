@@ -16,14 +16,14 @@
                               CommunityManagement="CommunityManagement"
                               SearchChangedCallback="SearchChangedAsync" TagFilterChanged="TagFilterChangedAsync" CanCreatePosts="CanCreatePosts"
                               IsLoading="Forum.IsLoading" HasMore="Forum.NextOffset.HasValue"
-                              OnNewPost="BeginCreateAsync" OnLoadMore="() => Forum.LoadMoreAsync()" OnOpen="OpenPostAsync"
+                              OnNewPost="BeginCreateAsync" OnLoadMore="() => Forum.LoadMoreAsync()" OnOpen="RequestOpenPostAsync"
                               OnContextMenu="OpenPostContextMenu" />
             break;
 
         case ForumViewMode.CreatingPost:
             <section class="forum-create-view" aria-label="Create Forum post">
                 <header class="forum-create-header">
-                    <button class="icon-button" title="Cancel new post" aria-label="Cancel new post" @onclick="BackToIndexAsync"><Icon Name="close" /></button>
+                    <button class="icon-button" title="Cancel new post" aria-label="Cancel new post" @onclick="BackAsync"><Icon Name="close" /></button>
                     <div><strong>New post</strong><small># @Channel.Name</small></div>
                 </header>
                 <div class="forum-create-content">
@@ -55,13 +55,14 @@
                                      OnSubmitted="FinishCreatedPostAsync" SendableContentChanged="BodySendableChanged"
                                      CanAttachFiles="CanAttachFiles"
                                      CanMentionEveryone="CanMentionEveryone" CanUseExternalEmoji="CanUseExternalEmoji"
+                                     IsMobileLayout="IsMobileLayout"
                                      NodeAuthority="@NodeAuthority"
                                      AccountId="@CurrentAccountId" ConversationKind="@CreateBodyDraftScope.ConversationKind"
                                      ConversationId="@CreateBodyDraftScope.ConversationId" />
                     @if (!string.IsNullOrWhiteSpace(_error)) { <p class="forum-error" role="alert">@_error</p> }
                 </div>
                 <footer class="forum-create-actions">
-                    <button class="cancel-post-button" @onclick="BackToIndexAsync">Cancel</button>
+                    <button class="cancel-post-button" @onclick="BackAsync">Cancel</button>
                     <button class="publish-post-button" disabled="@(!CanPublish)" @onclick="PublishAsync">Post</button>
                 </footer>
             </section>
@@ -77,12 +78,12 @@
                                           SearchChangedCallback="SearchChangedAsync" TagFilterChanged="TagFilterChangedAsync" CanCreatePosts="CanCreatePosts"
                                           IsLoading="Forum.IsLoading" HasMore="Forum.NextOffset.HasValue"
                                           SelectedPostId="SelectedForumPostId" OnNewPost="BeginCreateAsync"
-                                          OnLoadMore="() => Forum.LoadMoreAsync()" OnOpen="OpenPostAsync"
+                                          OnLoadMore="() => Forum.LoadMoreAsync()" OnOpen="RequestOpenPostAsync"
                                           OnContextMenu="OpenPostContextMenu" />
                     </aside>
                     <section class="forum-discussion-pane">
                         <header class="forum-discussion-header">
-                            <button class="post-back" title="Close post" aria-label="Close post" @onclick="BackToIndexAsync"><Icon Name="back" /></button>
+                            <button class="post-back" title="Close post" aria-label="Close post" @onclick="BackAsync"><Icon Name="back" /></button>
                             @if (_editingTitle)
                             {
                                 <div class="post-title-edit"><input maxlength="120" @bind="_titleDraft" aria-label="Forum post title" /><small># @Channel.Name</small></div>
@@ -156,6 +157,8 @@
                                          DraftConversationId="selectedPost.Id" RootMessageId="selectedPost.RootMessageId"
                                          ForumPostId="selectedPost.Id" ForumChannelId="Channel.Id"
                                          ForumPostEmbedProvider="selectedPost.EmbedProvider" ForumPostEmbedUrl="@selectedPost.EmbedUrl"
+                                         FocusRequest="@(_composerFocusPostId == selectedPost.Id ? _composerFocusRequest : 0)"
+                                         OnFocusConsumed="ComposerFocusConsumed"
                                          ShowReadOnlyNotice="false" />
                         </div>
                     </section>
@@ -172,6 +175,8 @@
                           CanMarkRead="@(postContext.Post.UnreadCount > 0)" CanEdit="canEditContextPost"
                           CanManage="CanManageMessages" CanDelete="canEditContextPost"
                           OnOpen="OpenContextPostAsync" OnMarkRead="MarkContextPostReadAsync"
+                          OnToggleFollow="ToggleContextPostFollowAsync"
+                          OnNotificationChanged="SetContextPostNotificationAsync"
                           OnToggleLock="ToggleContextPostLockedAsync" OnEditTitle="EditContextPostTitleAsync"
                           OnEditTags="EditContextPostTagsAsync" OnTogglePin="ToggleContextPostPinnedAsync"
                           CanManageDocument="@CanEditDocument(postContext.Post)"
@@ -195,6 +200,8 @@
     [Parameter] public bool CanAttachFiles { get; set; }
     [Parameter] public bool CanMentionEveryone { get; set; }
     [Parameter] public bool IsMobileLayout { get; set; }
+    [Parameter] public Guid? InitialPostId { get; set; }
+    [Parameter] public EventCallback<CommunityForumPostDto?> OnPostNavigationRequested { get; set; }
     [Parameter] public EventCallback<CommunityForumPostDto?> OnPostOpenChanged { get; set; }
     [Parameter] public EventCallback<bool> OnSubViewChanged { get; set; }
     [Parameter] public EventCallback OnEditProfile { get; set; }
@@ -218,6 +225,9 @@
     private CancellationTokenSource? _filterDebounce;
     private CancellationTokenSource? _postLoadCancellation;
     private long _postLoadGeneration;
+    private Guid? _loadingPostId;
+    private long _composerFocusRequest;
+    private Guid? _composerFocusPostId;
     private IReadOnlyList<Guid> _newTagIds = [], _editTagIds = [], _filterTagIds = [];
     private ForumPostContextRequest? _postContext;
     private ElementReference _forumSurface;
@@ -251,7 +261,14 @@
 
     protected override async Task OnParametersSetAsync()
     {
-        if (_loadedChannelId == Channel.Id) return;
+        if (_loadedChannelId == Channel.Id)
+        {
+            if (InitialPostId is { } requested && _selectedPost?.Id != requested)
+                await OpenPostByIdAsync(requested);
+            else if (InitialPostId is null && Mode == ForumViewMode.ViewingPost)
+                await BackToIndexAsync(notifyNavigation: false);
+            return;
+        }
         _loadedChannelId = Channel.Id;
         _selectedPost = null;
         SelectedForumPostId = null;
@@ -266,6 +283,7 @@
         _newTitle = await Drafts.LoadAsync(CreateTitleDraftScope) ?? string.Empty;
         await OnSubViewChanged.InvokeAsync(false);
         await Forum.LoadAsync(Community.Id, Channel.Id);
+        if (InitialPostId is { } initialPostId) await OpenPostByIdAsync(initialPostId);
     }
 
     private void ForumChanged()
@@ -281,6 +299,7 @@
                 Mode = ForumViewMode.Index;
                 _ = OnPostOpenChanged.InvokeAsync(null);
                 _ = OnSubViewChanged.InvokeAsync(false);
+                _ = OnPostNavigationRequested.InvokeAsync(null);
                 _ = InvokeAsync(StateHasChanged);
                 return;
             }
@@ -292,7 +311,6 @@
                     ? selected.EmbedUrl
                     : refreshed.EmbedUrl
             };
-            _ = OnPostOpenChanged.InvokeAsync(_selectedPost);
             if (_selectedPost.UnreadCount > 0) _ = InvokeAsync(MarkCurrentPostReadAsync);
         }
         _ = InvokeAsync(StateHasChanged);
@@ -322,6 +340,7 @@
         Mode = ForumViewMode.CreatingPost;
         _error = null;
         await OnPostOpenChanged.InvokeAsync(null);
+        if (OnPostNavigationRequested.HasDelegate) await OnPostNavigationRequested.InvokeAsync(null);
         await OnSubViewChanged.InvokeAsync(true);
     }
 
@@ -376,10 +395,22 @@
         _newTagIds = [];
         ClearNewDocument();
         _createdPost = null;
+        await RequestOpenPostAsync(post);
+    }
+
+    private async Task RequestOpenPostAsync(CommunityForumPostDto post)
+    {
+        if (OnPostNavigationRequested.HasDelegate)
+        {
+            await OnPostNavigationRequested.InvokeAsync(post);
+            return;
+        }
         await OpenPostAsync(post);
     }
 
-    private async Task OpenPostAsync(CommunityForumPostDto post)
+    private Task OpenPostAsync(CommunityForumPostDto post) => OpenPostAsync(post.Id);
+
+    private async Task OpenPostAsync(Guid postId)
     {
         _postContext = null;
         _postLoadCancellation?.Cancel();
@@ -387,18 +418,22 @@
         _postLoadCancellation = new();
         var cancellationToken = _postLoadCancellation.Token;
         var generation = ++_postLoadGeneration;
+        _loadingPostId = postId;
+        CommunityForumPostDto post;
         try
         {
-            post = await Session.GetForumPostAsync(Community.Id, Channel.Id, post.Id, cancellationToken);
+            post = await Session.GetForumPostAsync(Community.Id, Channel.Id, postId, cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return; }
         catch (Exception exception)
         {
-            Logger.LogWarning(exception, "Could not open Forum post {PostId}.", post.Id);
+            if (generation == _postLoadGeneration) _loadingPostId = null;
+            Logger.LogWarning(exception, "Could not open Forum post {PostId}.", postId);
             _error = exception.GetBaseException().Message;
             return;
         }
         if (generation != _postLoadGeneration || cancellationToken.IsCancellationRequested) return;
+        _loadingPostId = null;
         _selectedPost = post;
         SelectedForumPostId = post.Id;
         Mode = ForumViewMode.ViewingPost;
@@ -409,6 +444,11 @@
         _confirmRemoveDocument = false;
         _editTagIds = [];
         _titleDraft = post.Title;
+        if (!IsMobileLayout)
+        {
+            _composerFocusPostId = post.Id;
+            _composerFocusRequest++;
+        }
         Forum.MarkRead(post.Id);
         try { await Session.MarkCommunityChannelReadAsync(Community.Id, post.DiscussionChannelId); }
         catch (Exception exception) { Logger.LogDebug(exception, "Could not mark Forum post {PostId} read.", post.Id); }
@@ -416,14 +456,32 @@
         await OnSubViewChanged.InvokeAsync(true);
     }
 
-    public Task BackAsync() => BackToIndexAsync();
+    public async Task OpenPostByIdAsync(Guid postId)
+    {
+        if (_selectedPost?.Id == postId && Mode == ForumViewMode.ViewingPost) return;
+        if (_loadingPostId == postId) return;
+        await OpenPostAsync(postId);
+    }
 
-    public async Task BackToIndexAsync()
+    private void ComposerFocusConsumed(long request)
+    {
+        if (request == _composerFocusRequest) _composerFocusPostId = null;
+    }
+
+    public async Task BackAsync()
+    {
+        await BackToIndexAsync(notifyNavigation: false);
+        if (OnPostNavigationRequested.HasDelegate) await OnPostNavigationRequested.InvokeAsync(null);
+    }
+
+    private async Task BackToIndexAsync(bool notifyNavigation = true)
     {
         _postLoadCancellation?.Cancel();
         _postLoadCancellation?.Dispose();
         _postLoadCancellation = null;
         _postLoadGeneration++;
+        _loadingPostId = null;
+        _composerFocusPostId = null;
         _postContext = null;
         if (Mode == ForumViewMode.CreatingPost) await PersistTitleDraftAsync();
         _selectedPost = null;
@@ -439,6 +497,8 @@
         _error = null;
         await OnPostOpenChanged.InvokeAsync(null);
         await OnSubViewChanged.InvokeAsync(false);
+        if (notifyNavigation && OnPostNavigationRequested.HasDelegate)
+            await OnPostNavigationRequested.InvokeAsync(null);
     }
 
     public async Task MarkCurrentPostReadAsync()
@@ -479,12 +539,26 @@
 
     private void ClosePostContextMenu() => _postContext = null;
     private bool CanEditPost(CommunityForumPostDto post) => post.Author.AccountId == CurrentAccountId || CanManageMessages;
-    private async Task OpenContextPostAsync() { if (_postContext is { } context) await OpenPostAsync(context.Post); }
+    private async Task OpenContextPostAsync() { if (_postContext is { } context) await RequestOpenPostAsync(context.Post); }
     private async Task MarkContextPostReadAsync()
     {
         if (_postContext is not { } context) return;
         await Session.MarkCommunityChannelReadAsync(Community.Id, context.Post.DiscussionChannelId);
         Forum.MarkRead(context.Post.Id);
+    }
+    private async Task ToggleContextPostFollowAsync()
+    {
+        if (_postContext is not { } context) return;
+        var updated = context.Post.IsFollowed
+            ? await Forum.UnfollowAsync(context.Post.Id)
+            : await Forum.FollowAsync(context.Post.Id);
+        if (_selectedPost?.Id == updated.Id) _selectedPost = updated;
+    }
+    private async Task SetContextPostNotificationAsync(ForumPostNotificationLevel level)
+    {
+        if (_postContext is not { Post.IsFollowed: true } context) return;
+        var updated = await Forum.SetNotificationLevelAsync(context.Post.Id, level);
+        if (_selectedPost?.Id == updated.Id) _selectedPost = updated;
     }
     private async Task ToggleContextPostLockedAsync() => await UpdateContextPostAsync(new(IsLocked: !_postContext!.Post.IsLocked));
     private async Task ToggleContextPostPinnedAsync() => await UpdateContextPostAsync(new(IsPinned: !_postContext!.Post.IsPinned));

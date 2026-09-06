@@ -155,7 +155,7 @@ public static class CommunityForumTagEndpoints
             db.CommunityForumPostTags.Add(new() { Post = post, PostId = post.Id, Tag = tag, TagId = tag.Id });
         post.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync();
-        var dto = await CommunityForumEndpoints.ToDtoAsync(post, db);
+        var dto = await CommunityForumEndpoints.ToDtoAsync(post, db, accountId: session.AccountId);
         await CommunityForumEndpoints.PublishAsync(communityId, channelId,
             new(communityId, channelId, dto, post.Id, "tags-updated", session.AccountId), db, authorization, hub);
         return Results.Ok(dto);

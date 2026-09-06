@@ -1,0 +1,38 @@
+@using Iridium.Protocol
+
+<div class="forum-post-children" style="--forum-depth:@Depth" aria-label="Followed posts in @Forum.Name">
+    @foreach (var post in VisiblePosts)
+    {
+        <button @key="post.Id" type="button" class="forum-post-child forum-post-child-compact sidebar-nav-row @(post.Id == VisiblePosts[^1].Id ? "last-child-post" : null) @(SelectedPostId == post.Id ? "selected is-active" : null) @(post.UnreadCount > 0 ? "unread" : null)"
+                @onclick="() => OnSelect.InvokeAsync(post)" title="@post.Title">
+            @if (post.UnreadCount > 0 && SelectedPostId != post.Id)
+            {
+                <span class="forum-post-unread" aria-label="Unread replies"></span>
+            }
+            <span class="tree-branch" aria-hidden="true"></span>
+            <span class="sidebar-nav-surface forum-post-nav-surface">
+                <span class="forum-post-title">@post.Title</span>
+            </span>
+            @if (post.MentionCount > 0)
+            {
+                <span class="forum-post-mentions" aria-label="@($"{post.MentionCount} unread mentions")">@(post.MentionCount > 99 ? "99+" : post.MentionCount)</span>
+            }
+        </button>
+    }
+    @if (Posts.Count > SidebarLimit)
+    {
+        <button type="button" class="see-all-followed"
+                @onclick="() => OnSeeAll.InvokeAsync(Forum)">See all followed posts</button>
+    }
+</div>
+
+@code {
+    public const int SidebarLimit = 15;
+    [Parameter, EditorRequired] public required CommunityChannelDto Forum { get; set; }
+    [Parameter, EditorRequired] public required IReadOnlyList<CommunityForumPostDto> Posts { get; set; }
+    [Parameter] public Guid? SelectedPostId { get; set; }
+    [Parameter] public int Depth { get; set; } = 1;
+    [Parameter] public EventCallback<CommunityForumPostDto> OnSelect { get; set; }
+    [Parameter] public EventCallback<CommunityChannelDto> OnSeeAll { get; set; }
+    private IReadOnlyList<CommunityForumPostDto> VisiblePosts => Posts.Take(SidebarLimit).ToArray();
+}

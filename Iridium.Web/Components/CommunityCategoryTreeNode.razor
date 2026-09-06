@@ -13,7 +13,10 @@
             if (item.Channel is { } channel)
             {
                 <ChannelRow @key="item.Id" Channel="channel" CanManage="CanManage" CanManageForumTags="@MayManageForumTags(channel)" CanManagePermissions="@MayManagePermissions(channel.EffectivePermissions)" Depth="@(Depth + 1)"
-                            Selected="@(SelectedChannelId == channel.Id)" OnSelect="OnSelectChannel"
+                            Selected="@(SelectedChannelId == channel.Id && (channel.Kind != CommunityChannelKind.Forum || SelectedForumPostId is null))" OnSelect="OnSelectChannel"
+                            HasChildren="@(channel.Kind == CommunityChannelKind.Forum && FollowedPosts.Any(value => value.ForumChannelId == channel.Id))"
+                            ChildrenCollapsed="ForumChildrenCollapsed.Contains(channel.Id)"
+                            OnToggleChildren="() => OnToggleForumChildren.InvokeAsync(channel)"
                             Room="@VoiceRooms.FirstOrDefault(value => value.ChannelId == channel.Id)"
                             Connected="@(ConnectedVoiceChannelId == channel.Id)"
                             CurrentAccountId="CurrentAccountId"
@@ -22,6 +25,12 @@
                             StreamThumbnails="StreamThumbnails"
                             OnEdit="OnEditChannel" OnDelete="OnDeleteChannel"
                             OnPermissions="OnChannelPermissions" />
+                @if (channel.Kind == CommunityChannelKind.Forum && !ForumChildrenCollapsed.Contains(channel.Id))
+                {
+                    <ForumPostSidebarChildren Forum="channel" Posts="@FollowedPosts.Where(value => value.ForumChannelId == channel.Id).ToArray()"
+                                              Depth="@(Depth + 1)" SelectedPostId="SelectedForumPostId"
+                                              OnSelect="OnSelectForumPost" OnSeeAll="OnSelectChannel" />
+                }
             }
             else if (item.Category is { } child)
             {
@@ -33,6 +42,9 @@
                                            PublishedStreams="PublishedStreams" OnWatchStream="OnWatchStream"
                                            StreamThumbnails="StreamThumbnails"
                                            SelectedChannelId="SelectedChannelId" OnToggle="OnToggle" OnEdit="OnEdit"
+                                           FollowedPosts="FollowedPosts" SelectedForumPostId="SelectedForumPostId"
+                                           ForumChildrenCollapsed="ForumChildrenCollapsed"
+                                           OnToggleForumChildren="OnToggleForumChildren" OnSelectForumPost="OnSelectForumPost"
                                            OnCreateChannel="OnCreateChannel" OnCreateSubcategory="OnCreateSubcategory"
                                            OnDelete="OnDelete" OnSelectChannel="OnSelectChannel"
                                            OnEditChannel="OnEditChannel" OnDeleteChannel="OnDeleteChannel"
@@ -49,6 +61,9 @@
     [Parameter, EditorRequired] public required IReadOnlyList<CommunityChannelDto> Channels { get; set; }
     [Parameter, EditorRequired] public required IReadOnlySet<Guid> Collapsed { get; set; }
     [Parameter] public Guid? SelectedChannelId { get; set; }
+    [Parameter] public Guid? SelectedForumPostId { get; set; }
+    [Parameter] public IReadOnlyList<CommunityForumPostDto> FollowedPosts { get; set; } = [];
+    [Parameter, EditorRequired] public required IReadOnlySet<Guid> ForumChildrenCollapsed { get; set; }
     [Parameter] public int Depth { get; set; } = 1;
     [Parameter] public bool CanManage { get; set; }
     [Parameter] public bool CanManagePermissions { get; set; }
@@ -65,6 +80,8 @@
     [Parameter] public EventCallback<CommunityCategoryDto> OnCreateSubcategory { get; set; }
     [Parameter] public EventCallback<CommunityCategoryDto> OnDelete { get; set; }
     [Parameter] public EventCallback<CommunityChannelDto> OnSelectChannel { get; set; }
+    [Parameter] public EventCallback<CommunityChannelDto> OnToggleForumChildren { get; set; }
+    [Parameter] public EventCallback<CommunityForumPostDto> OnSelectForumPost { get; set; }
     [Parameter] public EventCallback<CommunityChannelDto> OnEditChannel { get; set; }
     [Parameter] public EventCallback<CommunityChannelDto> OnDeleteChannel { get; set; }
     [Parameter] public EventCallback<CommunityChannelDto> OnChannelPermissions { get; set; }

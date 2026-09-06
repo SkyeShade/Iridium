@@ -459,6 +459,30 @@ public sealed class NodeClient(Uri nodeAddress)
         SendAsync<CommunityForumPostDto>(HttpMethod.Post,
             $"api/communities/{communityId}/forums/{channelId}/posts", request, cancellationToken);
 
+    public Task<FollowedForumPostsDto> GetFollowedForumPostsAsync(Guid communityId, Guid channelId,
+        int limit = 15, CancellationToken cancellationToken = default) => SendAsync<FollowedForumPostsDto>(
+        HttpMethod.Get, $"api/communities/{communityId}/forums/{channelId}/posts/followed?limit={Math.Clamp(limit, 1, 100)}",
+        null, cancellationToken);
+
+    public Task<FollowedForumPostsDto> GetCommunityFollowedForumPostsAsync(Guid communityId, int limit = 15,
+        CancellationToken cancellationToken = default) => SendAsync<FollowedForumPostsDto>(HttpMethod.Get,
+        $"api/communities/{communityId}/forum-post-subscriptions?limit={Math.Clamp(limit, 1, 100)}", null,
+        cancellationToken);
+
+    public Task<ForumPostSubscriptionDto> FollowForumPostAsync(Guid communityId, Guid channelId, Guid postId,
+        CancellationToken cancellationToken = default) => SendAsync<ForumPostSubscriptionDto>(HttpMethod.Put,
+        $"api/communities/{communityId}/forums/{channelId}/posts/{postId}/subscription", new { }, cancellationToken);
+
+    public Task UnfollowForumPostAsync(Guid communityId, Guid channelId, Guid postId,
+        CancellationToken cancellationToken = default) => SendNoContentAsync(HttpMethod.Delete,
+        $"api/communities/{communityId}/forums/{channelId}/posts/{postId}/subscription", null, cancellationToken);
+
+    public Task<ForumPostSubscriptionDto> UpdateForumPostNotificationAsync(Guid communityId, Guid channelId,
+        Guid postId, ForumPostNotificationLevel notificationLevel,
+        CancellationToken cancellationToken = default) => SendAsync<ForumPostSubscriptionDto>(HttpMethod.Put,
+        $"api/communities/{communityId}/forums/{channelId}/posts/{postId}/notification-settings",
+        new UpdateForumPostNotificationRequest(notificationLevel), cancellationToken);
+
     public Task<CommunityForumPostDto> UpdateForumPostAsync(Guid communityId, Guid channelId, Guid postId,
         UpdateCommunityForumPostRequest request, CancellationToken cancellationToken = default) =>
         SendAsync<CommunityForumPostDto>(HttpMethod.Patch,

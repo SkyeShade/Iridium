@@ -89,6 +89,82 @@ public sealed class MessageDocumentPreviewTests
         Assert.DoesNotContain("new GoogleDocsDocumentParser", endpoints);
     }
 
+    [Fact]
+    public void MessageEmbedsLoadNearViewportAndLargeSheetsYieldBetweenBoundedBatches()
+    {
+        var preview = Source("Iridium.Web", "Components", "MessageDocumentPreview.razor");
+        var embeds = Source("Iridium.Web", "Components", "MessageDocumentEmbeds.razor");
+        var sheet = Source("Iridium.Web", "Components", "EmbeddedSheetView.razor");
+        var channel = Source("Iridium.Web", "Components", "ChannelView.razor");
+        var javascript = Source("Iridium.Web", "wwwroot", "js", "chat.js");
+
+        Assert.Contains("@key=\"PreviewKey(document)\"", embeds);
+        Assert.Contains("protected override bool ShouldRender() => _shouldRender", embeds);
+        Assert.Contains("observeDeferredContent", preview);
+        Assert.Contains("DeferredContentVisibleAsync", preview);
+        Assert.Contains("if (!_visible || _loading)", preview);
+        Assert.DoesNotContain("protected override async Task OnParametersSetAsync", preview);
+        Assert.Contains("IntersectionObserver", javascript);
+        Assert.Contains("rootMargin: \"600px 0px\"", javascript);
+        Assert.Contains("@key=\"RenderKey\"", preview);
+        Assert.Contains("LargeSheetCellThreshold = 1_000", sheet);
+        Assert.Contains("SheetRowBatchSize = 40", sheet);
+        Assert.Contains("SheetCellBatchSize = 400", sheet);
+        Assert.Contains("nextDocumentRenderFrame", sheet);
+        Assert.Contains("Embedded Sheet render commit", sheet);
+        Assert.Contains("_ = LoadEmbedDocumentAsync", channel);
+        Assert.Contains("Channel embed shell rendered", channel);
+        Assert.Contains("Channel embed DTO received and state assigned", channel);
+    }
+
+    [Fact]
+    public void HeavyDocumentsRenderInStableCancellableBatchesWithCollapsedBounds()
+    {
+        var preview = Source("Iridium.Web", "Components", "MessageDocumentPreview.razor");
+        var sheet = Source("Iridium.Web", "Components", "EmbeddedSheetView.razor");
+        var sheetBatch = Source("Iridium.Web", "Components", "EmbeddedSheetRowBatch.razor");
+        var document = Source("Iridium.Web", "Components", "EmbeddedDocumentView.razor");
+        var documentBatch = Source("Iridium.Web", "Components", "EmbeddedDocumentBlockBatch.razor");
+        var javascript = Source("Iridium.Web", "wwwroot", "js", "chat.js");
+
+        Assert.Contains("LimitCollapsedPreview=\"@(!_expanded)\"", preview);
+        Assert.Contains("CollapsedSheetRowLimit = 50", sheet);
+        Assert.Contains("CollapsedDocumentBlockLimit = 60", document);
+        Assert.Contains("DocumentBlockBatchSize = 40", document);
+        Assert.Contains("_renderCancellation?.Cancel()", sheet);
+        Assert.Contains("_renderCancellation?.Cancel()", document);
+        Assert.Contains("generation != _renderGeneration", sheet);
+        Assert.Contains("generation != _renderGeneration", document);
+        Assert.Contains("ResetProgressiveRender();", sheet);
+        Assert.Contains("private void SelectTab", sheet);
+        Assert.Contains("protected override bool ShouldRender() => _renderRequested", sheet);
+        Assert.Contains("protected override bool ShouldRender() => _renderRequested", document);
+        Assert.Contains("protected override bool ShouldRender() => _shouldRender", sheetBatch);
+        Assert.Contains("protected override bool ShouldRender() => _shouldRender", documentBatch);
+        Assert.Contains("nextDocumentRenderFrame", javascript);
+        Assert.Contains("requestAnimationFrame", javascript);
+    }
+
+    [Fact]
+    public void SheetRenderMetadataAndBrowserCommitDiagnosticsAvoidPerRenderGeometryWork()
+    {
+        var sheet = Source("Iridium.Web", "Components", "EmbeddedSheetView.razor");
+        var styles = Source("Iridium.Web", "Components", "EmbeddedSheetView.razor.css");
+        var javascript = Source("Iridium.Web", "wwwroot", "js", "chat.js");
+
+        Assert.Contains("SheetCellRenderModel", sheet);
+        Assert.Contains("CellClass(cell), CellStyle(cell)", sheet);
+        Assert.Contains("columnOffsets", sheet);
+        Assert.Contains("rowOffsets", sheet);
+        Assert.DoesNotContain("ImagePosition(selected, image)", sheet);
+        Assert.Contains("MergedCells={MergedCellCount}", sheet);
+        Assert.Contains("RenderedRows={RenderedRows}", sheet);
+        Assert.Contains("BrowserLayoutMs={BrowserLayoutMs:F1}", sheet);
+        Assert.Contains("measureDocumentRender", javascript);
+        Assert.Contains("table-layout:fixed", styles);
+        Assert.Contains("contain: layout paint style", styles);
+    }
+
     private static readonly string Root = FindRoot();
     private static string Source(params string[] parts) => File.ReadAllText(Path.Combine([Root, .. parts]));
 

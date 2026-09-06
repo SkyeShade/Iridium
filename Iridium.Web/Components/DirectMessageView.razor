@@ -42,11 +42,12 @@
         <TypingIndicatorLine Text="@Messaging.TypingIndicatorText" />
         <MessageComposer @ref="_composer" ChannelName="@Conversation.OtherParticipant.DisplayName"
                          PlaceholderText="@($"Message {Conversation.OtherParticipant.DisplayName}")"
-                         ReplyToDisplayName="@(_replyTo?.Author.DisplayName)" Busy="@_sending"
+                         ReplyToDisplayName="@(_replyTo?.Author.DisplayName)"
                          SendRich="SendMessageAsync" OnCancelReply="CancelReplyAsync"
                          CanUseExternalEmoji="true"
                          TypingActivityChanged="Messaging.ReportTypingActivityAsync"
                          OnEditLastMessage="EditLastOwnMessageAsync"
+                         IsMobileLayout="IsMobileLayout" OptimisticSubmission="true"
                          NodeAuthority="@NodeAuthority" AccountId="@CurrentAccountId" ConversationKind="direct" ConversationId="@Conversation.Id" />
     </div>
 </section>
@@ -74,7 +75,6 @@
     private bool _isPinnedToLatest = true;
     private bool _shouldShowJumpToLatest;
     private bool _loading;
-    private bool _sending;
     private bool _focusAfterRender;
     private long _consumedFocusRequest;
     private long _historyLoadGeneration;
@@ -162,10 +162,8 @@
         await InvokeAsync(StateHasChanged);
         if (_composer is not null) await _composer.FocusAsync();
     }
-    private async Task<bool> SendMessageAsync(MessageSubmission submission)
+    private Task<bool> SendMessageAsync(MessageSubmission submission)
     {
-        if (_sending) return false;
-        _sending = true;
         _error = null;
         try
         {
@@ -174,12 +172,10 @@
             Messaging.QueueDirectMessage(submission.Content, _replyTo?.Id, submission.Attachments,
                 submission.UploadAttachments);
             _replyTo = null;
-            await InvokeAsync(StateHasChanged);
-            if (_composer is not null) await _composer.FocusAsync();
-            return true;
+            _ = InvokeAsync(StateHasChanged);
+            return Task.FromResult(true);
         }
-        catch (Exception exception) { Logger.LogError(exception, "Direct Message send failed."); _error = exception.Message; return false; }
-        finally { _sending = false; }
+        catch (Exception exception) { Logger.LogError(exception, "Direct Message send failed."); _error = exception.Message; return Task.FromResult(false); }
     }
     private async Task<bool> EditMessageAsync(MessageEditSubmission submission)
     {

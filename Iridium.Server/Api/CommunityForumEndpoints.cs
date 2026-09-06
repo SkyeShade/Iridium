@@ -17,18 +17,56 @@ public static class CommunityForumEndpoints
     private const int DefaultPageSize = 30;
     private const int MaximumPageSize = 50;
     private const int MaximumTitleLength = 120;
+    public const int SidebarPostLimit = 15;
 
     public static IEndpointRouteBuilder MapCommunityForumEndpoints(this IEndpointRouteBuilder endpoints)
     {
+        endpoints.MapGet("/api/communities/{communityId:guid}/forum-post-subscriptions", ListCommunityFollowedAsync);
         var group = endpoints.MapGroup("/api/communities/{communityId:guid}/forums/{channelId:guid}/posts");
         group.MapGet("/", ListAsync);
+        group.MapGet("/followed", ListFollowedAsync);
         group.MapGet("/{postId:guid}", GetAsync);
         group.MapPost("/", CreateAsync);
         group.MapPatch("/{postId:guid}", UpdateAsync);
         group.MapGet("/{postId:guid}/embed-document", GetEmbedDocumentAsync);
         group.MapGet("/{postId:guid}/embed-document/media/{mediaId}", GetEmbedDocumentMediaAsync);
+        group.MapPut("/{postId:guid}/subscription", FollowAsync);
+        group.MapDelete("/{postId:guid}/subscription", UnfollowAsync);
+        group.MapPut("/{postId:guid}/notification-settings", UpdateNotificationAsync);
         group.MapDelete("/{postId:guid}", DeleteAsync);
         return endpoints;
+    }
+
+    private static async Task<IResult> ListCommunityFollowedAsync(Guid communityId, int? limit,
+        HttpContext context, IridiumDbContext db, SessionService sessions,
+        CommunityAuthorizationService authorization)
+    {
+        var session = await sessions.GetAsync(context, db);
+        if (session is null) return Results.Unauthorized();
+        var take = Math.Clamp(limit ?? SidebarPostLimit, 1, 100);
+        var rows = await db.ForumPostSubscriptions.AsNoTracking()
+            .Where(value => value.AccountId == session.AccountId && value.ForumPost.CommunityId == communityId)
+            .Include(value => value.ForumPost).ThenInclude(value => value.AuthorAccount)
+            .Include(value => value.ForumPost).ThenInclude(value => value.RootMessage)
+            .OrderByDescending(value => value.ForumPost.IsPinned)
+            .ThenByDescending(value => value.ForumPost.LastActivityAt)
+            .Take(101).ToListAsync();
+        var visibleForumIds = await authorization.VisibleChannelIdsAsync(communityId,
+            rows.Select(value => value.ForumPost.ForumChannelId).Distinct().ToArray(), session.AccountId,
+            CommunityPermission.ViewChannels, db);
+        var visible = rows.Where(value => visibleForumIds.Contains(value.ForumPost.ForumChannelId)).ToList();
+        visible = visible.OrderByDescending(value => value.ForumPost.IsPinned)
+            .ThenByDescending(value => value.ForumPost.LastActivityAt).ToList();
+        var hasMore = visible.Count > take;
+        if (hasMore) visible.RemoveRange(take, visible.Count - take);
+        var posts = visible.Select(value => value.ForumPost).ToArray();
+        var unread = await UnreadCountsAsync(posts, session.AccountId, db);
+        var subscriptionMap = visible.ToDictionary(value => value.ForumPostId);
+        var mentions = await MentionCountsAsync(posts, session.AccountId, db, subscriptionMap);
+        var tags = await LoadPostTagsAsync(posts.Select(value => value.Id).ToArray(), db);
+        return Results.Ok(new FollowedForumPostsDto(visible.Select(row => ToDto(row.ForumPost,
+            unread.GetValueOrDefault(row.ForumPostId), tags.GetValueOrDefault(row.ForumPostId), false, row,
+            mentions.GetValueOrDefault(row.ForumPostId))).ToArray(), hasMore));
     }
 
     private static async Task<IResult> GetEmbedDocumentAsync(Guid communityId, Guid channelId, Guid postId,
@@ -112,11 +150,15 @@ public static class CommunityForumEndpoints
             .Skip(skip).Take(take + 1).ToListAsync();
         var hasMore = posts.Count > take;
         if (hasMore) posts.RemoveAt(posts.Count - 1);
-        var unread = await UnreadCountsAsync(posts, session.AccountId, db);
+        var subscriptions = await SubscriptionMapAsync(posts.Select(value => value.Id).ToArray(), session.AccountId, db);
+        var followedPosts = posts.Where(value => subscriptions.ContainsKey(value.Id)).ToArray();
+        var unread = await UnreadCountsAsync(followedPosts, session.AccountId, db);
+        var mentions = await MentionCountsAsync(posts, session.AccountId, db, subscriptions);
         var tagMap = await LoadPostTagsAsync(posts.Select(value => value.Id).ToArray(), db);
         return Results.Ok(new CommunityForumPostPageDto(
             posts.Select(value => ToDto(value, unread.GetValueOrDefault(value.Id),
-                tagMap.GetValueOrDefault(value.Id), includeEmbedUrl: false)).ToArray(),
+                tagMap.GetValueOrDefault(value.Id), includeEmbedUrl: false,
+                subscriptions.GetValueOrDefault(value.Id), mentions.GetValueOrDefault(value.Id))).ToArray(),
             hasMore ? skip + take : null));
     }
 
@@ -133,8 +175,13 @@ public static class CommunityForumEndpoints
             .SingleOrDefaultAsync(value => value.Id == postId && value.CommunityId == communityId &&
                 value.ForumChannelId == channelId);
         if (post is null) return Results.NotFound();
-        var unread = await UnreadCountsAsync([post], session.AccountId, db);
-        return Results.Ok(await ToDtoAsync(post, db, unread.GetValueOrDefault(post.Id)));
+        var subscription = await db.ForumPostSubscriptions.AsNoTracking().SingleOrDefaultAsync(value =>
+            value.ForumPostId == post.Id && value.AccountId == session.AccountId);
+        var unread = subscription is null ? 0 : (await UnreadCountsAsync([post], session.AccountId, db)).GetValueOrDefault(post.Id);
+        var mention = subscription?.NotificationLevel == ForumPostNotificationLevel.Muted ? 0 :
+            await db.CommunityMentionNotifications.CountAsync(value => value.AccountId == session.AccountId &&
+                value.ChannelId == post.DiscussionChannelId && value.ReadAt == null);
+        return Results.Ok(await ToDtoAsync(post, db, unread, session.AccountId, mention));
     }
 
     private static async Task<IResult> CreateAsync(Guid communityId, Guid channelId,
@@ -214,6 +261,12 @@ public static class CommunityForumEndpoints
         db.CommunityChannels.Add(discussion);
         db.ChannelMessages.Add(root);
         db.CommunityForumPosts.Add(post);
+        var creatorSubscription = new ForumPostSubscription
+        {
+            ForumPost = post, ForumPostId = post.Id, Account = session.Account, AccountId = session.AccountId,
+            JoinedAt = now, NotificationLevel = ForumPostNotificationLevel.MentionsOnly
+        };
+        db.ForumPostSubscriptions.Add(creatorSubscription);
         foreach (var tag in tagValidation.Tags)
             db.CommunityForumPostTags.Add(new() { Post = post, PostId = post.Id, Tag = tag, TagId = tag.Id });
         foreach (var recipientId in mentionResult.Recipients)
@@ -223,7 +276,7 @@ public static class CommunityForumEndpoints
                 ChannelId = discussionId, CreatedAt = now, Message = root, Account = null!
             });
         await db.SaveChangesAsync();
-        var dto = ToDto(post, tags: tagValidation.Tags.Select(ToDto).ToArray());
+        var dto = ToDto(post, tags: tagValidation.Tags.Select(ToDto).ToArray(), subscription: creatorSubscription);
         await PublishAsync(communityId, channelId, new(communityId, channelId, dto, post.Id, "created", session.AccountId),
             db, authorization, hub);
         return Results.Created($"/api/communities/{communityId}/forums/{channelId}/posts/{post.Id}", dto);
@@ -270,10 +323,142 @@ public static class CommunityForumEndpoints
         }
         post.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync();
-        var dto = await ToDtoAsync(post, db);
+        var dto = await ToDtoAsync(post, db, accountId: session.AccountId);
         await PublishAsync(communityId, channelId, new(communityId, channelId, dto, post.Id, "updated"),
             db, authorization, hub);
         return Results.Ok(dto);
+    }
+
+    private static async Task<IResult> ListFollowedAsync(Guid communityId, Guid channelId, int? limit,
+        HttpContext context, IridiumDbContext db, SessionService sessions,
+        CommunityAuthorizationService authorization)
+    {
+        var session = await sessions.GetAsync(context, db);
+        if (session is null) return Results.Unauthorized();
+        if (!await IsForumVisibleAsync(communityId, channelId, session.AccountId, db, authorization))
+            return Results.NotFound();
+        var take = Math.Clamp(limit ?? SidebarPostLimit, 1, 100);
+        var rows = await db.ForumPostSubscriptions.AsNoTracking()
+            .Where(value => value.AccountId == session.AccountId &&
+                value.ForumPost.CommunityId == communityId && value.ForumPost.ForumChannelId == channelId)
+            .Include(value => value.ForumPost).ThenInclude(value => value.AuthorAccount)
+            .Include(value => value.ForumPost).ThenInclude(value => value.RootMessage)
+            .OrderByDescending(value => value.ForumPost.IsPinned)
+            .ThenByDescending(value => value.ForumPost.LastActivityAt)
+            .Take(take + 1).ToListAsync();
+        var hasMore = rows.Count > take;
+        if (hasMore) rows.RemoveAt(rows.Count - 1);
+        var posts = rows.Select(value => value.ForumPost).ToArray();
+        var unread = await UnreadCountsAsync(posts, session.AccountId, db);
+        var subscriptions = rows.ToDictionary(value => value.ForumPostId);
+        var mentions = await MentionCountsAsync(posts, session.AccountId, db, subscriptions);
+        var tags = await LoadPostTagsAsync(posts.Select(value => value.Id).ToArray(), db);
+        return Results.Ok(new FollowedForumPostsDto(rows.Select(row => ToDto(row.ForumPost,
+            unread.GetValueOrDefault(row.ForumPostId), tags.GetValueOrDefault(row.ForumPostId), false, row,
+            mentions.GetValueOrDefault(row.ForumPostId))).ToArray(), hasMore));
+    }
+
+    private static async Task<IResult> FollowAsync(Guid communityId, Guid channelId, Guid postId,
+        HttpContext context, IridiumDbContext db, SessionService sessions,
+        CommunityAuthorizationService authorization, IHubContext<ChatHub> hub)
+    {
+        var session = await sessions.GetAsync(context, db);
+        if (session is null) return Results.Unauthorized();
+        if (!await IsForumVisibleAsync(communityId, channelId, session.AccountId, db, authorization))
+            return Results.NotFound();
+        var post = await db.CommunityForumPosts.Include(value => value.AuthorAccount).Include(value => value.RootMessage)
+            .SingleOrDefaultAsync(value => value.Id == postId && value.CommunityId == communityId &&
+                value.ForumChannelId == channelId);
+        if (post is null) return Results.NotFound();
+        var joinedAt = DateTimeOffset.UtcNow;
+        await db.Database.ExecuteSqlInterpolatedAsync($"""
+            INSERT OR IGNORE INTO ForumPostSubscriptions
+                (ForumPostId, AccountId, JoinedAt, NotificationLevel)
+            VALUES ({postId}, {session.AccountId}, {joinedAt.UtcTicks},
+                {(int)ForumPostNotificationLevel.MentionsOnly})
+            """);
+        var subscription = await db.ForumPostSubscriptions.AsNoTracking().SingleAsync(value =>
+            value.ForumPostId == postId && value.AccountId == session.AccountId);
+        var dto = await ToDtoAsync(post, db, accountId: session.AccountId);
+        await hub.Clients.Group(ChatHub.AccountGroup(session.AccountId)).SendAsync(
+            CommunityForumHubContract.PostChanged,
+            new CommunityForumPostChangedEvent(communityId, channelId, dto, postId, "subscription-updated",
+                session.AccountId));
+        return Results.Ok(new ForumPostSubscriptionDto(postId, subscription.JoinedAt,
+            subscription.NotificationLevel));
+    }
+
+    private static async Task<IResult> UnfollowAsync(Guid communityId, Guid channelId, Guid postId,
+        HttpContext context, IridiumDbContext db, SessionService sessions,
+        CommunityAuthorizationService authorization, IHubContext<ChatHub> hub)
+    {
+        var session = await sessions.GetAsync(context, db);
+        if (session is null) return Results.Unauthorized();
+        if (!await IsForumVisibleAsync(communityId, channelId, session.AccountId, db, authorization))
+            return Results.NotFound();
+        var post = await db.CommunityForumPosts.Include(value => value.AuthorAccount).Include(value => value.RootMessage)
+            .SingleOrDefaultAsync(value => value.Id == postId && value.CommunityId == communityId &&
+                value.ForumChannelId == channelId);
+        if (post is null) return Results.NotFound();
+        var subscription = await db.ForumPostSubscriptions.SingleOrDefaultAsync(value =>
+            value.ForumPostId == postId && value.AccountId == session.AccountId);
+        if (subscription is not null)
+        {
+            db.ForumPostSubscriptions.Remove(subscription);
+            var latest = await db.ChannelMessages.Where(value => value.CommunityId == communityId &&
+                    value.ChannelId == post.DiscussionChannelId)
+                .MaxAsync(value => (DateTimeOffset?)value.CreatedAt) ?? DateTimeOffset.UtcNow;
+            var readState = await db.CommunityChannelReadStates.SingleOrDefaultAsync(value =>
+                value.CommunityId == communityId && value.ChannelId == post.DiscussionChannelId &&
+                value.AccountId == session.AccountId);
+            if (readState is null) db.CommunityChannelReadStates.Add(new CommunityChannelReadState
+            {
+                CommunityId = communityId, ChannelId = post.DiscussionChannelId, AccountId = session.AccountId,
+                LastReadAt = latest, Channel = null!, Account = session.Account
+            });
+            else if (latest > readState.LastReadAt) readState.LastReadAt = latest;
+            await db.SaveChangesAsync();
+        }
+        var dto = await ToDtoAsync(post, db, accountId: session.AccountId);
+        await hub.Clients.Group(ChatHub.AccountGroup(session.AccountId)).SendAsync(
+            CommunityForumHubContract.PostChanged,
+            new CommunityForumPostChangedEvent(communityId, channelId, dto, postId, "subscription-updated",
+                session.AccountId));
+        return Results.NoContent();
+    }
+
+    private static async Task<IResult> UpdateNotificationAsync(Guid communityId, Guid channelId, Guid postId,
+        UpdateForumPostNotificationRequest request, HttpContext context, IridiumDbContext db,
+        SessionService sessions, CommunityAuthorizationService authorization, IHubContext<ChatHub> hub)
+    {
+        var session = await sessions.GetAsync(context, db);
+        if (session is null) return Results.Unauthorized();
+        if (!Enum.IsDefined(request.NotificationLevel)) return Invalid("That notification level is invalid.");
+        if (!await IsForumVisibleAsync(communityId, channelId, session.AccountId, db, authorization))
+            return Results.NotFound();
+        var subscription = await db.ForumPostSubscriptions.Include(value => value.ForumPost)
+            .ThenInclude(value => value.AuthorAccount).Include(value => value.ForumPost)
+            .ThenInclude(value => value.RootMessage).SingleOrDefaultAsync(value =>
+                value.ForumPostId == postId && value.AccountId == session.AccountId &&
+                value.ForumPost.CommunityId == communityId && value.ForumPost.ForumChannelId == channelId);
+        if (subscription is null) return Results.Conflict(new { message = "Follow this Post before changing notifications." });
+        subscription.NotificationLevel = request.NotificationLevel;
+        if (request.NotificationLevel == ForumPostNotificationLevel.Muted)
+        {
+            var pendingMentions = await db.CommunityMentionNotifications.Where(value =>
+                value.AccountId == session.AccountId && value.ChannelId == subscription.ForumPost.DiscussionChannelId &&
+                value.ReadAt == null).ToListAsync();
+            var readAt = DateTimeOffset.UtcNow;
+            foreach (var mention in pendingMentions) mention.ReadAt = readAt;
+        }
+        await db.SaveChangesAsync();
+        var dto = await ToDtoAsync(subscription.ForumPost, db, accountId: session.AccountId);
+        await hub.Clients.Group(ChatHub.AccountGroup(session.AccountId)).SendAsync(
+            CommunityForumHubContract.PostChanged,
+            new CommunityForumPostChangedEvent(communityId, channelId, dto, postId, "subscription-updated",
+                session.AccountId));
+        return Results.Ok(new ForumPostSubscriptionDto(postId, subscription.JoinedAt,
+            subscription.NotificationLevel));
     }
 
     private static async Task<IResult> DeleteAsync(Guid communityId, Guid channelId, Guid postId,
@@ -322,8 +507,29 @@ public static class CommunityForumEndpoints
         return posts.ToDictionary(value => value.Id, value => counts.GetValueOrDefault(value.DiscussionChannelId));
     }
 
+    private static async Task<Dictionary<Guid, ForumPostSubscription>> SubscriptionMapAsync(
+        IReadOnlyList<Guid> postIds, Guid accountId, IridiumDbContext db) => postIds.Count == 0 ? [] :
+        await db.ForumPostSubscriptions.AsNoTracking().Where(value => value.AccountId == accountId &&
+            postIds.Contains(value.ForumPostId)).ToDictionaryAsync(value => value.ForumPostId);
+
+    private static async Task<Dictionary<Guid, int>> MentionCountsAsync(IReadOnlyList<CommunityForumPost> posts,
+        Guid accountId, IridiumDbContext db, IReadOnlyDictionary<Guid, ForumPostSubscription> subscriptions)
+    {
+        if (posts.Count == 0) return [];
+        var unmuted = posts.Where(post => subscriptions.GetValueOrDefault(post.Id)?.NotificationLevel !=
+                ForumPostNotificationLevel.Muted).ToArray();
+        var channelIds = unmuted.Select(value => value.DiscussionChannelId).ToArray();
+        var counts = await db.CommunityMentionNotifications.AsNoTracking().Where(value =>
+                value.AccountId == accountId && channelIds.Contains(value.ChannelId) && value.ReadAt == null)
+            .GroupBy(value => value.ChannelId).Select(value => new { ChannelId = value.Key, Count = value.Count() })
+            .ToDictionaryAsync(value => value.ChannelId, value => value.Count);
+        return posts.ToDictionary(value => value.Id,
+            value => counts.GetValueOrDefault(value.DiscussionChannelId));
+    }
+
     internal static CommunityForumPostDto ToDto(CommunityForumPost value, int unreadCount = 0,
-        IReadOnlyList<CommunityForumTagDto>? tags = null, bool includeEmbedUrl = true) => new(
+        IReadOnlyList<CommunityForumTagDto>? tags = null, bool includeEmbedUrl = true,
+        ForumPostSubscription? subscription = null, int mentionCount = 0) => new(
         value.Id, value.CommunityId, value.ForumChannelId, value.DiscussionChannelId, value.RootMessageId,
         new(value.AuthorAccountId, value.AuthorAccount.Username,
             value.RootMessage.AuthorDisplayNameSnapshot ?? value.AuthorAccount.DisplayName,
@@ -334,13 +540,20 @@ public static class CommunityForumEndpoints
         value.CreatedAt, value.UpdatedAt, value.LastActivityAt, value.ReplyCount, value.IsLocked, value.IsPinned,
         unreadCount, RootPreview(value.RootMessage?.Content),
         ChannelMessageMapper.DeserializeMentions(value.RootMessage?.MentionsJson), tags ?? [],
-        value.EmbedProvider, includeEmbedUrl ? value.EmbedUrl : null);
+        value.EmbedProvider, includeEmbedUrl ? value.EmbedUrl : null, subscription is not null,
+        subscription?.NotificationLevel, subscription?.JoinedAt, mentionCount);
 
     internal static async Task<CommunityForumPostDto> ToDtoAsync(CommunityForumPost value, IridiumDbContext db,
-        int unreadCount = 0)
+        int unreadCount = 0, Guid? accountId = null, int? mentionCount = null)
     {
         var map = await LoadPostTagsAsync([value.Id], db);
-        return ToDto(value, unreadCount, map.GetValueOrDefault(value.Id));
+        var subscription = accountId is null ? null : await db.ForumPostSubscriptions.AsNoTracking()
+            .SingleOrDefaultAsync(item => item.ForumPostId == value.Id && item.AccountId == accountId.Value);
+        var mentions = mentionCount ?? (accountId is null || subscription?.NotificationLevel == ForumPostNotificationLevel.Muted
+            ? 0 : await db.CommunityMentionNotifications.CountAsync(item => item.AccountId == accountId.Value &&
+                item.ChannelId == value.DiscussionChannelId && item.ReadAt == null));
+        return ToDto(value, subscription is null ? 0 : unreadCount, map.GetValueOrDefault(value.Id), true,
+            subscription, mentions);
     }
 
     internal static CommunityForumTagDto ToDto(CommunityForumTag value) => new(value.Id, value.ChannelId,
@@ -415,7 +628,14 @@ public static class CommunityForumEndpoints
             if (await authorization.HasChannelPermissionAsync(communityId, channelId, accountId,
                     CommunityPermission.ViewChannels, db))
             {
-                await hub.Clients.Group(ChatHub.AccountGroup(accountId)).SendAsync(CommunityForumHubContract.PostChanged, change);
+                var personalized = change.Post is null
+                    ? change
+                    : change with { Post = await ToDtoAsync(
+                        await db.CommunityForumPosts.Include(value => value.AuthorAccount)
+                            .Include(value => value.RootMessage).SingleAsync(value => value.Id == change.PostId),
+                        db, accountId: accountId) };
+                await hub.Clients.Group(ChatHub.AccountGroup(accountId)).SendAsync(
+                    CommunityForumHubContract.PostChanged, personalized);
                 if (change.Change == "created" && accountId != change.ActorAccountId)
                     await hub.Clients.Group(ChatHub.AccountGroup(accountId)).SendAsync(CommunityHubContract.ChannelActivity,
                         new CommunityChannelActivityEvent(communityId, channelId, change.ActorAccountId ?? Guid.Empty));

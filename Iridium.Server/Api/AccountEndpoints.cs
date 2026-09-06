@@ -409,11 +409,17 @@ public static partial class AccountEndpoints
             };
             var hasUnread = await db.ChannelMessages.AnyAsync(message =>
                 message.CommunityId == community.Id && message.AuthorAccountId != session.AccountId &&
+                (message.Channel.ParentForumChannelId == null || db.ForumPostSubscriptions.Any(subscription =>
+                    subscription.AccountId == session.AccountId &&
+                    subscription.ForumPost.DiscussionChannelId == message.ChannelId)) &&
                 !db.CommunityChannelReadStates.Any(state => state.CommunityId == message.CommunityId &&
                     state.ChannelId == message.ChannelId && state.AccountId == session.AccountId &&
                     state.LastReadAt >= message.CreatedAt));
             var mentionCount = await db.CommunityMentionNotifications.CountAsync(value =>
-                value.AccountId == session.AccountId && value.CommunityId == community.Id && value.ReadAt == null);
+                value.AccountId == session.AccountId && value.CommunityId == community.Id && value.ReadAt == null &&
+                !db.ForumPostSubscriptions.Any(subscription => subscription.AccountId == session.AccountId &&
+                    subscription.NotificationLevel == ForumPostNotificationLevel.Muted &&
+                    subscription.ForumPost.DiscussionChannelId == value.ChannelId));
             communities[index] = community with { HasUnread = hasUnread, MentionCount = mentionCount };
         }
         return Results.Ok(communities);

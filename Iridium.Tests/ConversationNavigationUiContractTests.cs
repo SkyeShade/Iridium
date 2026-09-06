@@ -79,6 +79,67 @@ public sealed class ConversationNavigationUiContractTests
     }
 
     [Fact]
+    public void ConversationSelectionRendersShellBeforeHistoryAndCancelsTheActualStaleLoad()
+    {
+        var home = Source("Iridium.Web", "Pages", "Home.razor");
+        var channel = Source("Iridium.Web", "Components", "ChannelView.razor");
+        var session = Source("Iridium.Client.Core", "ChannelMessagingSession.cs");
+        var select = Slice(home, "private async Task SelectChannelAsync", "private Task SelectChannelFromNavigationAsync");
+        var parameters = Slice(channel, "protected override void OnParametersSet()", "private async Task HydrateHistoryAsync");
+        var open = Slice(session, "public async Task OpenChannelAsync", "public async Task OpenDirectConversationAsync");
+
+        Assert.True(select.IndexOf("_selectedChannel = channel", StringComparison.Ordinal) <
+                    select.IndexOf("await InvokeAsync(StateHasChanged)", StringComparison.Ordinal));
+        Assert.Contains("_ = HydrateHistoryAsync", parameters);
+        Assert.Contains("CancellationTokenSource.CreateLinkedTokenSource", open);
+        Assert.Contains("_historyCancellation.Token", open);
+        Assert.Contains("loadToken", open);
+        Assert.Contains("IsCurrentChannelLoad", open);
+        Assert.Contains("Canceled stale channel load", open);
+        Assert.Contains("Channel shell rendered", channel);
+        Assert.Contains("Channel messages visible", channel);
+    }
+
+    [Fact]
+    public void ExplicitForumPostOpenUsesOneShotDesktopComposerFocus()
+    {
+        var forum = Source("Iridium.Web", "Components", "ForumChannelView.razor");
+        var open = Slice(forum, "private async Task OpenPostAsync(Guid postId)", "public async Task BackAsync");
+
+        Assert.Contains("FocusRequest=\"@(_composerFocusPostId == selectedPost.Id ? _composerFocusRequest : 0)\"", forum);
+        Assert.Contains("OnFocusConsumed=\"ComposerFocusConsumed\"", forum);
+        Assert.Contains("if (!IsMobileLayout)", open);
+        Assert.Contains("_composerFocusPostId = post.Id", open);
+        Assert.Equal(1, open.Split("_composerFocusRequest++", StringSplitOptions.None).Length - 1);
+        Assert.DoesNotContain("Task.Delay", open);
+        Assert.DoesNotContain("FocusAsync", open);
+    }
+
+    [Fact]
+    public void ForumRealtimeAndEditingNeverRequestComposerRefocus()
+    {
+        var forum = Source("Iridium.Web", "Components", "ForumChannelView.razor");
+        var realtime = Slice(forum, "private void ForumChanged()", "private async Task SearchChangedAsync");
+        var edits = Slice(forum, "private bool CanEditPost", "private bool CanEditDocument");
+
+        Assert.DoesNotContain("_composerFocusRequest++", realtime);
+        Assert.DoesNotContain("_composerFocusRequest++", edits);
+    }
+
+    [Fact]
+    public void ForumDocumentPostFocusUsesPreventScroll()
+    {
+        var forum = Source("Iridium.Web", "Components", "ForumChannelView.razor");
+        var channel = Source("Iridium.Web", "Components", "ChannelView.razor");
+        var chat = Source("Iridium.Web", "wwwroot", "js", "chat.js");
+
+        Assert.Contains("ForumPostEmbedProvider=\"selectedPost.EmbedProvider\"", forum);
+        Assert.Contains("FocusRequest=\"@(_composerFocusPostId == selectedPost.Id ? _composerFocusRequest : 0)\"", forum);
+        Assert.Contains("await _composer.FocusAsync()", channel);
+        Assert.Contains("textarea.focus({ preventScroll: true });", chat);
+    }
+
+    [Fact]
     public void FriendAndProfileMessageNavigationOpenThePanelBeforeAwaitingTheConversation()
     {
         var home = Source("Iridium.Web", "Pages", "Home.razor");

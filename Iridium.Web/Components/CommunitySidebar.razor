@@ -2,6 +2,7 @@
 @using Iridium.Protocol
 @using Iridium.Web.Models
 @inject ICategoryCollapseStore CollapseStore
+@inject IForumPostCollapseStore ForumCollapseStore
 @inject IJSRuntime JS
 @inject CommunityVoiceSession Voice
 @inject ActiveVoiceSessionCoordinator VoiceSessions
@@ -23,7 +24,10 @@
                 if (item.Channel is { } rootChannel)
                 {
                     <ChannelRow @key="item.Id" Channel="rootChannel" CanManage="State.CanManage" CanManageForumTags="@CanManageForumTags(rootChannel)" CanManagePermissions="@CanManagePermissions(rootChannel.EffectivePermissions)" Depth="1"
-                                Selected="@(SelectedChannel?.Id == rootChannel.Id)" OnSelect="SelectChannelAsync"
+                                Selected="@(SelectedChannel?.Id == rootChannel.Id && SelectedForumPostId is null)" OnSelect="SelectChannelAsync"
+                                HasChildren="@(rootChannel.Kind == CommunityChannelKind.Forum && ForumPosts(rootChannel.Id).Count > 0)"
+                                ChildrenCollapsed="_collapsedForums.Contains(rootChannel.Id)"
+                                OnToggleChildren="() => ToggleForumChildrenAsync(rootChannel)"
                                 Room="@Voice.Room(rootChannel.Id)" Connected="@(Voice.CurrentRoom?.ChannelId == rootChannel.Id)"
                                 CurrentAccountId="AccountId"
                                 Members="@(State.Management?.Members ?? [])"
@@ -31,6 +35,12 @@
                                 StreamThumbnails="VoiceSessions.StreamThumbnails"
                                 OnEdit="EditChannel" OnDelete="RequestDeleteChannel"
                                 OnPermissions="OpenChannelPermissions" />
+                    @if (rootChannel.Kind == CommunityChannelKind.Forum && !_collapsedForums.Contains(rootChannel.Id))
+                    {
+                        <ForumPostSidebarChildren Forum="rootChannel" Posts="ForumPosts(rootChannel.Id)" Depth="1"
+                                                  SelectedPostId="SelectedForumPostId" OnSelect="OnForumPostSelected"
+                                                  OnSeeAll="SelectChannelAsync" />
+                    }
                 }
                 else if (item.Category is { } category)
                 {
@@ -43,6 +53,10 @@
                                                PublishedStreams="Voice.PublishedStreams" OnWatchStream="WatchStreamAsync"
                                                StreamThumbnails="VoiceSessions.StreamThumbnails"
                                                SelectedChannelId="SelectedChannel?.Id" OnToggle="ToggleCategoryAsync"
+                                               FollowedPosts="State.FollowedForumPosts" SelectedForumPostId="SelectedForumPostId"
+                                               ForumChildrenCollapsed="_collapsedForums"
+                                               OnToggleForumChildren="ToggleForumChildrenAsync"
+                                               OnSelectForumPost="OnForumPostSelected"
                                                OnEdit="EditCategory" OnCreateChannel="OpenChannelDialog"
                                                OnCreateSubcategory="OpenSubcategoryDialog" OnDelete="RequestDeleteCategory"
                                                OnSelectChannel="SelectChannelAsync" OnEditChannel="EditChannel"
@@ -97,8 +111,12 @@
     [Parameter, EditorRequired] public required Guid CommunityId { get; set; }
     [Parameter] public CommunityChannelDto? SelectedChannel { get; set; }
     [Parameter] public EventCallback<CommunityChannelDto?> OnChannelSelected { get; set; }
+    [Parameter] public EventCallback<CommunityForumPostDto> OnForumPostSelected { get; set; }
+    [Parameter] public Guid? SelectedForumPostId { get; set; }
+    [Parameter, EditorRequired] public required string NodeAuthority { get; set; }
 
     private readonly HashSet<Guid> _collapsed = [];
+    private readonly HashSet<Guid> _collapsedForums = [];
     private Guid? _loadedCommunityId; private Guid? _revealedChannelId;
     private bool _showChannelDialog; private bool _showCategoryDialog; private bool _showSidebarContextMenu;
     private bool _confirmChannelDelete; private bool _confirmCategoryDelete; private bool _busy;
@@ -127,8 +145,12 @@
         if (!_voiceSubscribed) { Voice.Changed += OnVoiceChanged; _voiceSubscribed = true; }
         if (_loadedCommunityId != CommunityId)
         {
-            _loadedCommunityId = CommunityId; _collapsed.Clear();
+            _loadedCommunityId = CommunityId; _collapsed.Clear(); _collapsedForums.Clear();
             _collapsed.UnionWith(await CollapseStore.LoadAsync(AccountId, CommunityId));
+            foreach (var forumId in State.Channels.Where(value => value.Kind == CommunityChannelKind.Forum)
+                         .Select(value => value.Id))
+                if (await ForumCollapseStore.LoadAsync(new(NodeAuthority, AccountId, forumId)) == true)
+                    _collapsedForums.Add(forumId);
             _revealedChannelId = null;
             try { await Voice.ObserveCommunityAsync(CommunityId); }
             catch (Exception exception) { _error = exception.Message; }
@@ -260,6 +282,16 @@
         if (!_collapsed.Add(category.Id)) _collapsed.Remove(category.Id);
         await CollapseStore.SaveAsync(AccountId, CommunityId, _collapsed);
     }
+    private async Task ToggleForumChildrenAsync(CommunityChannelDto forum)
+    {
+        var collapsed = _collapsedForums.Add(forum.Id);
+        if (!collapsed) _collapsedForums.Remove(forum.Id);
+        await ForumCollapseStore.SaveAsync(new(NodeAuthority, AccountId, forum.Id), collapsed);
+    }
+    private IReadOnlyList<CommunityForumPostDto> ForumPosts(Guid forumId) => State.FollowedForumPosts
+        .Where(value => value.ForumChannelId == forumId)
+        .OrderByDescending(value => value.IsPinned)
+        .ThenByDescending(value => value.LastActivityAt).ToArray();
 
     [JSInvokable]
     public async Task CommitChannelDropAsync(string channelId, string? parentCategoryId, string? targetItemId,

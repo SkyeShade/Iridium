@@ -541,7 +541,24 @@ public sealed record CommunityForumPostDto(
     IReadOnlyList<CommunityMentionDto>? RootMentions = null,
     IReadOnlyList<CommunityForumTagDto>? Tags = null,
     CommunityChannelEmbedProvider? EmbedProvider = null,
-    string? EmbedUrl = null);
+    string? EmbedUrl = null,
+    bool IsFollowed = false,
+    ForumPostNotificationLevel? NotificationLevel = null,
+    DateTimeOffset? JoinedAt = null,
+    int MentionCount = 0);
+
+public enum ForumPostNotificationLevel
+{
+    AllMessages,
+    MentionsOnly,
+    Nothing,
+    Muted
+}
+
+public sealed record ForumPostSubscriptionDto(Guid ForumPostId, DateTimeOffset JoinedAt,
+    ForumPostNotificationLevel NotificationLevel);
+public sealed record UpdateForumPostNotificationRequest(ForumPostNotificationLevel NotificationLevel);
+public sealed record FollowedForumPostsDto(IReadOnlyList<CommunityForumPostDto> Posts, bool HasMore);
 
 public sealed record CommunityForumPostPageDto(IReadOnlyList<CommunityForumPostDto> Posts, int? NextOffset);
 public sealed record CreateCommunityForumPostRequest(string Title, SendChannelMessageRequest InitialMessage,

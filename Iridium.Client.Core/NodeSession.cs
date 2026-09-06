@@ -42,6 +42,7 @@ public sealed class NodeSession(
     public event Action<PresenceChangedEvent>? PresenceChanged;
     public event Action<CommunityMentionReceivedEvent>? CommunityMentionReceived;
     public event Action<CommunityChannelActivityEvent>? CommunityChannelActivity;
+    public event Action<CommunityForumPostChangedEvent>? CommunityForumPostChanged;
     public event Action<ProfileUpdatedEvent>? ProfileUpdated;
 
     public Task<ServerInfoDto> GetServerInfoAsync(CancellationToken cancellationToken = default) =>
@@ -529,6 +530,8 @@ public sealed class NodeSession(
     }
 
     internal void ApplyCommunityMention(CommunityMentionReceivedEvent mention) => CommunityMentionReceived?.Invoke(mention);
+    internal void ApplyCommunityForumPostChanged(CommunityForumPostChangedEvent change) =>
+        CommunityForumPostChanged?.Invoke(change);
 
     internal async Task ApplyCommunityChannelActivityAsync(CommunityChannelActivityEvent activity)
     {

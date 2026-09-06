@@ -87,7 +87,7 @@
     {
         <div class="composer-region">
             <TypingIndicatorLine Text="@Messaging.TypingIndicatorText" />
-            <MessageComposer @ref="_composer" ChannelName="@Channel.Name" ReplyToDisplayName="@(_replyTo?.Author.DisplayName)" Busy="@_sending"
+            <MessageComposer @ref="_composer" ChannelName="@Channel.Name" ReplyToDisplayName="@(_replyTo?.Author.DisplayName)"
                              Community="Community" CommunityManagement="CommunityManagement" SendRich="SendMessageAsync" OnCancelReply="CancelReplyAsync"
                              OnCommunityProfileChanged="OnCommunityProfileChanged"
                              OnAvatarSelectionSucceeded="FocusComposerAfterEditAsync"
@@ -95,6 +95,7 @@
                              CanUseExternalEmoji="CanUseExternalEmoji"
                              TypingActivityChanged="Messaging.ReportTypingActivityAsync"
                              OnEditLastMessage="EditLastOwnMessageAsync"
+                             IsMobileLayout="IsMobileLayout" OptimisticSubmission="true"
                              NodeAuthority="@NodeAuthority" AccountId="@CurrentAccountId" ConversationKind="@DraftConversationKind" ConversationId="@(DraftConversationId ?? Channel.Id)" />
         </div>
     }
@@ -159,11 +160,17 @@
     private Guid? _loadedEmbedForumPostId;
     private CommunityChannelEmbedProvider? _loadedEmbedProvider;
     private bool _loading;
-    private bool _sending;
     private bool _disposed;
     private bool _focusAfterRender;
     private long _consumedFocusRequest;
     private long _historyLoadGeneration;
+    private long _historyLoadStarted;
+    private long _embedLoadStarted;
+    private long _embedDtoReceivedAt;
+    private long _embedStateChangeRequestedAt;
+    private bool _historyShellDiagnosticPending;
+    private bool _embedShellDiagnosticPending;
+    private bool _embedAppliedDiagnosticPending;
     private string? _error;
     private IReadOnlyList<ChannelMessageDto> VisibleMessages => Messaging.MessagesFor(Community.Id, Channel.Id);
     private CommunityChannelEmbedProvider? ActiveEmbedProvider => ForumPostId.HasValue ? ForumPostEmbedProvider : Channel.EmbedProvider;
@@ -223,6 +230,8 @@
                     ActiveEmbedProvider is not null, ActiveEmbedProvider, HasDocumentEmbed);
             if (HasDocumentEmbed)
             {
+                _embedLoadStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+                _embedShellDiagnosticPending = true;
                 if (HostEnvironment.IsDevelopment() && ForumPostId is { } postId)
                     Logger.LogInformation("ForumDocument: PostId={PostId} HasDocument=true Provider={Provider} " +
                         "SourceResolved=true RequestStarted=true", postId, ActiveEmbedProvider);
@@ -246,6 +255,8 @@
         _replyTo = null;
         _error = null;
         _loading = true;
+        _historyLoadStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+        _historyShellDiagnosticPending = true;
         _loadedChannelId = Channel.Id;
         _loadedTargetMessageId = TargetMessageId;
         _isPinnedToLatest = TargetMessageId is null;
@@ -273,6 +284,10 @@
             if (IsCurrentHistoryLoad(communityId, channelId, generation))
             {
                 _loading = false;
+                if (HostEnvironment.IsDevelopment())
+                    Logger.LogInformation("Channel messages visible ChannelId={ChannelId} MessageCount={MessageCount} ElapsedMs={ElapsedMs:F1}.",
+                        channelId, VisibleMessages.Count,
+                        System.Diagnostics.Stopwatch.GetElapsedTime(_historyLoadStarted).TotalMilliseconds);
                 await RenderAsync();
             }
         }
@@ -283,6 +298,30 @@
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
+        if (_historyShellDiagnosticPending)
+        {
+            _historyShellDiagnosticPending = false;
+            if (HostEnvironment.IsDevelopment())
+                Logger.LogInformation("Channel shell rendered ChannelId={ChannelId} ElapsedMs={ElapsedMs:F1}.",
+                    Channel.Id, System.Diagnostics.Stopwatch.GetElapsedTime(_historyLoadStarted).TotalMilliseconds);
+        }
+        if (_embedShellDiagnosticPending)
+        {
+            _embedShellDiagnosticPending = false;
+            if (HostEnvironment.IsDevelopment())
+                Logger.LogInformation("Channel embed shell rendered ChannelId={ChannelId} ForumPostId={ForumPostId} ElapsedMs={ElapsedMs:F1}.",
+                    Channel.Id, ForumPostId,
+                    System.Diagnostics.Stopwatch.GetElapsedTime(_embedLoadStarted).TotalMilliseconds);
+        }
+        if (_embedAppliedDiagnosticPending)
+        {
+            _embedAppliedDiagnosticPending = false;
+            if (HostEnvironment.IsDevelopment())
+                Logger.LogInformation("Channel embed host render completed ChannelId={ChannelId} ForumPostId={ForumPostId} RazorCommitMs={RazorCommitMs:F1} TotalLoadAndApplyMs={ElapsedMs:F1}.",
+                    Channel.Id, ForumPostId,
+                    System.Diagnostics.Stopwatch.GetElapsedTime(_embedStateChangeRequestedAt).TotalMilliseconds,
+                    System.Diagnostics.Stopwatch.GetElapsedTime(_embedLoadStarted).TotalMilliseconds);
+        }
         if (!_focusAfterRender || IsMobileLayout) return;
         _focusAfterRender = false;
         _consumedFocusRequest = FocusRequest;
@@ -315,30 +354,23 @@
         if (_composer is not null) await _composer.InsertMentionAsync(member);
     }
 
-    private async Task<bool> SendMessageAsync(MessageSubmission submission)
+    private Task<bool> SendMessageAsync(MessageSubmission submission)
     {
-        if (_sending)
-        {
-            Logger.LogDebug("Ignored a duplicate message submission while channel {ChannelId} was sending.", Channel.Id);
-            return false;
-        }
-
         if (Messaging.CommunityId != Community.Id || Messaging.ChannelId != Channel.Id)
         {
             Logger.LogWarning("Rejected a message submission because the active realtime channel did not match {CommunityId}/{ChannelId}.", Community.Id, Channel.Id);
             _error = "The channel is still connecting. Please try again.";
-            return false;
+            return Task.FromResult(false);
         }
 
-        _sending = true;
         _error = null;
-        await RenderAsync();
         try
         {
             var smooth = ShowJumpToLatest;
             _messageList?.PrepareUserLatestTransition(smooth);
             var currentMember = CommunityManagement?.Members.FirstOrDefault(value => value.AccountId == CurrentAccountId);
-            var presentation = currentMember is null ? null : await ResolveOptimisticPresentationAsync(currentMember);
+            var presentation = currentMember is null ? null :
+                OptimisticMessageGrouping.PresentationFor(currentMember, _activeDefaultPfp);
             var clientMessageId = Messaging.QueueMessage(submission.Content, _replyTo?.Id, submission.Mentions, submission.Attachments,
                 submission.UploadAttachments, currentMember is null ? null : new MessageAuthorDto(
                     currentMember.AccountId, currentMember.Username,
@@ -351,20 +383,17 @@
                     hasHistoricalSnapshot: false, avatarSnapshotMessageId: null);
             }
             _replyTo = null;
-            await RenderAsync();
-            if (_composer is not null) await _composer.FocusAsync();
-            return true;
+            if (HostEnvironment.IsDevelopment())
+                Logger.LogInformation("Composer optimistic message inserted ChannelId={ChannelId} ClientMessageId={ClientMessageId}.",
+                    Channel.Id, clientMessageId);
+            _ = RenderAsync();
+            return Task.FromResult(true);
         }
         catch (Exception exception)
         {
             Logger.LogError(exception, "Message send failed in Community {CommunityId} channel {ChannelId}.", Community.Id, Channel.Id);
             _error = FailureMessage(exception, "Message send failed", "Your message could not be sent. Please try again.");
-            return false;
-        }
-        finally
-        {
-            _sending = false;
-            await RenderAsync();
+            return Task.FromResult(false);
         }
     }
 
@@ -403,13 +432,6 @@
         _optimisticPresentationOrder.Enqueue(clientMessageId);
         while (_optimisticPresentationOrder.Count > 128)
             _optimisticCommunityPresentations.Remove(_optimisticPresentationOrder.Dequeue());
-    }
-
-    private async Task<OptimisticCommunityAuthorPresentation> ResolveOptimisticPresentationAsync(
-        CommunityMemberDto member)
-    {
-        if (member.ActiveChatAvatarPresetId is null) await EnsureDefaultPfpIdentityAsync();
-        return OptimisticMessageGrouping.PresentationFor(member, _activeDefaultPfp);
     }
 
     private Task EnsureDefaultPfpIdentityAsync()
@@ -503,7 +525,14 @@
                     : await Session.GetChannelEmbedDocumentAsync(communityId, channelId, cancellationToken);
             if (_disposed || cancellationToken.IsCancellationRequested || generation != _embedDocumentLoadGeneration ||
                 Community.Id != communityId || Channel.Id != channelId || ForumPostId != forumPostId) return;
+            _embedDtoReceivedAt = System.Diagnostics.Stopwatch.GetTimestamp();
             _embedDocument = document;
+            _embedAppliedDiagnosticPending = true;
+            if (HostEnvironment.IsDevelopment())
+                Logger.LogInformation("Channel embed DTO received and state assigned ChannelId={ChannelId} ForumPostId={ForumPostId} Status={Status} NetworkAndDeserializeMs={ElapsedMs:F1} StateAssignMs={StateAssignMs:F1}.",
+                    channelId, forumPostId, document.Status,
+                    System.Diagnostics.Stopwatch.GetElapsedTime(_embedLoadStarted).TotalMilliseconds,
+                    System.Diagnostics.Stopwatch.GetElapsedTime(_embedDtoReceivedAt).TotalMilliseconds);
             if (HostEnvironment.IsDevelopment() && forumPostId is { } loadedPostId)
                 Logger.LogInformation("ForumDocument: PostId={PostId} HasDocument=true Provider={Provider} " +
                     "SourceResolved=true RequestStarted=true Result={Result}", loadedPostId, ActiveEmbedProvider,
@@ -522,6 +551,10 @@
             {
                 if (forceRefresh) _embedDocumentRefreshing = false;
                 else _embedDocumentLoading = false;
+                _embedStateChangeRequestedAt = System.Diagnostics.Stopwatch.GetTimestamp();
+                if (HostEnvironment.IsDevelopment())
+                    Logger.LogInformation("Channel embed StateHasChanged requested ChannelId={ChannelId} ForumPostId={ForumPostId}.",
+                        channelId, forumPostId);
                 await RenderAsync();
             }
         }

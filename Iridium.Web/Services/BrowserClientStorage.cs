@@ -8,7 +8,7 @@ public sealed class BrowserClientStorage(IJSRuntime js) : ISavedNodeStore, INode
     IActiveAccountSelectionStore, ICategoryCollapseStore, ILastCommunityChannelStore,
     IVoiceParticipantPreferenceStore, IEmojiPickerPreferenceStore, IMessageDraftStore,
     ICommunityForumPostCache, ILocalVoicePreferenceStore, IComposerActionModeStore,
-    IComposerAvatarUsageStore, IAsyncDisposable
+    IComposerAvatarUsageStore, ICommunityMemberListPreferenceStore, IForumPostCollapseStore, IAsyncDisposable
 {
     private const string MessageDraftNamespace = "iridium.messageDrafts.v1";
     private const int MaximumMessageDrafts = 500;
@@ -137,6 +137,37 @@ public sealed class BrowserClientStorage(IJSRuntime js) : ISavedNodeStore, INode
 
     private static string VoicePreferenceKey(LocalVoicePreferenceScope scope) =>
         $"iridium.voicePreferences.v1:{Uri.EscapeDataString(scope.NodeAuthority)}:{scope.AccountId:N}";
+
+    async Task<bool?> ICommunityMemberListPreferenceStore.LoadAsync(
+        CommunityMemberListPreferenceScope scope, CancellationToken cancellationToken)
+    {
+        var module = await ModuleAsync(cancellationToken);
+        return await module.InvokeAsync<bool?>("loadValue", cancellationToken, MemberListPreferenceKey(scope));
+    }
+
+    async Task ICommunityMemberListPreferenceStore.SaveAsync(
+        CommunityMemberListPreferenceScope scope, bool visible, CancellationToken cancellationToken)
+    {
+        var module = await ModuleAsync(cancellationToken);
+        await module.InvokeVoidAsync("save", cancellationToken, MemberListPreferenceKey(scope), visible);
+    }
+
+    private static string MemberListPreferenceKey(CommunityMemberListPreferenceScope scope) =>
+        $"iridium.community-member-list-visible.v1:{Uri.EscapeDataString(scope.NodeAuthority)}:{scope.AccountId:N}";
+
+    async Task<bool?> IForumPostCollapseStore.LoadAsync(ForumPostCollapseScope scope,
+        CancellationToken cancellationToken)
+    {
+        var module = await ModuleAsync(cancellationToken);
+        return await module.InvokeAsync<bool?>("loadValue", cancellationToken, scope.StorageKey);
+    }
+
+    async Task IForumPostCollapseStore.SaveAsync(ForumPostCollapseScope scope, bool collapsed,
+        CancellationToken cancellationToken)
+    {
+        var module = await ModuleAsync(cancellationToken);
+        await module.InvokeVoidAsync("save", cancellationToken, scope.StorageKey, collapsed);
+    }
 
     async Task<ComposerActionMode?> IComposerActionModeStore.LoadAsync(ComposerActionModeScope scope,
         CancellationToken cancellationToken)

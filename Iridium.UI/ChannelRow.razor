@@ -1,6 +1,6 @@
 @using Iridium.Protocol
 
-<div class="channel-row @(CanManage ? "draggable" : null) @(Selected ? "selected" : null) @(Connected ? "voice-connected" : null) @(Channel.UnreadCount > 0 ? "unread" : null)" style="--channel-depth:@Depth"
+<div class="channel-row sidebar-nav-row @(CanManage ? "draggable" : null) @(Selected ? "selected is-active" : null) @(Connected ? "voice-connected" : null) @(Channel.UnreadCount > 0 ? "unread" : null)" style="--channel-depth:@Depth"
      data-sidebar-item data-sidebar-kind="channel" data-sidebar-id="@Channel.Id" data-sidebar-parent="@Channel.CategoryId" data-sidebar-depth="@Depth"
      data-iridium-channel-drag="@(CanManage ? Channel.Id : null)"
      data-channel-category="@Channel.CategoryId"
@@ -13,21 +13,30 @@
     {
         <span class="channel-unread-marker" aria-label="Unread messages"></span>
     }
-    <span class="channel-symbol"><Icon Name="@(Channel.Kind == CommunityChannelKind.Voice ? "speaker" : Channel.Kind == CommunityChannelKind.Forum ? "message" : "channel")" /></span>
-    @if (Channel.IsPrivate) { <span class="private-lock" title="Private channel"><Icon Name="lock" Size="12" /></span> }
-    <span class="channel-name">@Channel.Name</span>
-    @if (Room is not null) { <VoiceElapsedTimer StartedAt="Room.StartedAt" /> }
+    <span class="sidebar-nav-surface channel-nav-surface">
+        <span class="channel-symbol"><Icon Name="@(Channel.Kind == CommunityChannelKind.Voice ? "speaker" : Channel.Kind == CommunityChannelKind.Forum ? "message" : "channel")" /></span>
+        @if (Channel.IsPrivate) { <span class="private-lock" title="Private channel"><Icon Name="lock" Size="12" /></span> }
+        <span class="channel-name @(HasChildren ? "has-disclosure" : null)">@Channel.Name</span>
+        @if (HasChildren)
+        {
+            <button class="channel-disclosure" title="@(ChildrenCollapsed ? "Show followed posts" : "Hide followed posts")"
+                    aria-expanded="@(!ChildrenCollapsed)" @onclick="ToggleChildrenAsync" @onclick:stopPropagation="true">
+                <SidebarDisclosureChevron Collapsed="ChildrenCollapsed" />
+            </button>
+        }
+        @if (Room is not null) { <VoiceElapsedTimer StartedAt="Room.StartedAt" /> }
+        @if (CanManage || CanManageForumTags)
+        {
+            <button class="channel-settings" title="Channel settings" aria-label="Settings for @Channel.Name"
+                    draggable="false" @onpointerdown:stopPropagation="true"
+                    @onclick="EditAsync" @onclick:stopPropagation="true"><Icon Name="settings" /></button>
+        }
+    </span>
     @if (Channel.MentionCount > 0)
     {
         <span class="channel-mention-badge" aria-label="@($"{Channel.MentionCount} unread mentions")">
             <span class="red-notification-count">@(Channel.MentionCount > 99 ? "99+" : Channel.MentionCount)</span>
         </span>
-    }
-    @if (CanManage || CanManageForumTags)
-    {
-        <button class="channel-settings" title="Channel settings" aria-label="Settings for @Channel.Name"
-                draggable="false" @onpointerdown:stopPropagation="true"
-                @onclick="EditAsync" @onclick:stopPropagation="true"><Icon Name="settings" /></button>
     }
     @if (_menuOpen && (CanManage || CanManageForumTags || CanManagePermissions))
     {
@@ -83,6 +92,9 @@
     [Parameter] public IReadOnlyList<CommunityMemberDto> Members { get; set; } = [];
     [Parameter] public IReadOnlyDictionary<Guid, string> StreamThumbnails { get; set; } = new Dictionary<Guid, string>();
     [Parameter] public int Depth { get; set; } = 1;
+    [Parameter] public bool HasChildren { get; set; }
+    [Parameter] public bool ChildrenCollapsed { get; set; }
+    [Parameter] public EventCallback OnToggleChildren { get; set; }
     [Parameter] public EventCallback<CommunityChannelDto> OnSelect { get; set; }
     [Parameter] public EventCallback<CommunityChannelDto> OnEdit { get; set; }
     [Parameter] public EventCallback<CommunityChannelDto> OnDelete { get; set; }
@@ -94,6 +106,7 @@
     private double _menuY;
 
     private Task SelectAsync() { _menuOpen = false; return OnSelect.InvokeAsync(Channel); }
+    private Task ToggleChildrenAsync() => OnToggleChildren.InvokeAsync();
     private void OpenMenu() { if (CanManage || CanManageForumTags || CanManagePermissions) _menuOpen = true; }
     private void OpenParticipantMenu(VoiceParticipantDto participant, MouseEventArgs args)
     {

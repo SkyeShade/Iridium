@@ -387,6 +387,8 @@ public sealed class ForumFlowTests
                 new("Member topic", new("Members can create posts by default", null,
                     ClientMessageId: Guid.NewGuid(), AttachmentIds: [initialAttachment.Id])));
             Assert.Equal(memberAuth.Account.Id, memberPost.Author.AccountId);
+            Assert.True(memberPost.IsFollowed);
+            Assert.Equal(ForumPostNotificationLevel.MentionsOnly, memberPost.NotificationLevel);
             Assert.Equal(initialAttachment.Id, Assert.Single((await member.GetChannelMessagePageAsync(
                 community.Id, memberPost.DiscussionChannelId)).Messages).Attachments!.Single().Id);
             var management = await owner.GetCommunityManagementAsync(community.Id);
@@ -416,13 +418,17 @@ public sealed class ForumFlowTests
                 value => changed.TrySetResult(value));
 
             var first = await owner.CreateForumPostAsync(community.Id, forum.Id,
-                new("First topic", new("Initial **Markdown** body", null, ClientMessageId: Guid.NewGuid())));
+                new("First topic", new("@forum-member Initial **Markdown** body", null,
+                    [new(CommunityMentionKind.Account, memberAuth.Account.Id, 0, 13)], Guid.NewGuid())));
             Assert.Equal(first.Id, (await changed.Task.WaitAsync(TimeSpan.FromSeconds(15))).PostId);
             Assert.NotEqual(first.Id, first.DiscussionChannelId);
+            Assert.False((await member.GetForumPostAsync(community.Id, forum.Id, first.Id)).IsFollowed);
+            Assert.True((await member.GetCommunityStructureAsync(community.Id)).Channels
+                .Single(value => value.Id == forum.Id).MentionCount > 0);
             var rootMessage = Assert.Single((await owner.GetChannelMessagePageAsync(
                 community.Id, first.DiscussionChannelId)).Messages);
             Assert.Equal(first.RootMessageId, rootMessage.Id);
-            Assert.Equal("Initial **Markdown** body", rootMessage.Content);
+            Assert.Equal("@forum-member Initial **Markdown** body", rootMessage.Content);
 
             await memberHub.InvokeAsync(ChatHubContract.JoinChannel, community.Id, first.DiscussionChannelId);
             var reply = await memberHub.InvokeAsync<ChannelMessageDto>(ChatHubContract.SendMessage,
@@ -431,20 +437,38 @@ public sealed class ForumFlowTests
             var afterReply = await owner.GetForumPostAsync(community.Id, forum.Id, first.Id);
             Assert.Equal(1, afterReply.ReplyCount);
             Assert.True(afterReply.LastActivityAt >= first.LastActivityAt);
+            var memberAfterReply = await member.GetForumPostAsync(community.Id, forum.Id, first.Id);
+            Assert.True(memberAfterReply.IsFollowed);
+            Assert.Equal(ForumPostNotificationLevel.MentionsOnly, memberAfterReply.NotificationLevel);
             var edited = await memberHub.InvokeAsync<ChannelMessageDto>(ChatHubContract.EditMessage,
-                community.Id, first.DiscussionChannelId, reply.Id, new EditChannelMessageRequest("Edited reply"));
-            Assert.Equal("Edited reply", edited.Content);
+                community.Id, first.DiscussionChannelId, reply.Id,
+                new EditChannelMessageRequest("Edited reply @Forum Owner"));
+            Assert.Equal("Edited reply @Forum Owner", edited.Content);
+            Assert.True(CommunityMentionPresentation.IsTargetedAt(edited, ownerAuth.Account.Id));
+            var persistedEditedReply = (await owner.GetChannelMessagePageAsync(
+                community.Id, first.DiscussionChannelId)).Messages.Single(value => value.Id == reply.Id);
+            Assert.True(CommunityMentionPresentation.IsTargetedAt(persistedEditedReply, ownerAuth.Account.Id));
             await memberHub.InvokeAsync(ChatHubContract.DeleteMessage, community.Id, first.DiscussionChannelId, reply.Id);
             Assert.Equal(0, (await owner.GetForumPostAsync(community.Id, forum.Id, first.Id)).ReplyCount);
 
             var second = await owner.CreateForumPostAsync(community.Id, forum.Id,
                 new("Second topic", new("Second body", null, ClientMessageId: Guid.NewGuid())));
+            var followed = await member.FollowForumPostAsync(community.Id, forum.Id, second.Id);
+            Assert.Equal(ForumPostNotificationLevel.MentionsOnly, followed.NotificationLevel);
+            var followedAgain = await member.FollowForumPostAsync(community.Id, forum.Id, second.Id);
+            Assert.Equal(followed.JoinedAt, followedAgain.JoinedAt);
+            await member.UpdateForumPostNotificationAsync(community.Id, forum.Id, second.Id,
+                ForumPostNotificationLevel.AllMessages);
+            Assert.Equal(ForumPostNotificationLevel.AllMessages, (await member.GetForumPostAsync(
+                community.Id, forum.Id, second.Id)).NotificationLevel);
+            await member.UnfollowForumPostAsync(community.Id, forum.Id, second.Id);
+            Assert.False((await member.GetForumPostAsync(community.Id, forum.Id, second.Id)).IsFollowed);
             var renamed = await owner.UpdateForumPostAsync(community.Id, forum.Id, first.Id,
                 new(Title: "Renamed topic", IsPinned: true));
             Assert.Equal("Renamed topic", renamed.Title);
             var page = await owner.GetForumPostsAsync(community.Id, forum.Id);
             Assert.Equal(first.Id, page.Posts[0].Id);
-            Assert.Equal("Initial **Markdown** body", page.Posts[0].RootPreview);
+            Assert.Equal("@forum-member Initial **Markdown** body", page.Posts[0].RootPreview);
             Assert.Contains(page.Posts, value => value.Id == second.Id);
 
             await owner.UpdateForumPostAsync(community.Id, forum.Id, first.Id, new(IsLocked: true));

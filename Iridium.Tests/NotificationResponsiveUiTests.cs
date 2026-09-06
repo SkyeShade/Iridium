@@ -45,6 +45,45 @@ public sealed class NotificationResponsiveUiTests
     }
 
     [Fact]
+    public void EditedMentionTextRetargetsVisualHighlightFromCurrentContent()
+    {
+        var alice = Guid.NewGuid();
+        var bob = Guid.NewGuid();
+        var role = Guid.NewGuid();
+        CommunityMentionTextTarget[] targets =
+        [
+            new(CommunityMentionKind.Account, alice, "@Alice"),
+            new(CommunityMentionKind.Account, bob, "@Bob"),
+            new(CommunityMentionKind.Role, role, "@Helpers"),
+            new(CommunityMentionKind.Everyone, null, "@everyone")
+        ];
+
+        Assert.Empty(CommunityMentionTextResolver.Resolve("hello", targets));
+        Assert.Equal(alice, Assert.Single(CommunityMentionTextResolver.Resolve("hello @Alice", targets)).TargetId);
+        Assert.Equal(bob, Assert.Single(CommunityMentionTextResolver.Resolve("hello @Bob", targets)).TargetId);
+        Assert.Empty(CommunityMentionTextResolver.Resolve("hello again", targets));
+        var broadcast = CommunityMentionTextResolver.Resolve("hello @Helpers @everyone", targets);
+        Assert.Contains(broadcast, value => value.Kind == CommunityMentionKind.Role && value.TargetId == role);
+        Assert.Contains(broadcast, value => value.Kind == CommunityMentionKind.Everyone);
+    }
+
+    [Fact]
+    public void EditedMentionResolutionIgnoresCodeAndAmbiguousDisplayNames()
+    {
+        var first = Guid.NewGuid();
+        var second = Guid.NewGuid();
+        CommunityMentionTextTarget[] targets =
+        [
+            new(CommunityMentionKind.Account, first, "@Same"),
+            new(CommunityMentionKind.Account, second, "@Same"),
+            new(CommunityMentionKind.Account, first, "@Alice")
+        ];
+
+        Assert.Empty(CommunityMentionTextResolver.Resolve("`@Alice` @Same", targets));
+        Assert.Equal(first, Assert.Single(CommunityMentionTextResolver.Resolve("outside @Alice", targets)).TargetId);
+    }
+
+    [Fact]
     public void MobilePanelsFollowNavigationConversationAndContextFlow()
     {
         var state = new MobilePanelNavigationState();

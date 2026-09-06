@@ -255,13 +255,16 @@ public static class MessageEndpoints
             .Take(take + 1).ToListAsync();
         var hasMore = found.Count > take;
         if (hasMore) found.RemoveAt(found.Count - 1);
-        var results = found.Select(value => new MessageSearchResultDto(value.Id, value.CommunityId, value.ChannelId, null,
-            value.Channel.Name, new(value.AuthorAccountId, value.AuthorAccount.Username,
+        var forumMap = await ForumSearchMapAsync(found.Select(value => value.ChannelId).ToArray(), db);
+        var results = found.Select(value => new MessageSearchResultDto(value.Id, value.CommunityId,
+            forumMap.TryGetValue(value.ChannelId, out var forum) ? forum.ForumChannelId : value.ChannelId, null,
+            forum?.ChannelName ?? value.Channel.Name, new(value.AuthorAccountId, value.AuthorAccount.Username,
                 value.AuthorDisplayNameSnapshot ?? value.AuthorAccount.DisplayName,
                 AvatarRevision: value.AuthorAvatarRevisionSnapshot ?? value.AuthorAccount.AvatarRevision,
                 AvatarSnapshotMessageId: value.AuthorAvatarObjectKeySnapshot is null ? null : value.Id,
                 HasHistoricalSnapshot: value.AuthorDisplayNameSnapshot is not null),
-            SearchContent(value.Content, value.ForwardedMessageSnapshot?.Content), value.CreatedAt)).ToArray();
+            SearchContent(value.Content, value.ForwardedMessageSnapshot?.Content), value.CreatedAt,
+            forum?.PostId)).ToArray();
         var next = results.Length == 0 ? null : MessageHistoryCursor.Encode(results[^1].CreatedAt, results[^1].MessageId);
         return Results.Ok(new MessageSearchPageDto(results, next, hasMore));
     }
@@ -320,13 +323,16 @@ public static class MessageEndpoints
         var found = await query.Take(take + 1).ToListAsync();
         var hasMore = found.Count > take;
         if (hasMore) found.RemoveAt(found.Count - 1);
-        var results = found.Select(value => new MessageSearchResultDto(value.Id, value.CommunityId, value.ChannelId, null,
-            value.Channel.Name, new(value.AuthorAccountId, value.AuthorAccount.Username,
+        var forumMap = await ForumSearchMapAsync(found.Select(value => value.ChannelId).ToArray(), db);
+        var results = found.Select(value => new MessageSearchResultDto(value.Id, value.CommunityId,
+            forumMap.TryGetValue(value.ChannelId, out var forum) ? forum.ForumChannelId : value.ChannelId, null,
+            forum?.ChannelName ?? value.Channel.Name, new(value.AuthorAccountId, value.AuthorAccount.Username,
                 value.AuthorDisplayNameSnapshot ?? value.AuthorAccount.DisplayName,
                 AvatarRevision: value.AuthorAvatarRevisionSnapshot ?? value.AuthorAccount.AvatarRevision,
                 AvatarSnapshotMessageId: value.AuthorAvatarObjectKeySnapshot is null ? null : value.Id,
                 HasHistoricalSnapshot: value.AuthorDisplayNameSnapshot is not null),
-            SearchContent(value.Content, value.ForwardedMessageSnapshot?.Content), value.CreatedAt)).ToArray();
+            SearchContent(value.Content, value.ForwardedMessageSnapshot?.Content), value.CreatedAt,
+            forum?.PostId)).ToArray();
         var next = results.Length == 0 ? null : MessageHistoryCursor.Encode(results[^1].CreatedAt, results[^1].MessageId);
         return Results.Ok(new MessageSearchPageDto(results, next, hasMore));
     }
@@ -334,6 +340,18 @@ public static class MessageEndpoints
     private static string SearchContent(string note, string? forwarded) => string.IsNullOrWhiteSpace(forwarded)
         ? note
         : string.IsNullOrWhiteSpace(note) ? forwarded : $"{note}\n{forwarded}";
+
+    private sealed record ForumSearchTarget(Guid PostId, Guid ForumChannelId, string ChannelName);
+
+    private static async Task<Dictionary<Guid, ForumSearchTarget>> ForumSearchMapAsync(
+        IReadOnlyCollection<Guid> discussionChannelIds, IridiumDbContext db) =>
+        await db.CommunityForumPosts.AsNoTracking().Where(value =>
+                discussionChannelIds.Contains(value.DiscussionChannelId))
+            .Select(value => new
+            {
+                value.DiscussionChannelId, value.Id, value.ForumChannelId, ChannelName = value.ForumChannel.Name
+            }).ToDictionaryAsync(value => value.DiscussionChannelId,
+                value => new ForumSearchTarget(value.Id, value.ForumChannelId, value.ChannelName));
 
     private static async Task<List<Guid>> AccessibleTextChannelIdsAsync(Guid communityId, Guid accountId,
         IridiumDbContext db, CommunityAuthorizationService authorization)

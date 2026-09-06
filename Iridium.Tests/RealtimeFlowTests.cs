@@ -445,7 +445,8 @@ public sealed class RealtimeFlowTests
             });
             secondConnection.On<ChannelMessageDto>(ChatHubContract.MessageUpdated, message =>
             {
-                if (message.Content == "edited hello") updatedOnSecond.TrySetResult(message);
+                if (message.Content is "edited hello @Outsider @Permission Manager @everyone" or "edited hello again")
+                    updatedOnSecond.TrySetResult(message);
             });
             firstConnection.On<ChannelMessageDto>(ChatHubContract.MessageCreated, message =>
             {
@@ -970,6 +971,8 @@ public sealed class RealtimeFlowTests
             Assert.Equal(0, mentionStructure.Channels.Single(value => value.Id == chatChannel.Id).MentionCount);
             Assert.Equal(1, mentionStructure.Channels.Single(value => value.Id == welcome.Id).MentionCount);
             Assert.Equal(1, (await outsider.GetCommunitiesAsync()).Single(value => value.Id == communityA.Id).MentionCount);
+            await Task.Delay(150);
+            var mentionNotificationsBeforeEdit = Volatile.Read(ref mentionNotificationCount);
             var secondFromFirst = await firstConnection.InvokeAsync<ChannelMessageDto>(
                 ChatHubContract.SendMessage, communityA.Id, chatChannel.Id,
                 new SendChannelMessageRequest("second from tab one", null));
@@ -979,11 +982,35 @@ public sealed class RealtimeFlowTests
             Assert.Equal(secondFromFirst.Id, (await secondCreatedOnSecond.Task.WaitAsync(TimeSpan.FromSeconds(5))).Id);
             Assert.Equal(thirdFromFirst.Id, (await thirdCreatedOnSecond.Task.WaitAsync(TimeSpan.FromSeconds(5))).Id);
 
-            await firstConnection.InvokeAsync<ChannelMessageDto>(
+            var editAddedMentions = await firstConnection.InvokeAsync<ChannelMessageDto>(
                 ChatHubContract.EditMessage, communityA.Id, chatChannel.Id, sent.Id,
-                new EditChannelMessageRequest("edited hello"));
+                new EditChannelMessageRequest("edited hello @Outsider @Permission Manager @everyone"));
             var edited = await updatedOnSecond.Task.WaitAsync(TimeSpan.FromSeconds(5));
             Assert.NotNull(edited.EditedAt);
+            Assert.Equal(3, editAddedMentions.Mentions?.Count);
+            Assert.Contains(editAddedMentions.Mentions ?? [], value =>
+                value.Kind == CommunityMentionKind.Role && value.TargetId == permissionManagerRole.Id);
+            Assert.True(CommunityMentionPresentation.IsTargetedAt(editAddedMentions, outsiderAuth.Account.Id));
+            var persistedAddedMention = (await owner.GetChannelMessagesAsync(communityA.Id, chatChannel.Id))
+                .Single(value => value.Id == sent.Id);
+            Assert.True(CommunityMentionPresentation.IsTargetedAt(persistedAddedMention, outsiderAuth.Account.Id));
+            await Task.Delay(150);
+            Assert.Equal(mentionNotificationsBeforeEdit, Volatile.Read(ref mentionNotificationCount));
+            mentionStructure = await outsider.GetCommunityStructureAsync(communityA.Id);
+            Assert.Equal(0, mentionStructure.Channels.Single(value => value.Id == chatChannel.Id).MentionCount);
+            Assert.Equal(1, (await outsider.GetCommunitiesAsync()).Single(value => value.Id == communityA.Id).MentionCount);
+
+            updatedOnSecond = Completion<ChannelMessageDto>();
+            var editRemovedMentions = await firstConnection.InvokeAsync<ChannelMessageDto>(
+                ChatHubContract.EditMessage, communityA.Id, chatChannel.Id, sent.Id,
+                new EditChannelMessageRequest("edited hello again"));
+            await updatedOnSecond.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Empty(editRemovedMentions.Mentions ?? []);
+            Assert.False(CommunityMentionPresentation.IsTargetedAt(editRemovedMentions, outsiderAuth.Account.Id));
+            var persistedRemovedMention = (await owner.GetChannelMessagesAsync(communityA.Id, chatChannel.Id))
+                .Single(value => value.Id == sent.Id);
+            Assert.Empty(persistedRemovedMention.Mentions ?? []);
+            Assert.Equal(mentionNotificationsBeforeEdit, Volatile.Read(ref mentionNotificationCount));
 
             var reply = await secondConnection.InvokeAsync<ChannelMessageDto>(
                 ChatHubContract.SendMessage, communityA.Id, chatChannel.Id,

@@ -14,3 +14,5 @@
 .message-region ::deep .channel-document-actions button{border:0;color:var(--text-muted);background:transparent;font:inherit;cursor:pointer}.message-region ::deep .channel-document-actions button:hover{color:var(--text-strong)}.message-region ::deep .channel-document-actions button:disabled{opacity:.6;cursor:default}
 .message-region ::deep .embedded-sheet{width:100%;max-width:none;min-width:0;margin:0}
 .message-region ::deep .channel-document-flow.sheet-flow{padding:.45rem}
+.message-region ::deep .embedded-document{contain:layout paint style}
+.message-region ::deep .document-render-progress{position:sticky;bottom:0;padding:.4rem .55rem;color:var(--text-muted);background:color-mix(in srgb,var(--surface-raised) 92%,transparent);font-size:.68rem}

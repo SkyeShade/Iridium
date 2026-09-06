@@ -1,0 +1,31 @@
+@using Iridium.Protocol
+
+@foreach (var block in Blocks)
+{
+    <EmbeddedDocumentBlock @key="block.Key" Block="block.Block" CommunityId="CommunityId" ChannelId="ChannelId"
+                           ForumPostId="ForumPostId" MessageId="MessageId" DocumentId="@DocumentId" />
+}
+
+@code {
+    [Parameter, EditorRequired]
+    public required IReadOnlyList<EmbeddedDocumentView.DocumentBlockRenderModel> Blocks { get; set; }
+    [Parameter, EditorRequired] public Guid CommunityId { get; set; }
+    [Parameter, EditorRequired] public Guid ChannelId { get; set; }
+    [Parameter] public Guid? ForumPostId { get; set; }
+    [Parameter] public Guid? MessageId { get; set; }
+    [Parameter] public string? DocumentId { get; set; }
+
+    private IReadOnlyList<EmbeddedDocumentView.DocumentBlockRenderModel>? _renderedBlocks;
+    private (Guid CommunityId, Guid ChannelId, Guid? ForumPostId, Guid? MessageId, string? DocumentId) _renderedHost;
+    private bool _shouldRender = true;
+
+    protected override void OnParametersSet()
+    {
+        var host = (CommunityId, ChannelId, ForumPostId, MessageId, DocumentId);
+        _shouldRender = !ReferenceEquals(_renderedBlocks, Blocks) || host != _renderedHost;
+        _renderedBlocks = Blocks;
+        _renderedHost = host;
+    }
+
+    protected override bool ShouldRender() => _shouldRender;
+}

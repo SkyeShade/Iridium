@@ -1,46 +1,45 @@
 @using Iridium.Protocol
+@implements IAsyncDisposable
+@inject ILogger<EmbeddedSheetView> Logger
+@inject IWebAssemblyHostEnvironment HostEnvironment
+@inject IJSRuntime JS
 
-<article class="embedded-sheet" aria-label="Imported spreadsheet">
+<article @ref="_root" class="embedded-sheet" aria-label="Imported spreadsheet">
     @if (Sheet.Tabs.Count > 1)
     {
         <nav class="sheet-tabs" aria-label="Spreadsheet tabs">
             @foreach (var tab in Sheet.Tabs)
             {
                 <button type="button" class="@(tab.Id == _selectedTabId ? "selected" : null)"
-                        @onclick="() => _selectedTabId = tab.Id">@tab.Name</button>
+                        @onclick="() => SelectTab(tab.Id)">@tab.Name</button>
             }
         </nav>
     }
-    @if (SelectedTab is { } selected)
+    @if (_renderTab is { } selected)
     {
         <div class="sheet-overflow">
-            <div class="sheet-canvas" style="--sheet-source-width:@(SourceWidth(selected))px">
-            <table><colgroup>
-                @foreach (var width in selected.ColumnWidths) { <col style="width:@(width)px" /> }
-            </colgroup><tbody>
-                @foreach (var row in selected.Rows)
+            <div class="sheet-canvas" style="--sheet-source-width:@(selected.SourceWidth)px">
+                <table><colgroup>
+                    @foreach (var width in selected.ColumnWidths) { <col style="width:@(width)px" /> }
+                </colgroup><tbody>
+                    @foreach (var batch in _rowBatches)
+                    {
+                        <EmbeddedSheetRowBatch @key="batch.StartRow" Rows="batch.Rows" />
+                    }
+                </tbody></table>
+                @foreach (var image in selected.Images.Where(image => image.AnchorRow < _preparedRowCount + 5))
                 {
-                    <tr style="@(row.Height is { } height ? $"height:{height}px" : null)">
-                        @foreach (var cell in row.Cells)
-                        {
-                            <td rowspan="@cell.RowSpan" colspan="@cell.ColumnSpan" class="@CellClass(cell)"
-                                style="@CellStyle(cell)">
-                                @if (cell.Link is { } link) { <a href="@link" target="_blank" rel="noopener noreferrer">@cell.DisplayValue</a> }
-                                else { @cell.DisplayValue }
-                            </td>
-                        }
-                    </tr>
+                    <div @key="image.Key" class="sheet-floating-image" style="@image.PositionStyle">
+                        <EmbeddedDocumentBlock Block="image.Block" CommunityId="CommunityId" ChannelId="ChannelId"
+                                               ForumPostId="ForumPostId" MessageId="MessageId" DocumentId="@DocumentId" />
+                    </div>
                 }
-            </tbody></table>
-            @foreach (var image in selected.Images ?? [])
-            {
-                <div class="sheet-floating-image" style="@ImagePosition(selected, image)">
-                    <EmbeddedDocumentBlock Block="@ImageBlock(image)" CommunityId="CommunityId" ChannelId="ChannelId"
-                                           ForumPostId="ForumPostId" MessageId="MessageId" DocumentId="DocumentId" />
-                </div>
-            }
             </div>
         </div>
+        @if (_preparedRowCount < _targetRowCount)
+        {
+            <div class="sheet-render-progress" role="status">Rendering spreadsheet… @_preparedRowCount / @_targetRowCount rows</div>
+        }
     }
 </article>
 
@@ -51,12 +50,178 @@
     [Parameter] public Guid? ForumPostId { get; set; }
     [Parameter] public Guid? MessageId { get; set; }
     [Parameter] public string? DocumentId { get; set; }
+    [Parameter] public bool LimitCollapsedPreview { get; set; }
+
+    private const int LargeSheetCellThreshold = 1_000;
+    private const int SheetRowBatchSize = 40;
+    private const int SheetCellBatchSize = 400;
+    private const int CollapsedSheetRowLimit = 50;
+    private readonly List<SheetRowBatchRenderModel> _rowBatches = [];
+    private ElementReference _root;
+    private IJSObjectReference? _module;
+    private CancellationTokenSource? _renderCancellation;
+    private EmbeddedSheetDto? _loadedSheet;
+    private SheetHostIdentity _loadedHost;
+    private SheetTabRenderModel? _renderTab;
     private string? _selectedTabId;
-    private EmbeddedSheetTabDto? SelectedTab => Sheet.Tabs.FirstOrDefault(tab => tab.Id == _selectedTabId) ?? Sheet.Tabs.FirstOrDefault();
+    private int _preparedRowCount;
+    private int _targetRowCount;
+    private int _totalCellCount;
+    private int _renderGeneration;
+    private bool _renderRequested = true;
+    private bool _firstBatchLogged;
+    private bool _completedLogged;
+    private long _stateAssignedAt;
+    private long _stateChangeRequestedAt;
+
     protected override void OnParametersSet()
     {
-        if (!Sheet.Tabs.Any(tab => tab.Id == _selectedTabId)) _selectedTabId = Sheet.DefaultTabId ?? Sheet.Tabs.FirstOrDefault()?.Id;
+        var host = new SheetHostIdentity(CommunityId, ChannelId, ForumPostId, MessageId, DocumentId,
+            LimitCollapsedPreview);
+        if (ReferenceEquals(_loadedSheet, Sheet) && host == _loadedHost) return;
+        _loadedSheet = Sheet;
+        _loadedHost = host;
+        if (!Sheet.Tabs.Any(tab => tab.Id == _selectedTabId))
+            _selectedTabId = Sheet.DefaultTabId ?? Sheet.Tabs.FirstOrDefault()?.Id;
+        ResetProgressiveRender();
     }
+
+    protected override bool ShouldRender() => _renderRequested;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        _renderRequested = false;
+        var generation = _renderGeneration;
+        var cancellation = _renderCancellation;
+        if (_renderTab is null || cancellation is null) return;
+
+        _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/chat.js");
+        await LogCommitAsync(generation, cancellation.Token);
+        if (cancellation.IsCancellationRequested || generation != _renderGeneration ||
+            _preparedRowCount >= _targetRowCount) return;
+
+        try
+        {
+            await _module.InvokeAsync<double>("nextDocumentRenderFrame", cancellation.Token);
+            if (cancellation.IsCancellationRequested || generation != _renderGeneration) return;
+            PrepareNextBatch();
+            _stateChangeRequestedAt = System.Diagnostics.Stopwatch.GetTimestamp();
+            _renderRequested = true;
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+        catch (JSDisconnectedException) { }
+    }
+
+    private void SelectTab(string tabId)
+    {
+        if (_selectedTabId == tabId) return;
+        _selectedTabId = tabId;
+        ResetProgressiveRender();
+    }
+
+    private void ResetProgressiveRender()
+    {
+        _renderCancellation?.Cancel();
+        _renderCancellation?.Dispose();
+        _renderCancellation = new();
+        _renderGeneration++;
+        _rowBatches.Clear();
+        _preparedRowCount = 0;
+        _firstBatchLogged = false;
+        _completedLogged = false;
+        _stateAssignedAt = System.Diagnostics.Stopwatch.GetTimestamp();
+        var selected = Sheet.Tabs.FirstOrDefault(tab => tab.Id == _selectedTabId) ?? Sheet.Tabs.FirstOrDefault();
+        _selectedTabId = selected?.Id;
+        _renderTab = selected is null ? null : BuildTabModel(selected);
+        _totalCellCount = selected?.Rows.Sum(row => row.Cells.Count) ?? 0;
+        var availableRows = selected?.Rows.Count ?? 0;
+        _targetRowCount = LimitCollapsedPreview ? Math.Min(CollapsedSheetRowLimit, availableRows) : availableRows;
+        PrepareNextBatch();
+        _stateChangeRequestedAt = System.Diagnostics.Stopwatch.GetTimestamp();
+        _renderRequested = true;
+        if (HostEnvironment.IsDevelopment() && selected is not null)
+        {
+            var merged = selected.Rows.Sum(row => row.Cells.Count(cell => cell.RowSpan > 1 || cell.ColumnSpan > 1));
+            Logger.LogInformation("Embedded Sheet DTO assigned TabId={TabId} Rows={RowCount} Columns={ColumnCount} Cells={CellCount} MergedCells={MergedCellCount} FloatingImages={ImageCount} CollapsedLimit={CollapsedLimit} StateAssignMs={StateAssignMs:F1}; StateHasChanged requested.",
+                selected.Id, selected.Rows.Count, selected.ColumnWidths.Count, _totalCellCount, merged,
+                selected.Images?.Count ?? 0, LimitCollapsedPreview,
+                System.Diagnostics.Stopwatch.GetElapsedTime(_stateAssignedAt).TotalMilliseconds);
+        }
+    }
+
+    private void PrepareNextBatch()
+    {
+        if (_renderTab is null || _preparedRowCount >= _targetRowCount) return;
+        var remaining = _targetRowCount - _preparedRowCount;
+        var batchSize = remaining;
+        if (_totalCellCount >= LargeSheetCellThreshold || LimitCollapsedPreview)
+        {
+            batchSize = 0;
+            var batchCells = 0;
+            while (batchSize < Math.Min(SheetRowBatchSize, remaining))
+            {
+                var nextCells = _renderTab.Source.Rows[_preparedRowCount + batchSize].Cells.Count;
+                if (batchSize > 0 && batchCells + nextCells > SheetCellBatchSize) break;
+                batchCells += nextCells;
+                batchSize++;
+            }
+        }
+        var rows = new SheetRowRenderModel[batchSize];
+        for (var offset = 0; offset < batchSize; offset++)
+        {
+            var rowIndex = _preparedRowCount + offset;
+            var source = _renderTab.Source.Rows[rowIndex];
+            rows[offset] = new SheetRowRenderModel($"{_renderTab.Id}:{rowIndex}",
+                source.Height is { } height ? $"height:{height}px" : null,
+                source.Cells.Select(cell => new SheetCellRenderModel($"{rowIndex}:{cell.Column}", cell,
+                    CellClass(cell), CellStyle(cell))).ToArray());
+        }
+        _rowBatches.Add(new(_preparedRowCount, rows));
+        _preparedRowCount += batchSize;
+    }
+
+    private SheetTabRenderModel BuildTabModel(EmbeddedSheetTabDto tab)
+    {
+        var columnOffsets = new int[tab.ColumnWidths.Count + 1];
+        for (var index = 0; index < tab.ColumnWidths.Count; index++)
+            columnOffsets[index + 1] = columnOffsets[index] + tab.ColumnWidths[index];
+        var rowOffsets = new int[tab.Rows.Count + 1];
+        for (var index = 0; index < tab.Rows.Count; index++)
+            rowOffsets[index + 1] = rowOffsets[index] + (tab.Rows[index].Height ?? 21);
+        var images = (tab.Images ?? []).Select(image => new SheetImageRenderModel(image.MediaId, image.AnchorRow,
+            new(image.MediaId, image.Alt, image.Width, image.Height),
+            $"left:{columnOffsets[Math.Min(Math.Max(0, image.AnchorColumn), tab.ColumnWidths.Count)] + image.OffsetX}px;" +
+            $"top:{rowOffsets[Math.Min(Math.Max(0, image.AnchorRow), tab.Rows.Count)] + image.OffsetY}px;" +
+            $"width:{image.Width}px;height:{image.Height}px")).ToArray();
+        return new(tab.Id, tab, tab.ColumnWidths, Math.Max(1, columnOffsets[^1]), images);
+    }
+
+    private async Task LogCommitAsync(int generation, CancellationToken cancellationToken)
+    {
+        if (!HostEnvironment.IsDevelopment() || _module is null || _renderTab is null) return;
+        var first = !_firstBatchLogged;
+        var complete = _preparedRowCount >= _targetRowCount && !_completedLogged;
+        if (!first && !complete) return;
+        _firstBatchLogged = true;
+        if (complete) _completedLogged = true;
+        var razorCommit = System.Diagnostics.Stopwatch.GetElapsedTime(_stateChangeRequestedAt).TotalMilliseconds;
+        try
+        {
+            await _module.InvokeAsync<double>("nextDocumentRenderFrame", cancellationToken);
+            if (generation != _renderGeneration || cancellationToken.IsCancellationRequested) return;
+            var browser = await _module.InvokeAsync<BrowserRenderMeasurement>("measureDocumentRender", cancellationToken, _root);
+            Logger.LogInformation("Embedded Sheet render commit TabId={TabId} Phase={Phase} RenderedRows={RenderedRows} RenderedCells={RenderedCells} TotalRows={TotalRows} TotalCells={TotalCells} RazorCommitMs={RazorCommitMs:F1} BrowserLayoutMs={BrowserLayoutMs:F1} TotalApplyMs={TotalApplyMs:F1} DomRows={DomRows} DomCells={DomCells}.",
+                _renderTab.Id, complete ? "complete" : "first", _preparedRowCount,
+                _rowBatches.Sum(batch => batch.Rows.Sum(row => row.Cells.Count)), _renderTab.Source.Rows.Count,
+                _totalCellCount, razorCommit, browser.LayoutDurationMs,
+                System.Diagnostics.Stopwatch.GetElapsedTime(_stateAssignedAt).TotalMilliseconds,
+                browser.DomRows, browser.DomCells);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+        catch (JSDisconnectedException) { }
+    }
+
     private static string CellClass(EmbeddedSheetCellDto cell) => string.Join(' ',
         $"sheet-h-{cell.HorizontalAlignment.ToString().ToLowerInvariant()}",
         $"sheet-v-{cell.VerticalAlignment.ToString().ToLowerInvariant()}",
@@ -70,17 +235,17 @@
         cell.Underline ? "sheet-underline" : null, cell.IsCheckbox ? "sheet-checkbox" : null,
         cell.WrapText == true ? "sheet-wrap" : "sheet-nowrap",
         $"sheet-font-{cell.FontSize.ToString().ToLowerInvariant()}");
-    private static int SourceWidth(EmbeddedSheetTabDto tab) => Math.Max(1, tab.ColumnWidths.Sum());
+
     private static string CellStyle(EmbeddedSheetCellDto cell)
     {
-        var values = new List<string>(6);
+        var values = new List<string>(10);
         var hasContent = !string.IsNullOrWhiteSpace(cell.DisplayValue) || cell.IsCheckbox;
         var background = EmbeddedSheetColors.Background(cell.BackgroundHex, hasContent,
             cell.RowSpan > 1 || cell.ColumnSpan > 1);
-        var backgroundTransformed = background is not null && !string.Equals(background, cell.BackgroundHex,
+        var transformed = background is not null && !string.Equals(background, cell.BackgroundHex,
             StringComparison.OrdinalIgnoreCase);
         if (background is not null) values.Add($"background-color:{background}");
-        if (EmbeddedSheetColors.Foreground(cell.ForegroundHex, background, backgroundTransformed) is { } foreground)
+        if (EmbeddedSheetColors.Foreground(cell.ForegroundHex, background, transformed) is { } foreground)
             values.Add($"color:{foreground}");
         if (EmbeddedSheetFonts.Family(cell.FontFamily) is { } family) values.Add($"font-family:{family}");
         if (EmbeddedSheetFonts.Size(cell.FontSizePx) is { } size) values.Add($"font-size:{size}px");
@@ -91,17 +256,33 @@
         AddBorder(values, "left", cell.LeftBorder, cell.LeftBorderColor);
         return string.Join(';', values);
     }
-    private static EmbeddedDocumentImageDto ImageBlock(EmbeddedSheetImageDto image) =>
-        new(image.MediaId, image.Alt, image.Width, image.Height);
-    private static string ImagePosition(EmbeddedSheetTabDto tab, EmbeddedSheetImageDto image)
-    {
-        var left = tab.ColumnWidths.Take(Math.Max(0, image.AnchorColumn)).Sum() + image.OffsetX;
-        var top = tab.Rows.Take(Math.Max(0, image.AnchorRow)).Sum(row => row.Height ?? 21) + image.OffsetY;
-        return $"left:{left}px;top:{top}px;width:{image.Width}px;height:{image.Height}px";
-    }
+
     private static void AddBorder(List<string> values, string side, EmbeddedSheetBorderStyle style, string? color)
     {
         if (style == EmbeddedSheetBorderStyle.None || EmbeddedSheetColors.Border(color) is not { } safe) return;
         values.Add($"border-{side}-color:{safe}");
     }
+
+    public async ValueTask DisposeAsync()
+    {
+        _renderCancellation?.Cancel();
+        _renderCancellation?.Dispose();
+        if (_module is not null)
+        {
+            try { await _module.DisposeAsync(); }
+            catch (JSDisconnectedException) { }
+        }
+    }
+
+    public sealed record SheetCellRenderModel(string Key, EmbeddedSheetCellDto Cell, string CssClass, string Style);
+    public sealed record SheetRowRenderModel(string Key, string? HeightStyle, IReadOnlyList<SheetCellRenderModel> Cells);
+    private sealed record SheetRowBatchRenderModel(int StartRow, IReadOnlyList<SheetRowRenderModel> Rows);
+    private sealed record SheetImageRenderModel(string Key, int AnchorRow, EmbeddedDocumentImageDto Block,
+        string PositionStyle);
+    private sealed record SheetTabRenderModel(string Id, EmbeddedSheetTabDto Source, IReadOnlyList<int> ColumnWidths,
+        int SourceWidth, IReadOnlyList<SheetImageRenderModel> Images);
+    private readonly record struct SheetHostIdentity(Guid CommunityId, Guid ChannelId, Guid? ForumPostId,
+        Guid? MessageId, string? DocumentId, bool LimitCollapsedPreview);
+    private sealed record BrowserRenderMeasurement(double LayoutDurationMs, int DomRows, int DomCells,
+        int DomBlocks, double Width, double Height);
 }

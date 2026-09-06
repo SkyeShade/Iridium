@@ -25,4 +25,5 @@ public sealed class CommunityForumPost
     public required ChannelMessage RootMessage { get; set; }
     public required NodeAccount AuthorAccount { get; set; }
     public ICollection<CommunityForumPostTag> TagAssignments { get; set; } = [];
+    public ICollection<ForumPostSubscription> Subscriptions { get; set; } = [];
 }

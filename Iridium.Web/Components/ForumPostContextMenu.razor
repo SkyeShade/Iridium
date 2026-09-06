@@ -10,6 +10,26 @@
         {
             <button role="menuitem" @onclick="OpenAsync"><Icon Name="open" /><span>Open Post</span></button>
         }
+        <button role="menuitem" @onclick="ToggleFollowAsync"><Icon Name="message" /><span>@(Post.IsFollowed ? "Unfollow Post" : "Follow Post")</span></button>
+        @if (Post.IsFollowed)
+        {
+            <button role="menuitem" aria-expanded="@_notificationOpen" @onclick="ToggleNotifications">
+                <Icon Name="settings" /><span>Notification Settings</span><span class="submenu-arrow">›</span>
+            </button>
+            @if (_notificationOpen)
+            {
+                <div class="notification-options" role="menu" aria-label="Post notification settings">
+                    @foreach (var option in NotificationOptions)
+                    {
+                        <button role="menuitemradio" aria-checked="@(Post.NotificationLevel == option.Level)"
+                                @onclick="() => SetNotificationAsync(option.Level)">
+                            <span class="radio-check">@(Post.NotificationLevel == option.Level ? "●" : "○")</span>
+                            <span>@option.Label</span>
+                        </button>
+                    }
+                </div>
+            }
+        }
         @if (CanManage)
         {
             <button role="menuitem" @onclick="ToggleLockAsync"><Icon Name="lock" /><span>@(Post.IsLocked ? "Unlock Post" : "Lock Post")</span></button>
@@ -56,6 +76,8 @@
     [Parameter] public bool CanManageDocument { get; set; }
     [Parameter] public EventCallback OnOpen { get; set; }
     [Parameter] public EventCallback OnMarkRead { get; set; }
+    [Parameter] public EventCallback OnToggleFollow { get; set; }
+    [Parameter] public EventCallback<ForumPostNotificationLevel> OnNotificationChanged { get; set; }
     [Parameter] public EventCallback OnToggleLock { get; set; }
     [Parameter] public EventCallback OnEditTitle { get; set; }
     [Parameter] public EventCallback OnEditTags { get; set; }
@@ -67,6 +89,14 @@
     [Parameter] public EventCallback OnClose { get; set; }
     private ElementReference _menu;
     private bool _confirmDelete;
+    private bool _notificationOpen;
+    private static readonly (ForumPostNotificationLevel Level, string Label)[] NotificationOptions =
+    [
+        (ForumPostNotificationLevel.AllMessages, "All Messages"),
+        (ForumPostNotificationLevel.MentionsOnly, "Mentions Only"),
+        (ForumPostNotificationLevel.Nothing, "Nothing"),
+        (ForumPostNotificationLevel.Muted, "Mute")
+    ];
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -78,6 +108,10 @@
     private async Task InvokeAndCloseAsync(EventCallback callback) { await callback.InvokeAsync(); await CloseAsync(); }
     private Task OpenAsync() => InvokeAndCloseAsync(OnOpen);
     private Task MarkReadAsync() => CanMarkRead ? InvokeAndCloseAsync(OnMarkRead) : Task.CompletedTask;
+    private Task ToggleFollowAsync() => InvokeAndCloseAsync(OnToggleFollow);
+    private void ToggleNotifications() => _notificationOpen = !_notificationOpen;
+    private async Task SetNotificationAsync(ForumPostNotificationLevel level)
+    { await OnNotificationChanged.InvokeAsync(level); await CloseAsync(); }
     private Task ToggleLockAsync() => InvokeAndCloseAsync(OnToggleLock);
     private Task EditTitleAsync() => InvokeAndCloseAsync(OnEditTitle);
     private Task EditTagsAsync() => InvokeAndCloseAsync(OnEditTags);

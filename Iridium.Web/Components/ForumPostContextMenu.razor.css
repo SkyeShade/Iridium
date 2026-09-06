@@ -7,4 +7,5 @@
 .forum-post-context button.destructive{color:var(--danger-text)}
 .forum-post-context button.destructive :deep(svg){color:currentColor}
 .separator{height:1px;margin:.3rem;background:var(--border)}
+.submenu-arrow{margin-left:auto;color:var(--text-faint);font-size:1rem}.notification-options{margin:.12rem .15rem .3rem;padding:.2rem;border-radius:.35rem;background:var(--bg-base)}.notification-options button{padding:.38rem .45rem;font-size:.72rem}.radio-check{width:.9rem;color:var(--accent);text-align:center}
 @media(max-width:860px){.forum-post-context-layer{background:#0005}.forum-post-context{left:max(.5rem,env(safe-area-inset-left));right:max(.5rem,env(safe-area-inset-right));top:auto;bottom:max(.5rem,var(--iridium-mobile-safe-bottom));width:auto;padding:.45rem;border-radius:.7rem}.forum-post-context button{min-height:2.75rem;font-size:.86rem}}

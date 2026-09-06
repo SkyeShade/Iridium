@@ -94,6 +94,7 @@
     [Parameter] public RenderFragment? ChildContent { get; set; }
     [Parameter] public RenderFragment? RightSidebar { get; set; }
     [Parameter] public bool ShowRightSidebar { get; set; }
+    [Parameter] public bool ShowDesktopRightSidebar { get; set; } = true;
     [Parameter] public EventCallback OnBackgroundInteraction { get; set; }
     [Parameter] public bool EnableMobilePanelDiagnostics { get; set; }
     [Parameter] public string MobileConversationContentKind { get; set; } = "none";
@@ -116,7 +117,8 @@
     private MobilePanel? _presentedMobilePanel;
     private long _presentedMobilePanelRevision = -1;
     private string? _presentedMobileContentKind;
-    private string ShellClass => $"app-shell {(ShowRightSidebar ? "has-context-sidebar" : null)} " +
+    private string ShellClass => $"app-shell {(ShowRightSidebar && ShowDesktopRightSidebar ? "has-context-sidebar" : null)} " +
+        $"{(ShowRightSidebar && !ShowDesktopRightSidebar ? "desktop-context-hidden" : null)} " +
         $"{(ShowMobileCallBar ? "has-mobile-call-bar" : null)} " +
         $"{(SuppressMobileVoiceConnection ? "suppress-mobile-voice-connection" : null)} " +
         $"mobile-{MobilePanels.Current.ToString().ToLowerInvariant()}";

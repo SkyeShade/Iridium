@@ -16,6 +16,7 @@
 @inject AppearanceService Appearance
 @inject IIdentityProfileResolver ProfileResolver
 @inject ILastCommunityChannelStore LastChannelStore
+@inject ICommunityMemberListPreferenceStore MemberListPreferences
 @inject Iridium.Web.Services.MessageMenuCoordinator MessageMenus
 @inject ActiveVoiceSessionCoordinator VoiceSessions
 @inject MobileDirectCallPresentationState MobileCallPresentation
@@ -75,6 +76,7 @@ else
                       OnProfile="OpenProfilePopup"
                       OnSettings="OpenSettings"
                       ShowRightSidebar="@HasContextSidebar"
+                      ShowDesktopRightSidebar="@(!HasCommunityContextSidebar || _communityMemberListVisible)"
                       EnableMobilePanelDiagnostics="HostEnvironment.IsDevelopment()"
                       MobileConversationContentKind="@MobileConversationContentKind"
                       MobileConversationTitle="@MobileConversationTitle"
@@ -154,6 +156,8 @@ else
             {
                 <CommunitySidebar @ref="_communitySidebar" State="CommunityState" Community="_selectedCommunity" AccountId="Session.Account!.Id"
                                   CommunityId="_selectedCommunity.Id" SelectedChannel="_selectedChannel"
+                                  NodeAuthority="@(Session.SelectedNode!.PublicAuthority)"
+                                  SelectedForumPostId="_selectedForumPostId" OnForumPostSelected="SelectForumPostFromSidebarAsync"
                                   OnChannelSelected="SelectChannelFromNavigationAsync"/>
             }
         </SidebarContent>
@@ -229,11 +233,13 @@ else
                 {
                     <ForumChannelView @key="(_selectedChannel.Id, _selectedChannel.EffectivePermissions)" @ref="_forumView"
                                       IsMobileLayout="_isMobileLayout"
+                                      InitialPostId="_selectedForumPostId"
                                       Community="_selectedCommunity" Channel="_selectedChannel"
                                       CurrentAccountId="Session.Account!.Id" NodeAuthority="@(Session.SelectedNode!.PublicAuthority)"
                                       CommunityManagement="CommunityState.Management" OnEditProfile="OpenProfileEditor"
                                       OnEditAvatars="OpenAvatarManager" OnCommunityProfileChanged="RefreshCommunityProfileAsync"
                                       OnMessage="OpenDirectMessageAsync" OnMemberRolesChanged="SetCommunityMemberRolesAsync"
+                                      OnPostNavigationRequested="ForumPostNavigationRequestedAsync"
                                       OnPostOpenChanged="ForumPostOpenChanged" OnSubViewChanged="ForumSubViewChanged"
                                       CanCreatePosts="@HasSelectedChannelPermission(CommunityPermission.CreateForumPosts)"
                                       CanManageMessages="@HasSelectedChannelPermission(CommunityPermission.ManageMessages)"
@@ -268,6 +274,8 @@ else
             @if (_selectedCommunity is not null && _selectedChannel is not null && CommunityState.Management is { } management)
             {
                 <CommunityMemberSidebar Management="management" CurrentAccountId="Session.Account!.Id"
+                                        MemberListVisible="_communityMemberListVisible"
+                                        OnMemberListVisibilityChanged="SetCommunityMemberListVisibleAsync"
                                         NodeAuthority="@(Session.SelectedNode!.PublicAuthority)" OnEditProfile="OpenProfileEditor"
                                         OnEditAvatars="OpenAvatarManager" OnCommunityProfileChanged="RefreshCommunityProfileAsync"
                                         Channels="CommunityState.Channels" OnSearchResultSelected="OpenCommunitySearchResultAsync"
@@ -395,6 +403,8 @@ else
     private bool _forumPostOpen;
     private bool _forumSubViewOpen;
     private string? _forumPostTitle;
+    private Guid? _selectedForumPostId;
+    private Guid? _selectedForumDiscussionChannelId;
     private Guid? _searchTargetMessageId;
     private DirectConversationDto? _selectedDirectConversation;
     private DirectMessageView? _directMessageView;
@@ -409,6 +419,8 @@ else
     private long _shellNavigationGeneration;
     private bool _isMobileLayout;
     private bool _mobileLayoutKnown;
+    private bool _communityMemberListVisible = true;
+    private CommunityMemberListPreferenceScope? _memberListPreferenceScope;
     private bool _faviconReady;
     private Guid? _composerFocusChannelId;
     private Guid? _composerFocusConversationId;
@@ -436,6 +448,8 @@ else
     private bool HasContextSidebar =>
         _selectedCommunity is not null && _selectedChannel is not null && CommunityState.Management is not null ||
         _selectedCommunity is null && _homeView == "dm" && _selectedDirectConversation is not null;
+    private bool HasCommunityContextSidebar =>
+        _selectedCommunity is not null && _selectedChannel is not null && CommunityState.Management is not null;
     private bool IsDirectConversationSelected =>
         _selectedCommunity is null && _homeView == "dm" && _selectedDirectConversation is not null;
     private string MobileConversationContentKind =>
@@ -485,6 +499,7 @@ else
         VoiceSessions.Changed += OnSessionChanged;
         MobileCallPresentation.Changed += OnMobileCallPresentationChanged;
         await AccountSwitching.InitializeAsync(SavedNodes.Nodes);
+        await LoadCommunityMemberListPreferenceAsync();
         if (IsRecoveryRoute())
         {
             AccountSwitching.BeginAuthentication(defaultNode);
@@ -666,6 +681,7 @@ else
             else
                 await AccountSwitching.LoginAsync(submission.Username, submission.Password);
             ResetAccountUi();
+            await LoadCommunityMemberListPreferenceAsync();
             _authenticationVisible = false;
             _addingAccount = false;
         }
@@ -757,7 +773,11 @@ else
         try
         {
             var authenticated = await AccountSwitching.SwitchAsync(key);
-            if (authenticated) ResetAccountUi();
+            if (authenticated)
+            {
+                ResetAccountUi();
+                await LoadCommunityMemberListPreferenceAsync();
+            }
             _authenticationVisible = !authenticated;
             _addingAccount = !authenticated && (wasAddingAccount || hadActiveAccount) && Session.IsAuthenticated;
         }
@@ -816,6 +836,8 @@ else
         _selectedCommunity = community;
         if (community is not null && mobilePanelSource is not null) ShowMobileConversation(mobilePanelSource);
         _selectedChannel = null;
+        _selectedForumPostId = null;
+        _selectedForumDiscussionChannelId = null;
         _searchTargetMessageId = null;
         _selectedDirectConversation = null;
         _error = null;
@@ -852,7 +874,8 @@ else
         Navigation.NavigateTo(Navigation.BaseUri, replace: true);
     }
     private async Task SelectChannelAsync(CommunityChannelDto? channel, bool requestComposerFocus = false,
-        Guid? searchTargetMessageId = null, string? mobilePanelSource = null)
+        Guid? searchTargetMessageId = null, string? mobilePanelSource = null, Guid? forumPostId = null,
+        Guid? forumDiscussionChannelId = null)
     {
         CollapseMobileDirectCall();
         ++_shellNavigationGeneration;
@@ -865,6 +888,8 @@ else
         _forumPostOpen = false;
         _forumSubViewOpen = false;
         _forumPostTitle = null;
+        _selectedForumPostId = forumPostId;
+        _selectedForumDiscussionChannelId = forumDiscussionChannelId;
         if (channel?.Kind == CommunityChannelKind.Text && requestComposerFocus)
             RequestChannelComposerFocus(channel.Id);
         if (channel is null)
@@ -881,6 +906,56 @@ else
     }
     private Task SelectChannelFromNavigationAsync(CommunityChannelDto? channel) =>
         SelectChannelFromMobileNavigationAsync(channel);
+    private Task SelectForumPostFromSidebarAsync(CommunityForumPostDto post) =>
+        OpenForumPostAsync(post.ForumChannelId, post.Id, ForumPostNavigationSource.SidebarChild,
+            post.DiscussionChannelId, explicitNavigation: true);
+
+    private async Task OpenForumPostAsync(Guid forumId, Guid postId, ForumPostNavigationSource source,
+        Guid? discussionChannelId = null, bool explicitNavigation = true)
+    {
+        Guid? previousForumId = _selectedChannel?.Kind == CommunityChannelKind.Forum ? _selectedChannel.Id : null;
+        var previousPostId = _selectedForumPostId;
+        var previousDiscussionChannelId = _selectedForumDiscussionChannelId;
+        var forum = CommunityState.Channels.FirstOrDefault(value => value.Id == forumId &&
+            value.Kind == CommunityChannelKind.Forum);
+        if (forum is null) return;
+        // The parent Forum and child Post are one atomic navigation target. In particular, do not
+        // clear the Post merely because the parent Forum is already selected.
+        await SelectChannelAsync(forum, mobilePanelSource: null, forumPostId: postId,
+            forumDiscussionChannelId: discussionChannelId);
+        LogForumNavigation(source, previousForumId, previousPostId, forumId, postId,
+            _selectedChannel?.Id, _selectedForumDiscussionChannelId ?? previousDiscussionChannelId,
+            explicitNavigation);
+    }
+
+    private async Task ForumPostNavigationRequestedAsync(CommunityForumPostDto? post)
+    {
+        if (post is not null)
+        {
+            await OpenForumPostAsync(post.ForumChannelId, post.Id, ForumPostNavigationSource.ForumOverview,
+                post.DiscussionChannelId, explicitNavigation: true);
+            return;
+        }
+        if (_selectedChannel is not { Kind: CommunityChannelKind.Forum } forum) return;
+        var previousPostId = _selectedForumPostId;
+        var previousDiscussionChannelId = _selectedForumDiscussionChannelId;
+        await SelectChannelAsync(forum, mobilePanelSource: null);
+        LogForumNavigation(ForumPostNavigationSource.ForumOverview, forum.Id, previousPostId,
+            forum.Id, null, _selectedChannel?.Id, previousDiscussionChannelId, explicitNavigation: true);
+    }
+
+    private void LogForumNavigation(ForumPostNavigationSource source, Guid? previousForumId,
+        Guid? previousPostId, Guid requestedForumId, Guid? requestedPostId, Guid? selectedChannelId,
+        Guid? discussionChannelId, bool explicitNavigation)
+    {
+        if (!HostEnvironment.IsDevelopment()) return;
+        Logger.LogInformation(
+            "Forum navigation Source={Source} PreviousForumId={PreviousForumId} PreviousPostId={PreviousPostId} " +
+            "RequestedForumId={RequestedForumId} RequestedPostId={RequestedPostId} SelectedChannelId={SelectedChannelId} " +
+            "SelectedForumPostId={SelectedForumPostId} DiscussionChannelId={DiscussionChannelId} Explicit={ExplicitNavigation}",
+            source, previousForumId, previousPostId, requestedForumId, requestedPostId, selectedChannelId,
+            _selectedForumPostId, discussionChannelId, explicitNavigation);
+    }
     private async Task SelectChannelFromMobileNavigationAsync(CommunityChannelDto? channel)
     {
         await SelectChannelAsync(
@@ -901,7 +976,10 @@ else
         if (result.ChannelId is not { } channelId) return;
         var channel = CommunityState.Channels.FirstOrDefault(value => value.Id == channelId);
         if (channel is null) return;
-        await SelectChannelAsync(channel, searchTargetMessageId: result.MessageId);
+        if (result.ForumPostId is { } forumPostId)
+            await OpenForumPostAsync(channel.Id, forumPostId, ForumPostNavigationSource.Search,
+                explicitNavigation: true);
+        else await SelectChannelAsync(channel, searchTargetMessageId: result.MessageId);
     }
     private async Task OpenForwardSourceAsync(ForwardSourceReferenceDto source)
     {
@@ -1014,10 +1092,50 @@ else
     }
     private void ForumPostOpenChanged(CommunityForumPostDto? post)
     {
+        // Completion and realtime callbacks describe the currently requested target; they do not
+        // select a different target. This prevents a stale Post A callback from overriding a newer
+        // explicit request for Post B.
+        if (post?.Id != _selectedForumPostId) return;
         _forumPostOpen = post is not null;
         _forumPostTitle = post?.Title;
+        if (post is not null)
+        {
+            _selectedForumDiscussionChannelId = post.DiscussionChannelId;
+            CommunityState.MarkForumPostRead(post.Id);
+        }
     }
     private void ForumSubViewChanged(bool isOpen) => _forumSubViewOpen = isOpen;
+    private async Task LoadCommunityMemberListPreferenceAsync()
+    {
+        if (Session.SelectedNode is null || Session.Account is null)
+        {
+            _memberListPreferenceScope = null;
+            _communityMemberListVisible = true;
+            return;
+        }
+        var scope = new CommunityMemberListPreferenceScope(Session.SelectedNode.PublicAuthority, Session.Account.Id);
+        _memberListPreferenceScope = scope;
+        try
+        {
+            var stored = await MemberListPreferences.LoadAsync(scope);
+            if (_memberListPreferenceScope == scope) _communityMemberListVisible = stored ?? true;
+        }
+        catch (Exception exception)
+        {
+            Logger.LogWarning(exception, "Could not load the local Community member-list preference.");
+            if (_memberListPreferenceScope == scope) _communityMemberListVisible = true;
+        }
+    }
+    private async Task SetCommunityMemberListVisibleAsync(bool visible)
+    {
+        _communityMemberListVisible = visible;
+        if (_memberListPreferenceScope is not { } scope) return;
+        try { await MemberListPreferences.SaveAsync(scope, visible); }
+        catch (Exception exception)
+        {
+            Logger.LogWarning(exception, "Could not save the local Community member-list preference.");
+        }
+    }
     private void ShowMobileContext() { if (HasContextSidebar) SetMobilePanel(MobilePanels.ShowContext("OpenContext")); }
     private void CloseMobileContext() => SetMobilePanel(MobilePanels.CloseContext("CloseContext"));
 
@@ -1214,6 +1332,8 @@ else
         _composerFocusRequest = 0;
         _composerFocusChannelId = null;
         _composerFocusConversationId = null;
+        _communityMemberListVisible = true;
+        _memberListPreferenceScope = null;
         _showSettings = false;
         _showProfile = false;
         _showAddFriend = false;
@@ -1286,6 +1406,15 @@ else
         }
         StateHasChanged();
     });
+    private enum ForumPostNavigationSource
+    {
+        ForumOverview,
+        SidebarChild,
+        Search,
+        Notification,
+        BrowserRoute,
+        StateRestoration
+    }
     private ProfileMediaEditState? CommunityHeaderBannerState => string.IsNullOrWhiteSpace(_selectedCommunity?.BannerUrl) ||
         _selectedCommunity.BannerIsProcessed ? null : new(_selectedCommunity.BannerUrl,
             Math.Max(1, _selectedCommunity.BannerWidth), Math.Max(1, _selectedCommunity.BannerHeight),

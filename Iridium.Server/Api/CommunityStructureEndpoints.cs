@@ -158,8 +158,9 @@ public static partial class CommunityStructureEndpoints
             var channel = channels[index];
             readStates.TryGetValue(channel.Id, out var lastReadAt);
             var activityChannelIds = channel.Kind == CommunityChannelKind.Forum
-                ? await db.CommunityForumPosts.Where(value => value.CommunityId == communityId &&
-                        value.ForumChannelId == channel.Id).Select(value => value.DiscussionChannelId).ToListAsync()
+                ? await db.ForumPostSubscriptions.Where(value => value.AccountId == session.AccountId &&
+                        value.ForumPost.CommunityId == communityId && value.ForumPost.ForumChannelId == channel.Id)
+                    .Select(value => value.ForumPost.DiscussionChannelId).ToListAsync()
                 : [channel.Id];
             var unread = channel.Kind == CommunityChannelKind.Forum
                 ? await db.ChannelMessages.CountAsync(message => message.CommunityId == communityId &&
@@ -169,8 +170,19 @@ public static partial class CommunityStructureEndpoints
                         state.LastReadAt >= message.CreatedAt))
                 : await db.ChannelMessages.CountAsync(value => value.CommunityId == communityId &&
                     value.ChannelId == channel.Id && value.AuthorAccountId != session.AccountId && value.CreatedAt > lastReadAt);
+            var mutedDiscussionIds = channel.Kind == CommunityChannelKind.Forum
+                ? await db.ForumPostSubscriptions.Where(value => value.AccountId == session.AccountId &&
+                        value.NotificationLevel == ForumPostNotificationLevel.Muted &&
+                        value.ForumPost.CommunityId == communityId && value.ForumPost.ForumChannelId == channel.Id)
+                    .Select(value => value.ForumPost.DiscussionChannelId).ToListAsync()
+                : [];
+            var mentionChannelIds = channel.Kind == CommunityChannelKind.Forum
+                ? await db.CommunityForumPosts.Where(value => value.CommunityId == communityId &&
+                    value.ForumChannelId == channel.Id && !mutedDiscussionIds.Contains(value.DiscussionChannelId))
+                    .Select(value => value.DiscussionChannelId).ToListAsync()
+                : activityChannelIds;
             var mentions = await db.CommunityMentionNotifications.CountAsync(value => value.AccountId == session.AccountId &&
-                value.CommunityId == communityId && activityChannelIds.Contains(value.ChannelId) && value.ReadAt == null);
+                value.CommunityId == communityId && mentionChannelIds.Contains(value.ChannelId) && value.ReadAt == null);
             channels[index] = channel with { UnreadCount = unread, MentionCount = mentions };
         }
         return Results.Ok(new CommunityStructureDto(communityId, access.Has(CommunityPermission.ManageChannels),

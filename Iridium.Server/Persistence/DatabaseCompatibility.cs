@@ -885,6 +885,21 @@ public static class DatabaseCompatibility
                 ON CommunityForumPostTags (PostId);
             CREATE INDEX IF NOT EXISTS IX_CommunityForumPostTags_TagId
                 ON CommunityForumPostTags (TagId);
+            CREATE TABLE IF NOT EXISTS ForumPostSubscriptions (
+                ForumPostId TEXT NOT NULL,
+                AccountId TEXT NOT NULL,
+                JoinedAt INTEGER NOT NULL,
+                NotificationLevel INTEGER NOT NULL DEFAULT 1,
+                CONSTRAINT PK_ForumPostSubscriptions PRIMARY KEY (ForumPostId, AccountId),
+                CONSTRAINT FK_ForumPostSubscriptions_CommunityForumPosts_ForumPostId
+                    FOREIGN KEY (ForumPostId) REFERENCES CommunityForumPosts (Id) ON DELETE CASCADE,
+                CONSTRAINT FK_ForumPostSubscriptions_Accounts_AccountId
+                    FOREIGN KEY (AccountId) REFERENCES Accounts (Id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS IX_ForumPostSubscriptions_AccountId
+                ON ForumPostSubscriptions (AccountId);
+            CREATE INDEX IF NOT EXISTS IX_ForumPostSubscriptions_ForumPostId
+                ON ForumPostSubscriptions (ForumPostId);
             """);
         await EnsureColumnAsync(db, "CommunityForumPosts", "EmbedProvider", "INTEGER NULL");
         await EnsureColumnAsync(db, "CommunityForumPosts", "EmbedUrl", "TEXT NULL");

@@ -92,6 +92,36 @@ public sealed class CommunityAuthorizationService
         CommunityPermission permission, IridiumDbContext db) =>
         (await GetChannelAccessAsync(communityId, channelId, accountId, db)).Has(permission);
 
+    public async Task<IReadOnlySet<Guid>> VisibleChannelIdsAsync(Guid communityId,
+        IReadOnlyCollection<Guid> channelIds, Guid accountId, CommunityPermission permission, IridiumDbContext db)
+    {
+        if (channelIds.Count == 0) return new HashSet<Guid>();
+        var baseAccess = await GetAccessAsync(communityId, accountId, db);
+        if (baseAccess.IsOwner || baseAccess.Has(CommunityPermission.Administrator))
+            return channelIds.ToHashSet();
+        var channels = await db.CommunityChannels.AsNoTracking().Where(value =>
+                value.CommunityId == communityId && channelIds.Contains(value.Id))
+            .Select(value => new { value.Id, value.CategoryId, value.PermissionsSyncedToCategory })
+            .ToListAsync();
+        var roleIds = await db.CommunityMemberRoles.AsNoTracking().Where(value =>
+                value.CommunityId == communityId && value.AccountId == accountId)
+            .Select(value => value.RoleId).ToListAsync();
+        var scopeIds = channels.Select(value => value.PermissionsSyncedToCategory && value.CategoryId.HasValue
+                ? value.CategoryId.Value : value.Id).Distinct().ToArray();
+        var overwrites = await db.CommunityPermissionOverwrites.AsNoTracking().Where(value =>
+                value.CommunityId == communityId && scopeIds.Contains(value.ScopeId))
+            .ToListAsync();
+        return channels.Where(channel =>
+        {
+            var type = channel.PermissionsSyncedToCategory && channel.CategoryId.HasValue
+                ? PermissionOverwriteScopeType.Category : PermissionOverwriteScopeType.Channel;
+            var id = type == PermissionOverwriteScopeType.Category ? channel.CategoryId!.Value : channel.Id;
+            var effective = Resolve(baseAccess.Permissions, overwrites.Where(value =>
+                value.ScopeType == type && value.ScopeId == id), roleIds, accountId);
+            return (effective & permission) == permission;
+        }).Select(value => value.Id).ToHashSet();
+    }
+
     public static CommunityPermission Resolve(CommunityPermission basePermissions,
         IEnumerable<CommunityPermissionOverwrite> overwrites, IReadOnlyCollection<Guid> roleIds, Guid accountId)
     {
