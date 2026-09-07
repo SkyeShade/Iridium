@@ -69,6 +69,49 @@ public sealed class ChannelMessagingSession(
     public event Action? Changed;
     public string? TypingIndicatorText => _typingIndicators.TextFor(CurrentTypingConversation);
 
+    public void ApplyThreadSummary(CommunityThreadDto thread)
+    {
+        if (thread.CreatedFromMessageId is not { } sourceMessageId) return;
+        var summary = new ThreadMessageSummaryDto(thread.Id, thread.ParentChannelId, thread.DiscussionChannelId,
+            thread.Name, thread.ReplyCount, thread.LastActivityAt, thread.IsArchived, thread.IsLocked,
+            thread.IsPrivate);
+        var changed = PatchThreadSummary(_messages, sourceMessageId, summary);
+        foreach (var hot in _channelHotStates.Values)
+        {
+            var messages = hot.Messages.ToList();
+            if (!PatchThreadSummary(messages, sourceMessageId, summary)) continue;
+            hot.Messages = messages;
+            changed = true;
+        }
+        if (changed) NotifyChanged();
+    }
+
+    public void ApplyThreadActivity(CommunityThreadActivityChangedEvent activity)
+    {
+        var changed = PatchThreadActivity(_messages, activity);
+        foreach (var hot in _channelHotStates.Values)
+        {
+            var messages = hot.Messages.ToList();
+            if (!PatchThreadActivity(messages, activity)) continue;
+            hot.Messages = messages;
+            changed = true;
+        }
+        if (changed) NotifyChanged();
+    }
+
+    public void RemoveThreadSummary(Guid threadId)
+    {
+        var changed = RemoveThreadSummary(_messages, threadId);
+        foreach (var hot in _channelHotStates.Values)
+        {
+            var messages = hot.Messages.ToList();
+            if (!RemoveThreadSummary(messages, threadId)) continue;
+            hot.Messages = messages;
+            changed = true;
+        }
+        if (changed) NotifyChanged();
+    }
+
     public IReadOnlyList<ChannelMessageDto> MessagesFor(Guid communityId, Guid channelId) =>
         CommunityId == communityId && ChannelId == channelId &&
         _channelStateScope is { Kind: MessageHistoryConversationKind.Channel, ConversationId: var stateChannelId } &&
@@ -899,6 +942,19 @@ public sealed class ChannelMessagingSession(
         _handlerRegistrations.Add(connection.On<CommunityForumPostChangedEvent>(CommunityForumHubContract.PostChanged,
             change => ReceiveSafely(CommunityForumHubContract.PostChanged,
                 () => nodeSession.ApplyCommunityForumPostChanged(change))));
+        foreach (var method in new[] { CommunityThreadHubContract.Created, CommunityThreadHubContract.Updated,
+                     CommunityThreadHubContract.Archived, CommunityThreadHubContract.Unarchived,
+                     CommunityThreadHubContract.Deleted })
+            _handlerRegistrations.Add(connection.On<CommunityThreadChangedEvent>(method,
+                change => ReceiveSafely(method, () => nodeSession.ApplyCommunityThreadChanged(change))));
+        _handlerRegistrations.Add(connection.On<CommunityThreadMembershipChangedEvent>(
+            CommunityThreadHubContract.MembershipChanged,
+            change => ReceiveSafely(CommunityThreadHubContract.MembershipChanged,
+                () => nodeSession.ApplyCommunityThreadMembershipChanged(change))));
+        _handlerRegistrations.Add(connection.On<CommunityThreadActivityChangedEvent>(
+            CommunityThreadHubContract.ActivityChanged,
+            change => ReceiveSafely(CommunityThreadHubContract.ActivityChanged,
+                () => nodeSession.ApplyCommunityThreadActivityChanged(change))));
         _handlerRegistrations.Add(connection.On<ProfileUpdatedEvent>(ProfileHubContract.Updated,
             change => ReceiveSafely(ProfileHubContract.Updated, () => nodeSession.ApplyProfileUpdated(change))));
         logger.LogInformation("Shared realtime connection to {NodeAddress} is active for messaging.", client.NodeAddress);
@@ -1962,6 +2018,35 @@ public sealed class ChannelMessagingSession(
             SortMessages(_messages);
         }
         if (notify) NotifyChanged();
+    }
+
+    private static bool PatchThreadSummary(List<ChannelMessageDto> messages, Guid sourceMessageId,
+        ThreadMessageSummaryDto summary)
+    {
+        var index = messages.FindIndex(value => value.Id == sourceMessageId);
+        if (index < 0 || messages[index].Thread == summary) return false;
+        messages[index] = messages[index] with { Thread = summary };
+        return true;
+    }
+
+    private static bool PatchThreadActivity(List<ChannelMessageDto> messages,
+        CommunityThreadActivityChangedEvent activity)
+    {
+        var index = messages.FindIndex(value => value.Thread?.ThreadId == activity.ThreadId);
+        if (index < 0 || messages[index].Thread is not { } summary) return false;
+        messages[index] = messages[index] with
+        {
+            Thread = summary with { ReplyCount = activity.ReplyCount, LastActivityAt = activity.LastActivityAt }
+        };
+        return true;
+    }
+
+    private static bool RemoveThreadSummary(List<ChannelMessageDto> messages, Guid threadId)
+    {
+        var index = messages.FindIndex(value => value.Thread?.ThreadId == threadId);
+        if (index < 0) return false;
+        messages[index] = messages[index] with { Thread = null };
+        return true;
     }
 
     private void PrimeMessageSnapshots(ChannelMessageDto message)

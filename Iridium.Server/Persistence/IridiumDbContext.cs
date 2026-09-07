@@ -23,6 +23,8 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
     public DbSet<CommunityForumTag> CommunityForumTags => Set<CommunityForumTag>();
     public DbSet<CommunityForumPostTag> CommunityForumPostTags => Set<CommunityForumPostTag>();
     public DbSet<ForumPostSubscription> ForumPostSubscriptions => Set<ForumPostSubscription>();
+    public DbSet<CommunityThread> CommunityThreads => Set<CommunityThread>();
+    public DbSet<CommunityThreadMember> CommunityThreadMembers => Set<CommunityThreadMember>();
     public DbSet<CommunityPermissionOverwrite> CommunityPermissionOverwrites => Set<CommunityPermissionOverwrite>();
     public DbSet<ChannelMessage> ChannelMessages => Set<ChannelMessage>();
     public DbSet<CommunityChannelReadState> CommunityChannelReadStates => Set<CommunityChannelReadState>();
@@ -228,6 +230,7 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
         channel.Property(value => value.AllowDocumentEmbeds).HasDefaultValue(false);
         channel.Property(value => value.EmbedUrl).HasMaxLength(320);
         channel.HasIndex(value => new { value.CommunityId, value.ParentForumChannelId });
+        channel.HasIndex(value => new { value.CommunityId, value.ParentThreadChannelId });
         channel.HasIndex(value => new { value.CommunityId, value.CategoryId, value.Position });
         channel.HasOne(value => value.Community).WithMany(value => value.Channels).HasForeignKey(value => value.CommunityId);
         channel.HasOne(value => value.Category).WithMany(value => value.Channels)
@@ -295,6 +298,43 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
         forumSubscription.HasOne(value => value.ForumPost).WithMany(value => value.Subscriptions)
             .HasForeignKey(value => value.ForumPostId).OnDelete(DeleteBehavior.Cascade);
         forumSubscription.HasOne(value => value.Account).WithMany()
+            .HasForeignKey(value => value.AccountId).OnDelete(DeleteBehavior.Cascade);
+
+        var thread = modelBuilder.Entity<CommunityThread>();
+        thread.HasKey(value => value.Id);
+        thread.Property(value => value.Name).HasMaxLength(CommunityThreadLimits.MaximumNameLength);
+        thread.Property(value => value.CreatedAt)
+            .HasConversion(value => value.UtcTicks, value => new DateTimeOffset(value, TimeSpan.Zero));
+        thread.Property(value => value.ArchivedAt)
+            .HasConversion(value => value.HasValue ? value.Value.UtcTicks : (long?)null,
+                value => value.HasValue ? new DateTimeOffset(value.Value, TimeSpan.Zero) : null);
+        thread.Property(value => value.LastActivityAt)
+            .HasConversion(value => value.UtcTicks, value => new DateTimeOffset(value, TimeSpan.Zero));
+        thread.HasIndex(value => value.DiscussionChannelId).IsUnique();
+        thread.HasIndex(value => new { value.CommunityId, value.ParentChannelId, value.IsArchived, value.LastActivityAt });
+        thread.HasIndex(value => value.CreatedFromMessageId).IsUnique().HasFilter("CreatedFromMessageId IS NOT NULL");
+        thread.HasOne(value => value.Community).WithMany().HasForeignKey(value => value.CommunityId)
+            .OnDelete(DeleteBehavior.Cascade);
+        thread.HasOne(value => value.ParentChannel).WithMany()
+            .HasForeignKey(value => new { value.CommunityId, value.ParentChannelId })
+            .HasPrincipalKey(value => new { value.CommunityId, value.Id }).OnDelete(DeleteBehavior.Cascade);
+        thread.HasOne(value => value.DiscussionChannel).WithMany()
+            .HasForeignKey(value => new { value.CommunityId, value.DiscussionChannelId })
+            .HasPrincipalKey(value => new { value.CommunityId, value.Id }).OnDelete(DeleteBehavior.Cascade);
+        thread.HasOne(value => value.OwnerAccount).WithMany().HasForeignKey(value => value.OwnerAccountId)
+            .OnDelete(DeleteBehavior.Restrict);
+        thread.HasOne(value => value.CreatedFromMessage).WithMany().HasForeignKey(value => value.CreatedFromMessageId)
+            .OnDelete(DeleteBehavior.SetNull);
+
+        var threadMember = modelBuilder.Entity<CommunityThreadMember>();
+        threadMember.HasKey(value => new { value.ThreadId, value.AccountId });
+        threadMember.Property(value => value.JoinedAt)
+            .HasConversion(value => value.UtcTicks, value => new DateTimeOffset(value, TimeSpan.Zero));
+        threadMember.HasIndex(value => value.AccountId);
+        threadMember.HasIndex(value => value.ThreadId);
+        threadMember.HasOne(value => value.Thread).WithMany(value => value.Members)
+            .HasForeignKey(value => value.ThreadId).OnDelete(DeleteBehavior.Cascade);
+        threadMember.HasOne(value => value.Account).WithMany()
             .HasForeignKey(value => value.AccountId).OnDelete(DeleteBehavior.Cascade);
 
         var overwrite = modelBuilder.Entity<CommunityPermissionOverwrite>();

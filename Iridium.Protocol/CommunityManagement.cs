@@ -29,12 +29,18 @@ public enum CommunityPermission : long
     CreateForumPosts = 1L << 22,
     UseExternalEmoji = 1L << 23,
     EmbedDocumentsInForumPosts = 1L << 24,
+    ManageThreads = 1L << 25,
+    CreatePublicThreads = 1L << 26,
+    CreatePrivateThreads = 1L << 27,
+    SendMessagesInThreads = 1L << 28,
+    BypassSlowmode = 1L << 29,
     Administrator = 1L << 62,
     All = ViewChannels | SendMessages | ManageMessages | ManageChannels | ManageCommunity |
           ManageRoles | CreateInvites | KickMembers | BanMembers | MentionEveryone | ConnectVoice | SpeakVoice |
           ShareScreen | ManagePermissions | ReadMessageHistory | AttachFiles | EmbedLinks | AddReactions |
           MuteMembers | DeafenMembers | MoveMembers | ManageExpressions | CreateForumPosts | UseExternalEmoji |
-          EmbedDocumentsInForumPosts
+          EmbedDocumentsInForumPosts | ManageThreads | CreatePublicThreads | CreatePrivateThreads |
+          SendMessagesInThreads | BypassSlowmode
 }
 
 public enum PermissionOverwriteScopeType { Category, Channel }

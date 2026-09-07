@@ -25,6 +25,7 @@
                      OnEditProfile="OnEditProfile" OnEditAvatars="OnEditAvatars"
                      OnCommunityProfileChanged="OnCommunityProfileChanged" OnMessage="OnMessage" OnMemberRolesChanged="OnMemberRolesChanged"
                      OnMention="MentionMemberAsync"
+                     CanCreateThread="CanCreateThread" OnCreateThread="OnCreateThread" OnOpenThread="OnOpenThread"
                      OnReply="BeginReply" Edit="EditMessageAsync" OnDelete="DeleteMessageAsync"
                      OnRetryLocal="RetryMessageAsync" OnRemoveLocal="RemoveLocalMessage"
                      OnOpenForwardSource="OnOpenForwardSource"
@@ -115,6 +116,9 @@
     [Parameter] public bool CanSend { get; set; } = true;
     [Parameter] public bool CanAttachFiles { get; set; } = true;
     [Parameter] public bool CanMentionEveryone { get; set; }
+    [Parameter] public bool CanCreateThread { get; set; }
+    [Parameter] public EventCallback<ChannelMessageDto> OnCreateThread { get; set; }
+    [Parameter] public EventCallback<ThreadMessageSummaryDto> OnOpenThread { get; set; }
     [Parameter] public string DraftConversationKind { get; set; } = "channel";
     [Parameter] public Guid? DraftConversationId { get; set; }
     [Parameter] public Guid? RootMessageId { get; set; }

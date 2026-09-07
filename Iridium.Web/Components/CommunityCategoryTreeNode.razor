@@ -13,7 +13,7 @@
             if (item.Channel is { } channel)
             {
                 <ChannelRow @key="item.Id" Channel="channel" CanManage="CanManage" CanManageForumTags="@MayManageForumTags(channel)" CanManagePermissions="@MayManagePermissions(channel.EffectivePermissions)" Depth="@(Depth + 1)"
-                            Selected="@(SelectedChannelId == channel.Id && (channel.Kind != CommunityChannelKind.Forum || SelectedForumPostId is null))" OnSelect="OnSelectChannel"
+                            Selected="@(SelectedChannelId == channel.Id && SelectedThreadId is null && (channel.Kind != CommunityChannelKind.Forum || SelectedForumPostId is null))" OnSelect="OnSelectChannel"
                             HasChildren="@(channel.Kind == CommunityChannelKind.Forum && FollowedPosts.Any(value => value.ForumChannelId == channel.Id))"
                             ChildrenCollapsed="ForumChildrenCollapsed.Contains(channel.Id)"
                             OnToggleChildren="() => OnToggleForumChildren.InvokeAsync(channel)"
@@ -25,6 +25,11 @@
                             StreamThumbnails="StreamThumbnails"
                             OnEdit="OnEditChannel" OnDelete="OnDeleteChannel"
                             OnPermissions="OnChannelPermissions" />
+                @if (channel.Kind == CommunityChannelKind.Text && ThreadChildren(channel.Id).Count > 0)
+                {
+                    <ThreadSidebarChildren Threads="ThreadChildren(channel.Id)" SelectedThreadId="SelectedThreadId"
+                                           Depth="@(Depth + 1)" OnSelect="OnSelectThread" />
+                }
                 @if (channel.Kind == CommunityChannelKind.Forum && !ForumChildrenCollapsed.Contains(channel.Id))
                 {
                     <ForumPostSidebarChildren Forum="channel" Posts="@FollowedPosts.Where(value => value.ForumChannelId == channel.Id).ToArray()"
@@ -45,6 +50,8 @@
                                            FollowedPosts="FollowedPosts" SelectedForumPostId="SelectedForumPostId"
                                            ForumChildrenCollapsed="ForumChildrenCollapsed"
                                            OnToggleForumChildren="OnToggleForumChildren" OnSelectForumPost="OnSelectForumPost"
+                                           JoinedThreads="JoinedThreads" SelectedThreadId="SelectedThreadId"
+                                           OnSelectThread="OnSelectThread"
                                            OnCreateChannel="OnCreateChannel" OnCreateSubcategory="OnCreateSubcategory"
                                            OnDelete="OnDelete" OnSelectChannel="OnSelectChannel"
                                            OnEditChannel="OnEditChannel" OnDeleteChannel="OnDeleteChannel"
@@ -63,6 +70,8 @@
     [Parameter] public Guid? SelectedChannelId { get; set; }
     [Parameter] public Guid? SelectedForumPostId { get; set; }
     [Parameter] public IReadOnlyList<CommunityForumPostDto> FollowedPosts { get; set; } = [];
+    [Parameter] public IReadOnlyList<CommunityThreadDto> JoinedThreads { get; set; } = [];
+    [Parameter] public Guid? SelectedThreadId { get; set; }
     [Parameter, EditorRequired] public required IReadOnlySet<Guid> ForumChildrenCollapsed { get; set; }
     [Parameter] public int Depth { get; set; } = 1;
     [Parameter] public bool CanManage { get; set; }
@@ -82,6 +91,7 @@
     [Parameter] public EventCallback<CommunityChannelDto> OnSelectChannel { get; set; }
     [Parameter] public EventCallback<CommunityChannelDto> OnToggleForumChildren { get; set; }
     [Parameter] public EventCallback<CommunityForumPostDto> OnSelectForumPost { get; set; }
+    [Parameter] public EventCallback<CommunityThreadDto> OnSelectThread { get; set; }
     [Parameter] public EventCallback<CommunityChannelDto> OnEditChannel { get; set; }
     [Parameter] public EventCallback<CommunityChannelDto> OnDeleteChannel { get; set; }
     [Parameter] public EventCallback<CommunityChannelDto> OnChannelPermissions { get; set; }
@@ -112,4 +122,7 @@
         (permissions & CommunityPermission.ManagePermissions) != 0;
     private static bool MayManageForumTags(CommunityChannelDto channel) => channel.Kind == CommunityChannelKind.Forum &&
         (channel.EffectivePermissions & (CommunityPermission.Administrator | CommunityPermission.ManageMessages)) != 0;
+    private IReadOnlyList<CommunityThreadDto> ThreadChildren(Guid channelId) => JoinedThreads
+        .Where(value => value.ParentChannelId == channelId && !value.IsArchived)
+        .OrderByDescending(value => value.LastActivityAt).ToArray();
 }

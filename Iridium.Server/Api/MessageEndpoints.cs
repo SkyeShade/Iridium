@@ -136,7 +136,8 @@ public static class MessageEndpoints
             return Results.BadRequest(new { message = "The history cursor is invalid." });
 
         if (around is { } targetId)
-            return await AroundAsync(communityId, channelId, targetId, take, db, reactions, session.AccountId);
+            return await AroundAsync(communityId, channelId, targetId, take, db, reactions, session.AccountId,
+                channelAccess.Has(CommunityPermission.ManageThreads));
 
         var query = db.ChannelMessages.AsNoTracking()
             .Where(value => value.CommunityId == communityId && value.ChannelId == channelId && !value.IsDeleted);
@@ -162,14 +163,16 @@ public static class MessageEndpoints
             .Select(ChannelMessageMapper.ToDto).ToList();
         var profiled = await ChannelMessageMapper.ResolveCommunityProfilesAsync(messages, db);
         var named = await ChannelMessageMapper.ResolveMentionNamesAsync(profiled, db);
-        var resolved = await reactions.AttachSummariesAsync(named, session.AccountId);
+        var resolved = await AttachThreadSummariesAsync(
+            await reactions.AttachSummariesAsync(named, session.AccountId), db, session.AccountId,
+            channelAccess.Has(CommunityPermission.ManageThreads));
         var olderCursor = resolved.Count == 0 ? null : MessageHistoryCursor.Encode(resolved[0].CreatedAt, resolved[0].Id);
         return Results.Ok(new MessageHistoryPage<ChannelMessageDto>(resolved, olderCursor, hasOlder));
     }
 
     private static async Task<IResult> AroundAsync(
         Guid communityId, Guid channelId, Guid targetId, int take, IridiumDbContext db,
-        MessageReactionService reactions, Guid accountId)
+        MessageReactionService reactions, Guid accountId, bool canManageThreads)
     {
         var target = await db.ChannelMessages.AsNoTracking()
             .Include(value => value.AuthorAccount)
@@ -205,7 +208,8 @@ public static class MessageEndpoints
         var messages = entities.Select(ChannelMessageMapper.ToDto).ToList();
         var profiled = await ChannelMessageMapper.ResolveCommunityProfilesAsync(messages, db);
         var named = await ChannelMessageMapper.ResolveMentionNamesAsync(profiled, db);
-        var resolved = await reactions.AttachSummariesAsync(named, accountId);
+        var resolved = await AttachThreadSummariesAsync(await reactions.AttachSummariesAsync(named, accountId), db,
+            accountId, canManageThreads);
         var olderCursor = resolved.Count == 0 ? null : MessageHistoryCursor.Encode(resolved[0].CreatedAt, resolved[0].Id);
         return Results.Ok(new MessageHistoryPage<ChannelMessageDto>(resolved, olderCursor, hasOlder, true, targetId));
     }
@@ -256,15 +260,21 @@ public static class MessageEndpoints
         var hasMore = found.Count > take;
         if (hasMore) found.RemoveAt(found.Count - 1);
         var forumMap = await ForumSearchMapAsync(found.Select(value => value.ChannelId).ToArray(), db);
-        var results = found.Select(value => new MessageSearchResultDto(value.Id, value.CommunityId,
-            forumMap.TryGetValue(value.ChannelId, out var forum) ? forum.ForumChannelId : value.ChannelId, null,
-            forum?.ChannelName ?? value.Channel.Name, new(value.AuthorAccountId, value.AuthorAccount.Username,
+        var threadMap = await ThreadSearchMapAsync(found.Select(value => value.ChannelId).ToArray(), db);
+        var results = found.Select(value =>
+        {
+            forumMap.TryGetValue(value.ChannelId, out var forum);
+            threadMap.TryGetValue(value.ChannelId, out var thread);
+            return new MessageSearchResultDto(value.Id, value.CommunityId,
+            forum?.ForumChannelId ?? thread?.ParentChannelId ?? value.ChannelId, null,
+            forum?.ChannelName ?? thread?.ParentChannelName ?? value.Channel.Name, new(value.AuthorAccountId, value.AuthorAccount.Username,
                 value.AuthorDisplayNameSnapshot ?? value.AuthorAccount.DisplayName,
                 AvatarRevision: value.AuthorAvatarRevisionSnapshot ?? value.AuthorAccount.AvatarRevision,
                 AvatarSnapshotMessageId: value.AuthorAvatarObjectKeySnapshot is null ? null : value.Id,
                 HasHistoricalSnapshot: value.AuthorDisplayNameSnapshot is not null),
             SearchContent(value.Content, value.ForwardedMessageSnapshot?.Content), value.CreatedAt,
-            forum?.PostId)).ToArray();
+            forum?.PostId, thread?.ThreadId, thread?.ThreadName);
+        }).ToArray();
         var next = results.Length == 0 ? null : MessageHistoryCursor.Encode(results[^1].CreatedAt, results[^1].MessageId);
         return Results.Ok(new MessageSearchPageDto(results, next, hasMore));
     }
@@ -324,15 +334,21 @@ public static class MessageEndpoints
         var hasMore = found.Count > take;
         if (hasMore) found.RemoveAt(found.Count - 1);
         var forumMap = await ForumSearchMapAsync(found.Select(value => value.ChannelId).ToArray(), db);
-        var results = found.Select(value => new MessageSearchResultDto(value.Id, value.CommunityId,
-            forumMap.TryGetValue(value.ChannelId, out var forum) ? forum.ForumChannelId : value.ChannelId, null,
-            forum?.ChannelName ?? value.Channel.Name, new(value.AuthorAccountId, value.AuthorAccount.Username,
+        var threadMap = await ThreadSearchMapAsync(found.Select(value => value.ChannelId).ToArray(), db);
+        var results = found.Select(value =>
+        {
+            forumMap.TryGetValue(value.ChannelId, out var forum);
+            threadMap.TryGetValue(value.ChannelId, out var thread);
+            return new MessageSearchResultDto(value.Id, value.CommunityId,
+            forum?.ForumChannelId ?? thread?.ParentChannelId ?? value.ChannelId, null,
+            forum?.ChannelName ?? thread?.ParentChannelName ?? value.Channel.Name, new(value.AuthorAccountId, value.AuthorAccount.Username,
                 value.AuthorDisplayNameSnapshot ?? value.AuthorAccount.DisplayName,
                 AvatarRevision: value.AuthorAvatarRevisionSnapshot ?? value.AuthorAccount.AvatarRevision,
                 AvatarSnapshotMessageId: value.AuthorAvatarObjectKeySnapshot is null ? null : value.Id,
                 HasHistoricalSnapshot: value.AuthorDisplayNameSnapshot is not null),
             SearchContent(value.Content, value.ForwardedMessageSnapshot?.Content), value.CreatedAt,
-            forum?.PostId)).ToArray();
+            forum?.PostId, thread?.ThreadId, thread?.ThreadName);
+        }).ToArray();
         var next = results.Length == 0 ? null : MessageHistoryCursor.Encode(results[^1].CreatedAt, results[^1].MessageId);
         return Results.Ok(new MessageSearchPageDto(results, next, hasMore));
     }
@@ -342,6 +358,8 @@ public static class MessageEndpoints
         : string.IsNullOrWhiteSpace(note) ? forwarded : $"{note}\n{forwarded}";
 
     private sealed record ForumSearchTarget(Guid PostId, Guid ForumChannelId, string ChannelName);
+    private sealed record ThreadSearchTarget(Guid ThreadId, Guid ParentChannelId, string ParentChannelName,
+        string ThreadName);
 
     private static async Task<Dictionary<Guid, ForumSearchTarget>> ForumSearchMapAsync(
         IReadOnlyCollection<Guid> discussionChannelIds, IridiumDbContext db) =>
@@ -352,6 +370,36 @@ public static class MessageEndpoints
                 value.DiscussionChannelId, value.Id, value.ForumChannelId, ChannelName = value.ForumChannel.Name
             }).ToDictionaryAsync(value => value.DiscussionChannelId,
                 value => new ForumSearchTarget(value.Id, value.ForumChannelId, value.ChannelName));
+
+    private static async Task<Dictionary<Guid, ThreadSearchTarget>> ThreadSearchMapAsync(
+        IReadOnlyCollection<Guid> discussionChannelIds, IridiumDbContext db) =>
+        await db.CommunityThreads.AsNoTracking().Where(value =>
+                discussionChannelIds.Contains(value.DiscussionChannelId))
+            .Select(value => new
+            {
+                value.DiscussionChannelId, value.Id, value.ParentChannelId,
+                ParentChannelName = value.ParentChannel.Name, ThreadName = value.Name
+            }).ToDictionaryAsync(value => value.DiscussionChannelId,
+                value => new ThreadSearchTarget(value.Id, value.ParentChannelId, value.ParentChannelName,
+                    value.ThreadName));
+
+    private static async Task<IReadOnlyList<ChannelMessageDto>> AttachThreadSummariesAsync(
+        IReadOnlyList<ChannelMessageDto> messages, IridiumDbContext db, Guid accountId, bool canManageThreads)
+    {
+        if (messages.Count == 0) return messages;
+        var messageIds = messages.Select(value => value.Id).ToArray();
+        var threads = await db.CommunityThreads.AsNoTracking().Where(value =>
+                value.CreatedFromMessageId != null && messageIds.Contains(value.CreatedFromMessageId.Value) &&
+                (!value.IsPrivate || canManageThreads || value.OwnerAccountId == accountId ||
+                 value.Members.Any(member => member.AccountId == accountId)))
+            .ToDictionaryAsync(value => value.CreatedFromMessageId!.Value,
+                value => new ThreadMessageSummaryDto(value.Id, value.ParentChannelId, value.DiscussionChannelId,
+                    value.Name, value.ReplyCount, value.LastActivityAt, value.IsArchived, value.IsLocked,
+                    value.IsPrivate));
+        return messages.Select(value => threads.TryGetValue(value.Id, out var thread)
+            ? value with { Thread = thread }
+            : value).ToArray();
+    }
 
     private static async Task<List<Guid>> AccessibleTextChannelIdsAsync(Guid communityId, Guid accountId,
         IridiumDbContext db, CommunityAuthorizationService authorization)

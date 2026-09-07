@@ -1,6 +1,7 @@
 @page "/"
 @page "/invite/{InviteToken}"
 @page "/recover-password"
+@page "/communities/{CommunityRouteId:guid}/channels/{ChannelRouteId:guid}/threads/{ThreadRouteId:guid}"
 @implements IDisposable
 @using Iridium.Client.Core
 @using Iridium.Protocol
@@ -158,6 +159,7 @@ else
                                   CommunityId="_selectedCommunity.Id" SelectedChannel="_selectedChannel"
                                   NodeAuthority="@(Session.SelectedNode!.PublicAuthority)"
                                   SelectedForumPostId="_selectedForumPostId" OnForumPostSelected="SelectForumPostFromSidebarAsync"
+                                  SelectedThreadId="_selectedThread?.Id" OnThreadSelected="OpenThreadAsync"
                                   OnChannelSelected="SelectChannelFromNavigationAsync"/>
             }
         </SidebarContent>
@@ -218,9 +220,19 @@ else
             }
             else
             {
-                @if (_selectedChannel?.Kind != CommunityChannelKind.Forum)
+                @if (_selectedChannel?.Kind != CommunityChannelKind.Forum && _selectedThread is null)
                 {
-                    <div class="content-header"><strong>@(_selectedChannel is null ? _selectedCommunity.Name : $"# {_selectedChannel.Name}")</strong></div>
+                    <div class="content-header"><strong>@(_selectedChannel is null ? _selectedCommunity.Name : $"# {_selectedChannel.Name}")</strong>
+                        @if (_selectedChannel?.Kind == CommunityChannelKind.Text)
+                        {
+                            <span class="channel-header-actions">
+                                <button @ref="_threadBrowserAnchor" class="channel-header-action" type="button" title="Threads"
+                                        aria-label="Threads" aria-expanded="@_threadBrowserOpen" @onclick="OpenThreadBrowser">
+                                    <Icon Name="thread" />
+                                </button>
+                            </span>
+                        }
+                    </div>
                 }
                 @if (_selectedChannel is null)
                 {
@@ -228,6 +240,20 @@ else
                         <div class="welcome-icon">@CommunityInitials(_selectedCommunity.Name)</div>
                         <h1>@_selectedCommunity.Name</h1>
                         <p>@(_selectedCommunity.Description ?? "Choose a text channel or create one to get started.")</p></div>
+                }
+                else if (_selectedThread is { } selectedThread)
+                {
+                    <ThreadConversationView @key="selectedThread.Id" Community="_selectedCommunity"
+                                            ParentChannel="_selectedChannel" Thread="selectedThread"
+                                            CurrentAccountId="Session.Account!.Id" NodeAuthority="@(Session.SelectedNode!.PublicAuthority)"
+                                            CommunityManagement="CommunityState.Management" IsMobileLayout="_isMobileLayout"
+                                            TargetMessageId="_searchTargetMessageId"
+                                            FocusRequest="@(_composerFocusChannelId == selectedThread.DiscussionChannelId ? _composerFocusRequest : 0)"
+                                            OnFocusConsumed="ComposerFocusConsumed" OnBack="CloseThreadAsync"
+                                            OnChanged="ThreadChanged" OnDeleted="CloseThreadAsync"
+                                            OnEditProfile="OpenProfileEditor" OnEditAvatars="OpenAvatarManager"
+                                            OnCommunityProfileChanged="RefreshCommunityProfileAsync" OnMessage="OpenDirectMessageAsync"
+                                            OnOpenForwardSource="OpenForwardSourceAsync" OnMemberRolesChanged="SetCommunityMemberRolesAsync" />
                 }
                 else if (_selectedChannel.Kind == CommunityChannelKind.Forum)
                 {
@@ -266,6 +292,8 @@ else
                                  CanSend="@HasSelectedChannelPermission(CommunityPermission.SendMessages)"
                                  CanAttachFiles="@HasSelectedChannelPermission(CommunityPermission.AttachFiles)"
                                  CanMentionEveryone="@HasSelectedChannelPermission(CommunityPermission.MentionEveryone)"
+                                 CanCreateThread="@(HasSelectedChannelPermission(CommunityPermission.CreatePublicThreads) || HasSelectedChannelPermission(CommunityPermission.CreatePrivateThreads))"
+                                 OnCreateThread="CreateThreadFromMessage" OnOpenThread="OpenThreadSummaryAsync"
                                  TargetMessageId="_searchTargetMessageId"/>
                 }
             }
@@ -290,6 +318,14 @@ else
             }
         </RightSidebar>
     </ApplicationShell>
+
+    @if (_threadBrowserOpen && _selectedCommunity is not null &&
+         _selectedChannel is { Kind: CommunityChannelKind.Text } threadParent)
+    {
+        <ThreadBrowser @key="_threadFromMessageId" Channel="threadParent" CreatedFromMessageId="_threadFromMessageId"
+                       Anchor="_threadBrowserAnchor" IsMobile="_isMobileLayout" OnOpen="OpenThreadAsync"
+                       OnClose="() => _threadBrowserOpen = false" />
+    }
 
     @if (!_isMobileLayout && VoiceSessions.WatchedStream is not null && VoiceSessions.ViewerMode == StreamViewerMode.Floating)
     {
@@ -374,6 +410,9 @@ else
 @code {
     [Parameter] public string? InviteToken { get; set; }
     [Parameter, SupplyParameterFromQuery(Name = "token")] public string? RecoveryTokenQuery { get; set; }
+    [Parameter] public Guid? CommunityRouteId { get; set; }
+    [Parameter] public Guid? ChannelRouteId { get; set; }
+    [Parameter] public Guid? ThreadRouteId { get; set; }
     private IReadOnlyList<NodeAvailability> _nodeAvailability = [];
     private bool _initialized;
     private bool _busy;
@@ -386,6 +425,10 @@ else
     private bool _showCommunitySettings;
     private bool _showQuickInvite;
     private bool _showCommunityMenu;
+    private bool _threadBrowserOpen;
+    private bool _threadRouteOpening;
+    private Guid? _dismissedThreadRouteId;
+    private Guid? _threadFromMessageId;
     private CommunityMemberDto? CurrentCommunityMember => _selectedCommunity is null ? null :
         CommunityState.Management?.Members.FirstOrDefault(value => value.AccountId == Session.Account?.Id);
     private string PlayerDisplayName => CurrentCommunityMember?.DisplayName ?? Session.Account!.DisplayName;
@@ -399,6 +442,7 @@ else
     private string? _error;
     private CommunityDto? _selectedCommunity;
     private CommunityChannelDto? _selectedChannel;
+    private CommunityThreadDto? _selectedThread;
     private ForumChannelView? _forumView;
     private bool _forumPostOpen;
     private bool _forumSubViewOpen;
@@ -406,6 +450,7 @@ else
     private Guid? _selectedForumPostId;
     private Guid? _selectedForumDiscussionChannelId;
     private Guid? _searchTargetMessageId;
+    private ElementReference _threadBrowserAnchor;
     private DirectConversationDto? _selectedDirectConversation;
     private DirectMessageView? _directMessageView;
     private string? _quickInviteUrl;
@@ -495,6 +540,8 @@ else
         CommunityState.RealtimeRefreshFailed += OnCommunityRefreshFailed;
         Session.PresenceChanged += OnPresenceChanged;
         Session.CommunityChannelActivity += OnCommunityChannelActivity;
+        Session.CommunityThreadChanged += OnCommunityThreadChanged;
+        Session.CommunityThreadActivityChanged += OnCommunityThreadActivityChanged;
         Messaging.Changed += OnSessionChanged;
         VoiceSessions.Changed += OnSessionChanged;
         MobileCallPresentation.Changed += OnMobileCallPresentationChanged;
@@ -520,9 +567,28 @@ else
     }
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (!firstRender) return;
-        _faviconReady = true;
-        await UpdateFaviconAsync();
+        if (firstRender)
+        {
+            _faviconReady = true;
+            await UpdateFaviconAsync();
+        }
+        if (ThreadRouteId is null) _dismissedThreadRouteId = null;
+        if (!_threadRouteOpening && _selectedThread is null && Session.IsAuthenticated &&
+            CommunityRouteId is { } communityId && ChannelRouteId is { } channelId &&
+            ThreadRouteId is { } threadId && _dismissedThreadRouteId != threadId)
+        {
+            _threadRouteOpening = true;
+            try
+            {
+                var community = Session.Communities.FirstOrDefault(value => value.Id == communityId);
+                if (community is null) { _error = "Thread not found."; return; }
+                if (_selectedCommunity?.Id != communityId) await SelectCommunity(community);
+                var thread = await CommunityState.GetThreadAsync(channelId, threadId);
+                await OpenThreadAsync(thread);
+            }
+            catch (NodeApiException) { _error = "Thread not found."; }
+            finally { _threadRouteOpening = false; }
+        }
     }
 
     private string? _recoveryToken;
@@ -836,6 +902,8 @@ else
         _selectedCommunity = community;
         if (community is not null && mobilePanelSource is not null) ShowMobileConversation(mobilePanelSource);
         _selectedChannel = null;
+        _selectedThread = null;
+        _threadBrowserOpen = false;
         _selectedForumPostId = null;
         _selectedForumDiscussionChannelId = null;
         _searchTargetMessageId = null;
@@ -884,6 +952,8 @@ else
         VoiceSessions.MinimizeWatchedStream();
         _searchTargetMessageId = searchTargetMessageId;
         _selectedChannel = channel;
+        _selectedThread = null;
+        _threadBrowserOpen = false;
         if (mobilePanelSource is not null) ShowMobileConversation(mobilePanelSource);
         _forumPostOpen = false;
         _forumSubViewOpen = false;
@@ -909,6 +979,52 @@ else
     private Task SelectForumPostFromSidebarAsync(CommunityForumPostDto post) =>
         OpenForumPostAsync(post.ForumChannelId, post.Id, ForumPostNavigationSource.SidebarChild,
             post.DiscussionChannelId, explicitNavigation: true);
+
+    private Task OpenThreadAsync(CommunityThreadDto thread) => OpenThreadAsync(thread, null);
+    private async Task OpenThreadAsync(CommunityThreadDto thread, Guid? targetMessageId)
+    {
+        var parent = CommunityState.Channels.FirstOrDefault(value => value.Id == thread.ParentChannelId &&
+            value.Kind == CommunityChannelKind.Text);
+        if (parent is null) return;
+        Messaging.ApplyThreadSummary(thread);
+        await SelectChannelAsync(parent, mobilePanelSource: _isMobileLayout ? "Thread" : null);
+        _selectedThread = thread;
+        _dismissedThreadRouteId = null;
+        _threadBrowserOpen = false;
+        _searchTargetMessageId = targetMessageId;
+        if (!_isMobileLayout) RequestChannelComposerFocus(thread.DiscussionChannelId);
+        CommunityState.MarkChannelRead(thread.DiscussionChannelId);
+        var route = $"communities/{thread.CommunityId}/channels/{thread.ParentChannelId}/threads/{thread.Id}";
+        if (!Navigation.Uri.EndsWith(route, StringComparison.OrdinalIgnoreCase)) Navigation.NavigateTo(route);
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void OpenThreadBrowser() { _threadFromMessageId = null; _threadBrowserOpen = true; }
+    private void CreateThreadFromMessage(ChannelMessageDto message)
+    { _threadFromMessageId = message.Id; _threadBrowserOpen = true; }
+    private async Task OpenThreadSummaryAsync(ThreadMessageSummaryDto summary)
+    {
+        await OpenThreadAsync(await CommunityState.GetThreadAsync(summary.ParentChannelId, summary.ThreadId));
+    }
+
+    private async Task CloseThreadAsync()
+    {
+        var parent = _selectedChannel;
+        _dismissedThreadRouteId = _selectedThread?.Id ?? ThreadRouteId;
+        _threadRouteOpening = true;
+        try
+        {
+            await SelectChannelFromNavigationAsync(parent);
+            Navigation.NavigateTo(Navigation.BaseUri);
+        }
+        finally { _threadRouteOpening = false; }
+    }
+
+    private void ThreadChanged(CommunityThreadDto thread)
+    {
+        Messaging.ApplyThreadSummary(thread);
+        if (_selectedThread?.Id == thread.Id) _selectedThread = thread;
+    }
 
     private async Task OpenForumPostAsync(Guid forumId, Guid postId, ForumPostNavigationSource source,
         Guid? discussionChannelId = null, bool explicitNavigation = true)
@@ -976,7 +1092,9 @@ else
         if (result.ChannelId is not { } channelId) return;
         var channel = CommunityState.Channels.FirstOrDefault(value => value.Id == channelId);
         if (channel is null) return;
-        if (result.ForumPostId is { } forumPostId)
+        if (result.ThreadId is { } threadId)
+            await OpenThreadAsync(await CommunityState.GetThreadAsync(channel.Id, threadId), result.MessageId);
+        else if (result.ForumPostId is { } forumPostId)
             await OpenForumPostAsync(channel.Id, forumPostId, ForumPostNavigationSource.Search,
                 explicitNavigation: true);
         else await SelectChannelAsync(channel, searchTargetMessageId: result.MessageId);
@@ -1404,8 +1522,39 @@ else
             if (refreshed is not null) _selectedChannel = refreshed;
             else await SelectChannelAsync(CommunityState.FirstOrderedChannel());
         }
+        if (_selectedThread is { } selectedThread && _selectedChannel is { } parent)
+        {
+            try { _selectedThread = await CommunityState.GetThreadAsync(parent.Id, selectedThread.Id); }
+            catch (NodeApiException exception) when (exception.StatusCode == System.Net.HttpStatusCode.NotFound)
+            { _selectedThread = null; }
+        }
         StateHasChanged();
     });
+    private void OnCommunityThreadChanged(CommunityThreadChangedEvent change) => _ = InvokeAsync(async () =>
+    {
+        if (_selectedCommunity?.Id != change.CommunityId) return;
+        if (change.IsDeleted)
+        {
+            Messaging.RemoveThreadSummary(change.ThreadId);
+            if (_selectedThread?.Id == change.ThreadId) await CloseThreadAsync();
+            return;
+        }
+        try
+        {
+            var thread = await CommunityState.GetThreadAsync(change.ParentChannelId, change.ThreadId);
+            Messaging.ApplyThreadSummary(thread);
+            if (_selectedThread?.Id == thread.Id) _selectedThread = thread;
+        }
+        catch (NodeApiException exception) when (exception.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            Messaging.RemoveThreadSummary(change.ThreadId);
+            if (_selectedThread?.Id == change.ThreadId) await CloseThreadAsync();
+        }
+    });
+    private void OnCommunityThreadActivityChanged(CommunityThreadActivityChangedEvent change)
+    {
+        if (_selectedCommunity?.Id == change.CommunityId) Messaging.ApplyThreadActivity(change);
+    }
     private enum ForumPostNavigationSource
     {
         ForumOverview,
@@ -1475,6 +1624,8 @@ else
         CommunityState.RealtimeRefreshFailed -= OnCommunityRefreshFailed;
         Session.PresenceChanged -= OnPresenceChanged;
         Session.CommunityChannelActivity -= OnCommunityChannelActivity;
+        Session.CommunityThreadChanged -= OnCommunityThreadChanged;
+        Session.CommunityThreadActivityChanged -= OnCommunityThreadActivityChanged;
         Messaging.Changed -= OnSessionChanged;
         VoiceSessions.Changed -= OnSessionChanged;
         MobileCallPresentation.Changed -= OnMobileCallPresentationChanged;

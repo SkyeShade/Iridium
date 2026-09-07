@@ -8,15 +8,28 @@
             <span class="sheet-drag-handle"></span>
         </div>
         <div class="sheet-content">
+            @if (CanAddReaction && QuickReactions.Count > 0)
+            {
+                <div class="mobile-quick-reactions" aria-label="Quick reactions">
+                    @foreach (var quick in QuickReactions.Take(8))
+                    {
+                        <button type="button" title="React with @QuickReactionName(quick)" aria-label="React with @QuickReactionName(quick)" @onclick="() => ExecuteAsync(() => OnQuickReaction.InvokeAsync(quick))">
+                            @if (quick.Standard is { } standard) { <StandardEmojiArtwork Glyph="@standard.Glyph" ArtworkKey="@standard.ArtworkKey" /> }
+                            else if (quick.Custom is { } custom) { <CommunityEmojiImage Emoji="@custom" /> }
+                        </button>
+                    }
+                </div>
+            }
             <div class="sheet-action-group">
-                @if (CanEdit)
-                {
-                    <button type="button" @onclick="() => ExecuteAsync(OnEdit)"><Icon Name="edit" /><span>Edit</span></button>
-                }
-                <button type="button" @onclick="() => ExecuteAsync(OnReply)"><Icon Name="reply" /><span>Reply</span></button>
                 @if (CanAddReaction) { <button type="button" @onclick="() => ExecuteAsync(OnAddReaction)"><Icon Name="emoji" /><span>Add Reaction</span></button> }
                 @if (HasReactions) { <button type="button" @onclick="() => ExecuteAsync(OnViewReactions)"><Icon Name="emoji" /><span>View Reactions</span></button> }
+                <button type="button" @onclick="() => ExecuteAsync(OnReply)"><Icon Name="reply" /><span>Reply</span></button>
+                @if (CanOpenThread) { <button type="button" @onclick="() => ExecuteAsync(OnOpenThread)"><Icon Name="thread" /><span>Open Thread</span></button> }
+                @if (CanCreateThread) { <button type="button" @onclick="() => ExecuteAsync(OnCreateThread)"><Icon Name="thread" /><span>Create Thread</span></button> }
                 <button type="button" @onclick="() => ExecuteAsync(OnForward)"><Icon Name="forward" /><span>Forward</span></button>
+                @if (CanEdit) { <button type="button" @onclick="() => ExecuteAsync(OnEdit)"><Icon Name="edit" /><span>Edit Message</span></button> }
+                @if (CanCopyText) { <button type="button" @onclick="() => ExecuteAsync(OnCopyText)"><Icon Name="copy" /><span>Copy Text</span></button> }
+                @if (CanMarkUnread) { <button type="button" @onclick="() => ExecuteAsync(OnMarkUnread)"><Icon Name="message" /><span>Mark Unread</span></button> }
             </div>
             @if (CanDelete)
             {
@@ -35,12 +48,22 @@
     [Parameter] public bool CanDelete { get; set; }
     [Parameter] public bool CanAddReaction { get; set; }
     [Parameter] public bool HasReactions { get; set; }
+    [Parameter] public bool CanCreateThread { get; set; }
+    [Parameter] public bool CanOpenThread { get; set; }
+    [Parameter] public bool CanCopyText { get; set; }
+    [Parameter] public bool CanMarkUnread { get; set; }
+    [Parameter] public IReadOnlyList<Iridium.Web.Models.EmojiPickerSearchResult> QuickReactions { get; set; } = [];
     [Parameter] public EventCallback OnReply { get; set; }
     [Parameter] public EventCallback OnForward { get; set; }
     [Parameter] public EventCallback OnEdit { get; set; }
     [Parameter] public EventCallback OnDelete { get; set; }
     [Parameter] public EventCallback OnAddReaction { get; set; }
     [Parameter] public EventCallback OnViewReactions { get; set; }
+    [Parameter] public EventCallback OnCreateThread { get; set; }
+    [Parameter] public EventCallback OnOpenThread { get; set; }
+    [Parameter] public EventCallback OnCopyText { get; set; }
+    [Parameter] public EventCallback OnMarkUnread { get; set; }
+    [Parameter] public EventCallback<Iridium.Web.Models.EmojiPickerSearchResult> OnQuickReaction { get; set; }
     [Parameter] public EventCallback OnClose { get; set; }
 
     private ElementReference _backdrop;
@@ -49,6 +72,8 @@
     private IJSObjectReference? _module;
     private DotNetObjectReference<MobileMessageActionSheet>? _selfReference;
     private bool _closing;
+    private static string QuickReactionName(Iridium.Web.Models.EmojiPickerSearchResult result) =>
+        result.Standard?.Name ?? result.Custom?.Name ?? "emoji";
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -65,6 +90,15 @@
         await AnimateCloseAsync();
         await OnClose.InvokeAsync();
         await action.InvokeAsync();
+    }
+
+    private async Task ExecuteAsync(Func<Task> action)
+    {
+        if (_closing) return;
+        _closing = true;
+        await AnimateCloseAsync();
+        await OnClose.InvokeAsync();
+        await action();
     }
 
     private async Task DismissAsync()

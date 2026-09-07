@@ -138,14 +138,14 @@ public sealed class MessageQolUiContractTests
         Assert.Contains("event.key === \"Escape\"", script);
         Assert.Contains("message-action-sheet-open", script);
 
-        var edit = sheet.IndexOf("<span>Edit</span>", StringComparison.Ordinal);
+        var edit = sheet.IndexOf("<span>Edit Message</span>", StringComparison.Ordinal);
         var reply = sheet.IndexOf("<span>Reply</span>", StringComparison.Ordinal);
         var forward = sheet.IndexOf("<span>Forward</span>", StringComparison.Ordinal);
         var separator = sheet.IndexOf("class=\"sheet-separator\"", StringComparison.Ordinal);
         var delete = sheet.IndexOf("<span>Delete Message</span>", StringComparison.Ordinal);
-        Assert.True(edit >= 0 && reply > edit && forward > reply && separator > forward && delete > separator);
-        Assert.Contains("@if (CanEdit)", sheet[..reply]);
-        Assert.Contains("@if (CanDelete)", sheet[forward..separator]);
+        Assert.True(reply >= 0 && forward > reply && edit > forward && separator > edit && delete > separator);
+        Assert.Contains("@if (CanEdit)", sheet[forward..separator]);
+        Assert.Contains("@if (CanDelete)", sheet[edit..separator]);
         Assert.DoesNotContain("CanEdit || CanDelete", sheet);
         Assert.Contains("class=\"destructive\"", sheet[separator..delete]);
     }

@@ -1,0 +1,13 @@
+@using Iridium.Protocol
+<SidebarChildConversationList Items="ChildItems" Depth="Depth" AriaLabel="Joined Threads" OnSelect="SelectAsync" />
+@code {
+    [Parameter] public IReadOnlyList<CommunityThreadDto> Threads { get; set; } = [];
+    [Parameter] public Guid? SelectedThreadId { get; set; }
+    [Parameter] public int Depth { get; set; } = 1;
+    [Parameter] public EventCallback<CommunityThreadDto> OnSelect { get; set; }
+    private IReadOnlyList<CommunityThreadDto> Ordered => Threads.OrderByDescending(value => value.LastActivityAt).ToArray();
+    private IReadOnlyList<SidebarChildConversationList.SidebarChildConversationItem> ChildItems => Ordered
+        .Select(thread => new SidebarChildConversationList.SidebarChildConversationItem(thread.Id, thread.Name,
+            SelectedThreadId == thread.Id, thread.UnreadCount > 0, thread.MentionCount, "thread")).ToArray();
+    private Task SelectAsync(Guid id) => OnSelect.InvokeAsync(Ordered.First(value => value.Id == id));
+}

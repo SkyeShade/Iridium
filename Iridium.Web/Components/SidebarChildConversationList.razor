@@ -1,0 +1,30 @@
+<div class="sidebar-child-conversations" style="--sidebar-child-depth:@Depth" aria-label="@AriaLabel">
+    <div class="sidebar-child-tree">
+        @foreach (var item in Items)
+        {
+            <button @key="item.Id" type="button"
+                    class="sidebar-child-row sidebar-nav-row @(item.IsActive ? "selected is-active" : null) @(item.IsUnread ? "unread" : null)"
+                    title="@item.Title" @onclick="() => OnSelect.InvokeAsync(item.Id)">
+                @if (item.IsUnread && !item.IsActive) { <span class="sidebar-child-unread" aria-label="Unread replies"></span> }
+                <span class="sidebar-child-branch" aria-hidden="true"></span>
+                <span class="sidebar-nav-surface sidebar-child-nav-surface">
+                    @if (item.IconName is not null) { <Icon Name="@item.IconName" Size="14" /> }
+                    <span class="sidebar-child-title">@item.Title</span>
+                </span>
+                @if (item.MentionCount > 0)
+                {
+                    <span class="sidebar-child-mentions" aria-label="@($"{item.MentionCount} unread mentions")">@(item.MentionCount > 99 ? "99+" : item.MentionCount)</span>
+                }
+            </button>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public IReadOnlyList<SidebarChildConversationItem> Items { get; set; } = [];
+    [Parameter] public int Depth { get; set; } = 1;
+    [Parameter] public string AriaLabel { get; set; } = "Child conversations";
+    [Parameter] public EventCallback<Guid> OnSelect { get; set; }
+    public sealed record SidebarChildConversationItem(Guid Id, string Title, bool IsActive, bool IsUnread,
+        int MentionCount, string? IconName = null);
+}

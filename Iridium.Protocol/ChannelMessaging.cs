@@ -82,7 +82,12 @@ public sealed record ChannelMessageDto(
     IReadOnlyList<AttachmentDto>? Attachments = null,
     MessageKind Kind = MessageKind.User,
     ForwardedMessageSnapshotDto? Forwarded = null,
-    IReadOnlyList<ReactionSummaryDto>? Reactions = null);
+    IReadOnlyList<ReactionSummaryDto>? Reactions = null,
+    ThreadMessageSummaryDto? Thread = null);
+
+public sealed record ThreadMessageSummaryDto(
+    Guid ThreadId, Guid ParentChannelId, Guid DiscussionChannelId, string Name, int ReplyCount,
+    DateTimeOffset LastActivityAt, bool IsArchived, bool IsLocked, bool IsPrivate);
 
 public enum ReactionEmojiKind { Standard, Custom }
 

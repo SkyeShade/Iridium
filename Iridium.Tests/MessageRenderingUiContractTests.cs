@@ -343,10 +343,11 @@ public sealed class MessageRenderingUiContractTests
     public void AnchoredProfileAvatarUsesCardSurfaceRingWithoutChangingAvatarSize()
     {
         var card = Source("Iridium.Web", "Components", "AnchoredProfileCard.razor");
+        var styles = Source("Iridium.Web", "Components", "AnchoredProfileCard.razor.css");
 
         Assert.Contains("Size=\"large\" Surface=\"sidebar\"", card);
-        Assert.Contains("padding:.3rem", card);
-        Assert.Contains("box-shadow:0 0 0 1px var(--bg-sidebar)", card);
+        Assert.Contains("padding:.25rem", styles);
+        Assert.Contains("box-shadow:0 0 0 1px var(--bg-sidebar)", styles);
         Assert.Contains("Presence=\"@Presence\"", card);
     }
 

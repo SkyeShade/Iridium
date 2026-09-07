@@ -1,29 +1,8 @@
 @using Iridium.Protocol
 
 <div class="forum-post-children" style="--forum-depth:@Depth" aria-label="Followed posts in @Forum.Name">
-    @if (VisiblePosts.Count > 0)
-    {
-        <div class="forum-post-child-tree">
-            @foreach (var post in VisiblePosts)
-            {
-                <button @key="post.Id" type="button" class="forum-post-child forum-post-child-compact sidebar-nav-row @(SelectedPostId == post.Id ? "selected is-active" : null) @(post.UnreadCount > 0 ? "unread" : null)"
-                        @onclick="() => OnSelect.InvokeAsync(post)" title="@post.Title">
-                    @if (post.UnreadCount > 0 && SelectedPostId != post.Id)
-                    {
-                        <span class="forum-post-unread" aria-label="Unread replies"></span>
-                    }
-                    <span class="tree-branch" aria-hidden="true"></span>
-                    <span class="sidebar-nav-surface forum-post-nav-surface">
-                        <span class="forum-post-title">@post.Title</span>
-                    </span>
-                    @if (post.MentionCount > 0)
-                    {
-                        <span class="forum-post-mentions" aria-label="@($"{post.MentionCount} unread mentions")">@(post.MentionCount > 99 ? "99+" : post.MentionCount)</span>
-                    }
-                </button>
-            }
-        </div>
-    }
+    @if (VisiblePosts.Count > 0) { <SidebarChildConversationList Items="ChildItems" Depth="Depth"
+        AriaLabel="Followed Forum posts" OnSelect="SelectAsync" /> }
     @if (Posts.Count > SidebarLimit)
     {
         <button type="button" class="see-all-followed"
@@ -40,4 +19,8 @@
     [Parameter] public EventCallback<CommunityForumPostDto> OnSelect { get; set; }
     [Parameter] public EventCallback<CommunityChannelDto> OnSeeAll { get; set; }
     private IReadOnlyList<CommunityForumPostDto> VisiblePosts => Posts.Take(SidebarLimit).ToArray();
+    private IReadOnlyList<SidebarChildConversationList.SidebarChildConversationItem> ChildItems => VisiblePosts
+        .Select(post => new SidebarChildConversationList.SidebarChildConversationItem(post.Id, post.Title,
+            SelectedPostId == post.Id, post.UnreadCount > 0, post.MentionCount)).ToArray();
+    private Task SelectAsync(Guid id) => OnSelect.InvokeAsync(VisiblePosts.First(value => value.Id == id));
 }

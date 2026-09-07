@@ -105,6 +105,7 @@ builder.Services.AddSingleton<CommunityVoiceRoomService>();
 builder.Services.AddSingleton<VoiceStreamRegistry>();
 builder.Services.AddScoped<DirectCallAuthorizationService>();
 builder.Services.AddHostedService<CallTimeoutService>();
+builder.Services.AddHostedService<CommunityThreadArchiveService>();
 if (builder.Environment.IsDevelopment())
 {
     builder.Services.AddCors(options => options.AddPolicy("DevelopmentClient", policy =>
@@ -136,6 +137,7 @@ await using (var scope = app.Services.CreateAsyncScope())
     await DatabaseCompatibility.EnsureMessageHistoryIndexesAsync(db);
     await DatabaseCompatibility.EnsureCommunityManagementSchemaAsync(db);
     await DatabaseCompatibility.EnsureCommunityForumPermissionDefaultsAsync(db);
+    await DatabaseCompatibility.EnsureCommunityThreadPermissionDefaultsAsync(db);
     await DatabaseCompatibility.EnsureCommunityVoiceSchemaAsync(db);
     await DatabaseCompatibility.EnsureCommunityPermissionOverwriteSchemaAsync(db);
     await DatabaseCompatibility.EnsureAvatarPresetSchemaAsync(db);
@@ -190,6 +192,7 @@ app.MapAccountEndpoints();
 app.MapFriendEndpoints();
 app.MapCommunityStructureEndpoints();
 app.MapCommunityForumEndpoints();
+app.MapCommunityThreadEndpoints();
 app.MapCommunityForumTagEndpoints();
 app.MapMessageEndpoints();
 app.MapDirectMessageEndpoints();

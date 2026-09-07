@@ -346,13 +346,42 @@ public sealed class ChatHub(
         SendChannelMessageRequest request)
     {
         var session = await RequireSessionAsync();
-        await RequireChannelAsync(communityId, channelId, session.AccountId, CommunityPermission.SendMessages);
+        var thread = await db.CommunityThreads
+            .SingleOrDefaultAsync(value => value.CommunityId == communityId && value.DiscussionChannelId == channelId);
+        await RequireChannelAsync(communityId, channelId, session.AccountId,
+            thread is null ? CommunityPermission.SendMessages : CommunityPermission.SendMessagesInThreads);
         var forumPost = await db.CommunityForumPosts.Include(value => value.AuthorAccount)
             .Include(value => value.RootMessage)
             .SingleOrDefaultAsync(value => value.CommunityId == communityId && value.DiscussionChannelId == channelId);
         if (forumPost?.IsLocked == true && !await authorization.HasChannelPermissionAsync(
                 communityId, channelId, session.AccountId, CommunityPermission.ManageMessages, db))
             throw new HubException("This Forum post is locked.");
+        if (thread is not null)
+        {
+            var threadAccess = await authorization.GetChannelAccessAsync(communityId, channelId,
+                session.AccountId, db);
+            var manageThreads = threadAccess.Has(CommunityPermission.ManageThreads);
+            if (thread.IsLocked && !manageThreads)
+                throw new HubException("This Thread is locked.");
+            if (thread.IsArchived)
+            {
+                if (thread.IsLocked && !manageThreads)
+                    throw new HubException("A locked Thread can only be reopened by a moderator.");
+                CommunityThreadEndpoints.SetArchived(thread, false);
+            }
+            if (thread.SlowmodeSeconds > 0 && !threadAccess.IsOwner &&
+                !threadAccess.Has(CommunityPermission.Administrator) &&
+                !threadAccess.Has(CommunityPermission.BypassSlowmode))
+            {
+                var lastSentAt = await db.ChannelMessages.AsNoTracking().Where(value =>
+                        value.ChannelId == channelId && value.AuthorAccountId == session.AccountId && !value.IsDeleted)
+                    .OrderByDescending(value => value.CreatedAt).Select(value => (DateTimeOffset?)value.CreatedAt)
+                    .FirstOrDefaultAsync();
+                var remaining = lastSentAt?.AddSeconds(thread.SlowmodeSeconds) - DateTimeOffset.UtcNow;
+                if (remaining > TimeSpan.Zero)
+                    throw new HubException($"Slowmode is active. Try again in {Math.Ceiling(remaining.Value.TotalSeconds)} seconds.");
+            }
+        }
         if (request.ClientMessageId == Guid.Empty) throw new HubException("The client message identifier is invalid.");
         if (request.ClientMessageId is { } existingClientId)
         {
@@ -361,6 +390,7 @@ public sealed class ChatHub(
                 .Include(value => value.ReplyToMessage).ThenInclude(value => value!.Attachments)
                 .Include(value => value.Attachments)
                 .IncludeForwardedSnapshot()
+                .AsSplitQuery()
                 .SingleOrDefaultAsync(value => value.AuthorAccountId == session.AccountId &&
                     value.CommunityId == communityId && value.ChannelId == channelId &&
                     value.ClientMessageId == existingClientId);
@@ -379,6 +409,14 @@ public sealed class ChatHub(
             var mutedRecipients = await db.ForumPostSubscriptions.AsNoTracking().Where(value =>
                     value.ForumPostId == forumPost.Id && recipients.Contains(value.AccountId) &&
                     value.NotificationLevel == ForumPostNotificationLevel.Muted)
+                .Select(value => value.AccountId).ToListAsync();
+            recipients.ExceptWith(mutedRecipients);
+        }
+        if (thread is not null && recipients.Count > 0)
+        {
+            var mutedRecipients = await db.CommunityThreadMembers.AsNoTracking().Where(value =>
+                    value.ThreadId == thread.Id && recipients.Contains(value.AccountId) &&
+                    value.NotificationLevel == ThreadNotificationLevel.Muted)
                 .Select(value => value.AccountId).ToListAsync();
             recipients.ExceptWith(mutedRecipients);
         }
@@ -441,6 +479,17 @@ public sealed class ChatHub(
             forumPost.LastActivityAt = message.CreatedAt;
             forumPost.UpdatedAt = message.CreatedAt;
         }
+        if (thread is not null)
+        {
+            await db.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT OR IGNORE INTO CommunityThreadMembers
+                    (ThreadId, AccountId, JoinedAt, NotificationLevel)
+                VALUES ({thread.Id}, {session.AccountId}, {message.CreatedAt.UtcTicks},
+                    {(int)ThreadNotificationLevel.MentionsOnly})
+                """);
+            thread.ReplyCount++;
+            thread.LastActivityAt = message.CreatedAt;
+        }
         await db.SaveChangesAsync();
         await sendTransaction.CommitAsync();
         var result = await ChannelMessageMapper.ResolveCommunityProfileAsync(ChannelMessageMapper.ToDto(message), db);
@@ -448,14 +497,19 @@ public sealed class ChatHub(
             CurrentTypingSessionId,
             session.AccountId, session.Account.DisplayName);
         await Clients.Group(GroupName(communityId, channelId)).SendAsync(ChatHubContract.MessageCreated, result);
-        var communityRecipients = forumPost is null
+        var communityRecipients = forumPost is null && thread is null
             ? await db.CommunityMembers.Where(value => value.CommunityId == communityId &&
                     value.AccountId != session.AccountId).Select(value => value.AccountId).ToListAsync()
-            : await db.ForumPostSubscriptions.Where(value => value.ForumPostId == forumPost.Id &&
+            : forumPost is not null ? await db.ForumPostSubscriptions.Where(value => value.ForumPostId == forumPost.Id &&
                     value.AccountId != session.AccountId &&
                     value.NotificationLevel == ForumPostNotificationLevel.AllMessages)
+                .Select(value => value.AccountId).ToListAsync()
+            : await db.CommunityThreadMembers.Where(value => value.ThreadId == thread!.Id &&
+                    value.AccountId != session.AccountId &&
+                    value.NotificationLevel == ThreadNotificationLevel.AllMessages)
                 .Select(value => value.AccountId).ToListAsync();
         if (forumPost is not null) communityRecipients.AddRange(recipients);
+        if (thread is not null) communityRecipients.AddRange(recipients);
         communityRecipients = communityRecipients.Distinct().ToList();
         foreach (var recipient in communityRecipients.ToArray())
             if (!await authorization.HasChannelPermissionAsync(communityId, channelId, recipient,
@@ -463,7 +517,8 @@ public sealed class ChatHub(
         if (communityRecipients.Count > 0)
             await Clients.Groups(communityRecipients.Select(AccountGroup).ToArray()).SendAsync(
                 CommunityHubContract.ChannelActivity,
-                new CommunityChannelActivityEvent(communityId, forumPost?.ForumChannelId ?? channelId, session.AccountId));
+                new CommunityChannelActivityEvent(communityId,
+                    forumPost?.ForumChannelId ?? thread?.ParentChannelId ?? channelId, session.AccountId));
         if (recipients.Count > 0)
         {
             var mentionEvent = new CommunityMentionReceivedEvent(communityId, channelId, message.Id, session.AccountId);
@@ -471,6 +526,25 @@ public sealed class ChatHub(
                 .SendAsync(CommunityMentionHubContract.Received, mentionEvent);
         }
         if (forumPost is not null) await PublishForumPostAsync(forumPost, "activity", session.AccountId);
+        if (thread is not null)
+        {
+            var activityRecipients = await db.CommunityMembers.AsNoTracking()
+                .Where(value => value.CommunityId == communityId).Select(value => value.AccountId).ToListAsync();
+            var communityOwner = await db.Communities.AsNoTracking().Where(value => value.Id == communityId)
+                .Select(value => (Guid?)value.OwnerAccountId).SingleOrDefaultAsync();
+            if (communityOwner is { } ownerId) activityRecipients.Add(ownerId);
+            foreach (var recipient in activityRecipients.ToArray())
+                if (!await authorization.HasChannelPermissionAsync(communityId, channelId, recipient,
+                        CommunityPermission.ViewChannels, db)) activityRecipients.Remove(recipient);
+            await Clients.Groups(activityRecipients.Append(session.AccountId).Distinct().Select(AccountGroup).ToArray())
+                .SendAsync(CommunityThreadHubContract.ActivityChanged,
+                    new CommunityThreadActivityChangedEvent(communityId, thread.ParentChannelId, thread.Id,
+                        thread.ReplyCount, thread.LastActivityAt, session.AccountId));
+            await Clients.Group(AccountGroup(session.AccountId)).SendAsync(
+                CommunityThreadHubContract.MembershipChanged,
+                new CommunityThreadMembershipChangedEvent(communityId, thread.ParentChannelId, thread.Id,
+                    session.AccountId, true));
+        }
         return result;
     }
 
@@ -1195,6 +1269,11 @@ public sealed class ChatHub(
     private async Task RequireChannelAsync(
         Guid communityId, Guid channelId, Guid accountId, CommunityPermission permission)
     {
+        if ((permission & CommunityPermission.SendMessages) != 0 &&
+            await db.CommunityChannels.AnyAsync(value => value.CommunityId == communityId && value.Id == channelId &&
+                value.ParentThreadChannelId != null))
+            permission = (permission & ~CommunityPermission.SendMessages) |
+                         CommunityPermission.SendMessagesInThreads;
         var access = await authorization.GetChannelAccessAsync(communityId, channelId, accountId, db);
         if (!access.IsOwner && !await authorization.IsMemberAsync(communityId, accountId, db))
             throw new HubException("You are not a member of this Server.");

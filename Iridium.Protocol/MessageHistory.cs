@@ -24,7 +24,9 @@ public sealed record MessageSearchResultDto(
     MessageAuthorDto Author,
     string Content,
     DateTimeOffset CreatedAt,
-    Guid? ForumPostId = null);
+    Guid? ForumPostId = null,
+    Guid? ThreadId = null,
+    string? ThreadName = null);
 
 public sealed record MessageSearchPageDto(
     IReadOnlyList<MessageSearchResultDto> Results,

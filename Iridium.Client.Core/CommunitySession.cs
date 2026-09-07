@@ -10,6 +10,7 @@ public sealed class CommunitySession : IDisposable
     private readonly List<CommunityCategoryDto> _categories = [];
     private readonly List<CommunityChannelDto> _channels = [];
     private readonly List<CommunityForumPostDto> _followedForumPosts = [];
+    private readonly List<CommunityThreadDto> _joinedThreads = [];
     private readonly object _realtimeGate = new();
     private long _requestedRevision;
     private long _appliedRevision;
@@ -25,6 +26,9 @@ public sealed class CommunitySession : IDisposable
         nodeSession.CommunityChanged += OnCommunityChanged;
         nodeSession.RealtimeReconnected += OnRealtimeReconnected;
         nodeSession.CommunityForumPostChanged += OnForumPostChanged;
+        nodeSession.CommunityThreadChanged += OnThreadChanged;
+        nodeSession.CommunityThreadMembershipChanged += OnThreadMembershipChanged;
+        nodeSession.CommunityThreadActivityChanged += OnThreadActivityChanged;
     }
 
     public event Action? Changed;
@@ -39,6 +43,7 @@ public sealed class CommunitySession : IDisposable
     public IReadOnlyList<CommunityCategoryDto> Categories => _categories;
     public IReadOnlyList<CommunityChannelDto> Channels => _channels;
     public IReadOnlyList<CommunityForumPostDto> FollowedForumPosts => _followedForumPosts;
+    public IReadOnlyList<CommunityThreadDto> JoinedThreads => _joinedThreads;
     public long AppliedRevision { get { lock (_realtimeGate) return _appliedRevision; } }
 
     public async Task LoadAsync(Guid communityId, CancellationToken cancellationToken = default)
@@ -52,9 +57,12 @@ public sealed class CommunitySession : IDisposable
         var structureTask = _nodeSession.AuthorizedClient.GetCommunityStructureAsync(communityId, cancellationToken);
         var followedTask = _nodeSession.AuthorizedClient.GetCommunityFollowedForumPostsAsync(
             communityId, 100, cancellationToken);
-        await Task.WhenAll(structureTask, followedTask);
+        var threadsTask = _nodeSession.AuthorizedClient.GetCommunityJoinedThreadsAsync(communityId, 100,
+            cancellationToken);
+        await Task.WhenAll(structureTask, followedTask, threadsTask);
         var structure = await structureTask;
         var followed = await followedTask;
+        var threads = await threadsTask;
         lock (_realtimeGate)
             if (generation != _generation) return;
         CommunityId = communityId;
@@ -64,11 +72,90 @@ public sealed class CommunitySession : IDisposable
         CanManagePermissions = structure.CanManagePermissions;
         Replace(structure);
         ReplaceFollowed(followed.Posts);
+        ReplaceThreads(threads.Threads);
     }
 
     public bool HasPermission(CommunityPermission permission) =>
         IsOwner || (EffectivePermissions & CommunityPermission.Administrator) != 0 ||
         (EffectivePermissions & permission) == permission;
+
+    public Task<CommunityThreadPageDto> GetThreadsAsync(Guid channelId,
+        CommunityThreadListKind view = CommunityThreadListKind.Active, string? search = null, int offset = 0,
+        int limit = 30, CancellationToken cancellationToken = default) =>
+        _nodeSession.AuthorizedClient.GetThreadsAsync(RequireCommunity(), channelId, view, search, offset, limit,
+            cancellationToken);
+
+    public Task<CommunityThreadDto> GetThreadAsync(Guid channelId, Guid threadId,
+        CancellationToken cancellationToken = default) => _nodeSession.AuthorizedClient.GetThreadAsync(
+        RequireCommunity(), channelId, threadId, cancellationToken);
+
+    public async Task<CommunityThreadDto> CreateThreadAsync(Guid channelId, CreateCommunityThreadRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var value = await _nodeSession.AuthorizedClient.CreateThreadAsync(RequireCommunity(), channelId, request,
+            cancellationToken);
+        ReplaceThread(value);
+        Changed?.Invoke();
+        return value;
+    }
+
+    public async Task<CommunityThreadDto> UpdateThreadAsync(Guid channelId, Guid threadId,
+        UpdateCommunityThreadRequest request, CancellationToken cancellationToken = default)
+    {
+        var value = await _nodeSession.AuthorizedClient.UpdateThreadAsync(RequireCommunity(), channelId, threadId,
+            request, cancellationToken);
+        ReplaceThread(value);
+        Changed?.Invoke();
+        return value;
+    }
+
+    public async Task<CommunityThreadDto> JoinThreadAsync(Guid channelId, Guid threadId,
+        CancellationToken cancellationToken = default)
+    {
+        var value = await _nodeSession.AuthorizedClient.JoinThreadAsync(RequireCommunity(), channelId, threadId,
+            cancellationToken);
+        ReplaceThread(value);
+        Changed?.Invoke();
+        return value;
+    }
+
+    public async Task LeaveThreadAsync(Guid channelId, Guid threadId,
+        CancellationToken cancellationToken = default)
+    {
+        await _nodeSession.AuthorizedClient.LeaveThreadAsync(RequireCommunity(), channelId, threadId,
+            cancellationToken);
+        _joinedThreads.RemoveAll(value => value.Id == threadId);
+        Changed?.Invoke();
+    }
+
+    public Task<IReadOnlyList<ThreadMemberDto>> GetThreadMembersAsync(Guid channelId, Guid threadId,
+        CancellationToken cancellationToken = default) => _nodeSession.AuthorizedClient.GetThreadMembersAsync(
+        RequireCommunity(), channelId, threadId, cancellationToken);
+
+    public Task AddThreadMemberAsync(Guid channelId, Guid threadId, Guid accountId,
+        CancellationToken cancellationToken = default) => _nodeSession.AuthorizedClient.AddThreadMemberAsync(
+        RequireCommunity(), channelId, threadId, accountId, cancellationToken);
+
+    public Task RemoveThreadMemberAsync(Guid channelId, Guid threadId, Guid accountId,
+        CancellationToken cancellationToken = default) => _nodeSession.AuthorizedClient.RemoveThreadMemberAsync(
+        RequireCommunity(), channelId, threadId, accountId, cancellationToken);
+
+    public async Task<CommunityThreadDto> UpdateThreadNotificationAsync(Guid channelId, Guid threadId,
+        ThreadNotificationLevel level, CancellationToken cancellationToken = default)
+    {
+        var value = await _nodeSession.AuthorizedClient.UpdateThreadNotificationAsync(RequireCommunity(), channelId,
+            threadId, level, cancellationToken);
+        ReplaceThread(value); Changed?.Invoke(); return value;
+    }
+
+    public async Task DeleteThreadAsync(Guid channelId, Guid threadId,
+        CancellationToken cancellationToken = default)
+    {
+        await _nodeSession.AuthorizedClient.DeleteThreadAsync(RequireCommunity(), channelId, threadId,
+            cancellationToken);
+        _joinedThreads.RemoveAll(value => value.Id == threadId);
+        Changed?.Invoke();
+    }
 
     public async Task<CommunityManagementDto> LoadManagementAsync(CancellationToken cancellationToken = default)
     {
@@ -295,12 +382,19 @@ public sealed class CommunitySession : IDisposable
     {
         var index = _channels.FindIndex(value => value.Id == channelId);
         if (index >= 0) _channels[index] = _channels[index] with { UnreadCount = 0, MentionCount = 0 };
+        var threadIndex = _joinedThreads.FindIndex(value => value.DiscussionChannelId == channelId);
+        if (threadIndex >= 0) _joinedThreads[threadIndex] = _joinedThreads[threadIndex] with
+            { UnreadCount = 0, MentionCount = 0 };
     }
 
     public void MarkChannelUnread(Guid channelId)
     {
         var index = _channels.FindIndex(value => value.Id == channelId);
         if (index >= 0) _channels[index] = _channels[index] with { UnreadCount = Math.Max(1, _channels[index].UnreadCount + 1) };
+        var threadIndex = _joinedThreads.FindIndex(value => value.DiscussionChannelId == channelId);
+        if (threadIndex >= 0) _joinedThreads[threadIndex] = _joinedThreads[threadIndex] with
+            { UnreadCount = Math.Max(1, _joinedThreads[threadIndex].UnreadCount + 1) };
+        Changed?.Invoke();
     }
 
     public void MarkForumPostRead(Guid postId)
@@ -352,6 +446,7 @@ public sealed class CommunitySession : IDisposable
         _categories.Clear();
         _channels.Clear();
         _followedForumPosts.Clear();
+        _joinedThreads.Clear();
         lock (_realtimeGate)
         {
             _requestedRevision = 0;
@@ -404,6 +499,31 @@ public sealed class CommunitySession : IDisposable
         Changed?.Invoke();
     }
 
+    private void OnThreadChanged(CommunityThreadChangedEvent change)
+    {
+        if (CommunityId == change.CommunityId) QueueRealtimeRefresh(0, false);
+    }
+
+    private void OnThreadMembershipChanged(CommunityThreadMembershipChangedEvent change)
+    {
+        if (CommunityId == change.CommunityId && change.AccountId == _nodeSession.Account?.Id)
+            QueueRealtimeRefresh(0, false);
+    }
+
+    private void OnThreadActivityChanged(CommunityThreadActivityChangedEvent change)
+    {
+        if (CommunityId != change.CommunityId) return;
+        var index = _joinedThreads.FindIndex(value => value.Id == change.ThreadId);
+        if (index < 0) return;
+        _joinedThreads[index] = _joinedThreads[index] with
+        {
+            ReplyCount = change.ReplyCount, LastActivityAt = change.LastActivityAt,
+            UnreadCount = change.ActorAccountId == _nodeSession.Account?.Id ? _joinedThreads[index].UnreadCount :
+                Math.Max(1, _joinedThreads[index].UnreadCount + 1)
+        };
+        Changed?.Invoke();
+    }
+
     private void QueueRealtimeRefresh(long revision, bool refreshManagement)
     {
         lock (_realtimeGate)
@@ -448,6 +568,7 @@ public sealed class CommunitySession : IDisposable
                     communityId, AppliedRevision, targetRevision);
                 var structure = await _nodeSession.AuthorizedClient.GetCommunityStructureAsync(communityId);
                 var followed = await _nodeSession.AuthorizedClient.GetCommunityFollowedForumPostsAsync(communityId, 100);
+                var threads = await _nodeSession.AuthorizedClient.GetCommunityJoinedThreadsAsync(communityId, 100);
                 var management = reloadManagement
                     ? await _nodeSession.AuthorizedClient.GetCommunityManagementAsync(communityId)
                     : null;
@@ -464,6 +585,7 @@ public sealed class CommunitySession : IDisposable
                     CanManagePermissions = structure.CanManagePermissions;
                     Replace(structure);
                     ReplaceFollowed(followed.Posts);
+                    ReplaceThreads(threads.Threads);
                     if (management is not null)
                     {
                         Management = management;
@@ -508,6 +630,9 @@ public sealed class CommunitySession : IDisposable
         _nodeSession.CommunityChanged -= OnCommunityChanged;
         _nodeSession.RealtimeReconnected -= OnRealtimeReconnected;
         _nodeSession.CommunityForumPostChanged -= OnForumPostChanged;
+        _nodeSession.CommunityThreadChanged -= OnThreadChanged;
+        _nodeSession.CommunityThreadMembershipChanged -= OnThreadMembershipChanged;
+        _nodeSession.CommunityThreadActivityChanged -= OnThreadActivityChanged;
     }
 
     private static bool RequiresManagementRefresh(string change) =>
@@ -522,6 +647,14 @@ public sealed class CommunitySession : IDisposable
     private void Replace(CommunityStructureDto structure) { _categories.Clear(); _categories.AddRange(structure.Categories); _channels.Clear(); _channels.AddRange(structure.Channels); Sort(); }
     private void ReplaceFollowed(IEnumerable<CommunityForumPostDto> posts)
     { _followedForumPosts.Clear(); _followedForumPosts.AddRange(posts); SortFollowed(); }
+    private void ReplaceThreads(IEnumerable<CommunityThreadDto> threads)
+    { _joinedThreads.Clear(); _joinedThreads.AddRange(threads); _joinedThreads.Sort((a,b) => b.LastActivityAt.CompareTo(a.LastActivityAt)); }
+    private void ReplaceThread(CommunityThreadDto thread)
+    {
+        _joinedThreads.RemoveAll(value => value.Id == thread.Id);
+        if (thread.IsJoined && !thread.IsArchived) _joinedThreads.Add(thread);
+        _joinedThreads.Sort((a,b) => b.LastActivityAt.CompareTo(a.LastActivityAt));
+    }
     private void SortFollowed() => _followedForumPosts.Sort((left, right) =>
     { var pinned = right.IsPinned.CompareTo(left.IsPinned); return pinned != 0 ? pinned : right.LastActivityAt.CompareTo(left.LastActivityAt); });
     private void ReplaceCategory(CommunityCategoryDto value) { _categories.RemoveAll(item => item.Id == value.Id); _categories.Add(value); Sort(); }

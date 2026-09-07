@@ -42,7 +42,11 @@ public sealed class CommunityAuthorizationService
         if (baseAccess.IsOwner || baseAccess.Has(CommunityPermission.Administrator)) return baseAccess;
         var channel = await db.CommunityChannels.AsNoTracking()
             .Where(value => value.CommunityId == communityId && value.Id == channelId)
-            .Select(value => new { value.CategoryId, value.PermissionsSyncedToCategory, value.ParentForumChannelId })
+            .Select(value => new
+            {
+                value.CategoryId, value.PermissionsSyncedToCategory, value.ParentForumChannelId,
+                value.ParentThreadChannelId
+            })
             .SingleOrDefaultAsync();
         if (channel is null) return new(false, CommunityPermission.None);
 
@@ -60,6 +64,18 @@ public sealed class CommunityAuthorizationService
             categoryId = forum.CategoryId;
             permissionsSyncedToCategory = forum.PermissionsSyncedToCategory;
         }
+        else if (channel.ParentThreadChannelId is { } threadParentChannelId)
+        {
+            var parent = await db.CommunityChannels.AsNoTracking().Where(value =>
+                    value.CommunityId == communityId && value.Id == threadParentChannelId &&
+                    value.Kind == CommunityChannelKind.Text && value.ParentForumChannelId == null &&
+                    value.ParentThreadChannelId == null)
+                .Select(value => new { value.CategoryId, value.PermissionsSyncedToCategory }).SingleOrDefaultAsync();
+            if (parent is null) return new(false, CommunityPermission.None);
+            permissionChannelId = threadParentChannelId;
+            categoryId = parent.CategoryId;
+            permissionsSyncedToCategory = parent.PermissionsSyncedToCategory;
+        }
 
         var scopeType = permissionsSyncedToCategory && categoryId.HasValue
             ? PermissionOverwriteScopeType.Category : PermissionOverwriteScopeType.Channel;
@@ -70,7 +86,25 @@ public sealed class CommunityAuthorizationService
         var roleIds = await db.CommunityMemberRoles.AsNoTracking()
             .Where(value => value.CommunityId == communityId && value.AccountId == accountId)
             .Select(value => value.RoleId).ToListAsync();
-        return new(false, Resolve(baseAccess.Permissions, overwrites, roleIds, accountId));
+        var resolved = Resolve(baseAccess.Permissions, overwrites, roleIds, accountId);
+        if (channel.ParentThreadChannelId is not null)
+        {
+            if ((resolved & CommunityPermission.ViewChannels) == 0)
+                return new(false, CommunityPermission.None);
+            var privateAccess = await db.CommunityThreads.AsNoTracking()
+                .Where(value => value.CommunityId == communityId && value.DiscussionChannelId == channelId)
+                .Select(value => new
+                {
+                    value.IsPrivate,
+                    value.OwnerAccountId,
+                    IsMember = value.Members.Any(member => member.AccountId == accountId)
+                }).SingleOrDefaultAsync();
+            if (privateAccess is null || privateAccess.IsPrivate && !privateAccess.IsMember &&
+                privateAccess.OwnerAccountId != accountId &&
+                (resolved & CommunityPermission.ManageThreads) == 0)
+                return new(false, CommunityPermission.None);
+        }
+        return new(false, resolved);
     }
 
     public async Task<CommunityAccessDto> GetCategoryAccessAsync(Guid communityId, Guid categoryId, Guid accountId,

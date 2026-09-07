@@ -67,6 +67,36 @@ export function wireAnchoredPopup(element, anchor, dotnet) {
     anchoredHandlers.set(element, { pointerdown, keydown, close, closeOnScroll });
 }
 
+export function wirePointerPopup(element, clientX, clientY, dotnet) {
+    disposeDismiss(element);
+    disposeAnchoredPopup(element);
+    element.classList.remove("positioned");
+    const margin = 8;
+    const rect = element.getBoundingClientRect();
+    let x = Number(clientX);
+    let y = Number(clientY);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        dotnet.invokeMethodAsync("DismissMenuAsync");
+        return;
+    }
+    if (x + rect.width > window.innerWidth - margin) x -= rect.width;
+    if (y + rect.height > window.innerHeight - margin) y -= rect.height;
+    x = Math.max(margin, Math.min(window.innerWidth - rect.width - margin, x));
+    y = Math.max(margin, Math.min(window.innerHeight - rect.height - margin, y));
+    element.style.transform = `translate3d(${Math.round(x)}px,${Math.round(y)}px,0)`;
+    element.classList.add("positioned");
+
+    const close = () => dotnet.invokeMethodAsync("DismissMenuAsync");
+    const closeOnScroll = event => { if (!element.contains(event.target)) close(); };
+    const pointerdown = event => { if (!element.contains(event.target)) close(); };
+    const keydown = event => { if (event.key === "Escape") close(); };
+    document.addEventListener("pointerdown", pointerdown, true);
+    document.addEventListener("keydown", keydown, true);
+    document.addEventListener("scroll", closeOnScroll, true);
+    window.addEventListener("resize", close, true);
+    anchoredHandlers.set(element, { pointerdown, keydown, close, closeOnScroll });
+}
+
 export function calculateAnchoredPosition(anchorRect, popupRect, viewportWidth, viewportHeight,
     margin = 10, gap = 8) {
     const hasAnchor = anchorRect && anchorRect.width > 0 && anchorRect.height > 0;

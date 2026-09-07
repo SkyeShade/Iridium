@@ -1,0 +1,135 @@
+@using Iridium.Client.Core
+@using Iridium.Protocol
+@using Iridium.Web.Models
+@inject CommunitySession Threads
+
+<section class="thread-conversation" aria-label="Thread @Thread.Name">
+    <header class="thread-header">
+        <button class="thread-back" type="button" title="Back to #@ParentChannel.Name" @onclick="OnBack">
+            <Icon Name="back" />
+        </button>
+        <span class="thread-title"><Icon Name="thread" /><strong>@Thread.Name</strong>
+            <small>#@ParentChannel.Name &middot; @(Thread.IsPrivate ? "Private Thread" : "Public Thread")</small></span>
+        <span class="thread-actions">
+            @if (!Thread.IsJoined) { <button type="button" @onclick="JoinAsync">Join Thread</button> }
+            else { <button type="button" @onclick="LeaveAsync">Leave Thread</button> }
+            <button type="button" title="Thread settings" @onclick="ToggleSettingsAsync"><Icon Name="more" /></button>
+        </span>
+        @if (_settingsOpen)
+        {
+            <div class="thread-menu">
+                @if (Thread.IsJoined)
+                {
+                    <label>Notifications<select value="@Thread.NotificationLevel" @onchange="NotificationChangedAsync">
+                        @foreach (var level in Enum.GetValues<ThreadNotificationLevel>()) { <option value="@level">@Label(level)</option> }
+                    </select></label>
+                }
+                @if (Thread.CanEditOwn || Thread.CanManage)
+                {
+                    <button type="button" @onclick="BeginRename">Rename Thread</button>
+                    <button type="button" @onclick="ToggleArchiveAsync">@(Thread.IsArchived ? "Reopen Thread" : "Archive Thread")</button>
+                }
+                else if (Thread.IsArchived && !Thread.IsLocked && Has(CommunityPermission.SendMessagesInThreads))
+                {
+                    <button type="button" @onclick="ToggleArchiveAsync">Reopen Thread</button>
+                }
+                @if (Thread.CanManage)
+                {
+                    <label>Slowmode<select value="@Thread.SlowmodeSeconds" @onchange="SlowmodeChangedAsync">
+                        @foreach (var seconds in CommunityThreadLimits.SlowmodeSeconds.Order()) { <option value="@seconds">@SlowmodeLabel(seconds)</option> }
+                    </select></label>
+                    <label>Auto archive<select value="@((int)Thread.AutoArchiveDuration)" @onchange="ArchiveDurationChangedAsync">
+                        @foreach (var duration in Enum.GetValues<ThreadAutoArchiveDuration>()) { <option value="@((int)duration)">@ArchiveLabel(duration)</option> }
+                    </select></label>
+                    <button type="button" @onclick="ToggleLockAsync">@(Thread.IsLocked ? "Unlock Thread" : "Lock Thread")</button>
+                    <button class="destructive" type="button" @onclick="DeleteAsync">@(_confirmDelete ? "Confirm Delete" : "Delete Thread")</button>
+                }
+                @if (Thread.IsPrivate && (Thread.CanEditOwn || Thread.CanManage))
+                {
+                    <div class="thread-members"><strong>Members</strong>
+                        @foreach (var member in _members) { <span>@member.DisplayName @if (member.AccountId != CurrentAccountId) { <button type="button" title="Remove member" @onclick="() => RemoveMemberAsync(member.AccountId)">&times;</button> }</span> }
+                        <select @bind="_memberToAdd"><option value="">Add member&hellip;</option>@foreach (var member in AvailableMembers) { <option value="@member.AccountId">@member.DisplayName</option> }</select>
+                        <button type="button" disabled="@(!_memberToAdd.HasValue)" @onclick="AddMemberAsync">Add Members</button>
+                    </div>
+                }
+            </div>
+        }
+    </header>
+    @if (_renaming)
+    {
+        <div class="thread-rename"><input maxlength="@CommunityThreadLimits.MaximumNameLength" @bind="_name" />
+            <button type="button" @onclick="SaveRenameAsync">Save</button><button type="button" @onclick="() => _renaming = false">Cancel</button></div>
+    }
+    @if (!string.IsNullOrWhiteSpace(_error)) { <div class="channel-error">@_error</div> }
+    @if (Thread.IsArchived)
+    {
+        <div class="thread-closed"><Icon Name="lock" /> This Thread is @(Thread.IsLocked ? "locked and archived" : "archived"). History remains readable.</div>
+    }
+    <ChannelView @key="(Thread.DiscussionChannelId, Thread.IsArchived, Thread.IsLocked)"
+                 Community="Community" Channel="DiscussionChannel" CurrentAccountId="CurrentAccountId"
+                 NodeAuthority="NodeAuthority" CommunityManagement="CommunityManagement"
+                 IsMobileLayout="IsMobileLayout" FocusRequest="FocusRequest" OnFocusConsumed="OnFocusConsumed"
+                 OnEditProfile="OnEditProfile" OnEditAvatars="OnEditAvatars"
+                 OnCommunityProfileChanged="OnCommunityProfileChanged" OnMessage="OnMessage"
+                 OnMemberRolesChanged="OnMemberRolesChanged" OnOpenForwardSource="OnOpenForwardSource"
+                 CanManageMessages="Has(CommunityPermission.ManageMessages)"
+                 CanAddReactions="Has(CommunityPermission.AddReactions)"
+                 CanUseExternalEmoji="Has(CommunityPermission.UseExternalEmoji)"
+                 CanAttachFiles="Has(CommunityPermission.AttachFiles)"
+                 CanMentionEveryone="Has(CommunityPermission.MentionEveryone)"
+                 CanSend="@(Has(CommunityPermission.SendMessagesInThreads) && !Thread.IsArchived && !Thread.IsLocked)"
+                 TargetMessageId="TargetMessageId"
+                 DraftConversationKind="thread" DraftConversationId="Thread.Id" />
+</section>
+
+@code {
+    [Parameter, EditorRequired] public required CommunityDto Community { get; set; }
+    [Parameter, EditorRequired] public required CommunityChannelDto ParentChannel { get; set; }
+    [Parameter, EditorRequired] public required CommunityThreadDto Thread { get; set; }
+    [Parameter, EditorRequired] public required Guid CurrentAccountId { get; set; }
+    [Parameter, EditorRequired] public required string NodeAuthority { get; set; }
+    [Parameter] public CommunityManagementDto? CommunityManagement { get; set; }
+    [Parameter] public bool IsMobileLayout { get; set; }
+    [Parameter] public long FocusRequest { get; set; }
+    [Parameter] public Guid? TargetMessageId { get; set; }
+    [Parameter] public EventCallback<long> OnFocusConsumed { get; set; }
+    [Parameter] public EventCallback OnBack { get; set; }
+    [Parameter] public EventCallback<CommunityThreadDto> OnChanged { get; set; }
+    [Parameter] public EventCallback OnDeleted { get; set; }
+    [Parameter] public EventCallback OnEditProfile { get; set; }
+    [Parameter] public EventCallback OnEditAvatars { get; set; }
+    [Parameter] public EventCallback OnCommunityProfileChanged { get; set; }
+    [Parameter] public EventCallback<Guid> OnMessage { get; set; }
+    [Parameter] public EventCallback<CommunityMemberRolesChange> OnMemberRolesChanged { get; set; }
+    [Parameter] public EventCallback<ForwardSourceReferenceDto> OnOpenForwardSource { get; set; }
+    private bool _settingsOpen, _renaming, _confirmDelete;
+    private List<ThreadMemberDto> _members = [];
+    private Guid? _memberToAdd;
+    private string _name = string.Empty;
+    private string? _error;
+    private CommunityChannelDto DiscussionChannel => new(Thread.DiscussionChannelId, Community.Id,
+        ParentChannel.CategoryId, Thread.Name, 0, Thread.CreatedAt, Thread.UnreadCount, Thread.MentionCount,
+        CommunityChannelKind.Text, ParentChannel.EffectivePermissions, ParentChannel.PermissionsSyncedToCategory,
+        ParentChannel.IsPrivate);
+    private bool Has(CommunityPermission permission) => Threads.IsOwner ||
+        (ParentChannel.EffectivePermissions & (CommunityPermission.Administrator | permission)) != 0;
+    private void BeginRename() { _name = Thread.Name; _renaming = true; _settingsOpen = false; }
+    private IEnumerable<CommunityMemberDto> AvailableMembers => (CommunityManagement?.Members ?? [])
+        .Where(value => _members.All(member => member.AccountId != value.AccountId));
+    private async Task ToggleSettingsAsync() { _settingsOpen = !_settingsOpen; if (_settingsOpen && Thread.IsPrivate) try { _members = (await Threads.GetThreadMembersAsync(ParentChannel.Id, Thread.Id)).ToList(); } catch (Exception e) { _error = e.Message; } }
+    private async Task NotificationChangedAsync(ChangeEventArgs e) { if (Enum.TryParse<ThreadNotificationLevel>(e.Value?.ToString(), out var level)) await OnChanged.InvokeAsync(await Threads.UpdateThreadNotificationAsync(ParentChannel.Id, Thread.Id, level)); }
+    private async Task SlowmodeChangedAsync(ChangeEventArgs e) { if (int.TryParse(e.Value?.ToString(), out var seconds)) await UpdateAsync(new(SlowmodeSeconds: seconds)); }
+    private async Task ArchiveDurationChangedAsync(ChangeEventArgs e) { if (int.TryParse(e.Value?.ToString(), out var minutes) && Enum.IsDefined(typeof(ThreadAutoArchiveDuration), minutes)) await UpdateAsync(new(AutoArchiveDuration: (ThreadAutoArchiveDuration)minutes)); }
+    private async Task AddMemberAsync() { if (_memberToAdd is not { } accountId) return; try { await Threads.AddThreadMemberAsync(ParentChannel.Id, Thread.Id, accountId); _members = (await Threads.GetThreadMembersAsync(ParentChannel.Id, Thread.Id)).ToList(); _memberToAdd = null; } catch (Exception e) { _error = e.Message; } }
+    private async Task RemoveMemberAsync(Guid accountId) { try { await Threads.RemoveThreadMemberAsync(ParentChannel.Id, Thread.Id, accountId); _members.RemoveAll(value => value.AccountId == accountId); } catch (Exception e) { _error = e.Message; } }
+    private static string Label(ThreadNotificationLevel value) => value switch { ThreadNotificationLevel.AllMessages => "All Messages", ThreadNotificationLevel.MentionsOnly => "Mentions Only", _ => value.ToString() };
+    private static string SlowmodeLabel(int seconds) => seconds == 0 ? "Off" : seconds < 60 ? $"{seconds} sec" : seconds < 3600 ? $"{seconds / 60} min" : $"{seconds / 3600} hours";
+    private static string ArchiveLabel(ThreadAutoArchiveDuration value) => value switch { ThreadAutoArchiveDuration.OneHour => "1 hour", ThreadAutoArchiveDuration.OneDay => "24 hours", ThreadAutoArchiveDuration.ThreeDays => "3 days", _ => "7 days" };
+    private async Task SaveRenameAsync() => await UpdateAsync(new(Name: _name));
+    private async Task ToggleArchiveAsync() => await UpdateAsync(new(IsArchived: !Thread.IsArchived));
+    private async Task ToggleLockAsync() => await UpdateAsync(new(IsLocked: !Thread.IsLocked));
+    private async Task JoinAsync() { try { await OnChanged.InvokeAsync(await Threads.JoinThreadAsync(ParentChannel.Id, Thread.Id)); } catch (Exception e) { _error = e.Message; } }
+    private async Task LeaveAsync() { try { await Threads.LeaveThreadAsync(ParentChannel.Id, Thread.Id); await OnChanged.InvokeAsync(Thread with { IsJoined = false }); } catch (Exception e) { _error = e.Message; } }
+    private async Task UpdateAsync(UpdateCommunityThreadRequest request) { try { var changed = await Threads.UpdateThreadAsync(ParentChannel.Id, Thread.Id, request); _renaming = false; _settingsOpen = false; await OnChanged.InvokeAsync(changed); } catch (Exception e) { _error = e.Message; } }
+    private async Task DeleteAsync() { if (!_confirmDelete) { _confirmDelete = true; return; } try { await Threads.DeleteThreadAsync(ParentChannel.Id, Thread.Id); await OnDeleted.InvokeAsync(); } catch (Exception e) { _error = e.Message; } }
+}

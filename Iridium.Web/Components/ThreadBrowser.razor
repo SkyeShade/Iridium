@@ -1,0 +1,153 @@
+@using Iridium.Client.Core
+@using Iridium.Protocol
+@inject CommunitySession Session
+@inject IJSRuntime JS
+@implements IAsyncDisposable
+
+@if (IsMobile)
+{
+    <div class="thread-browser-backdrop" @onclick="OnClose">@Browser</div>
+}
+else
+{
+    @Browser
+}
+
+@code {
+    private RenderFragment Browser => @<section @ref="_browser" class="thread-browser @(IsMobile ? "mobile" : "anchored")"
+        role="dialog" aria-label="Threads" @onclick:stopPropagation="true">
+        <header>
+            <div><h2>Threads</h2><small>#@Channel.Name</small></div>
+            <button type="button" title="Close" aria-label="Close Threads" @onclick="OnClose"><Icon Name="close" /></button>
+        </header>
+        <div class="thread-browser-tools">
+            <label><Icon Name="search" /><input value="@_searchInput" @oninput="SearchChanged"
+                placeholder="Search threads..." aria-label="Search threads" /></label>
+            @if (CanCreatePublic || CanCreatePrivate)
+            {
+                <button class="create-thread" type="button" title="Create Thread" @onclick="() => _creating = true">
+                    <Icon Name="plus" /><span>Create</span>
+                </button>
+            }
+        </div>
+        <nav aria-label="Thread filters">
+            <button class="@TabClass(CommunityThreadListKind.Active)" @onclick="() => SelectTabAsync(CommunityThreadListKind.Active)">Active</button>
+            <button class="@TabClass(CommunityThreadListKind.Joined)" @onclick="() => SelectTabAsync(CommunityThreadListKind.Joined)">Joined</button>
+            <button class="@TabClass(CommunityThreadListKind.Archived)" @onclick="() => SelectTabAsync(CommunityThreadListKind.Archived)">Archived</button>
+        </nav>
+        @if (_creating)
+        {
+            <form @onsubmit="CreateAsync" @onsubmit:preventDefault="true" class="thread-create">
+                <input maxlength="@CommunityThreadLimits.MaximumNameLength" value="@_name" @oninput="NameChanged" placeholder="Thread name" autofocus />
+                @if (CanCreatePrivate)
+                {
+                    <div class="thread-private-control"><span><strong>Private Thread</strong><small>Only invited members can view this thread.</small></span>
+                        <SettingsSwitch Value="_private" ValueChanged="PrivateChanged" Disabled="@(!CanCreatePublic)" AriaLabel="Private Thread" /></div>
+                }
+                <span><button type="submit" disabled="@(!CanSubmit)">Create</button>
+                    <button type="button" @onclick="() => _creating = false">Cancel</button></span>
+            </form>
+        }
+        @if (!string.IsNullOrWhiteSpace(_error)) { <div class="thread-browser-error">@_error</div> }
+        <div class="thread-list">
+            @if (_loading) { <p class="thread-empty">Loading threads&hellip;</p> }
+            else if (_threads.Count == 0) { <p class="thread-empty">No threads yet.</p> }
+            @foreach (var thread in _threads)
+            {
+                <article>
+                    <button class="thread-open" type="button" @onclick="() => OpenAsync(thread)">
+                        <Icon Name="thread" />
+                        <span><strong>@thread.Name</strong><small>
+                            @if (thread.IsLocked) { <Icon Name="lock" Size="11" /> }
+                            @(thread.IsPrivate ? "Private" : "Public") &middot; @thread.ReplyCount replies &middot; @Relative(thread.LastActivityAt)
+                        </small></span>
+                    </button>
+                    @if (thread.IsJoined) { <span class="joined">Joined</span> }
+                    else if (!thread.IsLocked) { <button class="join" type="button" @onclick="() => JoinAsync(thread)">Join</button> }
+                </article>
+            }
+        </div>
+    </section>;
+
+    [Parameter, EditorRequired] public required CommunityChannelDto Channel { get; set; }
+    [Parameter] public Guid? CreatedFromMessageId { get; set; }
+    [Parameter] public ElementReference Anchor { get; set; }
+    [Parameter] public bool IsMobile { get; set; }
+    [Parameter] public EventCallback<CommunityThreadDto> OnOpen { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    private readonly List<CommunityThreadDto> _threads = [];
+    private CommunityThreadListKind _tab;
+    private string _searchInput = string.Empty, _search = string.Empty, _name = string.Empty;
+    private bool _private, _creating, _busy, _loading = true;
+    private string? _error;
+    private ElementReference _browser;
+    private IJSObjectReference? _module;
+    private DotNetObjectReference<ThreadBrowser>? _self;
+    private CancellationTokenSource? _searchDebounce;
+    private bool Has(CommunityPermission value) => Session.IsOwner ||
+        (Channel.EffectivePermissions & (CommunityPermission.Administrator | value)) != 0;
+    private bool CanCreatePublic => Has(CommunityPermission.CreatePublicThreads);
+    private bool CanCreatePrivate => Has(CommunityPermission.CreatePrivateThreads);
+    private bool CanSubmit => !_busy && _name.Trim().Length is >= CommunityThreadLimits.MinimumNameLength
+        and <= CommunityThreadLimits.MaximumNameLength && (_private ? CanCreatePrivate : CanCreatePublic);
+
+    protected override async Task OnInitializedAsync()
+    {
+        _creating = CreatedFromMessageId.HasValue;
+        _private = !CanCreatePublic && CanCreatePrivate;
+        await LoadAsync();
+    }
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        _module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/emojiPicker.js");
+        _self = DotNetObjectReference.Create(this);
+        if (!IsMobile) await _module.InvokeVoidAsync("wireAnchoredPopup", _browser, Anchor, _self);
+    }
+    [JSInvokable] public Task DismissAsync() => OnClose.InvokeAsync();
+    private async Task LoadAsync(CancellationToken cancellationToken = default)
+    {
+        _loading = true; _error = null;
+        try { var page = await Session.GetThreadsAsync(Channel.Id, _tab, _search, cancellationToken: cancellationToken); _threads.Clear(); _threads.AddRange(page.Threads); }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+        catch (Exception e) { _error = e.Message; }
+        finally { _loading = false; }
+    }
+    private async Task SelectTabAsync(CommunityThreadListKind tab) { _tab = tab; await LoadAsync(); }
+    private void SearchChanged(ChangeEventArgs e)
+    {
+        _searchInput = e.Value?.ToString() ?? string.Empty;
+        _searchDebounce?.Cancel(); _searchDebounce?.Dispose();
+        var source = _searchDebounce = new CancellationTokenSource();
+        _ = DebouncedSearchAsync(source);
+    }
+    private void NameChanged(ChangeEventArgs e) => _name = e.Value?.ToString() ?? string.Empty;
+    private void PrivateChanged(bool value) => _private = value;
+    private async Task DebouncedSearchAsync(CancellationTokenSource source)
+    {
+        try { await Task.Delay(250, source.Token); _search = _searchInput.Trim(); await InvokeAsync(() => LoadAsync(source.Token)); }
+        catch (OperationCanceledException) { }
+    }
+    private async Task CreateAsync()
+    {
+        if (!CanSubmit) return;
+        _busy = true;
+        try { var created = await Session.CreateThreadAsync(Channel.Id, new(_name.Trim(), _private, CreatedFromMessageId)); await OnClose.InvokeAsync(); await OnOpen.InvokeAsync(created); }
+        catch (Exception e) { _error = e.Message; }
+        finally { _busy = false; }
+    }
+    private async Task OpenAsync(CommunityThreadDto thread) { await OnClose.InvokeAsync(); await OnOpen.InvokeAsync(thread); }
+    private async Task JoinAsync(CommunityThreadDto thread)
+    {
+        try { var joined = await Session.JoinThreadAsync(Channel.Id, thread.Id); var index = _threads.FindIndex(value => value.Id == joined.Id); if (index >= 0) _threads[index] = joined; }
+        catch (Exception e) { _error = e.Message; }
+    }
+    private string TabClass(CommunityThreadListKind tab) => _tab == tab ? "selected" : string.Empty;
+    private static string Relative(DateTimeOffset value) { var elapsed = DateTimeOffset.UtcNow - value; return elapsed.TotalMinutes < 1 ? "just now" : elapsed.TotalHours < 1 ? $"{(int)elapsed.TotalMinutes}m ago" : elapsed.TotalDays < 1 ? $"{(int)elapsed.TotalHours}h ago" : $"{(int)elapsed.TotalDays}d ago"; }
+    public async ValueTask DisposeAsync()
+    {
+        _searchDebounce?.Cancel(); _searchDebounce?.Dispose();
+        if (_module is not null) { try { await _module.InvokeVoidAsync("disposeAnchoredPopup", _browser); await _module.DisposeAsync(); } catch (JSDisconnectedException) { } }
+        _self?.Dispose();
+    }
+}

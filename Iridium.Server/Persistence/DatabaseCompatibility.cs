@@ -16,6 +16,7 @@ public static class DatabaseCompatibility
     {
         await EnsureCommunityStructureTablesAsync(db);
         await EnsureCommunityForumSchemaAsync(db);
+        await EnsureCommunityThreadSchemaAsync(db);
     }
 
     public static async Task EnsureMessageForwardingSchemaAsync(IridiumDbContext db)
@@ -446,7 +447,9 @@ public static class DatabaseCompatibility
                               CommunityPermission.ShareScreen | CommunityPermission.ReadMessageHistory |
                               CommunityPermission.AttachFiles | CommunityPermission.EmbedLinks |
                               CommunityPermission.AddReactions | CommunityPermission.UseExternalEmoji |
-                              CommunityPermission.CreateForumPosts | CommunityPermission.EmbedDocumentsInForumPosts
+                              CommunityPermission.CreateForumPosts | CommunityPermission.EmbedDocumentsInForumPosts |
+                              CommunityPermission.CreatePublicThreads | CommunityPermission.CreatePrivateThreads |
+                              CommunityPermission.SendMessagesInThreads
             });
         if (missing.Count > 0) await db.SaveChangesAsync();
     }
@@ -496,6 +499,29 @@ public static class DatabaseCompatibility
             "INSERT INTO IridiumCompatibilityMigrations (Id, AppliedAt) VALUES ({0}, {1})",
             documentMigration, DateTimeOffset.UtcNow.UtcTicks);
         await documentTransaction.CommitAsync();
+    }
+
+    public static async Task EnsureCommunityThreadPermissionDefaultsAsync(IridiumDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS IridiumCompatibilityMigrations (
+                Id TEXT NOT NULL CONSTRAINT PK_IridiumCompatibilityMigrations PRIMARY KEY,
+                AppliedAt INTEGER NOT NULL
+            );
+            """);
+        const string migration = "community-thread-permissions-v1";
+        if (await db.Database.SqlQueryRaw<int>(
+                "SELECT COUNT(*) AS Value FROM IridiumCompatibilityMigrations WHERE Id = {0}", migration)
+            .SingleAsync() > 0) return;
+        await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
+        await db.Database.ExecuteSqlRawAsync(
+            "UPDATE CommunityRoles SET Permissions = Permissions | {0} WHERE IsDefault = 1",
+            (long)(CommunityPermission.CreatePublicThreads | CommunityPermission.CreatePrivateThreads |
+                   CommunityPermission.SendMessagesInThreads));
+        await db.Database.ExecuteSqlRawAsync(
+            "INSERT INTO IridiumCompatibilityMigrations (Id, AppliedAt) VALUES ({0}, {1})",
+            migration, DateTimeOffset.UtcNow.UtcTicks);
+        await transaction.CommitAsync();
     }
 
     public static async Task EnsureCommunityPermissionOverwriteSchemaAsync(IridiumDbContext db)
@@ -781,6 +807,7 @@ public static class DatabaseCompatibility
                 Id TEXT NOT NULL,
                 CategoryId TEXT NULL,
                 ParentForumChannelId TEXT NULL,
+                ParentThreadChannelId TEXT NULL,
                 Name TEXT NOT NULL,
                 Kind INTEGER NOT NULL DEFAULT 0,
                 PermissionsSyncedToCategory INTEGER NOT NULL DEFAULT 0,
@@ -800,6 +827,7 @@ public static class DatabaseCompatibility
         await EnsureColumnAsync(db, "CommunityChannels", "Kind", "INTEGER NOT NULL DEFAULT 0");
         await EnsureColumnAsync(db, "CommunityChannels", "PermissionsSyncedToCategory", "INTEGER NOT NULL DEFAULT 0");
         await EnsureColumnAsync(db, "CommunityChannels", "ParentForumChannelId", "TEXT NULL");
+        await EnsureColumnAsync(db, "CommunityChannels", "ParentThreadChannelId", "TEXT NULL");
         await EnsureColumnAsync(db, "CommunityChannels", "RequireTag", "INTEGER NOT NULL DEFAULT 0");
         await EnsureColumnAsync(db, "CommunityChannels", "AllowDocumentEmbeds", "INTEGER NOT NULL DEFAULT 0");
         await EnsureColumnAsync(db, "CommunityChannels", "EmbedProvider", "INTEGER NULL");
@@ -905,11 +933,70 @@ public static class DatabaseCompatibility
         await EnsureColumnAsync(db, "CommunityForumPosts", "EmbedUrl", "TEXT NULL");
     }
 
+    public static async Task EnsureCommunityThreadSchemaAsync(IridiumDbContext db)
+    {
+        await EnsureColumnAsync(db, "CommunityChannels", "ParentThreadChannelId", "TEXT NULL");
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE INDEX IF NOT EXISTS IX_CommunityChannels_CommunityId_ParentThreadChannelId
+                ON CommunityChannels (CommunityId, ParentThreadChannelId);
+            CREATE TABLE IF NOT EXISTS CommunityThreads (
+                Id TEXT NOT NULL CONSTRAINT PK_CommunityThreads PRIMARY KEY,
+                CommunityId TEXT NOT NULL,
+                ParentChannelId TEXT NOT NULL,
+                DiscussionChannelId TEXT NOT NULL,
+                OwnerAccountId TEXT NOT NULL,
+                CreatedFromMessageId TEXT NULL,
+                Name TEXT NOT NULL,
+                CreatedAt INTEGER NOT NULL,
+                ArchivedAt INTEGER NULL,
+                IsArchived INTEGER NOT NULL DEFAULT 0,
+                IsLocked INTEGER NOT NULL DEFAULT 0,
+                IsPrivate INTEGER NOT NULL DEFAULT 0,
+                AutoArchiveDuration INTEGER NOT NULL DEFAULT 4320,
+                SlowmodeSeconds INTEGER NOT NULL DEFAULT 0,
+                LastActivityAt INTEGER NOT NULL,
+                ReplyCount INTEGER NOT NULL DEFAULT 0,
+                CONSTRAINT FK_CommunityThreads_Communities_CommunityId
+                    FOREIGN KEY (CommunityId) REFERENCES Communities (Id) ON DELETE CASCADE,
+                CONSTRAINT FK_CommunityThreads_ParentChannel
+                    FOREIGN KEY (CommunityId, ParentChannelId) REFERENCES CommunityChannels (CommunityId, Id) ON DELETE CASCADE,
+                CONSTRAINT FK_CommunityThreads_DiscussionChannel
+                    FOREIGN KEY (CommunityId, DiscussionChannelId) REFERENCES CommunityChannels (CommunityId, Id) ON DELETE CASCADE,
+                CONSTRAINT FK_CommunityThreads_Owner
+                    FOREIGN KEY (OwnerAccountId) REFERENCES Accounts (Id) ON DELETE RESTRICT,
+                CONSTRAINT FK_CommunityThreads_CreatedFromMessage
+                    FOREIGN KEY (CreatedFromMessageId) REFERENCES ChannelMessages (Id) ON DELETE SET NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS IX_CommunityThreads_DiscussionChannelId
+                ON CommunityThreads (DiscussionChannelId);
+            CREATE UNIQUE INDEX IF NOT EXISTS IX_CommunityThreads_CreatedFromMessageId
+                ON CommunityThreads (CreatedFromMessageId) WHERE CreatedFromMessageId IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS IX_CommunityThreads_ParentActivity
+                ON CommunityThreads (CommunityId, ParentChannelId, IsArchived, LastActivityAt);
+            CREATE TABLE IF NOT EXISTS CommunityThreadMembers (
+                ThreadId TEXT NOT NULL,
+                AccountId TEXT NOT NULL,
+                JoinedAt INTEGER NOT NULL,
+                NotificationLevel INTEGER NOT NULL DEFAULT 1,
+                CONSTRAINT PK_CommunityThreadMembers PRIMARY KEY (ThreadId, AccountId),
+                CONSTRAINT FK_CommunityThreadMembers_Thread
+                    FOREIGN KEY (ThreadId) REFERENCES CommunityThreads (Id) ON DELETE CASCADE,
+                CONSTRAINT FK_CommunityThreadMembers_Account
+                    FOREIGN KEY (AccountId) REFERENCES Accounts (Id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS IX_CommunityThreadMembers_AccountId
+                ON CommunityThreadMembers (AccountId);
+            CREATE INDEX IF NOT EXISTS IX_CommunityThreadMembers_ThreadId
+                ON CommunityThreadMembers (ThreadId);
+            """);
+    }
+
     public static async Task EnsureUnifiedCommunitySidebarOrderingAsync(IridiumDbContext db)
     {
         await EnsureColumnAsync(db, "CommunityChannels", "Kind", "INTEGER NOT NULL DEFAULT 0");
         await EnsureColumnAsync(db, "CommunityChannels", "PermissionsSyncedToCategory", "INTEGER NOT NULL DEFAULT 0");
         await EnsureColumnAsync(db, "CommunityChannels", "ParentForumChannelId", "TEXT NULL");
+        await EnsureColumnAsync(db, "CommunityChannels", "ParentThreadChannelId", "TEXT NULL");
         // Keep this migration independently safe for maintenance tools and focused tests.
         // Normal startup adds it earlier through EnsureEarlyCommunitySchemaAsync.
         await EnsureColumnAsync(db, "CommunityChannels", "RequireTag", "INTEGER NOT NULL DEFAULT 0");
@@ -989,6 +1076,7 @@ public static class DatabaseCompatibility
                     Id TEXT NOT NULL,
                     CategoryId TEXT NULL,
                     ParentForumChannelId TEXT NULL,
+                    ParentThreadChannelId TEXT NULL,
                     Name TEXT NOT NULL,
                     Kind INTEGER NOT NULL DEFAULT 0,
                     PermissionsSyncedToCategory INTEGER NOT NULL DEFAULT 0,
@@ -1002,14 +1090,16 @@ public static class DatabaseCompatibility
                     CONSTRAINT FK_CommunityChannels_Communities_CommunityId FOREIGN KEY (CommunityId) REFERENCES Communities (Id) ON DELETE CASCADE,
                     CONSTRAINT FK_CommunityChannels_CommunityCategories_CommunityId_CategoryId FOREIGN KEY (CommunityId, CategoryId) REFERENCES CommunityCategories (CommunityId, Id) ON DELETE RESTRICT
                 );
-                INSERT INTO CommunityChannels_NullableUpgrade (CommunityId, Id, CategoryId, ParentForumChannelId, Name, Kind, PermissionsSyncedToCategory, RequireTag, AllowDocumentEmbeds, EmbedProvider, EmbedUrl, Position, CreatedAt)
-                    SELECT CommunityId, Id, CategoryId, ParentForumChannelId, Name, Kind, PermissionsSyncedToCategory, RequireTag, AllowDocumentEmbeds, EmbedProvider, EmbedUrl, Position, CreatedAt FROM CommunityChannels;
+                INSERT INTO CommunityChannels_NullableUpgrade (CommunityId, Id, CategoryId, ParentForumChannelId, ParentThreadChannelId, Name, Kind, PermissionsSyncedToCategory, RequireTag, AllowDocumentEmbeds, EmbedProvider, EmbedUrl, Position, CreatedAt)
+                    SELECT CommunityId, Id, CategoryId, ParentForumChannelId, ParentThreadChannelId, Name, Kind, PermissionsSyncedToCategory, RequireTag, AllowDocumentEmbeds, EmbedProvider, EmbedUrl, Position, CreatedAt FROM CommunityChannels;
                 DROP TABLE CommunityChannels;
                 ALTER TABLE CommunityChannels_NullableUpgrade RENAME TO CommunityChannels;
                 CREATE INDEX IX_CommunityChannels_CommunityId_CategoryId_Position
                     ON CommunityChannels (CommunityId, CategoryId, Position);
                 CREATE INDEX IX_CommunityChannels_CommunityId_ParentForumChannelId
                     ON CommunityChannels (CommunityId, ParentForumChannelId);
+                CREATE INDEX IX_CommunityChannels_CommunityId_ParentThreadChannelId
+                    ON CommunityChannels (CommunityId, ParentThreadChannelId);
                 """);
             await transaction.CommitAsync();
         }

@@ -24,7 +24,7 @@
                 if (item.Channel is { } rootChannel)
                 {
                     <ChannelRow @key="item.Id" Channel="rootChannel" CanManage="State.CanManage" CanManageForumTags="@CanManageForumTags(rootChannel)" CanManagePermissions="@CanManagePermissions(rootChannel.EffectivePermissions)" Depth="1"
-                                Selected="@(SelectedChannel?.Id == rootChannel.Id && SelectedForumPostId is null)" OnSelect="SelectChannelAsync"
+                                Selected="@(SelectedChannel?.Id == rootChannel.Id && SelectedForumPostId is null && SelectedThreadId is null)" OnSelect="SelectChannelAsync"
                                 HasChildren="@(rootChannel.Kind == CommunityChannelKind.Forum && ForumPosts(rootChannel.Id).Count > 0)"
                                 ChildrenCollapsed="_collapsedForums.Contains(rootChannel.Id)"
                                 OnToggleChildren="() => ToggleForumChildrenAsync(rootChannel)"
@@ -35,6 +35,11 @@
                                 StreamThumbnails="VoiceSessions.StreamThumbnails"
                                 OnEdit="EditChannel" OnDelete="RequestDeleteChannel"
                                 OnPermissions="OpenChannelPermissions" />
+                    @if (rootChannel.Kind == CommunityChannelKind.Text && Threads(rootChannel.Id).Count > 0)
+                    {
+                        <ThreadSidebarChildren Threads="Threads(rootChannel.Id)" SelectedThreadId="SelectedThreadId"
+                                               Depth="1" OnSelect="OnThreadSelected" />
+                    }
                     @if (rootChannel.Kind == CommunityChannelKind.Forum && !_collapsedForums.Contains(rootChannel.Id))
                     {
                         <ForumPostSidebarChildren Forum="rootChannel" Posts="ForumPosts(rootChannel.Id)" Depth="1"
@@ -57,6 +62,8 @@
                                                ForumChildrenCollapsed="_collapsedForums"
                                                OnToggleForumChildren="ToggleForumChildrenAsync"
                                                OnSelectForumPost="OnForumPostSelected"
+                                               JoinedThreads="State.JoinedThreads" SelectedThreadId="SelectedThreadId"
+                                               OnSelectThread="OnThreadSelected"
                                                OnEdit="EditCategory" OnCreateChannel="OpenChannelDialog"
                                                OnCreateSubcategory="OpenSubcategoryDialog" OnDelete="RequestDeleteCategory"
                                                OnSelectChannel="SelectChannelAsync" OnEditChannel="EditChannel"
@@ -113,6 +120,8 @@
     [Parameter] public EventCallback<CommunityChannelDto?> OnChannelSelected { get; set; }
     [Parameter] public EventCallback<CommunityForumPostDto> OnForumPostSelected { get; set; }
     [Parameter] public Guid? SelectedForumPostId { get; set; }
+    [Parameter] public EventCallback<CommunityThreadDto> OnThreadSelected { get; set; }
+    [Parameter] public Guid? SelectedThreadId { get; set; }
     [Parameter, EditorRequired] public required string NodeAuthority { get; set; }
 
     private readonly HashSet<Guid> _collapsed = [];
@@ -292,6 +301,9 @@
         .Where(value => value.ForumChannelId == forumId)
         .OrderByDescending(value => value.IsPinned)
         .ThenByDescending(value => value.LastActivityAt).ToArray();
+    private IReadOnlyList<CommunityThreadDto> Threads(Guid channelId) => State.JoinedThreads
+        .Where(value => value.ParentChannelId == channelId && !value.IsArchived)
+        .OrderByDescending(value => value.LastActivityAt).ToArray();
 
     [JSInvokable]
     public async Task CommitChannelDropAsync(string channelId, string? parentCategoryId, string? targetItemId,

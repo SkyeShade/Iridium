@@ -37,7 +37,7 @@ public sealed class ForumPostSubscriptionTests
         Assert.Contains("OrderByDescending(value => value.IsPinned)", Source("Iridium.Web", "Components", "CommunitySidebar.razor"));
         Assert.Contains("See all followed posts", sidebar);
         Assert.Contains("@media(max-width:860px)", styles);
-        Assert.Contains(".forum-post-children { display: none; }", styles);
+        Assert.Contains(".forum-post-children{display:none}", styles);
         Assert.Contains("Follow Post", menu);
         Assert.Contains("Unfollow Post", menu);
         Assert.Contains("All Messages", menu);
@@ -49,27 +49,28 @@ public sealed class ForumPostSubscriptionTests
     public void FollowedPostChildrenUseCompactDesktopHierarchyStyles()
     {
         var markup = Source("Iridium.Web", "Components", "ForumPostSidebarChildren.razor");
-        var styles = Source("Iridium.Web", "Components", "ForumPostSidebarChildren.razor.css");
+        var styles = Source("Iridium.Web", "Components", "SidebarChildConversationList.razor.css");
+        var sharedMarkup = Source("Iridium.Web", "Components", "SidebarChildConversationList.razor");
         var shared = Source("Iridium.Web", "wwwroot", "css", "app.css");
 
-        Assert.Contains("forum-post-child-compact", markup);
-        Assert.Contains("forum-post-child-tree", markup);
-        Assert.Contains("min-height: var(--forum-child-row-height)", styles);
-        Assert.Contains("min-height: 2.25rem", styles);
-        Assert.Contains("font-size: .82rem", styles);
+        Assert.Contains("<SidebarChildConversationList", markup);
+        Assert.Contains("sidebar-child-row sidebar-nav-row", sharedMarkup);
+        Assert.Contains("min-height:var(--sidebar-child-row-height)", styles);
+        Assert.Contains("min-height:2.25rem", styles);
+        Assert.Contains("font-size:.82rem", styles);
         Assert.Contains("border-radius: .42rem", shared);
-        Assert.Contains("min-width: 0", styles);
-        Assert.Contains("overflow: hidden", styles);
-        Assert.Contains("text-overflow: ellipsis", styles);
-        Assert.Contains("white-space: nowrap", styles);
-        Assert.Contains(".forum-post-child.unread .forum-post-title", styles);
-        Assert.Contains(".forum-post-mentions", styles);
+        Assert.Contains("min-width:0", styles);
+        Assert.Contains("overflow:hidden", styles);
+        Assert.Contains("text-overflow:ellipsis", styles);
+        Assert.Contains("white-space:nowrap", styles);
+        Assert.Contains(".sidebar-child-row.unread .sidebar-child-title", styles);
+        Assert.Contains(".sidebar-child-mentions", styles);
     }
 
     [Fact]
     public void FollowedPostStatesAndConnectorGuidesHaveExplicitVisualPrecedence()
     {
-        var styles = Source("Iridium.Web", "Components", "ForumPostSidebarChildren.razor.css");
+        var styles = Source("Iridium.Web", "Components", "SidebarChildConversationList.razor.css");
         var shared = Source("Iridium.Web", "wwwroot", "css", "app.css");
         var hover = shared.IndexOf(".sidebar-nav-row:hover > .sidebar-nav-surface", StringComparison.Ordinal);
         var selected = shared.IndexOf(".sidebar-nav-row.is-active > .sidebar-nav-surface", StringComparison.Ordinal);
@@ -78,32 +79,31 @@ public sealed class ForumPostSubscriptionTests
         Assert.True(hover >= 0 && selected > hover && selectedHover > selected);
         Assert.Contains("var(--surface-hover)", shared);
         Assert.Contains("var(--surface-active)", shared);
-        Assert.Contains(".forum-post-child-tree::before", styles);
-        Assert.Contains("bottom: calc(var(--forum-child-row-height) / 2)", styles);
-        Assert.Contains("background: color-mix(in srgb, var(--text-faint) 42%, transparent)", styles);
-        Assert.Contains("width: .52rem", styles);
+        Assert.Contains(".sidebar-child-tree::before", styles);
+        Assert.Contains("bottom:calc(var(--sidebar-child-row-height)/2)", styles);
+        Assert.Contains("background:color-mix(in srgb,var(--text-faint) 42%,transparent)", styles);
+        Assert.Contains("width:.52rem", styles);
         Assert.DoesNotContain("border-left:", styles);
         Assert.DoesNotContain(".last-child-post", styles);
-        Assert.Contains("@key=\"post.Id\"", Source("Iridium.Web", "Components", "ForumPostSidebarChildren.razor"));
+        Assert.Contains("@key=\"item.Id\"", Source("Iridium.Web", "Components", "SidebarChildConversationList.razor"));
     }
 
     [Fact]
     public void ForumConnectorTreeUsesOneSharedTrunkForOneOrManyStableChildren()
     {
-        var markup = Source("Iridium.Web", "Components", "ForumPostSidebarChildren.razor");
-        var styles = Source("Iridium.Web", "Components", "ForumPostSidebarChildren.razor.css");
-        var tree = markup.IndexOf("class=\"forum-post-child-tree\"", StringComparison.Ordinal);
-        var loop = markup.IndexOf("@foreach (var post in VisiblePosts)", StringComparison.Ordinal);
-        var branch = markup.IndexOf("class=\"tree-branch\"", StringComparison.Ordinal);
-        var surface = markup.IndexOf("sidebar-nav-surface forum-post-nav-surface", StringComparison.Ordinal);
+        var markup = Source("Iridium.Web", "Components", "SidebarChildConversationList.razor");
+        var styles = Source("Iridium.Web", "Components", "SidebarChildConversationList.razor.css");
+        var tree = markup.IndexOf("class=\"sidebar-child-tree\"", StringComparison.Ordinal);
+        var loop = markup.IndexOf("@foreach (var item in Items)", StringComparison.Ordinal);
+        var branch = markup.IndexOf("class=\"sidebar-child-branch\"", StringComparison.Ordinal);
+        var surface = markup.IndexOf("sidebar-nav-surface sidebar-child-nav-surface", StringComparison.Ordinal);
 
         Assert.True(tree >= 0 && loop > tree && branch > loop && surface > branch);
-        Assert.Contains("@if (VisiblePosts.Count > 0)", markup);
-        Assert.Equal(1, styles.Split(".forum-post-child-tree::before", StringSplitOptions.None).Length - 1);
-        Assert.DoesNotContain(".tree-branch::after", styles);
+        Assert.Equal(1, styles.Split(".sidebar-child-tree::before", StringSplitOptions.None).Length - 1);
+        Assert.DoesNotContain(".sidebar-child-branch::after", styles);
         Assert.DoesNotContain("nth-child", styles);
-        Assert.Contains("bottom: calc(var(--forum-child-row-height) / 2)", styles);
-        Assert.Contains(".forum-post-children { display: none; }", styles);
+        Assert.Contains("bottom:calc(var(--sidebar-child-row-height)/2)", styles);
+        Assert.Contains(".sidebar-child-conversations{display:none}", styles);
     }
 
     [Fact]
@@ -111,13 +111,13 @@ public sealed class ForumPostSubscriptionTests
     {
         var channel = Source("Iridium.UI", "ChannelRow.razor");
         var channelStyles = Source("Iridium.UI", "ChannelRow.razor.css");
-        var child = Source("Iridium.Web", "Components", "ForumPostSidebarChildren.razor");
+        var child = Source("Iridium.Web", "Components", "SidebarChildConversationList.razor");
         var shared = Source("Iridium.Web", "wwwroot", "css", "app.css");
 
         Assert.Contains("channel-row sidebar-nav-row", channel);
         Assert.Contains("sidebar-nav-surface channel-nav-surface", channel);
-        Assert.Contains("forum-post-child-compact sidebar-nav-row", child);
-        Assert.Contains("sidebar-nav-surface forum-post-nav-surface", child);
+        Assert.Contains("sidebar-child-row sidebar-nav-row", child);
+        Assert.Contains("sidebar-nav-surface sidebar-child-nav-surface", child);
         Assert.DoesNotContain("width: fit-content", shared);
         Assert.Contains("flex: 1 1 0", shared);
         Assert.Contains("width: auto", shared);
@@ -125,7 +125,7 @@ public sealed class ForumPostSubscriptionTests
         Assert.Contains("min-height:2.25rem", channelStyles);
         Assert.Contains("flex: 1 1 auto", channelStyles);
         Assert.Contains("@onclick=\"SelectAsync\"", channel);
-        Assert.Contains("@onclick=\"() => OnSelect.InvokeAsync(post)\"", child);
+        Assert.Contains("@onclick=\"() => OnSelect.InvokeAsync(item.Id)\"", child);
         Assert.Contains("margin-left:auto", channelStyles);
         Assert.Contains("text-overflow: ellipsis", channelStyles);
     }
@@ -206,8 +206,8 @@ public sealed class ForumPostSubscriptionTests
         Assert.Contains("forumPostId: postId", canonical);
         Assert.Contains("forumDiscussionChannelId: discussionChannelId", canonical);
         Assert.DoesNotContain("_selectedForumPostId = post.Id", canonical);
-        Assert.Contains("@key=\"post.Id\"", sidebar);
-        Assert.Contains("SelectedPostId == post.Id ? \"selected is-active\"", sidebar);
+        Assert.Contains("<SidebarChildConversationList", sidebar);
+        Assert.Contains("SelectedPostId == post.Id", sidebar);
     }
 
     [Fact]

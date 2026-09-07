@@ -409,9 +409,12 @@ public static partial class AccountEndpoints
             };
             var hasUnread = await db.ChannelMessages.AnyAsync(message =>
                 message.CommunityId == community.Id && message.AuthorAccountId != session.AccountId &&
-                (message.Channel.ParentForumChannelId == null || db.ForumPostSubscriptions.Any(subscription =>
+                ((message.Channel.ParentForumChannelId == null && message.Channel.ParentThreadChannelId == null) ||
+                 db.ForumPostSubscriptions.Any(subscription =>
                     subscription.AccountId == session.AccountId &&
-                    subscription.ForumPost.DiscussionChannelId == message.ChannelId)) &&
+                    subscription.ForumPost.DiscussionChannelId == message.ChannelId) ||
+                 db.CommunityThreadMembers.Any(member => member.AccountId == session.AccountId &&
+                    member.Thread.DiscussionChannelId == message.ChannelId)) &&
                 !db.CommunityChannelReadStates.Any(state => state.CommunityId == message.CommunityId &&
                     state.ChannelId == message.ChannelId && state.AccountId == session.AccountId &&
                     state.LastReadAt >= message.CreatedAt));
@@ -419,7 +422,10 @@ public static partial class AccountEndpoints
                 value.AccountId == session.AccountId && value.CommunityId == community.Id && value.ReadAt == null &&
                 !db.ForumPostSubscriptions.Any(subscription => subscription.AccountId == session.AccountId &&
                     subscription.NotificationLevel == ForumPostNotificationLevel.Muted &&
-                    subscription.ForumPost.DiscussionChannelId == value.ChannelId));
+                    subscription.ForumPost.DiscussionChannelId == value.ChannelId) &&
+                !db.CommunityThreadMembers.Any(member => member.AccountId == session.AccountId &&
+                    member.NotificationLevel == ThreadNotificationLevel.Muted &&
+                    member.Thread.DiscussionChannelId == value.ChannelId));
             communities[index] = community with { HasUnread = hasUnread, MentionCount = mentionCount };
         }
         return Results.Ok(communities);
@@ -491,7 +497,9 @@ public static partial class AccountEndpoints
                               CommunityPermission.ShareScreen | CommunityPermission.ReadMessageHistory |
                               CommunityPermission.AttachFiles | CommunityPermission.EmbedLinks |
                               CommunityPermission.AddReactions | CommunityPermission.UseExternalEmoji |
-                              CommunityPermission.CreateForumPosts | CommunityPermission.EmbedDocumentsInForumPosts });
+                              CommunityPermission.CreateForumPosts | CommunityPermission.EmbedDocumentsInForumPosts |
+                              CommunityPermission.CreatePublicThreads | CommunityPermission.CreatePrivateThreads |
+                              CommunityPermission.SendMessagesInThreads });
             logger.LogInformation("COMMUNITY CREATE Default role prepared Id={CommunityId}", community.Id);
 
             stage = "DefaultCategory";

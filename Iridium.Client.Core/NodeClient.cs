@@ -516,6 +516,70 @@ public sealed class NodeClient(Uri nodeAddress)
         CancellationToken cancellationToken = default) => SendNoContentAsync(HttpMethod.Delete,
         $"api/communities/{communityId}/forums/{channelId}/posts/{postId}", null, cancellationToken);
 
+    public Task<CommunityThreadPageDto> GetCommunityJoinedThreadsAsync(Guid communityId, int limit = 15,
+        CancellationToken cancellationToken = default) => SendAsync<CommunityThreadPageDto>(HttpMethod.Get,
+        $"api/communities/{communityId}/thread-memberships?limit={Math.Clamp(limit, 1, 100)}", null,
+        cancellationToken);
+
+    public Task<CommunityThreadPageDto> GetThreadsAsync(Guid communityId, Guid channelId,
+        CommunityThreadListKind view = CommunityThreadListKind.Active, string? search = null, int offset = 0,
+        int limit = 30, CancellationToken cancellationToken = default)
+    {
+        var query = $"view={view}&offset={Math.Max(0, offset)}&limit={Math.Clamp(limit, 1, 50)}";
+        if (!string.IsNullOrWhiteSpace(search)) query += $"&search={Uri.EscapeDataString(search.Trim())}";
+        return SendAsync<CommunityThreadPageDto>(HttpMethod.Get,
+            $"api/communities/{communityId}/channels/{channelId}/threads?{query}", null, cancellationToken);
+    }
+
+    public Task<CommunityThreadDto> GetThreadAsync(Guid communityId, Guid channelId, Guid threadId,
+        CancellationToken cancellationToken = default) => SendAsync<CommunityThreadDto>(HttpMethod.Get,
+        $"api/communities/{communityId}/channels/{channelId}/threads/{threadId}", null, cancellationToken);
+
+    public Task<CommunityThreadDto> CreateThreadAsync(Guid communityId, Guid channelId,
+        CreateCommunityThreadRequest request, CancellationToken cancellationToken = default) =>
+        SendAsync<CommunityThreadDto>(HttpMethod.Post,
+            $"api/communities/{communityId}/channels/{channelId}/threads", request, cancellationToken);
+
+    public Task<CommunityThreadDto> UpdateThreadAsync(Guid communityId, Guid channelId, Guid threadId,
+        UpdateCommunityThreadRequest request, CancellationToken cancellationToken = default) =>
+        SendAsync<CommunityThreadDto>(HttpMethod.Patch,
+            $"api/communities/{communityId}/channels/{channelId}/threads/{threadId}", request, cancellationToken);
+
+    public Task DeleteThreadAsync(Guid communityId, Guid channelId, Guid threadId,
+        CancellationToken cancellationToken = default) => SendNoContentAsync(HttpMethod.Delete,
+        $"api/communities/{communityId}/channels/{channelId}/threads/{threadId}", null, cancellationToken);
+
+    public Task<CommunityThreadDto> JoinThreadAsync(Guid communityId, Guid channelId, Guid threadId,
+        CancellationToken cancellationToken = default) => SendAsync<CommunityThreadDto>(HttpMethod.Put,
+        $"api/communities/{communityId}/channels/{channelId}/threads/{threadId}/membership", new { },
+        cancellationToken);
+
+    public Task LeaveThreadAsync(Guid communityId, Guid channelId, Guid threadId,
+        CancellationToken cancellationToken = default) => SendNoContentAsync(HttpMethod.Delete,
+        $"api/communities/{communityId}/channels/{channelId}/threads/{threadId}/membership", null,
+        cancellationToken);
+
+    public Task<CommunityThreadDto> UpdateThreadNotificationAsync(Guid communityId, Guid channelId, Guid threadId,
+        ThreadNotificationLevel level, CancellationToken cancellationToken = default) =>
+        SendAsync<CommunityThreadDto>(HttpMethod.Put,
+            $"api/communities/{communityId}/channels/{channelId}/threads/{threadId}/notification-settings",
+            new UpdateThreadNotificationRequest(level), cancellationToken);
+
+    public Task<IReadOnlyList<ThreadMemberDto>> GetThreadMembersAsync(Guid communityId, Guid channelId,
+        Guid threadId, CancellationToken cancellationToken = default) => SendAsync<IReadOnlyList<ThreadMemberDto>>(
+        HttpMethod.Get, $"api/communities/{communityId}/channels/{channelId}/threads/{threadId}/members", null,
+        cancellationToken);
+
+    public Task AddThreadMemberAsync(Guid communityId, Guid channelId, Guid threadId, Guid accountId,
+        CancellationToken cancellationToken = default) => SendNoContentAsync(HttpMethod.Put,
+        $"api/communities/{communityId}/channels/{channelId}/threads/{threadId}/members/{accountId}", new { },
+        cancellationToken);
+
+    public Task RemoveThreadMemberAsync(Guid communityId, Guid channelId, Guid threadId, Guid accountId,
+        CancellationToken cancellationToken = default) => SendNoContentAsync(HttpMethod.Delete,
+        $"api/communities/{communityId}/channels/{channelId}/threads/{threadId}/members/{accountId}", null,
+        cancellationToken);
+
     public Task<IReadOnlyList<CommunityForumTagDto>> GetForumTagsAsync(Guid communityId, Guid channelId,
         CancellationToken cancellationToken = default) => SendAsync<IReadOnlyList<CommunityForumTagDto>>(
         HttpMethod.Get, $"api/communities/{communityId}/forums/{channelId}/tags", null, cancellationToken);

@@ -9,11 +9,13 @@
 @inject ExternalEmbedResolver ExternalEmbeds
 @inject ModifierKeyStateService ModifierKeys
 @inject ChannelMessagingSession Messaging
+@inject CommunitySession CommunityState
 @inject EmojiPickerPreferencesService EmojiPreferences
 @inject ReactionEmojiPickerCoordinator ReactionPickers
 
 <article @ref="_messageRow" class="message-row @(StartsGroup ? "group-start" : "compact") @(Message.IsDeleted ? "deleted" : null) @(MentionsCurrentAccount ? "mentions-current-account" : null) @DeliveryClass"
-         data-message-id="@Message.Id" @onpointerenter="MessageEntered" @onpointerleave="MessageLeft">
+         data-message-id="@Message.Id" @onpointerenter="MessageEntered" @onpointerleave="MessageLeft"
+         @oncontextmenu="OpenMessageContextMenuAsync" @oncontextmenu:preventDefault="true" @oncontextmenu:stopPropagation="true">
     @if (Message.ReplyTo is { } reply)
     {
         <div class="reply-reference">
@@ -40,7 +42,7 @@
     }
     @if (StartsGroup)
     {
-        <button type="button" class="message-avatar author-trigger" @onclick="OpenAuthorProfileAsync" @oncontextmenu="OpenAuthorContext" @oncontextmenu:preventDefault="true" title="View @Message.Author.DisplayName's profile">
+        <button type="button" class="message-avatar author-trigger" @onclick="OpenAuthorProfileAsync" @oncontextmenu="OpenAuthorContext" @oncontextmenu:preventDefault="true" @oncontextmenu:stopPropagation="true" title="View @Message.Author.DisplayName's profile">
             <ProfileAvatar AccountId="Message.Author.AccountId" DisplayName="@Message.Author.DisplayName" Presence="@(AuthorPresence ?? PublicPresence.Offline)"
                            AvatarPresetId="Message.Author.AvatarPresetId" AvatarRevision="Message.Author.AvatarRevision"
                            AvatarSnapshotMessageId="Message.Author.AvatarSnapshotMessageId"
@@ -51,7 +53,7 @@
     <div class="message-body">
         @if (StartsGroup)
         {
-            <header><button type="button" class="author-name display-name" style="@AuthorStyle" @onclick="OpenAuthorProfileAsync" @oncontextmenu="OpenAuthorContext" @oncontextmenu:preventDefault="true">@Message.Author.DisplayName</button><time title="@Message.CreatedAt.ToLocalTime().ToString("F")">@Message.CreatedAt.ToLocalTime().ToString("HH:mm")</time></header>
+            <header><button type="button" class="author-name display-name" style="@AuthorStyle" @onclick="OpenAuthorProfileAsync" @oncontextmenu="OpenAuthorContext" @oncontextmenu:preventDefault="true" @oncontextmenu:stopPropagation="true">@Message.Author.DisplayName</button><time title="@Message.CreatedAt.ToLocalTime().ToString("F")">@Message.CreatedAt.ToLocalTime().ToString("HH:mm")</time></header>
         }
         <div class="message-content">
             @if (_editing)
@@ -86,6 +88,12 @@
                     <ForwardedMessageBlock Snapshot="forwarded" OnOpenSource="OnOpenForwardSource" />
                 }
                 <MessageAttachments Attachments="Message.Attachments" DeliveryState="Message.DeliveryState" />
+            }
+            @if (Message.Thread is { } thread)
+            {
+                <button type="button" class="message-thread-indicator" @onclick="() => OnOpenThread.InvokeAsync(thread)">
+                    <Icon Name="thread" Size="16" /><span class="thread-summary-copy"><strong>@thread.Name</strong><small>@MessageCount(thread.ReplyCount) &middot; last reply @Relative(thread.LastActivityAt) @if (thread.IsLocked) { <Icon Name="lock" Size="11" /> } else if (thread.IsArchived) { <em>Archived</em> }</small></span><span class="thread-open-arrow" aria-hidden="true">›</span>
+                </button>
             }
             @if (Message.DeliveryState == MessageDeliveryState.Failed)
             {
@@ -135,37 +143,48 @@
             <button title="Reply" @onclick="ReplyAsync" @onclick:stopPropagation="true"><Icon Name="reply" /></button>
             @if (CanEdit) { <button title="Edit" @onclick="BeginEdit" @onclick:stopPropagation="true"><Icon Name="edit" /></button> }
             @if (CanDelete) { <button class="shift-action destructive" title="Delete Message" @onclick="DeleteAsync" @onclick:stopPropagation="true"><Icon Name="trash" /></button> }
-            <button title="More actions" @onclick="ToggleMenu" @onclick:stopPropagation="true"><Icon Name="more" /></button>
+            <button @ref="_moreButton" title="More actions" aria-label="More message actions" @onclick="ToggleMenu" @onclick:stopPropagation="true"><Icon Name="more" /></button>
         </div>
         @if (_menuOpen && !IsMobileLayout)
         {
-            <div class="message-menu" @onpointerenter="MenuEntered" @onpointerleave="MenuLeft" @onclick:stopPropagation="true">
+            <div @ref="_messageMenu" class="message-menu" role="menu" aria-label="Message actions"
+                 @onpointerenter="MenuEntered" @onpointerleave="MenuLeft" @onclick:stopPropagation="true">
                 @if (CanAddReactions && _quickReactions.Count > 0)
                 {
                     <div class="quick-reactions" aria-label="Quick reactions">
                         @foreach (var quick in _quickReactions)
                         {
-                            <button type="button" title="Quick reaction" @onclick="() => QuickReactionAsync(quick)">
-                                @if (quick.Standard is { } standard) { <StandardEmojiArtwork Glyph="standard.Glyph" ArtworkKey="standard.ArtworkKey" /> }
-                                else if (quick.Custom is { } custom) { <CommunityEmojiImage Emoji="custom" /> }
+                            <button type="button" title="React with @QuickReactionName(quick)" aria-label="React with @QuickReactionName(quick)" @onclick="() => QuickReactionAsync(quick)">
+                                @if (quick.Standard is { } standard) { <StandardEmojiArtwork Glyph="@standard.Glyph" ArtworkKey="@standard.ArtworkKey" /> }
+                                else if (quick.Custom is { } custom) { <CommunityEmojiImage Emoji="@custom" /> }
                             </button>
                         }
                     </div>
                 }
-                <button @onclick="ReplyFromMenuAsync"><Icon Name="reply" /> Reply</button>
-                @if (CanAddReactions) { <button @onclick="OpenReactionPickerFromMenu"><Icon Name="emoji" /> Add Reaction</button> }
+                @if (CanAddReactions) { <button role="menuitem" class="submenu-action" @onclick="OpenReactionPickerFromMenu"><Icon Name="emoji" /><span>Add Reaction</span><b aria-hidden="true">›</b></button> }
                 @if (Message.Reactions is { Count: > 0 }) { <button @onclick="OpenReactionDetails"><Icon Name="emoji" /> View Reactions</button> }
-                <button @onclick="ForwardFromMenu"><Icon Name="forward" /> Forward</button>
-                @if (CanEdit) { <button @onclick="EditFromMenu"><Icon Name="edit" /> Edit</button> }
-                @if (CanDelete) { <button class="destructive" @onclick="DeleteAsync"><Icon Name="trash" /> Delete Message</button> }
+                <div class="menu-separator" role="separator"></div>
+                <button role="menuitem" @onclick="ReplyFromMenuAsync"><Icon Name="reply" /> Reply</button>
+                @if (Message.Thread is not null) { <button role="menuitem" @onclick="OpenExistingThreadFromMenu"><Icon Name="thread" /> Open Thread</button> }
+                else if (CanCreateThread && IsThreadable) { <button role="menuitem" @onclick="CreateThreadFromMenu"><Icon Name="thread" /> Create Thread</button> }
+                <button role="menuitem" @onclick="ForwardFromMenu"><Icon Name="forward" /> Forward</button>
+                <div class="menu-separator" role="separator"></div>
+                @if (CanEdit) { <button role="menuitem" @onclick="EditFromMenu"><Icon Name="edit" /> Edit Message</button> }
+                @if (!string.IsNullOrWhiteSpace(Message.Content)) { <button role="menuitem" @onclick="CopyTextAsync"><Icon Name="copy" /> Copy Text</button> }
+                @if (!IsDirectMessage) { <button role="menuitem" @onclick="MarkUnread"><Icon Name="message" /> Mark Unread</button> }
+                @if (CanDelete) { <div class="menu-separator" role="separator"></div><button class="destructive" @onclick="DeleteAsync"><Icon Name="trash" /> Delete Message</button> }
             </div>
         }
     }
 </article>
 @if (_menuOpen && IsMobileLayout)
 {
-    <MobileMessageActionSheet MessageId="Message.Id" CanEdit="CanEdit" CanDelete="CanDelete"
+    <MobileMessageActionSheet MessageId="Message.Id" CanEdit="CanEdit" CanDelete="CanDelete" QuickReactions="_quickReactions"
                               CanAddReaction="CanAddReactions" HasReactions="@(Message.Reactions is { Count: > 0 })"
+                              CanCreateThread="@(CanCreateThread && Message.Thread is null && IsThreadable)" OnCreateThread="CreateThreadFromMenu"
+                              CanOpenThread="@(Message.Thread is not null)" OnOpenThread="OpenExistingThreadFromMenu"
+                              OnQuickReaction="QuickReactionAsync" CanCopyText="@(!string.IsNullOrWhiteSpace(Message.Content))"
+                              OnCopyText="CopyTextAsync" CanMarkUnread="@(!IsDirectMessage)" OnMarkUnread="MarkUnread"
                               OnAddReaction="OpenReactionPickerFromMenu" OnViewReactions="OpenReactionDetails"
                               OnReply="ReplyFromMenuAsync" OnForward="ForwardFromMenu"
                               OnEdit="EditFromMenu" OnDelete="DeleteAsync" OnClose="CloseMessageMenu" />
@@ -223,6 +242,9 @@
     [Parameter] public EventCallback<CommunityMemberRolesChange> OnMemberRolesChanged { get; set; }
     [Parameter] public EventCallback<CommunityMemberDto> OnMention { get; set; }
     [Parameter] public EventCallback<ChannelMessageDto> OnReply { get; set; }
+    [Parameter] public bool CanCreateThread { get; set; }
+    [Parameter] public EventCallback<ChannelMessageDto> OnCreateThread { get; set; }
+    [Parameter] public EventCallback<ThreadMessageSummaryDto> OnOpenThread { get; set; }
     [Parameter, EditorRequired] public required Func<MessageEditSubmission, Task<bool>> Edit { get; set; }
     [Parameter] public EventCallback<Guid> OnDelete { get; set; }
     [Parameter] public EventCallback<Guid> OnRetryLocal { get; set; }
@@ -245,6 +267,13 @@
     private ElementReference _reactionHoverButton;
     private ElementReference _reactionRowButton;
     private ElementReference _messageRow;
+    private ElementReference _moreButton;
+    private ElementReference _messageMenu;
+    private IJSObjectReference? _popupModule;
+    private DotNetObjectReference<MessageRow>? _popupSelf;
+    private bool _menuNeedsPosition;
+    private bool _menuAtPointer;
+    private double _menuX, _menuY;
     private IReadOnlyList<EmojiPickerSearchResult> _quickReactions = [];
     private string _editContent = string.Empty;
     private IJSObjectReference? _module;
@@ -341,13 +370,15 @@
                      available.FirstOrDefault(value => value.Emoji.Id == id &&
                          (CanUseExternalEmoji || value.Community.Id == Message.CommunityId)) is { } custom)
                 results.Add(new(Community: custom.Community, Custom: custom.Emoji));
-            if (results.Count == 4) break;
+            if (results.Count == (IsMobileLayout ? 8 : 4)) break;
         }
         _quickReactions = results;
     }
     private void OpenReactionDetails() { MessageMenus.Close(Message.Id); _reactionDetailsOpen = true; }
     private void CloseReactionDetails() => _reactionDetailsOpen = false;
     private bool IsDirectMessage => Message.CommunityId == Guid.Empty;
+    private bool IsThreadable => !IsDirectMessage && Message.Kind == MessageKind.User &&
+        Message.DeliveryState == MessageDeliveryState.Confirmed && !Message.IsDeleted;
     private bool MentionsCurrentAccount => CommunityMentionPresentation.IsTargetedAt(Message, CurrentAccountId, CommunityManagement);
 
     private string? ReplyAuthorStyle(Guid accountId)
@@ -364,14 +395,53 @@
         return ExternalEmbeds.Resolve(reply.Excerpt ?? string.Empty, 1).Count > 0 ? "YouTube video" : null;
     }
     private Task ReplyAsync() => OnReply.InvokeAsync(Message);
+    private async Task CreateThreadFromMenu() { MessageMenus.Close(Message.Id); await OnCreateThread.InvokeAsync(Message); }
+    private async Task OpenExistingThreadFromMenu()
+    {
+        MessageMenus.Close(Message.Id);
+        if (Message.Thread is { } thread) await OnOpenThread.InvokeAsync(thread);
+    }
+    private static string Relative(DateTimeOffset value) { var elapsed = DateTimeOffset.UtcNow - value; return elapsed.TotalMinutes < 1 ? "just now" : elapsed.TotalHours < 1 ? $"{(int)elapsed.TotalMinutes}m ago" : elapsed.TotalDays < 1 ? $"{(int)elapsed.TotalHours}h ago" : $"{(int)elapsed.TotalDays}d ago"; }
+    private static string MessageCount(int count) => count == 1 ? "1 Message" : $"{count} Messages";
     private Task ReplyFromMenuAsync() { MessageMenus.Close(Message.Id); return ReplyAsync(); }
     private void ForwardFromMenu() { MessageMenus.Close(Message.Id); _forwardOpen = true; }
     private void CloseForward() => _forwardOpen = false;
     private ForwardMessageSourceDto ForwardSource => Message.CommunityId == Guid.Empty
         ? new(MessageLocationKind.DirectConversation, Message.Id, ConversationId: Message.ChannelId)
         : new(MessageLocationKind.CommunityChannel, Message.Id, Message.CommunityId, Message.ChannelId);
-    private async Task ToggleMenu() { CancelMenuClose(); MessageMenus.Toggle(Message.Id); if (_menuOpen) await LoadQuickReactionsAsync(); }
+    private async Task ToggleMenu()
+    {
+        CancelMenuClose();
+        if (_menuOpen) { MessageMenus.Close(Message.Id); return; }
+        await LoadQuickReactionsAsync();
+        _menuAtPointer = false; _menuNeedsPosition = true;
+        MessageMenus.Open(Message.Id);
+    }
+    private async Task OpenMessageContextMenuAsync(MouseEventArgs args)
+    {
+        if (!IsThreadable) return;
+        CancelMenuClose();
+        await LoadQuickReactionsAsync();
+        _menuX = args.ClientX; _menuY = args.ClientY; _menuAtPointer = true; _menuNeedsPosition = true;
+        if (_menuOpen) { MessageMenus.Close(Message.Id); await InvokeAsync(StateHasChanged); }
+        else MessageMenus.Close();
+        MessageMenus.Open(Message.Id);
+    }
+    [JSInvokable] public Task DismissAsync() { CloseMessageMenu(); return Task.CompletedTask; }
+    [JSInvokable] public Task DismissMenuAsync() { CloseMessageMenu(); return Task.CompletedTask; }
     private void CloseMessageMenu() => MessageMenus.Close(Message.Id);
+    private static string QuickReactionName(EmojiPickerSearchResult result) =>
+        result.Standard?.Name ?? result.Custom?.Name ?? "emoji";
+    private async Task CopyTextAsync()
+    {
+        MessageMenus.Close(Message.Id);
+        await JS.InvokeVoidAsync("iridiumBrowserCompatibility.copyText", Message.Content);
+    }
+    private void MarkUnread()
+    {
+        MessageMenus.Close(Message.Id);
+        CommunityState.MarkChannelUnread(Message.ChannelId);
+    }
     private readonly List<CommunityEmojiDraftReference> _editEmojiReferences = [];
     private readonly List<StandardEmojiDraftReference> _editStandardEmojiReferences = [];
     private readonly List<ComposerEmojiToken> _editEmojiTokens = [];
@@ -465,7 +535,27 @@
         _consumedEditRequest = EditRequest;
         await BeginEdit();
     }
-    private void MenuChanged() => _ = InvokeAsync(StateHasChanged);
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_menuOpen || !_menuNeedsPosition) return;
+        _menuNeedsPosition = false;
+        _popupModule ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/emojiPicker.js");
+        _popupSelf ??= DotNetObjectReference.Create(this);
+        if (_menuAtPointer)
+            await _popupModule.InvokeVoidAsync("wirePointerPopup", _messageMenu, _menuX, _menuY, _popupSelf);
+        else
+            await _popupModule.InvokeVoidAsync("wireAnchoredPopup", _messageMenu, _moreButton, _popupSelf);
+    }
+    private void MenuChanged() => _ = InvokeAsync(async () =>
+    {
+        if (_menuOpen && IsMobileLayout) await LoadQuickReactionsAsync();
+        if (!_menuOpen && _popupModule is not null)
+        {
+            try { await _popupModule.InvokeVoidAsync("disposeAnchoredPopup", _messageMenu); }
+            catch (JSDisconnectedException) { }
+        }
+        StateHasChanged();
+    });
     private void ModifierChanged() => _ = InvokeAsync(StateHasChanged);
     private void MessageEntered() { _messageHovered = true; CancelMenuClose(); }
     private void MessageLeft() { _messageHovered = false; if (!IsMobileLayout) ScheduleMenuClose(); }
@@ -551,5 +641,11 @@
             try { await _module.DisposeAsync(); }
             catch (JSDisconnectedException) { }
         }
+        if (_popupModule is not null)
+        {
+            try { await _popupModule.InvokeVoidAsync("disposeAnchoredPopup", _messageMenu); await _popupModule.DisposeAsync(); }
+            catch (JSDisconnectedException) { }
+        }
+        _popupSelf?.Dispose();
     }
 }

@@ -44,6 +44,7 @@
                         OnCommunityProfileChanged="OnCommunityProfileChanged" OnMessage="OnMessage"
                         OnMemberRolesChanged="OnMemberRolesChanged"
                         OnMention="OnMention"
+                        CanCreateThread="CanCreateThread" OnCreateThread="OnCreateThread" OnOpenThread="OnOpenThread"
                         OnReply="OnReply" Edit="Edit" OnDelete="OnDelete" OnFocusReply="FocusMessageAsync"
                         OnOpenForwardSource="OnOpenForwardSource"
                         EditRequest="@(_editRequestedMessageId == message.Id ? _editRequest : 0)"
@@ -82,6 +83,9 @@
     [Parameter] public EventCallback<CommunityMemberRolesChange> OnMemberRolesChanged { get; set; }
     [Parameter] public EventCallback<CommunityMemberDto> OnMention { get; set; }
     [Parameter] public EventCallback<ChannelMessageDto> OnReply { get; set; }
+    [Parameter] public bool CanCreateThread { get; set; }
+    [Parameter] public EventCallback<ChannelMessageDto> OnCreateThread { get; set; }
+    [Parameter] public EventCallback<ThreadMessageSummaryDto> OnOpenThread { get; set; }
     [Parameter, EditorRequired] public required Func<MessageEditSubmission, Task<bool>> Edit { get; set; }
     [Parameter] public EventCallback<Guid> OnDelete { get; set; }
     [Parameter] public EventCallback<Guid> OnRetryLocal { get; set; }
