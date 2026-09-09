@@ -24,7 +24,7 @@
         <div class="dm-message-history">
         <MessageList @key="Conversation.Id" @ref="_messageList" Messages="ProjectedMessages" CurrentAccountId="CurrentAccountId" CanManage="false"
                      CanAddReactions="true" CanUseExternalEmoji="true"
-                     IsMobileLayout="IsMobileLayout"
+                     IsMobileLayout="IsMobileLayout" MobileLayoutKnown="MobileLayoutKnown"
                      DirectParticipant="Conversation.OtherParticipant"
                      NodeAuthority="@NodeAuthority" OnEditProfile="OnEditProfile" OnEditAvatars="OnEditAvatars" OnMessage="OnMessage"
                      EmptyIcon="message" EmptyTitle="No messages yet" EmptyDescription="Send the first Direct Message."
@@ -62,6 +62,7 @@
     [Parameter] public EventCallback<ForwardSourceReferenceDto> OnOpenForwardSource { get; set; }
     [Parameter] public EventCallback OnStartVoiceCall { get; set; }
     [Parameter] public bool IsMobileLayout { get; set; }
+    [Parameter] public bool MobileLayoutKnown { get; set; } = true;
     [Parameter] public bool MobileCallExpanded { get; set; }
     [Parameter] public EventCallback OnMobileCallMinimize { get; set; }
     [Parameter] public Guid? TargetMessageId { get; set; }
@@ -86,7 +87,8 @@
         new ChannelMessageDto(message.Id, Guid.Empty, message.ConversationId, message.Author, message.Content,
             message.CreatedAt, message.EditedAt, message.IsDeleted, message.ReplyTo, null,
             message.ClientMessageId, message.DeliveryState, message.DeliveryError, message.CanRetry,
-            message.Attachments, message.Kind, message.Forwarded, message.Reactions)).ToArray();
+            message.Attachments, message.Kind, message.Forwarded, message.Reactions,
+            DiceRoll: message.DiceRoll)).ToArray();
 
     protected override void OnInitialized() { Messaging.Changed += MessagesChanged; Calls.Changed += CallsChanged; }
     protected override void OnParametersSet()
@@ -151,7 +153,7 @@
     private void CallsChanged() => _ = InvokeAsync(StateHasChanged);
     private async Task BeginReply(ChannelMessageDto message)
     {
-        if (message.Kind != MessageKind.User) return;
+        if (message.Kind is not (MessageKind.User or MessageKind.DiceRoll)) return;
         _replyTo = message;
         await InvokeAsync(StateHasChanged);
         if (_composer is not null) await _composer.FocusAsync();
@@ -167,6 +169,8 @@
         _error = null;
         try
         {
+            if (DiceRollCommandParser.Parse(submission.Content).IsValid)
+                return SendDirectDiceRollMessageAsync(submission.Content);
             var smooth = ShowJumpToLatest;
             _messageList?.PrepareUserLatestTransition(smooth);
             Messaging.QueueDirectMessage(submission.Content, _replyTo?.Id, submission.Attachments,
@@ -181,6 +185,17 @@
     {
         try { await Messaging.EditDirectAsync(submission.MessageId, submission.Content); return true; }
         catch (Exception exception) { _error = exception.Message; return false; }
+    }
+    private async Task<bool> SendDirectDiceRollMessageAsync(string command)
+    {
+        try
+        {
+            await Messaging.SendDirectDiceRollAsync(command, _replyTo?.Id);
+            _replyTo = null;
+            await InvokeAsync(StateHasChanged);
+            return true;
+        }
+        catch (Exception exception) { Logger.LogError(exception, "Direct Message dice roll failed."); _error = exception.Message; return false; }
     }
     private async Task DeleteMessageAsync(Guid messageId)
     {

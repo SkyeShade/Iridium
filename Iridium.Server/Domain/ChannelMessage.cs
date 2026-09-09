@@ -1,3 +1,5 @@
+using Iridium.Protocol;
+
 namespace Iridium.Server.Domain;
 
 public sealed class ChannelMessage
@@ -7,6 +9,8 @@ public sealed class ChannelMessage
     public Guid ChannelId { get; set; }
     public Guid AuthorAccountId { get; set; }
     public Guid? ClientMessageId { get; set; }
+    public MessageKind Kind { get; set; } = MessageKind.User;
+    public string? DiceRollJson { get; set; }
     public string? AuthorDisplayNameSnapshot { get; set; }
     public string? AuthorAvatarObjectKeySnapshot { get; set; }
     public string? AuthorAvatarContentTypeSnapshot { get; set; }

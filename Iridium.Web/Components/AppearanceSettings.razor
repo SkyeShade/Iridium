@@ -1,5 +1,6 @@
 @using Iridium.Web.Services
 @inject AppearanceService Appearance
+@inject DocumentEmbedPreferencesService DocumentEmbedPreferences
 @inject ILogger<AppearanceSettings> Logger
 
 <section class="appearance-settings">
@@ -42,6 +43,16 @@
                                 AriaLabel="Show activity status on message avatars" />
             </div>
         </div>
+        <div class="appearance-card">
+            <div class="appearance-toggle-setting">
+                <div><strong>Automatically load document embeds</strong><span>Automatically loads Google Docs and Sheets embedded in channels and messages. Disabled by default on mobile to improve performance.</span></div>
+                @if (_embedPreferenceLoaded)
+                {
+                    <SettingsSwitch Value="@EffectiveEmbedAutoLoad" ValueChanged="ChangeEmbedAutoLoadAsync"
+                                    AriaLabel="Automatically load document embeds" />
+                }
+            </div>
+        </div>
         @if (!string.IsNullOrWhiteSpace(_error))
         {
             <p class="appearance-error">@_error</p>
@@ -60,9 +71,37 @@
     private string _baseColor = string.Empty;
     private string _surfaceColor = string.Empty;
     private string? _error;
+    private bool? _storedEmbedAutoLoad;
+    private bool _embedPreferenceLoaded;
 
-    protected override async Task OnInitializedAsync() =>
+    [Parameter, EditorRequired] public required string NodeAuthority { get; set; }
+    [Parameter, EditorRequired] public Guid AccountId { get; set; }
+    [Parameter] public bool IsMobileLayout { get; set; }
+    private DocumentEmbedPreferenceScope EmbedPreferenceScope => new(NodeAuthority, AccountId);
+    private bool EffectiveEmbedAutoLoad => DocumentEmbedPreferencesService.EffectiveAutoLoad(
+        _storedEmbedAutoLoad, IsMobileLayout);
+
+    protected override async Task OnInitializedAsync()
+    {
         LoadAppearanceFieldsFromCurrentSettings(Appearance.Current ?? await Appearance.InitializeAsync());
+        _storedEmbedAutoLoad = await DocumentEmbedPreferences.GetStoredAsync(EmbedPreferenceScope);
+        _embedPreferenceLoaded = true;
+    }
+
+    private async Task ChangeEmbedAutoLoadAsync(bool enabled)
+    {
+        _error = null;
+        try
+        {
+            await DocumentEmbedPreferences.SetAsync(EmbedPreferenceScope, enabled);
+            _storedEmbedAutoLoad = enabled;
+        }
+        catch (Exception exception)
+        {
+            Logger.LogError(exception, "Could not save document embed preferences.");
+            _error = "Document embed preferences could not be saved in this browser.";
+        }
+    }
 
     private async Task ChangeAsync(ColorSetting setting, int inputRevision, ChangeEventArgs eventArgs)
     {

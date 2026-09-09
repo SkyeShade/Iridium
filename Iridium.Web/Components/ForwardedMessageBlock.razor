@@ -5,7 +5,11 @@
 <section class="forwarded-block" aria-label="Forwarded message">
     <div class="forwarded-label"><Icon Name="forward" /><em>Forwarded</em></div>
     <div class="forwarded-content">
-        @if (!string.IsNullOrWhiteSpace(Snapshot.Content))
+        @if (Snapshot.Kind == MessageKind.DiceRoll && Snapshot.DiceRoll is { } diceRoll)
+        {
+            <DiceRollMessage Result="diceRoll" />
+        }
+        else if (!string.IsNullOrWhiteSpace(Snapshot.Content))
         {
             <MentionedMessageContent Content="@Snapshot.Content" Mentions="Snapshot.Mentions"
                                      CommunityId="Snapshot.Source?.CommunityId" />

@@ -478,6 +478,26 @@ public sealed class ChannelMessagingSession(
         CancellationToken cancellationToken = default) =>
         BeginDirectMessage(content, replyToMessageId, cancellationToken: cancellationToken).Completion;
 
+    public async Task SendDirectDiceRollAsync(string command, Guid? replyToMessageId = null,
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        await _lifecycleGate.WaitAsync(cancellationToken);
+        try
+        {
+            await EnsureConnectionAsync(cancellationToken);
+            var conversationId = RequireDirectConversation();
+            var result = await RequireConnection().InvokeAsync<DirectMessageDto>(
+                DirectMessageHubContract.SendMessage, conversationId,
+                new SendDirectMessageRequest(command, replyToMessageId, Guid.NewGuid()), cancellationToken);
+            if (DirectConversationId == conversationId) UpsertDirect(result);
+            CacheSafely(_historyCache.UpsertDirectAsync(DirectScope(conversationId), [result]),
+                "cache authoritative Direct Message dice roll");
+            await nodeSession.RefreshDirectConversationsAsync(cancellationToken);
+        }
+        finally { _lifecycleGate.Release(); }
+    }
+
     private OutgoingOperation BeginDirectMessage(
         string content, Guid? replyToMessageId, IReadOnlyList<AttachmentDto>? attachments = null,
         Func<CancellationToken, Task<IReadOnlyList<AttachmentDto>>>? uploadAttachments = null,
@@ -608,7 +628,7 @@ public sealed class ChannelMessagingSession(
     public async Task DeleteDirectAsync(Guid messageId, CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
-        if (_directMessages.FirstOrDefault(value => value.Id == messageId) is { Kind: not MessageKind.User })
+        if (_directMessages.FirstOrDefault(value => value.Id == messageId) is { Kind: not (MessageKind.User or MessageKind.DiceRoll) })
             throw new InvalidOperationException("System messages cannot be deleted.");
         await _lifecycleGate.WaitAsync(cancellationToken);
         try
@@ -629,6 +649,26 @@ public sealed class ChannelMessagingSession(
     public Task SendAsync(string content, Guid? replyToMessageId = null,
         IReadOnlyList<CommunityMentionInput>? mentions = null, CancellationToken cancellationToken = default) =>
         BeginMessage(content, replyToMessageId, mentions, cancellationToken: cancellationToken).Completion;
+
+    public async Task SendDiceRollAsync(string command, Guid? replyToMessageId = null,
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        await _lifecycleGate.WaitAsync(cancellationToken);
+        try
+        {
+            await EnsureConnectionAsync(cancellationToken);
+            var (communityId, channelId) = RequireChannel();
+            var result = await RequireConnection().InvokeAsync<ChannelMessageDto>(
+                ChatHubContract.SendMessage, communityId, channelId,
+                new SendChannelMessageRequest(command, replyToMessageId, ClientMessageId: Guid.NewGuid()),
+                cancellationToken);
+            if (CommunityId == communityId && ChannelId == channelId) Upsert(result);
+            CacheSafely(_historyCache.UpsertChannelAsync(ChannelScope(channelId), [result]),
+                "cache authoritative channel dice roll");
+        }
+        finally { _lifecycleGate.Release(); }
+    }
 
     public async Task<ForwardMessagesResultDto> ForwardAsync(ForwardMessageRequest request,
         CancellationToken cancellationToken = default)

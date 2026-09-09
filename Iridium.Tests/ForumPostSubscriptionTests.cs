@@ -26,7 +26,7 @@ public sealed class ForumPostSubscriptionTests
     }
 
     [Fact]
-    public void SidebarAndContextMenuUseCanonicalFollowStateAndDesktopOnlyChildren()
+    public void SidebarAndContextMenuUseCanonicalFollowStateAndResponsiveChildren()
     {
         var sidebar = Source("Iridium.Web", "Components", "ForumPostSidebarChildren.razor");
         var styles = Source("Iridium.Web", "Components", "ForumPostSidebarChildren.razor.css");
@@ -36,8 +36,7 @@ public sealed class ForumPostSubscriptionTests
         Assert.Contains("SidebarLimit = 15", sidebar);
         Assert.Contains("OrderByDescending(value => value.IsPinned)", Source("Iridium.Web", "Components", "CommunitySidebar.razor"));
         Assert.Contains("See all followed posts", sidebar);
-        Assert.Contains("@media(max-width:860px)", styles);
-        Assert.Contains(".forum-post-children{display:none}", styles);
+        Assert.DoesNotContain(".forum-post-children{display:none}", styles);
         Assert.Contains("Follow Post", menu);
         Assert.Contains("Unfollow Post", menu);
         Assert.Contains("All Messages", menu);
@@ -103,7 +102,7 @@ public sealed class ForumPostSubscriptionTests
         Assert.DoesNotContain(".sidebar-child-branch::after", styles);
         Assert.DoesNotContain("nth-child", styles);
         Assert.Contains("bottom:calc(var(--sidebar-child-row-height)/2)", styles);
-        Assert.Contains(".sidebar-child-conversations{display:none}", styles);
+        Assert.DoesNotContain(".sidebar-child-conversations{display:none}", styles);
     }
 
     [Fact]

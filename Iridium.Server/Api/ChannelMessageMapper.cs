@@ -44,7 +44,9 @@ public static class ChannelMessageMapper
             DeserializeMentions(message.MentionsJson),
             message.ClientMessageId,
             Attachments: message.IsDeleted ? [] : message.Attachments.Select(ToAttachment).ToArray(),
-            Forwarded: message.IsDeleted ? null : ToForwarded(message.ForwardedMessageSnapshot));
+            Kind: message.Kind,
+            Forwarded: message.IsDeleted ? null : ToForwarded(message.ForwardedMessageSnapshot),
+            DiceRoll: message.IsDeleted ? null : DeserializeDiceRoll(message.DiceRollJson));
     }
 
     internal static AttachmentDto ToAttachment(Attachment value) => new(
@@ -60,7 +62,9 @@ public static class ChannelMessageMapper
             snapshot.SourceCommunityId is { } communityId && snapshot.SourceChannelId is { } channelId &&
             snapshot.SourceMessageId is { } messageId
                 ? new ForwardSourceReferenceDto(communityId, channelId, messageId)
-                : null);
+                : null,
+            snapshot.Kind,
+            DeserializeDiceRoll(snapshot.DiceRollJson));
 
     private static MessageAvatarSnapshotDto? AvatarSnapshot(ChannelMessage message) =>
         message.AuthorAvatarObjectKeySnapshot is null ? null : new(
@@ -84,6 +88,13 @@ public static class ChannelMessageMapper
         if (string.IsNullOrWhiteSpace(json)) return [];
         try { return JsonSerializer.Deserialize<List<CommunityMentionDto>>(json) ?? []; }
         catch (JsonException) { return []; }
+    }
+
+    internal static DiceRollResultDto? DeserializeDiceRoll(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try { return JsonSerializer.Deserialize<DiceRollResultDto>(json); }
+        catch (JsonException) { return null; }
     }
 
     internal static async Task<IReadOnlyList<ChannelMessageDto>> ResolveMentionNamesAsync(

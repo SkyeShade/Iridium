@@ -18,7 +18,8 @@ public static class DirectMessageHubContract
 public enum MessageKind
 {
     User = 0,
-    CallStarted = 1
+    CallStarted = 1,
+    DiceRoll = 2
 }
 
 public sealed record DirectParticipantDto(
@@ -56,7 +57,8 @@ public sealed record DirectMessageDto(
     MessageKind Kind = MessageKind.User,
     Guid? RelatedCallId = null,
     ForwardedMessageSnapshotDto? Forwarded = null,
-    IReadOnlyList<ReactionSummaryDto>? Reactions = null);
+    IReadOnlyList<ReactionSummaryDto>? Reactions = null,
+    DiceRollResultDto? DiceRoll = null);
 
 public sealed record DirectMessageReactionChangedEvent(
     Guid ConversationId,

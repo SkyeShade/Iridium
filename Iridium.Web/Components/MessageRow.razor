@@ -73,15 +73,24 @@
             }
             else
             {
-                <MentionedMessageContent Content="@Message.Content" Mentions="Message.Mentions"
-                                         CommunityId="@(Message.CommunityId == Guid.Empty ? null : Message.CommunityId)" OnProfile="OpenMentionProfileAsync" />
-                @if (Message.EditedAt is not null) { <span class="edited" title="Edited @Message.EditedAt.Value.ToLocalTime().ToString("g")">(edited)</span> }
-                <InviteEmbed Content="@Message.Content" />
-                <MessageExternalEmbeds Content="@Message.Content" />
-                @if (!Message.IsDeleted && Message.DeliveryState == MessageDeliveryState.Confirmed)
+                @if (Message.Kind == MessageKind.DiceRoll && Message.DiceRoll is { } diceRoll)
                 {
-                    <MessageDocumentEmbeds MessageId="Message.Id" CommunityId="Message.CommunityId"
-                                           ChannelId="Message.ChannelId" Content="@Message.Content" />
+                    <DiceRollMessage Result="diceRoll" />
+                }
+                else
+                {
+                    <MentionedMessageContent Content="@Message.Content" Mentions="Message.Mentions"
+                                             CommunityId="@(Message.CommunityId == Guid.Empty ? null : Message.CommunityId)" OnProfile="OpenMentionProfileAsync" />
+                    @if (Message.EditedAt is not null) { <span class="edited" title="Edited @Message.EditedAt.Value.ToLocalTime().ToString("g")">(edited)</span> }
+                    <InviteEmbed Content="@Message.Content" />
+                    <MessageExternalEmbeds Content="@Message.Content" />
+                    @if (!Message.IsDeleted && Message.DeliveryState == MessageDeliveryState.Confirmed)
+                    {
+                        <MessageDocumentEmbeds MessageId="Message.Id" CommunityId="Message.CommunityId"
+                                               ChannelId="Message.ChannelId" Content="@Message.Content"
+                                               NodeAuthority="NodeAuthority" AccountId="CurrentAccountId"
+                                               IsMobileLayout="IsMobileLayout" MobileLayoutKnown="MobileLayoutKnown" />
+                    }
                 }
                 @if (Message.Forwarded is { } forwarded)
                 {
@@ -230,6 +239,7 @@
     [Parameter] public bool CanUseExternalEmoji { get; set; }
     [Parameter] public bool CanManageReactions { get; set; }
     [Parameter] public bool IsMobileLayout { get; set; }
+    [Parameter] public bool MobileLayoutKnown { get; set; } = true;
     [Parameter, EditorRequired] public required Guid CurrentAccountId { get; set; }
     [Parameter, EditorRequired] public required string NodeAuthority { get; set; }
     [Parameter] public CommunityManagementDto? CommunityManagement { get; set; }

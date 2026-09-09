@@ -195,7 +195,7 @@ else
                 @if (_homeView == "dm" && _selectedDirectConversation is not null)
                 {
                     <DirectMessageView @key="_selectedDirectConversation.Id" @ref="_directMessageView" Conversation="_selectedDirectConversation"
-                                       IsMobileLayout="_isMobileLayout"
+                                       IsMobileLayout="_isMobileLayout" MobileLayoutKnown="_mobileLayoutKnown"
                                        MobileCallExpanded="@IsExpandedMobileDirectCall"
                                        OnMobileCallMinimize="CollapseMobileDirectCall"
                                        FocusRequest="@(_composerFocusConversationId == _selectedDirectConversation.Id ? _composerFocusRequest : 0)"
@@ -246,7 +246,7 @@ else
                     <ThreadConversationView @key="selectedThread.Id" Community="_selectedCommunity"
                                             ParentChannel="_selectedChannel" Thread="selectedThread"
                                             CurrentAccountId="Session.Account!.Id" NodeAuthority="@(Session.SelectedNode!.PublicAuthority)"
-                                            CommunityManagement="CommunityState.Management" IsMobileLayout="_isMobileLayout"
+                                            CommunityManagement="CommunityState.Management" IsMobileLayout="_isMobileLayout" MobileLayoutKnown="_mobileLayoutKnown"
                                             TargetMessageId="_searchTargetMessageId"
                                             FocusRequest="@(_composerFocusChannelId == selectedThread.DiscussionChannelId ? _composerFocusRequest : 0)"
                                             OnFocusConsumed="ComposerFocusConsumed" OnBack="CloseThreadAsync"
@@ -258,7 +258,7 @@ else
                 else if (_selectedChannel.Kind == CommunityChannelKind.Forum)
                 {
                     <ForumChannelView @key="(_selectedChannel.Id, _selectedChannel.EffectivePermissions)" @ref="_forumView"
-                                      IsMobileLayout="_isMobileLayout"
+                                      IsMobileLayout="_isMobileLayout" MobileLayoutKnown="_mobileLayoutKnown"
                                       InitialPostId="_selectedForumPostId"
                                       Community="_selectedCommunity" Channel="_selectedChannel"
                                       CurrentAccountId="Session.Account!.Id" NodeAuthority="@(Session.SelectedNode!.PublicAuthority)"
@@ -277,7 +277,7 @@ else
                 else
                 {
                     <ChannelView @key="(_selectedChannel.Id, _selectedChannel.EffectivePermissions)" Community="_selectedCommunity" Channel="_selectedChannel"
-                                 IsMobileLayout="_isMobileLayout"
+                                 IsMobileLayout="_isMobileLayout" MobileLayoutKnown="_mobileLayoutKnown"
                                  FocusRequest="@(_composerFocusChannelId == _selectedChannel.Id ? _composerFocusRequest : 0)"
                                  OnFocusConsumed="ComposerFocusConsumed"
                                  CurrentAccountId="Session.Account!.Id"
@@ -350,7 +350,7 @@ else
     }
     @if (_showSettings)
     {
-        <SettingsView Account="@(Session.Account!)" CurrentNode="@(Session.SelectedNode!)" Nodes="@_nodeAvailability"
+        <SettingsView Account="@(Session.Account!)" CurrentNode="@(Session.SelectedNode!)" Nodes="@_nodeAvailability" IsMobileLayout="_isMobileLayout"
                       Busy="_busy" Error="@_error" OnEditProfile="OpenProfileEditor"
                       OnAddNode="AddNodeAsync" OnRemoveNode="RemoveNodeAsync"
                       OnLogout="LogoutAsync" OnClose="CloseSettings" />
@@ -1022,6 +1022,8 @@ else
             _searchTargetMessageId = targetMessageId;
             if (!_isMobileLayout) RequestChannelComposerFocus(thread.DiscussionChannelId);
             CommunityState.MarkChannelRead(thread.DiscussionChannelId);
+            TrackBackground(Session.MarkCommunityChannelReadAsync(thread.CommunityId, thread.DiscussionChannelId),
+                $"persist Thread read state {thread.Id}");
             var route = $"communities/{thread.CommunityId}/channels/{thread.ParentChannelId}/threads/{thread.Id}";
             if (!Navigation.Uri.EndsWith(route, StringComparison.OrdinalIgnoreCase)) Navigation.NavigateTo(route);
             await InvokeAsync(StateHasChanged);
@@ -1160,7 +1162,8 @@ else
     private async Task CompleteChannelSelectionAsync(Guid accountId, CommunityChannelDto channel)
     {
         await LastChannelStore.SaveAsync(accountId, channel.CommunityId, channel.Id);
-        await Session.MarkCommunityChannelReadAsync(channel.CommunityId, channel.Id);
+        if (CommunityReadStateRouting.SupportsChannelReadEndpoint(channel.Kind))
+            await Session.MarkCommunityChannelReadAsync(channel.CommunityId, channel.Id);
     }
 
     private async Task OpenCommunitySearchResultAsync(MessageSearchResultDto result)

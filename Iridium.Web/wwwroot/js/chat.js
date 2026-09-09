@@ -1,5 +1,48 @@
 const composerHandlers = new WeakMap();
 const deferredContentObservers = new WeakMap();
+const embedZoomObservers = new WeakMap();
+
+function updateEmbedZoom(root) {
+    const wired = root ? embedZoomObservers.get(root) : null;
+    if (!wired) return;
+    const { viewport, layout, content, dotNetReference } = wired;
+    const fixedSourceWidth = Number(root.dataset.sourceWidth || 0);
+    const sourceWidth = fixedSourceWidth > 0 ? fixedSourceWidth : Math.max(1, viewport.clientWidth);
+    if (!fixedSourceWidth) content.style.width = `${sourceWidth}px`;
+    let zoom = Number.parseFloat(getComputedStyle(root).getPropertyValue("--embed-zoom")) || 1;
+    if (root.dataset.fitWidth === "true" && fixedSourceWidth > 0) {
+        const fitted = Math.max(.25, Math.min(1, viewport.clientWidth / fixedSourceWidth));
+        if (Math.abs(fitted - zoom) > .001) {
+            zoom = fitted;
+            root.style.setProperty("--embed-zoom", String(zoom));
+            void dotNetReference?.invokeMethodAsync("EmbedFitWidthChangedAsync", zoom);
+        }
+    }
+    const sourceHeight = Math.max(1, content.scrollHeight, content.offsetHeight);
+    layout.style.width = `${sourceWidth * zoom}px`;
+    layout.style.height = `${sourceHeight * zoom}px`;
+}
+
+export function wireEmbedZoom(root, dotNetReference) {
+    if (!root || embedZoomObservers.has(root)) return;
+    const viewport = root.querySelector("[data-embed-zoom-viewport]");
+    const layout = root.querySelector("[data-embed-zoom-layout]");
+    const content = root.querySelector("[data-embed-zoom-content]");
+    if (!viewport || !layout || !content) return;
+    const observer = new ResizeObserver(() => updateEmbedZoom(root));
+    observer.observe(viewport);
+    observer.observe(content);
+    embedZoomObservers.set(root, { viewport, layout, content, observer, dotNetReference });
+    updateEmbedZoom(root);
+}
+
+export function refreshEmbedZoom(root) { updateEmbedZoom(root); }
+
+export function unwireEmbedZoom(root) {
+    const wired = root ? embedZoomObservers.get(root) : null;
+    wired?.observer.disconnect();
+    if (root) embedZoomObservers.delete(root);
+}
 
 export function observeDeferredContent(element, dotNetReference) {
     if (!element || deferredContentObservers.has(element)) return;

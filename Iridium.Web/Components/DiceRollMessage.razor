@@ -1,0 +1,18 @@
+@using Iridium.Protocol
+
+<section class="dice-roll" aria-label="Roll @Result.DiceCount d @Result.Sides, total @Result.Total">
+    <div class="dice-roll-heading">Roll: <strong>@Result.DiceCount@("d")@Result.Sides</strong></div>
+    <div class="dice-roll-values" aria-label="Roll results">
+        @for (var index = 0; index < Result.Rolls.Count; index++)
+        {
+            var value = Result.Rolls[index];
+            <span class="dice-roll-value @(IsExtreme(value) ? "extreme" : null)">@value</span>
+        }
+    </div>
+    <div class="dice-roll-total">Total: <strong>@Result.Total</strong></div>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public required DiceRollResultDto Result { get; set; }
+    private bool IsExtreme(int value) => value == Result.Minimum || value == Result.Maximum;
+}

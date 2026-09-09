@@ -1,0 +1,39 @@
+@using Iridium.Web.Models
+
+<div class="embed-zoom-controls" aria-label="Embed zoom controls">
+    <button type="button" aria-label="Zoom out" @onclick="ZoomOut">−</button>
+    <div class="embed-zoom-presets">
+        <button type="button" class="zoom-value" aria-haspopup="menu" aria-expanded="@_open" @onclick="() => _open = !_open">
+            @(FitWidth ? "Fit width" : $"{Math.Round(Zoom * 100)}%")
+        </button>
+        @if (_open)
+        {
+            <div class="zoom-menu" role="menu">
+                @if (SupportsFitWidth)
+                {
+                    <button type="button" role="menuitem" @onclick="SelectFitWidth">Fit width</button>
+                }
+                @foreach (var preset in Presets)
+                {
+                    <button type="button" role="menuitem" class="@(!FitWidth && Math.Abs(Zoom - preset) < .001 ? "selected" : null)"
+                            @onclick="() => Select(preset)">@Math.Round(preset * 100)%</button>
+                }
+            </div>
+        }
+    </div>
+    <button type="button" aria-label="Zoom in" @onclick="ZoomIn">+</button>
+</div>
+
+@code {
+    private static readonly double[] Presets = [.5, .67, .8, .9, 1, 1.1, 1.25, 1.5, 2];
+    [Parameter] public double Zoom { get; set; } = 1;
+    [Parameter] public bool FitWidth { get; set; }
+    [Parameter] public bool SupportsFitWidth { get; set; }
+    [Parameter] public EventCallback<EmbedZoomSelection> Changed { get; set; }
+    private bool _open;
+
+    private Task Select(double zoom) { _open = false; return Changed.InvokeAsync(new(zoom)); }
+    private Task SelectFitWidth() { _open = false; return Changed.InvokeAsync(new(Zoom, true)); }
+    private Task ZoomOut() => Select(Presets.LastOrDefault(value => value < Zoom - .001, Presets[0]));
+    private Task ZoomIn() => Select(Presets.FirstOrDefault(value => value > Zoom + .001, Presets[^1]));
+}

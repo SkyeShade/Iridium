@@ -81,6 +81,7 @@
     private string _meterStatus = "loading";
     private string _meterMessage = "Starting live microphone input preview…";
     private bool _disposed;
+    private readonly CancellationTokenSource _lifetime = new();
 
     private int LevelPercent => (int)Math.Round(Math.Clamp(_level, 0, 1) * 100);
     private int ThresholdPercent => (int)Math.Round(Preferences.ManualInputSensitivityThreshold * 100);
@@ -91,30 +92,45 @@
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (!firstRender) return;
+        if (!firstRender || _disposed) return;
+        IJSObjectReference? importedModule = null;
         try
         {
-            _module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/microphoneInputMeter.js");
-            _callback = DotNetObjectReference.Create(this);
-            var result = await _module.InvokeAsync<MicrophoneMeterStartResult>("startMicrophoneInputMeter",
-                _callback, Preferences.InputDeviceId);
+            importedModule = await JS.InvokeAsync<IJSObjectReference>("import", "./js/microphoneInputMeter.js");
             if (_disposed)
             {
-                if (result.MeterId is not null)
-                    await _module.InvokeVoidAsync("stopMicrophoneInputMeter", result.MeterId);
+                var abandonedModule = importedModule;
+                importedModule = null;
+                await DisposeModuleAsync(abandonedModule);
                 return;
             }
+            _module = importedModule;
+            importedModule = null;
+            var callback = DotNetObjectReference.Create(this);
+            _callback = callback;
+            var meterId = Guid.NewGuid().ToString("N");
+            _meterId = meterId;
+            var module = _module;
+            var result = await module.InvokeAsync<MicrophoneMeterStartResult>("startMicrophoneInputMeter",
+                _lifetime.Token, meterId, callback, Preferences.InputDeviceId);
+            if (_disposed || _lifetime.IsCancellationRequested) return;
             _meterId = result.MeterId;
             _meterStatus = result.Status;
             _meterMessage = result.Message ?? string.Empty;
             _devices = result.Devices ?? [];
             await InvokeAsync(StateHasChanged);
         }
+        catch (OperationCanceledException) when (_disposed || _lifetime.IsCancellationRequested) { }
+        catch (ObjectDisposedException) when (_disposed) { }
         catch (Exception exception) when (exception is JSException or JSDisconnectedException)
         {
             _meterStatus = "unavailable";
             _meterMessage = "Live microphone input preview is unavailable.";
             if (!_disposed) await InvokeAsync(StateHasChanged);
+        }
+        finally
+        {
+            if (importedModule is not null) await DisposeModuleAsync(importedModule);
         }
     }
 
@@ -122,18 +138,24 @@
     public Task OnMicrophoneLevel(double level)
     {
         if (_disposed) return Task.CompletedTask;
-        _level = Math.Clamp(level, 0, 1);
-        return InvokeAsync(StateHasChanged);
+        return InvokeAsync(() =>
+        {
+            if (_disposed) return;
+            _level = Math.Clamp(level, 0, 1);
+            StateHasChanged();
+        });
     }
 
     private async Task AutomaticChangedAsync(ChangeEventArgs args)
     {
+        if (_disposed) return;
         var automatic = args.Value is bool value && value;
         await Preferences.SetAutoInputSensitivityAsync(automatic);
     }
 
     private async Task ManualThresholdChangedAsync(ChangeEventArgs args)
     {
+        if (_disposed) return;
         if (double.TryParse(args.Value?.ToString(), System.Globalization.NumberStyles.Float,
                 System.Globalization.CultureInfo.InvariantCulture, out var threshold))
             await Preferences.SetManualInputSensitivityThresholdAsync(threshold);
@@ -141,11 +163,21 @@
 
     private async Task InputDeviceChangedAsync(ChangeEventArgs args)
     {
+        if (_disposed) return;
         var deviceId = string.IsNullOrWhiteSpace(args.Value?.ToString()) ? null : args.Value!.ToString();
-        if (_module is not null && _meterId is not null)
+        var module = _module;
+        var meterId = _meterId;
+        if (module is not null && meterId is not null)
         {
-            var result = await _module.InvokeAsync<MicrophoneMeterRebindResult>(
-                "rebindMicrophoneInputMeter", _meterId, deviceId);
+            MicrophoneMeterRebindResult result;
+            try
+            {
+                result = await module.InvokeAsync<MicrophoneMeterRebindResult>(
+                    "rebindMicrophoneInputMeter", _lifetime.Token, meterId, deviceId);
+            }
+            catch (OperationCanceledException) when (_disposed || _lifetime.IsCancellationRequested) { return; }
+            catch (ObjectDisposedException) when (_disposed) { return; }
+            if (_disposed || _lifetime.IsCancellationRequested) return;
             _meterStatus = result.Status;
             _meterMessage = result.Message ?? string.Empty;
             if (result.Status != "ready") return;
@@ -155,19 +187,37 @@
 
     private void PreferencesChanged()
     {
-        if (!_disposed) _ = InvokeAsync(StateHasChanged);
+        if (_disposed) return;
+        _ = InvokeAsync(() =>
+        {
+            if (!_disposed) StateHasChanged();
+        });
     }
 
     public async ValueTask DisposeAsync()
     {
         if (_disposed) return;
         _disposed = true;
+        _lifetime.Cancel();
         Preferences.Changed -= PreferencesChanged;
-        if (_module is not null && _meterId is not null)
-            try { await _module.InvokeVoidAsync("stopMicrophoneInputMeter", _meterId); }
-            catch (JSDisconnectedException) { }
-        _callback?.Dispose();
-        if (_module is not null) await _module.DisposeAsync();
+        var module = _module;
+        _module = null;
+        var meterId = _meterId;
+        _meterId = null;
+        var callback = _callback;
+        _callback = null;
+        if (module is not null && meterId is not null)
+            try { await module.InvokeVoidAsync("stopMicrophoneInputMeter", meterId); }
+            catch (Exception exception) when (exception is JSDisconnectedException or ObjectDisposedException) { }
+        callback?.Dispose();
+        if (module is not null) await DisposeModuleAsync(module);
+        _lifetime.Dispose();
+    }
+
+    private static async ValueTask DisposeModuleAsync(IJSObjectReference module)
+    {
+        try { await module.DisposeAsync(); }
+        catch (Exception exception) when (exception is JSDisconnectedException or ObjectDisposedException) { }
     }
 
     private sealed record MicrophoneDeviceOption(string DeviceId, string Label);

@@ -89,19 +89,21 @@ function installGraph(meter, graph) {
     meter.frame = requestAnimationFrame(sample);
 }
 
-async function captureInto(meter, deviceId) {
-    installGraph(meter, await createGraph(deviceId));
-}
-
-export async function startMicrophoneInputMeter(callback, deviceId) {
+export async function startMicrophoneInputMeter(meterId, callback, deviceId) {
     if (!navigator.mediaDevices?.getUserMedia)
         return { meterId: null, status: "unavailable", message: "This browser does not support microphone input preview.", devices: [] };
-    const meter = { id: crypto.randomUUID(), callback, frame: 0, stream: null, context: null, source: null, analyser: null };
+    const meter = { id: meterId, callback, frame: 0, stream: null, context: null, source: null, analyser: null };
+    meters.set(meter.id, meter);
     try {
-        await captureInto(meter, deviceId);
-        meters.set(meter.id, meter);
+        const graph = await createGraph(deviceId);
+        if (!meters.has(meter.id)) {
+            releaseGraph(graph);
+            return { meterId: null, status: "cancelled", message: null, devices: [] };
+        }
+        installGraph(meter, graph);
         return { meterId: meter.id, status: "ready", message: null, devices: await inputDevices() };
     } catch (error) {
+        meters.delete(meter.id);
         releaseGraph(meter);
         return { meterId: null, ...unavailableStatus(error), devices: await inputDevices().catch(() => []) };
     }

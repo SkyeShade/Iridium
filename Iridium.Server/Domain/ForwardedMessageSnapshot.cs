@@ -1,3 +1,5 @@
+using Iridium.Protocol;
+
 namespace Iridium.Server.Domain;
 
 public sealed class ForwardedMessageSnapshot
@@ -5,6 +7,8 @@ public sealed class ForwardedMessageSnapshot
     public Guid Id { get; set; }
     public required string Content { get; set; }
     public string? MentionsJson { get; set; }
+    public MessageKind Kind { get; set; } = MessageKind.User;
+    public string? DiceRollJson { get; set; }
     public Guid? SourceCommunityId { get; set; }
     public Guid? SourceChannelId { get; set; }
     public Guid? SourceMessageId { get; set; }

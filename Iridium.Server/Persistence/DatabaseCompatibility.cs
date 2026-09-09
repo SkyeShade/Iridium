@@ -7,6 +7,15 @@ namespace Iridium.Server.Persistence;
 
 public static class DatabaseCompatibility
 {
+    public static async Task EnsureDiceRollSchemaAsync(IridiumDbContext db)
+    {
+        await EnsureColumnAsync(db, "ChannelMessages", "Kind", "INTEGER NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(db, "ChannelMessages", "DiceRollJson", "TEXT NULL");
+        await EnsureColumnAsync(db, "DirectMessages", "DiceRollJson", "TEXT NULL");
+        await EnsureColumnAsync(db, "ForwardedMessageSnapshots", "Kind", "INTEGER NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(db, "ForwardedMessageSnapshots", "DiceRollJson", "TEXT NULL");
+    }
+
     /// <summary>
     /// Applies additive Community schema changes before compatibility routines that materialize
     /// current EF entities. Keep newly mapped Community columns and tables in this phase so an
@@ -49,6 +58,8 @@ public static class DatabaseCompatibility
             CREATE INDEX IF NOT EXISTS IX_ForwardedMessageAttachments_AttachmentId
                 ON ForwardedMessageAttachments (AttachmentId);
             """);
+        await EnsureColumnAsync(db, "ForwardedMessageSnapshots", "Kind", "INTEGER NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(db, "ForwardedMessageSnapshots", "DiceRollJson", "TEXT NULL");
     }
 
     public static async Task EnsureAccountSecuritySchemaAsync(IridiumDbContext db)
@@ -621,6 +632,7 @@ public static class DatabaseCompatibility
         await EnsureColumnAsync(db, "DirectConversationStates", "LastReadAt", "INTEGER NULL");
         await EnsureColumnAsync(db, "DirectMessages", "Kind", "INTEGER NOT NULL DEFAULT 0");
         await EnsureColumnAsync(db, "DirectMessages", "RelatedCallId", "TEXT NULL");
+        await EnsureColumnAsync(db, "DirectMessages", "DiceRollJson", "TEXT NULL");
         await db.Database.ExecuteSqlRawAsync("""
             CREATE UNIQUE INDEX IF NOT EXISTS IX_DirectMessages_RelatedCallId_Kind
                 ON DirectMessages (RelatedCallId, Kind) WHERE RelatedCallId IS NOT NULL;
@@ -1151,6 +1163,8 @@ public static class DatabaseCompatibility
         await EnsureColumnAsync(db, "ChannelMessages", "AuthorAvatarCropYSnapshot", "REAL NULL");
         await EnsureColumnAsync(db, "ChannelMessages", "AuthorAvatarZoomSnapshot", "REAL NULL");
         await EnsureColumnAsync(db, "ChannelMessages", "AuthorAvatarRevisionSnapshot", "INTEGER NULL");
+        await EnsureColumnAsync(db, "ChannelMessages", "Kind", "INTEGER NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(db, "ChannelMessages", "DiceRollJson", "TEXT NULL");
     }
 
     public static async Task EnsureAttachmentsTableAsync(IridiumDbContext db)

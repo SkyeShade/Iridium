@@ -40,7 +40,9 @@ public sealed record ForwardedMessageSnapshotDto(
     string Content,
     IReadOnlyList<CommunityMentionDto> Mentions,
     IReadOnlyList<AttachmentDto> Attachments,
-    ForwardSourceReferenceDto? Source = null);
+    ForwardSourceReferenceDto? Source = null,
+    MessageKind Kind = MessageKind.User,
+    DiceRollResultDto? DiceRoll = null);
 
 public sealed record ForwardMessagesResultDto(
     IReadOnlyList<ChannelMessageDto> ChannelMessages,

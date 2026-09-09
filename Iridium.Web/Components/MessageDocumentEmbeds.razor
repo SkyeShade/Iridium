@@ -6,7 +6,9 @@
         @foreach (var document in _documents)
         {
             <MessageDocumentPreview @key="PreviewKey(document)" MessageId="MessageId"
-                                    CommunityId="CommunityId" ChannelId="ChannelId" Source="document" />
+                                    CommunityId="CommunityId" ChannelId="ChannelId" Source="document"
+                                    NodeAuthority="NodeAuthority" AccountId="AccountId" IsMobileLayout="IsMobileLayout"
+                                    MobileLayoutKnown="MobileLayoutKnown" />
         }
     </div>
 }
@@ -16,12 +18,17 @@
     [Parameter, EditorRequired] public Guid CommunityId { get; set; }
     [Parameter, EditorRequired] public Guid ChannelId { get; set; }
     [Parameter, EditorRequired] public required string Content { get; set; }
+    [Parameter, EditorRequired] public required string NodeAuthority { get; set; }
+    [Parameter, EditorRequired] public Guid AccountId { get; set; }
+    [Parameter] public bool IsMobileLayout { get; set; }
+    [Parameter] public bool MobileLayoutKnown { get; set; } = true;
     private IReadOnlyList<EmbeddedContentConfiguration> _documents = [];
     private EmbedHostIdentity _renderedIdentity;
     private bool _shouldRender = true;
     protected override void OnParametersSet()
     {
-        var identity = new EmbedHostIdentity(MessageId, CommunityId, ChannelId, Content);
+        var identity = new EmbedHostIdentity(MessageId, CommunityId, ChannelId, Content, NodeAuthority, AccountId,
+            IsMobileLayout, MobileLayoutKnown);
         _shouldRender = identity != _renderedIdentity;
         if (!_shouldRender) return;
         _renderedIdentity = identity;
@@ -29,5 +36,6 @@
     }
     protected override bool ShouldRender() => _shouldRender;
     private string PreviewKey(EmbeddedContentConfiguration document) => $"{MessageId:N}:{document.CacheIdentity}";
-    private readonly record struct EmbedHostIdentity(Guid MessageId, Guid CommunityId, Guid ChannelId, string Content);
+    private readonly record struct EmbedHostIdentity(Guid MessageId, Guid CommunityId, Guid ChannelId, string Content,
+        string NodeAuthority, Guid AccountId, bool IsMobileLayout, bool MobileLayoutKnown);
 }

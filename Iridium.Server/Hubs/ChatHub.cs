@@ -24,6 +24,7 @@ public sealed class ChatHub(
     MessageReactionService reactions,
     IOptions<NodeOptions> nodeOptions,
     ICommunityLimitsService limitService,
+    DiceRollService diceRoller,
     ICallService calls,
     IMediaService media,
     INodeMediaSessionService nodeMedia,
@@ -400,10 +401,18 @@ public sealed class ChatHub(
         var attachments = await ValidateAttachmentsAsync(request.AttachmentIds, session.AccountId);
         if (attachments.Count > 0)
             await RequireChannelAsync(communityId, channelId, session.AccountId, CommunityPermission.AttachFiles);
-        var content = ValidContent(request.Content, attachments.Count > 0, communityId);
-        await ValidateCommunityEmojiUseAsync(content, session.AccountId, communityId, channelId);
-        var (mentions, recipients) = await ValidateMentionsAsync(
-            communityId, channelId, session.AccountId, content, request.Mentions);
+        var parsedRoll = DiceRollCommandParser.Parse(request.Content);
+        if (parsedRoll.IsCommand && !parsedRoll.IsValid) throw new HubException(parsedRoll.Error!);
+        if (parsedRoll.IsValid && attachments.Count > 0)
+            throw new HubException("Dice rolls cannot include attachments.");
+        var diceRoll = parsedRoll.Request is { } rollRequest ? diceRoller.Roll(rollRequest) : null;
+        var content = diceRoll is null
+            ? ValidContent(request.Content, attachments.Count > 0, communityId)
+            : DiceRollService.SearchableContent(diceRoll);
+        if (diceRoll is null) await ValidateCommunityEmojiUseAsync(content, session.AccountId, communityId, channelId);
+        var (mentions, recipients) = diceRoll is null
+            ? await ValidateMentionsAsync(communityId, channelId, session.AccountId, content, request.Mentions)
+            : ((IReadOnlyList<CommunityMentionDto>)[], new HashSet<Guid>());
         if (forumPost is not null && recipients.Count > 0)
         {
             var mutedRecipients = await db.ForumPostSubscriptions.AsNoTracking().Where(value =>
@@ -440,6 +449,8 @@ public sealed class ChatHub(
             AuthorAccount = session.Account,
             Channel = null!,
             Content = content,
+            Kind = diceRoll is null ? MessageKind.User : MessageKind.DiceRoll,
+            DiceRollJson = diceRoll is null ? null : JsonSerializer.Serialize(diceRoll),
             CreatedAt = DateTimeOffset.UtcNow,
             ReplyToMessageId = reply?.Id,
             ReplyToMessage = reply,
@@ -621,6 +632,8 @@ public sealed class ChatHub(
             Id = Guid.NewGuid(),
             Content = source.Content,
             MentionsJson = source.MentionsJson,
+            Kind = source.Kind,
+            DiceRollJson = source.DiceRollJson,
             SourceCommunityId = source.SourceCommunityId,
             SourceChannelId = source.SourceChannelId,
             SourceMessageId = source.SourceMessageId,
@@ -733,7 +746,8 @@ public sealed class ChatHub(
             if (message is null) throw new HubException("The source message is no longer available.");
             return message.ForwardedMessageSnapshot is { } forwarded
                 ? ForwardSource.FromExisting(forwarded)
-                : new(message.Content, message.MentionsJson, message.Attachments.ToArray(), null,
+                : new(message.Content, message.MentionsJson, message.Kind, message.DiceRollJson,
+                    message.Attachments.ToArray(), null,
                     communityId, channelId, message.Id);
         }
 
@@ -742,21 +756,23 @@ public sealed class ChatHub(
             _ = await RequireDirectConversationAsync(conversationId, accountId);
             var message = await db.DirectMessages.Include(value => value.Attachments).IncludeForwardedSnapshot()
                 .SingleOrDefaultAsync(value => value.Id == source.MessageId && value.ConversationId == conversationId &&
-                    !value.IsDeleted && value.Kind == MessageKind.User);
+                    !value.IsDeleted && (value.Kind == MessageKind.User || value.Kind == MessageKind.DiceRoll));
             if (message is null) throw new HubException("The source message is no longer available.");
             return message.ForwardedMessageSnapshot is { } forwarded
                 ? ForwardSource.FromExisting(forwarded)
-                : new(message.Content, null, message.Attachments.ToArray(), null, null, null, null);
+                : new(message.Content, null, message.Kind, message.DiceRollJson,
+                    message.Attachments.ToArray(), null, null, null, null);
         }
         throw new HubException("The source message location is invalid.");
     }
 
-    private sealed record ForwardSource(string Content, string? MentionsJson, IReadOnlyList<Attachment> Attachments,
+    private sealed record ForwardSource(string Content, string? MentionsJson, MessageKind Kind, string? DiceRollJson,
+        IReadOnlyList<Attachment> Attachments,
         ForwardedMessageSnapshot? ExistingSnapshot, Guid? SourceCommunityId, Guid? SourceChannelId,
         Guid? SourceMessageId)
     {
         public static ForwardSource FromExisting(ForwardedMessageSnapshot snapshot) =>
-            new(snapshot.Content, snapshot.MentionsJson, [], snapshot, snapshot.SourceCommunityId,
+            new(snapshot.Content, snapshot.MentionsJson, snapshot.Kind, snapshot.DiceRollJson, [], snapshot, snapshot.SourceCommunityId,
                 snapshot.SourceChannelId, snapshot.SourceMessageId);
     }
 
@@ -772,6 +788,7 @@ public sealed class ChatHub(
         var rootForumPost = await db.CommunityForumPosts.Include(value => value.AuthorAccount)
             .Include(value => value.RootMessage)
             .SingleOrDefaultAsync(value => value.RootMessageId == messageId);
+        if (message.Kind != MessageKind.User) throw new HubException("Dice rolls cannot be edited.");
         if (message.AuthorAccountId != accountId) throw new HubException("You can only edit your own messages.");
         if (message.IsDeleted) throw new HubException("Deleted messages cannot be edited.");
 
@@ -1105,6 +1122,10 @@ public sealed class ChatHub(
             if (existing is not null) return DirectMessageMapper.ToDto(existing);
         }
         var attachments = await ValidateAttachmentsAsync(request.AttachmentIds, session.AccountId);
+        var parsedRoll = DiceRollCommandParser.Parse(request.Content);
+        if (parsedRoll.IsCommand && !parsedRoll.IsValid) throw new HubException(parsedRoll.Error!);
+        if (parsedRoll.IsValid && attachments.Count > 0)
+            throw new HubException("Dice rolls cannot include attachments.");
         DirectMessage? reply = null;
         if (request.ReplyToMessageId is { } replyId)
         {
@@ -1112,10 +1133,14 @@ public sealed class ChatHub(
                 .Include(value => value.Attachments)
                 .SingleOrDefaultAsync(value => value.Id == replyId && value.ConversationId == conversationId);
             if (reply is null || reply.IsDeleted) throw new HubException("The message being replied to is no longer available.");
-            if (reply.Kind != MessageKind.User) throw new HubException("System messages cannot be replied to.");
+            if (reply.Kind is not (MessageKind.User or MessageKind.DiceRoll))
+                throw new HubException("System messages cannot be replied to.");
         }
-        var content = ValidContent(request.Content, attachments.Count > 0);
-        await ValidateCommunityEmojiUseAsync(content, session.AccountId);
+        var diceRoll = parsedRoll.Request is { } rollRequest ? diceRoller.Roll(rollRequest) : null;
+        var content = diceRoll is null
+            ? ValidContent(request.Content, attachments.Count > 0)
+            : DiceRollService.SearchableContent(diceRoll);
+        if (diceRoll is null) await ValidateCommunityEmojiUseAsync(content, session.AccountId);
         var message = new DirectMessage
         {
             Id = Guid.NewGuid(),
@@ -1125,6 +1150,8 @@ public sealed class ChatHub(
             ClientMessageId = request.ClientMessageId,
             AuthorAccount = session.Account,
             Content = content,
+            Kind = diceRoll is null ? MessageKind.User : MessageKind.DiceRoll,
+            DiceRollJson = diceRoll is null ? null : JsonSerializer.Serialize(diceRoll),
             CreatedAt = DateTimeOffset.UtcNow,
             ReplyToMessageId = reply?.Id,
             ReplyToMessage = reply
@@ -1170,7 +1197,8 @@ public sealed class ChatHub(
         var accountId = await RequireAccountAsync();
         var conversation = await RequireDirectConversationAsync(conversationId, accountId);
         var message = await DirectMessageInContextAsync(conversationId, messageId);
-        if (message.Kind != MessageKind.User) throw new HubException("System messages cannot be deleted.");
+        if (message.Kind is not (MessageKind.User or MessageKind.DiceRoll))
+            throw new HubException("System messages cannot be deleted.");
         if (message.AuthorAccountId != accountId) throw new HubException("You can only delete your own messages.");
         if (message.IsDeleted) return;
         message.IsDeleted = true;

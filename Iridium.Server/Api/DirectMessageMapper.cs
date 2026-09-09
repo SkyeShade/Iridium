@@ -26,7 +26,8 @@ public static class DirectMessageMapper
         Attachments: message.IsDeleted ? [] : message.Attachments.Select(ChannelMessageMapper.ToAttachment).ToArray(),
         Kind: message.Kind,
         RelatedCallId: message.RelatedCallId,
-        Forwarded: message.IsDeleted ? null : ChannelMessageMapper.ToForwarded(message.ForwardedMessageSnapshot));
+        Forwarded: message.IsDeleted ? null : ChannelMessageMapper.ToForwarded(message.ForwardedMessageSnapshot),
+        DiceRoll: message.IsDeleted ? null : ChannelMessageMapper.DeserializeDiceRoll(message.DiceRollJson));
 
     public static DirectConversationDto ConversationToDto(
         DirectConversation conversation,

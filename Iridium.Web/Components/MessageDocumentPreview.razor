@@ -5,8 +5,9 @@
 @inject ILogger<MessageDocumentPreview> Logger
 @inject IJSRuntime JS
 @inject IWebAssemblyHostEnvironment HostEnvironment
+@inject DocumentEmbedPreferencesService DocumentEmbedPreferences
 
-<section @ref="_root" class="message-document-preview @(Source.Provider == CommunityChannelEmbedProvider.GoogleSheets ? "sheet-preview" : "document-preview") @(_expanded ? "expanded" : "collapsed")" aria-label="@Source.ProviderName preview">
+<section @ref="_root" class="message-document-preview @(Source.Provider == CommunityChannelEmbedProvider.GoogleSheets ? "sheet-preview" : "document-preview") @(_expanded ? "expanded" : "collapsed") @(!EmbedContentMounted ? "not-loaded" : null)" aria-label="@Source.ProviderName preview">
     <header>
         <span class="document-label"><Icon Name="file" Size="16" /><strong>@Source.ContentName</strong><small>@Source.ProviderName</small></span>
         <span class="document-actions">
@@ -15,7 +16,12 @@
         </span>
     </header>
     <div class="message-document-body">
-        @if (!_visible || _loading)
+        @if (!EmbedContentMounted)
+        {
+            <div class="message-document-load"><Icon Name="file" Size="24" /><strong>@Source.ProviderName</strong>
+                <button type="button" @onclick="LoadThisEmbedAsync">Load embed</button></div>
+        }
+        else if (!_visible || _loading)
         {
             <div class="message-document-state"><span class="loading" aria-hidden="true"></span>Loading document…</div>
         }
@@ -41,11 +47,14 @@
             </div>
         }
     </div>
-    <footer>
-        <button type="button" aria-expanded="@_expanded" @onclick="ToggleExpanded">
-            @(_expanded ? "Collapse document" : "Expand document")
-        </button>
-    </footer>
+    @if (EmbedContentMounted)
+    {
+        <footer>
+            <button type="button" aria-expanded="@_expanded" @onclick="ToggleExpanded">
+                @(_expanded ? "Collapse document" : "Expand document")
+            </button>
+        </footer>
+    }
 </section>
 
 @code {
@@ -53,6 +62,10 @@
     [Parameter, EditorRequired] public Guid CommunityId { get; set; }
     [Parameter, EditorRequired] public Guid ChannelId { get; set; }
     [Parameter, EditorRequired] public required EmbeddedContentConfiguration Source { get; set; }
+    [Parameter, EditorRequired] public required string NodeAuthority { get; set; }
+    [Parameter, EditorRequired] public Guid AccountId { get; set; }
+    [Parameter] public bool IsMobileLayout { get; set; }
+    [Parameter] public bool MobileLayoutKnown { get; set; } = true;
     private string? _sourceKey;
     private ElementReference _root;
     private IJSObjectReference? _module;
@@ -64,30 +77,65 @@
     private bool _expanded;
     private bool _visible;
     private bool _wireVisibility;
+    private bool _preferenceResolved;
+    private bool _preferenceResolutionStarted;
+    private bool? _storedPreference;
+    private bool _resolvedMobileLayout;
+    private bool _autoLoad;
+    private bool _manuallyLoaded;
     private long _loadStarted;
     private long _dtoReceivedAt;
     private long _stateChangeRequestedAt;
     private bool _applyDiagnosticPending;
-    private string RenderKey => $"{_sourceKey}:{_document?.IsStale}";
+    private string RenderKey => _sourceKey ?? string.Empty;
+    private bool EmbedContentMounted => _manuallyLoaded || _preferenceResolved && _autoLoad;
+    private DocumentEmbedPreferenceScope PreferenceScope => new(NodeAuthority, AccountId);
+
+    protected override void OnInitialized() => DocumentEmbedPreferences.Changed += PreferenceChanged;
 
     protected override void OnParametersSet()
     {
         var key = $"{MessageId:N}:{Source.CacheIdentity}";
-        if (key == _sourceKey) return;
+        if (key == _sourceKey)
+        {
+            if (MobileLayoutKnown && !_preferenceResolutionStarted)
+            {
+                _preferenceResolutionStarted = true;
+                _ = ResolvePreferenceAsync(key);
+            }
+            if (_preferenceResolved && _resolvedMobileLayout != IsMobileLayout)
+            {
+                _resolvedMobileLayout = IsMobileLayout;
+                _autoLoad = DocumentEmbedPreferencesService.EffectiveAutoLoad(_storedPreference, IsMobileLayout);
+                _wireVisibility = _autoLoad && !_visible;
+            }
+            return;
+        }
         _sourceKey = key;
         _expanded = false;
         _visible = false;
         _document = null;
         _loading = false;
-        _wireVisibility = true;
+        _wireVisibility = false;
+        _preferenceResolved = false;
+        _preferenceResolutionStarted = false;
+        _storedPreference = null;
+        _resolvedMobileLayout = IsMobileLayout;
+        _autoLoad = false;
+        _manuallyLoaded = false;
         _loadCancellation?.Cancel();
         _loadCancellation?.Dispose();
         _loadCancellation = null;
+        if (MobileLayoutKnown)
+        {
+            _preferenceResolutionStarted = true;
+            _ = ResolvePreferenceAsync(key);
+        }
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (_wireVisibility)
+        if (_wireVisibility && EmbedContentMounted)
         {
             _wireVisibility = false;
             _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/chat.js");
@@ -166,6 +214,35 @@
         if (!_visible) _ = DeferredContentVisibleAsync();
     }
 
+    private async Task ResolvePreferenceAsync(string sourceKey)
+    {
+        var stored = await DocumentEmbedPreferences.GetStoredAsync(PreferenceScope);
+        if (sourceKey != _sourceKey) return;
+        _storedPreference = stored;
+        _resolvedMobileLayout = IsMobileLayout;
+        _autoLoad = DocumentEmbedPreferencesService.EffectiveAutoLoad(stored, IsMobileLayout);
+        _preferenceResolved = true;
+        _wireVisibility = _autoLoad;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task LoadThisEmbedAsync()
+    {
+        _manuallyLoaded = true;
+        await DeferredContentVisibleAsync();
+    }
+
+    private void PreferenceChanged(DocumentEmbedPreferenceScope scope, bool? stored)
+    {
+        if (scope != PreferenceScope) return;
+        _storedPreference = stored;
+        _resolvedMobileLayout = IsMobileLayout;
+        _preferenceResolved = true;
+        _autoLoad = DocumentEmbedPreferencesService.EffectiveAutoLoad(stored, IsMobileLayout);
+        _wireVisibility = _autoLoad && !_visible;
+        _ = InvokeAsync(StateHasChanged);
+    }
+
     private async Task RefreshAsync()
     {
         if (_refreshing) return;
@@ -193,6 +270,7 @@
 
     public async ValueTask DisposeAsync()
     {
+        DocumentEmbedPreferences.Changed -= PreferenceChanged;
         _loadCancellation?.Cancel();
         _loadCancellation?.Dispose();
         if (_module is not null)

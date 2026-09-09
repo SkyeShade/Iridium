@@ -163,7 +163,17 @@
                          Anchor="_emojiButton" OnSelected="InsertEmojiAsync"
                          OnClose="CloseEmojiPicker" />
         }
-        @if (Suggestions.Count > 0)
+        @if (ShowRollSuggestion)
+        {
+            <div class="mention-suggestions command-suggestions" role="listbox" aria-label="Command suggestions">
+                <button type="button" class="mention-option command-option active" role="option" aria-selected="true"
+                        @onpointerdown:preventDefault="true" @onclick="AcceptRollCommandSuggestionAsync">
+                    <span class="mention-symbol">/</span>
+                    <span><strong>Roll Dice</strong><small>Roll dice using XdY notation</small><small>Example: /roll 2d20</small></span>
+                </button>
+            </div>
+        }
+        else if (Suggestions.Count > 0)
         {
             <div class="mention-suggestions" role="listbox" aria-label="Mention suggestions">
                 @for (var index = 0; index < Suggestions.Count; index++)
@@ -211,6 +221,7 @@
     [Parameter] public bool Busy { get; set; }
     [Parameter] public bool IsMobileLayout { get; set; }
     [Parameter] public bool OptimisticSubmission { get; set; }
+    [Parameter] public bool SupportsSlashCommands { get; set; } = true;
     [Parameter] public Func<string, Task<bool>>? Send { get; set; }
     [Parameter] public Func<MessageSubmission, Task<bool>>? SendRich { get; set; }
     [Parameter] public EventCallback OnSubmitted { get; set; }
@@ -289,6 +300,15 @@
     private IReadOnlyList<PendingAttachment> PendingAttachments => _attachmentKey is { } key ? Attachments.Get(key) : [];
     private int RemainingCharacters => _maxMessageCharacters - CommunityEmojiDraftCodec.CountCharacters(_content, _emojiReferences);
     private bool HasSendableText => !string.IsNullOrWhiteSpace(_content);
+    private bool ShowRollSuggestion
+    {
+        get
+        {
+            var value = _content.Trim();
+            return SupportsSlashCommands && value.Length > 0 && value.Length <= 5 &&
+                   "/roll".StartsWith(value, StringComparison.OrdinalIgnoreCase);
+        }
+    }
     private MessageDraftScope DraftScope => new(NodeAuthority, AccountId, ConversationKind, ConversationId);
     private string ActiveDisplayName => Session.Account?.Id == AccountId ? Session.Account.DisplayName : string.Empty;
     private long ActiveAvatarRevision => Math.Max(_activeAvatarRevision,
@@ -447,7 +467,8 @@
     [JSInvokable]
     public async Task SubmitFromKeyboardAsync()
     {
-        var exclusiveSubmission = !OptimisticSubmission;
+        var parsedRoll = SupportsSlashCommands ? DiceRollCommandParser.Parse(_content) : new DiceRollCommandParseResult(false);
+        var exclusiveSubmission = !OptimisticSubmission || parsedRoll.IsCommand;
         if (Busy || (exclusiveSubmission && _submitting))
         {
             Logger.LogDebug("Ignored a keyboard submission while the composer for channel {ChannelName} was busy.", ChannelName);
@@ -459,6 +480,16 @@
             return;
         }
         if (string.IsNullOrWhiteSpace(_content) && PendingAttachments.Count == 0) return;
+        if (parsedRoll.IsCommand && !parsedRoll.IsValid)
+        {
+            _attachmentError = parsedRoll.Error;
+            return;
+        }
+        if (parsedRoll.IsValid && PendingAttachments.Count > 0)
+        {
+            _attachmentError = "Dice rolls cannot include attachments.";
+            return;
+        }
 
         if (exclusiveSubmission) _submitting = true;
         try
@@ -930,6 +961,11 @@
     [JSInvokable]
     public async Task HandleMentionKeyAsync(string key)
     {
+        if (ShowRollSuggestion)
+        {
+            if (key is "Enter" or "Tab") await AcceptRollCommandSuggestionAsync();
+            return;
+        }
         if (EmojiSuggestions.Count > 0)
         {
             switch (key)
@@ -1111,6 +1147,17 @@
         _mentions.Add(new(suggestion.Kind, suggestion.TargetId, _mentionStart, display.Length));
         CloseSuggestions();
         _resizeAfterRender = true;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task AcceptRollCommandSuggestionAsync()
+    {
+        if (_module is null) return;
+        var snapshot = await _module.InvokeAsync<ComposerDocumentSnapshot>("setComposerText", _textarea, "/roll ");
+        ApplySnapshot(snapshot);
+        _resizeAfterRender = true;
+        await TypingActivityChanged.InvokeAsync(true);
+        await SendableContentChanged.InvokeAsync(true);
         await InvokeAsync(StateHasChanged);
     }
 

@@ -83,7 +83,8 @@ public sealed record ChannelMessageDto(
     MessageKind Kind = MessageKind.User,
     ForwardedMessageSnapshotDto? Forwarded = null,
     IReadOnlyList<ReactionSummaryDto>? Reactions = null,
-    ThreadMessageSummaryDto? Thread = null);
+    ThreadMessageSummaryDto? Thread = null,
+    DiceRollResultDto? DiceRoll = null);
 
 public sealed record ThreadMessageSummaryDto(
     Guid ThreadId, Guid ParentChannelId, Guid DiscussionChannelId, string Name, int ReplyCount,

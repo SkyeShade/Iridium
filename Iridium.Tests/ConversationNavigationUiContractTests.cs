@@ -365,6 +365,36 @@ public sealed class ConversationNavigationUiContractTests
     }
 
     [Fact]
+    public void ChannelReadPersistenceRoutesByConversationKindWithoutBlockingNavigation()
+    {
+        var home = Source("Iridium.Web", "Pages", "Home.razor");
+        var complete = Slice(home, "private async Task CompleteChannelSelectionAsync", "private async Task OpenCommunitySearchResultAsync");
+        var forum = Source("Iridium.Web", "Components", "ForumChannelView.razor");
+        var openPost = Slice(forum, "private async Task OpenPostAsync", "public async Task OpenPostByIdAsync");
+        var endpoint = Source("Iridium.Server", "Api", "MessageEndpoints.cs");
+
+        Assert.Contains("CommunityReadStateRouting.SupportsChannelReadEndpoint(channel.Kind)", complete);
+        Assert.Contains("Session.MarkCommunityChannelReadAsync(channel.CommunityId, channel.Id)", complete);
+        Assert.True(home.IndexOf("await InvokeAsync(StateHasChanged)", home.IndexOf("private async Task SelectChannelAsync", StringComparison.Ordinal), StringComparison.Ordinal) <
+                    home.IndexOf("TrackBackground(CompleteChannelSelectionAsync", StringComparison.Ordinal));
+        Assert.Contains("_ = PersistOpenedPostReadAsync(post)", openPost);
+        Assert.Contains("post.DiscussionChannelId", Slice(forum, "private async Task PersistOpenedPostReadAsync", "private Task OpenPostContextMenu"));
+        Assert.DoesNotContain("await Session.MarkCommunityChannelReadAsync", openPost);
+        Assert.Contains("value.Kind == CommunityChannelKind.Text", endpoint);
+    }
+
+    [Fact]
+    public void ThreadNavigationPersistsItsDiscussionReadStateInBackground()
+    {
+        var home = Source("Iridium.Web", "Pages", "Home.razor");
+        var openThread = Slice(home, "private async Task OpenThreadAsync(CommunityThreadDto thread, Guid? targetMessageId,", "private void OpenThreadBrowser");
+
+        Assert.Contains("CommunityState.MarkChannelRead(thread.DiscussionChannelId)", openThread);
+        Assert.Contains("TrackBackground(Session.MarkCommunityChannelReadAsync(thread.CommunityId, thread.DiscussionChannelId)", openThread);
+        Assert.Contains("await SelectChannelAsync(parent", openThread);
+    }
+
+    [Fact]
     public void ConversationViewsNeverBindTheSharedListWithoutMatchingItsIdentity()
     {
         var channel = Source("Iridium.Web", "Components", "ChannelView.razor");

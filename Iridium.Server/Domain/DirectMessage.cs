@@ -9,6 +9,7 @@ public sealed class DirectMessage
     public Guid AuthorAccountId { get; set; }
     public Guid? ClientMessageId { get; set; }
     public MessageKind Kind { get; set; } = MessageKind.User;
+    public string? DiceRollJson { get; set; }
     public Guid? RelatedCallId { get; set; }
     public string Content { get; set; } = string.Empty;
     public DateTimeOffset CreatedAt { get; set; }

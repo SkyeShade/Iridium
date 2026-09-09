@@ -49,6 +49,7 @@
                         <p class="forum-tag-required" role="status">Select at least one tag before publishing this Post.</p>
                     }
                     <MessageComposer @ref="_newPostComposer" Class="forum-create-composer" ChannelName="@Channel.Name"
+                                     SupportsSlashCommands="false"
                                      PlaceholderText="Enter a message..." Busy="_creating" Community="Community"
                                      CommunityManagement="CommunityManagement" SendRich="CreatePostAsync"
                                      OnCommunityProfileChanged="OnCommunityProfileChanged"
@@ -146,7 +147,7 @@
                         }
                         <div class="forum-discussion">
                             <ChannelView @key="(selectedPost.DiscussionChannelId, selectedPost.IsLocked)" Community="Community"
-                                         IsMobileLayout="IsMobileLayout"
+                                         IsMobileLayout="IsMobileLayout" MobileLayoutKnown="MobileLayoutKnown"
                                          Channel="DiscussionChannel" CurrentAccountId="CurrentAccountId" NodeAuthority="@NodeAuthority"
                                          CommunityManagement="CommunityManagement" OnEditProfile="OnEditProfile" OnEditAvatars="OnEditAvatars"
                                          OnCommunityProfileChanged="OnCommunityProfileChanged" OnMessage="OnMessage"
@@ -200,6 +201,7 @@
     [Parameter] public bool CanAttachFiles { get; set; }
     [Parameter] public bool CanMentionEveryone { get; set; }
     [Parameter] public bool IsMobileLayout { get; set; }
+    [Parameter] public bool MobileLayoutKnown { get; set; } = true;
     [Parameter] public Guid? InitialPostId { get; set; }
     [Parameter] public EventCallback<CommunityForumPostDto?> OnPostNavigationRequested { get; set; }
     [Parameter] public EventCallback<CommunityForumPostDto?> OnPostOpenChanged { get; set; }
@@ -450,8 +452,7 @@
             _composerFocusRequest++;
         }
         Forum.MarkRead(post.Id);
-        try { await Session.MarkCommunityChannelReadAsync(Community.Id, post.DiscussionChannelId); }
-        catch (Exception exception) { Logger.LogDebug(exception, "Could not mark Forum post {PostId} read.", post.Id); }
+        _ = PersistOpenedPostReadAsync(post);
         await OnPostOpenChanged.InvokeAsync(post);
         await OnSubViewChanged.InvokeAsync(true);
     }
@@ -506,6 +507,12 @@
         if (_selectedPost is not { } post) return;
         await Session.MarkCommunityChannelReadAsync(Community.Id, post.DiscussionChannelId);
         Forum.MarkRead(post.Id);
+    }
+
+    private async Task PersistOpenedPostReadAsync(CommunityForumPostDto post)
+    {
+        try { await Session.MarkCommunityChannelReadAsync(Community.Id, post.DiscussionChannelId); }
+        catch (Exception exception) { Logger.LogDebug(exception, "Could not mark Forum post {PostId} read.", post.Id); }
     }
 
     private Task OpenPostContextMenu(ForumPostContextRequest request)

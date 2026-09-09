@@ -72,7 +72,7 @@ public sealed class ForumPostDocumentEmbedTests
         var messageList = Source("Iridium.Web", "Components", "MessageList.razor");
 
         var leadingContentStart = channelView.IndexOf("<BeforeMessages>", StringComparison.Ordinal);
-        var document = channelView.IndexOf("<section class=\"channel-document\"", StringComparison.Ordinal);
+        var document = channelView.IndexOf("<section class=\"channel-document", StringComparison.Ordinal);
         var separator = channelView.IndexOf("class=\"channel-document-separator\"", StringComparison.Ordinal);
         var leadingContentEnd = channelView.IndexOf("</BeforeMessages>", StringComparison.Ordinal);
         Assert.True(leadingContentStart >= 0 && leadingContentStart < document);

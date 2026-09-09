@@ -68,7 +68,7 @@
     <ChannelView @key="(Thread.DiscussionChannelId, Thread.IsArchived, Thread.IsLocked)"
                  Community="Community" Channel="DiscussionChannel" CurrentAccountId="CurrentAccountId"
                  NodeAuthority="NodeAuthority" CommunityManagement="CommunityManagement"
-                 IsMobileLayout="IsMobileLayout" FocusRequest="FocusRequest" OnFocusConsumed="OnFocusConsumed"
+                 IsMobileLayout="IsMobileLayout" MobileLayoutKnown="MobileLayoutKnown" FocusRequest="FocusRequest" OnFocusConsumed="OnFocusConsumed"
                  OnEditProfile="OnEditProfile" OnEditAvatars="OnEditAvatars"
                  OnCommunityProfileChanged="OnCommunityProfileChanged" OnMessage="OnMessage"
                  OnMemberRolesChanged="OnMemberRolesChanged" OnOpenForwardSource="OnOpenForwardSource"
@@ -90,6 +90,7 @@
     [Parameter, EditorRequired] public required string NodeAuthority { get; set; }
     [Parameter] public CommunityManagementDto? CommunityManagement { get; set; }
     [Parameter] public bool IsMobileLayout { get; set; }
+    [Parameter] public bool MobileLayoutKnown { get; set; } = true;
     [Parameter] public long FocusRequest { get; set; }
     [Parameter] public Guid? TargetMessageId { get; set; }
     [Parameter] public EventCallback<long> OnFocusConsumed { get; set; }

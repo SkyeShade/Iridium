@@ -8,7 +8,8 @@ public sealed class BrowserClientStorage(IJSRuntime js) : ISavedNodeStore, INode
     IActiveAccountSelectionStore, ICategoryCollapseStore, ILastCommunityChannelStore,
     IVoiceParticipantPreferenceStore, IEmojiPickerPreferenceStore, IMessageDraftStore,
     ICommunityForumPostCache, ILocalVoicePreferenceStore, IComposerActionModeStore,
-    IComposerAvatarUsageStore, ICommunityMemberListPreferenceStore, IForumPostCollapseStore, IAsyncDisposable
+    IComposerAvatarUsageStore, ICommunityMemberListPreferenceStore, IForumPostCollapseStore,
+    IDocumentEmbedPreferenceStore, IAsyncDisposable
 {
     private const string MessageDraftNamespace = "iridium.messageDrafts.v1";
     private const int MaximumMessageDrafts = 500;
@@ -154,6 +155,20 @@ public sealed class BrowserClientStorage(IJSRuntime js) : ISavedNodeStore, INode
 
     private static string MemberListPreferenceKey(CommunityMemberListPreferenceScope scope) =>
         $"iridium.community-member-list-visible.v1:{Uri.EscapeDataString(scope.NodeAuthority)}:{scope.AccountId:N}";
+
+    async Task<bool?> IDocumentEmbedPreferenceStore.LoadAsync(DocumentEmbedPreferenceScope scope,
+        CancellationToken cancellationToken)
+    {
+        var module = await ModuleAsync(cancellationToken);
+        return await module.InvokeAsync<bool?>("loadValue", cancellationToken, scope.StorageKey);
+    }
+
+    async Task IDocumentEmbedPreferenceStore.SaveAsync(DocumentEmbedPreferenceScope scope, bool autoLoad,
+        CancellationToken cancellationToken)
+    {
+        var module = await ModuleAsync(cancellationToken);
+        await module.InvokeVoidAsync("save", cancellationToken, scope.StorageKey, autoLoad);
+    }
 
     async Task<bool?> IForumPostCollapseStore.LoadAsync(ForumPostCollapseScope scope,
         CancellationToken cancellationToken)

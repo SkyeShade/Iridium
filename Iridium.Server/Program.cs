@@ -104,6 +104,8 @@ else
 builder.Services.AddSingleton<CommunityVoiceRoomService>();
 builder.Services.AddSingleton<VoiceStreamRegistry>();
 builder.Services.AddScoped<DirectCallAuthorizationService>();
+builder.Services.AddSingleton<IDiceRollRandomSource, CryptographicDiceRollRandomSource>();
+builder.Services.AddSingleton<DiceRollService>();
 builder.Services.AddHostedService<CallTimeoutService>();
 builder.Services.AddHostedService<CommunityThreadArchiveService>();
 if (builder.Environment.IsDevelopment())
@@ -133,6 +135,8 @@ await using (var scope = app.Services.CreateAsyncScope())
     await DatabaseCompatibility.EnsureCommunityChannelReadStatesAsync(db);
     await DatabaseCompatibility.EnsureCommunityMentionNotificationsAsync(db);
     await DatabaseCompatibility.EnsureDirectMessageTablesAsync(db);
+    await DatabaseCompatibility.EnsureMessageForwardingSchemaAsync(db);
+    await DatabaseCompatibility.EnsureDiceRollSchemaAsync(db);
     await DatabaseCompatibility.EnsureMessageClientIdsAsync(db);
     await DatabaseCompatibility.EnsureMessageHistoryIndexesAsync(db);
     await DatabaseCompatibility.EnsureCommunityManagementSchemaAsync(db);
@@ -146,7 +150,6 @@ await DatabaseCompatibility.EnsureCommunityMediaSchemaAsync(db);
 await DatabaseCompatibility.EnsureCommunityEmojiSchemaAsync(db);
     await DatabaseCompatibility.EnsureMessageReactionSchemaAsync(db);
     await DatabaseCompatibility.EnsureAttachmentsTableAsync(db);
-    await DatabaseCompatibility.EnsureMessageForwardingSchemaAsync(db);
 }
 
 if (app.Environment.IsDevelopment())

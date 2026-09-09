@@ -361,6 +361,8 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
         var message = modelBuilder.Entity<ChannelMessage>();
         message.HasKey(value => value.Id);
         message.Property(value => value.Content);
+        message.Property(value => value.Kind).HasDefaultValue(Iridium.Protocol.MessageKind.User);
+        message.Property(value => value.DiceRollJson).HasMaxLength(4096);
         message.Property(value => value.AuthorDisplayNameSnapshot).HasMaxLength(64);
         message.Property(value => value.AuthorAvatarObjectKeySnapshot).HasMaxLength(64);
         message.Property(value => value.AuthorAvatarContentTypeSnapshot).HasMaxLength(64);
@@ -447,6 +449,7 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
         directMessage.HasKey(value => value.Id);
         directMessage.Property(value => value.Content);
         directMessage.Property(value => value.Kind).HasDefaultValue(Iridium.Protocol.MessageKind.User);
+        directMessage.Property(value => value.DiceRollJson).HasMaxLength(4096);
         directMessage.Property(value => value.CreatedAt)
             .HasConversion(value => value.UtcTicks, value => new DateTimeOffset(value, TimeSpan.Zero));
         directMessage.Property(value => value.EditedAt)
@@ -489,6 +492,8 @@ public sealed class IridiumDbContext(DbContextOptions<IridiumDbContext> options)
         forwardedSnapshot.HasKey(value => value.Id);
         forwardedSnapshot.Property(value => value.Content);
         forwardedSnapshot.Property(value => value.MentionsJson).HasMaxLength(8000);
+        forwardedSnapshot.Property(value => value.Kind).HasDefaultValue(Iridium.Protocol.MessageKind.User);
+        forwardedSnapshot.Property(value => value.DiceRollJson).HasMaxLength(4096);
         forwardedSnapshot.Property(value => value.CreatedAt)
             .HasConversion(value => value.UtcTicks, value => new DateTimeOffset(value, TimeSpan.Zero));
 
