@@ -31,6 +31,32 @@ public sealed class ThreadUiPolishTests
     }
 
     [Fact]
+    public void ThreadsUseOneCanonicalSpoolGlyphAcrossDesktopMobileAndNestedSurfaces()
+    {
+        var icon = Source("Iridium.UI", "Icon.razor");
+        var home = Source("Iridium.Web", "Pages", "Home.razor");
+        var row = Source("Iridium.Web", "Components", "MessageRow.razor");
+        var mobile = Source("Iridium.Web", "Components", "MobileMessageActionSheet.razor");
+        var browser = Source("Iridium.Web", "Components", "ThreadBrowser.razor");
+        var thread = Source("Iridium.Web", "Components", "ThreadConversationView.razor");
+        var children = Source("Iridium.Web", "Components", "ThreadSidebarChildren.razor");
+
+        Assert.Contains("@if (Name == \"thread\")", icon);
+        Assert.Contains("fill=\"none\" stroke=\"currentColor\"", icon);
+        Assert.Contains("stroke-linecap=\"round\" stroke-linejoin=\"round\"", icon);
+        Assert.DoesNotContain("M7 3h2L8.4 6h5.2", icon);
+        Assert.Contains("title=\"Threads\"", home);
+        Assert.Contains("aria-label=\"Threads\"", home);
+        Assert.Contains("<Icon Name=\"thread\"", home);
+        Assert.Contains("<Icon Name=\"thread\"", row);
+        Assert.Contains("<Icon Name=\"thread\"", mobile);
+        Assert.Contains("thread-browser-heading", browser);
+        Assert.Contains("<Icon Name=\"thread\"", browser);
+        Assert.Contains("<Icon Name=\"thread\"", thread);
+        Assert.Contains("MentionCount, \"thread\"", children);
+    }
+
+    [Fact]
     public void RightClickAndMoreShareTheCanonicalPermissionAwareMessageMenu()
     {
         var row = Source("Iridium.Web", "Components", "MessageRow.razor");
@@ -125,11 +151,68 @@ public sealed class ThreadUiPolishTests
         var close = home[closeStart..closeEnd];
 
         Assert.Contains("_dismissedThreadRouteId", home);
-        Assert.Contains("await SelectChannelFromNavigationAsync(parent)", close);
-        Assert.Contains("Navigation.NavigateTo(Navigation.BaseUri)", close);
-        Assert.True(close.IndexOf("SelectChannelFromNavigationAsync", StringComparison.Ordinal) <
-                    close.IndexOf("NavigateTo", StringComparison.Ordinal));
+        Assert.Contains("await ExitThreadAndNavigateToChannelAsync(parent, ThreadNavigationSource.ThreadBack", close);
+        Assert.DoesNotContain("Navigation.NavigateTo", close);
+        var canonical = home[home.IndexOf("private async Task ExitThreadAndNavigateToChannelAsync", StringComparison.Ordinal)..
+            home.IndexOf("private void ExitActiveThreadForExplicitDestination", StringComparison.Ordinal)];
+        Assert.Contains("_dismissedThreadRouteId = departedRouteId", canonical);
+        Assert.Contains("var generation = ++_shellNavigationGeneration", canonical);
+        Assert.Contains("await SelectChannelAsync(channel", canonical);
+        Assert.Contains("if (generation != _shellNavigationGeneration) return", canonical);
+        Assert.Contains("Navigation.NavigateTo(Navigation.BaseUri)", canonical);
+        Assert.True(canonical.IndexOf("_dismissedThreadRouteId = departedRouteId", StringComparison.Ordinal) <
+                    canonical.IndexOf("await SelectChannelAsync", StringComparison.Ordinal));
         Assert.Contains("_dismissedThreadRouteId != threadId", home);
+    }
+
+    [Fact]
+    public void ExplicitChannelNavigationOwnsThreadExitAndStaleRestorationCannotReopenIt()
+    {
+        var home = Source("Iridium.Web", "Pages", "Home.razor");
+        var sidebar = home[home.IndexOf("private Task SelectChannelFromNavigationAsync", StringComparison.Ordinal)..
+            home.IndexOf("private Task SelectForumPostFromSidebarAsync", StringComparison.Ordinal)];
+        var select = home[home.IndexOf("private async Task SelectChannelAsync", StringComparison.Ordinal)..
+            home.IndexOf("private Task SelectChannelFromNavigationAsync", StringComparison.Ordinal)];
+        var route = home[home.IndexOf("protected override async Task OnAfterRenderAsync", StringComparison.Ordinal)..
+            home.IndexOf("private string? _recoveryToken", StringComparison.Ordinal)];
+        var refresh = home[home.IndexOf("private void OnCommunityStateChanged", StringComparison.Ordinal)..
+            home.IndexOf("private void OnCommunityThreadChanged", StringComparison.Ordinal)];
+
+        Assert.Contains("ExitThreadAndNavigateToChannelAsync(channel, ThreadNavigationSource.ChannelSidebar", sidebar);
+        Assert.Contains("_selectedThread = null", select);
+        Assert.True(select.IndexOf("_selectedThread = null", StringComparison.Ordinal) <
+                    select.IndexOf("await InvokeAsync(StateHasChanged)", StringComparison.Ordinal));
+        Assert.Contains("generation != _shellNavigationGeneration", route);
+        Assert.Contains("_dismissedThreadRouteId == threadId", route);
+        Assert.Contains("generation == _shellNavigationGeneration", refresh);
+        Assert.Contains("_selectedThread?.Id == selectedThread.Id", refresh);
+        Assert.Contains("_selectedChannel?.Id == parent.Id", refresh);
+    }
+
+    [Fact]
+    public void ThreadSwitchAndNonThreadDestinationsUseExplicitTargetPrecedence()
+    {
+        var home = Source("Iridium.Web", "Pages", "Home.razor");
+        var open = home[home.IndexOf("private async Task OpenThreadAsync(CommunityThreadDto thread, Guid? targetMessageId", StringComparison.Ordinal)..
+            home.IndexOf("private void OpenThreadBrowser", StringComparison.Ordinal)];
+
+        Assert.Contains("var generation = ++_shellNavigationGeneration", open);
+        Assert.Contains("navigationGeneration: generation", open);
+        Assert.Contains("if (generation != _shellNavigationGeneration) return", open);
+        Assert.Contains("_selectedThread = thread", open);
+        Assert.Contains("ThreadNavigationSource.ForumOverview", home);
+        Assert.Contains("ThreadNavigationSource.ForumPost", home);
+        Assert.Contains("ThreadNavigationSource.CommunitySidebar", home);
+        Assert.Contains("ThreadNavigationSource.DirectMessage", home);
+        Assert.Contains("ThreadNavigationSource.Home", home);
+        Assert.Contains("SelectedThreadId=\"_selectedThread?.Id\"", home);
+
+        var children = Source("Iridium.Web", "Components", "ThreadSidebarChildren.razor");
+        var sidebar = Source("Iridium.Web", "Components", "CommunitySidebar.razor");
+        Assert.Contains("SelectedThreadId == thread.Id", children);
+        Assert.Contains("JoinedThreads=\"State.JoinedThreads\"", sidebar);
+        Assert.Contains("SelectedThreadId=\"SelectedThreadId\"", sidebar);
+        Assert.DoesNotContain("OpenThread", children);
     }
 
     [Fact]

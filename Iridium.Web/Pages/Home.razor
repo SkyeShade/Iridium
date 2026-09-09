@@ -583,8 +583,15 @@ else
                 var community = Session.Communities.FirstOrDefault(value => value.Id == communityId);
                 if (community is null) { _error = "Thread not found."; return; }
                 if (_selectedCommunity?.Id != communityId) await SelectCommunity(community);
+                var generation = _shellNavigationGeneration;
+                LogThreadNavigation(ThreadNavigationSource.BrowserRoute, communityId, channelId, threadId,
+                    _selectedChannel?.Id, _selectedThread?.Id, explicitNavigation: false, "requested");
                 var thread = await CommunityState.GetThreadAsync(channelId, threadId);
-                await OpenThreadAsync(thread);
+                if (generation != _shellNavigationGeneration || ThreadRouteId != threadId ||
+                    _dismissedThreadRouteId == threadId)
+                    return;
+                await OpenThreadAsync(thread, null, ThreadNavigationSource.BrowserRoute,
+                    explicitNavigation: false);
             }
             catch (NodeApiException) { _error = "Thread not found."; }
             finally { _threadRouteOpening = false; }
@@ -932,6 +939,8 @@ else
     }
     private async Task SelectCommunityFromNavigationAsync(CommunityDto? community)
     {
+        ExitActiveThreadForExplicitDestination(ThreadNavigationSource.CommunitySidebar,
+            community?.Id, null);
         await SelectCommunity(community, focusRestoredChannel: ShouldAutoFocusNavigation,
             mobilePanelSource: community is not null ? "CommunityClick" : null);
     }
@@ -943,10 +952,11 @@ else
     }
     private async Task SelectChannelAsync(CommunityChannelDto? channel, bool requestComposerFocus = false,
         Guid? searchTargetMessageId = null, string? mobilePanelSource = null, Guid? forumPostId = null,
-        Guid? forumDiscussionChannelId = null)
+        Guid? forumDiscussionChannelId = null, long? navigationGeneration = null)
     {
         CollapseMobileDirectCall();
-        ++_shellNavigationGeneration;
+        var generation = navigationGeneration ?? ++_shellNavigationGeneration;
+        if (generation != _shellNavigationGeneration) return;
         _composerFocusChannelId = null;
         _composerFocusConversationId = null;
         VoiceSessions.MinimizeWatchedStream();
@@ -975,28 +985,50 @@ else
             $"persist channel navigation {channel.Id}");
     }
     private Task SelectChannelFromNavigationAsync(CommunityChannelDto? channel) =>
-        SelectChannelFromMobileNavigationAsync(channel);
+        ExitThreadAndNavigateToChannelAsync(channel, ThreadNavigationSource.ChannelSidebar,
+            requestComposerFocus: ShouldAutoFocusNavigation,
+            mobilePanelSource: channel?.Kind is CommunityChannelKind.Text or CommunityChannelKind.Forum
+                ? "TextChannelClick" : null);
     private Task SelectForumPostFromSidebarAsync(CommunityForumPostDto post) =>
         OpenForumPostAsync(post.ForumChannelId, post.Id, ForumPostNavigationSource.SidebarChild,
             post.DiscussionChannelId, explicitNavigation: true);
 
-    private Task OpenThreadAsync(CommunityThreadDto thread) => OpenThreadAsync(thread, null);
-    private async Task OpenThreadAsync(CommunityThreadDto thread, Guid? targetMessageId)
+    private Task OpenThreadAsync(CommunityThreadDto thread) =>
+        OpenThreadAsync(thread, null, ThreadNavigationSource.ThreadSidebar, explicitNavigation: true);
+    private async Task OpenThreadAsync(CommunityThreadDto thread, Guid? targetMessageId,
+        ThreadNavigationSource source, bool explicitNavigation)
     {
         var parent = CommunityState.Channels.FirstOrDefault(value => value.Id == thread.ParentChannelId &&
             value.Kind == CommunityChannelKind.Text);
         if (parent is null) return;
-        Messaging.ApplyThreadSummary(thread);
-        await SelectChannelAsync(parent, mobilePanelSource: _isMobileLayout ? "Thread" : null);
-        _selectedThread = thread;
-        _dismissedThreadRouteId = null;
-        _threadBrowserOpen = false;
-        _searchTargetMessageId = targetMessageId;
-        if (!_isMobileLayout) RequestChannelComposerFocus(thread.DiscussionChannelId);
-        CommunityState.MarkChannelRead(thread.DiscussionChannelId);
-        var route = $"communities/{thread.CommunityId}/channels/{thread.ParentChannelId}/threads/{thread.Id}";
-        if (!Navigation.Uri.EndsWith(route, StringComparison.OrdinalIgnoreCase)) Navigation.NavigateTo(route);
-        await InvokeAsync(StateHasChanged);
+        var previousChannelId = _selectedChannel?.Id;
+        var previousThreadId = _selectedThread?.Id;
+        var generation = ++_shellNavigationGeneration;
+        _dismissedThreadRouteId = previousThreadId is not null && previousThreadId != thread.Id
+            ? previousThreadId
+            : ThreadRouteId is { } routeThreadId && routeThreadId != thread.Id ? routeThreadId : null;
+        _threadRouteOpening = true;
+        LogThreadNavigation(source, thread.CommunityId, thread.ParentChannelId, thread.Id,
+            previousChannelId, previousThreadId, explicitNavigation, "requested");
+        try
+        {
+            Messaging.ApplyThreadSummary(thread);
+            await SelectChannelAsync(parent, mobilePanelSource: _isMobileLayout ? "Thread" : null,
+                navigationGeneration: generation);
+            if (generation != _shellNavigationGeneration) return;
+            _selectedThread = thread;
+            _dismissedThreadRouteId = null;
+            _threadBrowserOpen = false;
+            _searchTargetMessageId = targetMessageId;
+            if (!_isMobileLayout) RequestChannelComposerFocus(thread.DiscussionChannelId);
+            CommunityState.MarkChannelRead(thread.DiscussionChannelId);
+            var route = $"communities/{thread.CommunityId}/channels/{thread.ParentChannelId}/threads/{thread.Id}";
+            if (!Navigation.Uri.EndsWith(route, StringComparison.OrdinalIgnoreCase)) Navigation.NavigateTo(route);
+            await InvokeAsync(StateHasChanged);
+            LogThreadNavigation(source, thread.CommunityId, thread.ParentChannelId, thread.Id,
+                previousChannelId, previousThreadId, explicitNavigation, "applied");
+        }
+        finally { _threadRouteOpening = false; }
     }
 
     private void OpenThreadBrowser() { _threadFromMessageId = null; _threadBrowserOpen = true; }
@@ -1004,20 +1036,19 @@ else
     { _threadFromMessageId = message.Id; _threadBrowserOpen = true; }
     private async Task OpenThreadSummaryAsync(ThreadMessageSummaryDto summary)
     {
-        await OpenThreadAsync(await CommunityState.GetThreadAsync(summary.ParentChannelId, summary.ThreadId));
+        var generation = ++_shellNavigationGeneration;
+        var thread = await CommunityState.GetThreadAsync(summary.ParentChannelId, summary.ThreadId);
+        if (generation != _shellNavigationGeneration) return;
+        await OpenThreadAsync(thread, null, ThreadNavigationSource.MessageSummary, explicitNavigation: true);
     }
 
     private async Task CloseThreadAsync()
     {
         var parent = _selectedChannel;
-        _dismissedThreadRouteId = _selectedThread?.Id ?? ThreadRouteId;
-        _threadRouteOpening = true;
-        try
-        {
-            await SelectChannelFromNavigationAsync(parent);
-            Navigation.NavigateTo(Navigation.BaseUri);
-        }
-        finally { _threadRouteOpening = false; }
+        await ExitThreadAndNavigateToChannelAsync(parent, ThreadNavigationSource.ThreadBack,
+            requestComposerFocus: ShouldAutoFocusNavigation,
+            mobilePanelSource: parent?.Kind is CommunityChannelKind.Text or CommunityChannelKind.Forum
+                ? "ThreadBack" : null);
     }
 
     private void ThreadChanged(CommunityThreadDto thread)
@@ -1037,8 +1068,8 @@ else
         if (forum is null) return;
         // The parent Forum and child Post are one atomic navigation target. In particular, do not
         // clear the Post merely because the parent Forum is already selected.
-        await SelectChannelAsync(forum, mobilePanelSource: null, forumPostId: postId,
-            forumDiscussionChannelId: discussionChannelId);
+        await ExitThreadAndNavigateToChannelAsync(forum, ThreadNavigationSource.ForumPost,
+            forumPostId: postId, forumDiscussionChannelId: discussionChannelId);
         LogForumNavigation(source, previousForumId, previousPostId, forumId, postId,
             _selectedChannel?.Id, _selectedForumDiscussionChannelId ?? previousDiscussionChannelId,
             explicitNavigation);
@@ -1055,7 +1086,7 @@ else
         if (_selectedChannel is not { Kind: CommunityChannelKind.Forum } forum) return;
         var previousPostId = _selectedForumPostId;
         var previousDiscussionChannelId = _selectedForumDiscussionChannelId;
-        await SelectChannelAsync(forum, mobilePanelSource: null);
+        await ExitThreadAndNavigateToChannelAsync(forum, ThreadNavigationSource.ForumOverview);
         LogForumNavigation(ForumPostNavigationSource.ForumOverview, forum.Id, previousPostId,
             forum.Id, null, _selectedChannel?.Id, previousDiscussionChannelId, explicitNavigation: true);
     }
@@ -1072,13 +1103,58 @@ else
             source, previousForumId, previousPostId, requestedForumId, requestedPostId, selectedChannelId,
             _selectedForumPostId, discussionChannelId, explicitNavigation);
     }
-    private async Task SelectChannelFromMobileNavigationAsync(CommunityChannelDto? channel)
+    private async Task ExitThreadAndNavigateToChannelAsync(CommunityChannelDto? channel,
+        ThreadNavigationSource source, bool requestComposerFocus = false, string? mobilePanelSource = null,
+        Guid? searchTargetMessageId = null, Guid? forumPostId = null, Guid? forumDiscussionChannelId = null)
     {
-        await SelectChannelAsync(
-            channel,
-            requestComposerFocus: ShouldAutoFocusNavigation,
-            mobilePanelSource: channel?.Kind is CommunityChannelKind.Text or CommunityChannelKind.Forum
-                ? "TextChannelClick" : null);
+        var previousChannelId = _selectedChannel?.Id;
+        var previousThreadId = _selectedThread?.Id;
+        var departedRouteId = previousThreadId ?? ThreadRouteId;
+        if (departedRouteId is not null) _dismissedThreadRouteId = departedRouteId;
+        var generation = ++_shellNavigationGeneration;
+        LogThreadNavigation(source, channel?.CommunityId ?? _selectedCommunity?.Id, channel?.Id, null,
+            previousChannelId, previousThreadId, explicitNavigation: true, "requested");
+        await SelectChannelAsync(channel, requestComposerFocus, searchTargetMessageId, mobilePanelSource,
+            forumPostId, forumDiscussionChannelId, generation);
+        if (generation != _shellNavigationGeneration) return;
+        if (departedRouteId is not null && ThreadRouteId is not null)
+            Navigation.NavigateTo(Navigation.BaseUri);
+        LogThreadNavigation(source, channel?.CommunityId ?? _selectedCommunity?.Id, channel?.Id, null,
+            previousChannelId, previousThreadId, explicitNavigation: true, "applied");
+    }
+
+    private void ExitActiveThreadForExplicitDestination(ThreadNavigationSource source,
+        Guid? requestedCommunityId, Guid? requestedChannelId)
+    {
+        var previousChannelId = _selectedChannel?.Id;
+        var previousThreadId = _selectedThread?.Id;
+        var departedRouteId = previousThreadId ?? ThreadRouteId;
+        LogThreadNavigation(source, requestedCommunityId, requestedChannelId, null,
+            previousChannelId, previousThreadId, explicitNavigation: true, "requested");
+        ++_shellNavigationGeneration;
+        if (departedRouteId is not null) _dismissedThreadRouteId = departedRouteId;
+        _selectedThread = null;
+        _threadBrowserOpen = false;
+        _threadFromMessageId = null;
+        _searchTargetMessageId = null;
+        if (departedRouteId is not null && ThreadRouteId is not null)
+            Navigation.NavigateTo(Navigation.BaseUri);
+        LogThreadNavigation(source, requestedCommunityId, requestedChannelId, null,
+            previousChannelId, previousThreadId, explicitNavigation: true, "applied");
+    }
+
+    private void LogThreadNavigation(ThreadNavigationSource source, Guid? requestedCommunityId,
+        Guid? requestedChannelId, Guid? requestedThreadId, Guid? previousChannelId,
+        Guid? previousThreadId, bool explicitNavigation, string phase)
+    {
+        if (!HostEnvironment.IsDevelopment()) return;
+        Logger.LogInformation(
+            "Thread navigation Phase={Phase} Source={Source} RequestedCommunityId={RequestedCommunityId} " +
+            "RequestedChannelId={RequestedChannelId} RequestedThreadId={RequestedThreadId} " +
+            "PreviousSelectedChannelId={PreviousSelectedChannelId} PreviousSelectedThreadId={PreviousSelectedThreadId} " +
+            "SelectedChannelId={SelectedChannelId} SelectedThreadId={SelectedThreadId} Explicit={ExplicitNavigation}",
+            phase, source, requestedCommunityId, requestedChannelId, requestedThreadId,
+            previousChannelId, previousThreadId, _selectedChannel?.Id, _selectedThread?.Id, explicitNavigation);
     }
 
     private async Task CompleteChannelSelectionAsync(Guid accountId, CommunityChannelDto channel)
@@ -1093,25 +1169,36 @@ else
         var channel = CommunityState.Channels.FirstOrDefault(value => value.Id == channelId);
         if (channel is null) return;
         if (result.ThreadId is { } threadId)
-            await OpenThreadAsync(await CommunityState.GetThreadAsync(channel.Id, threadId), result.MessageId);
+        {
+            var generation = ++_shellNavigationGeneration;
+            var thread = await CommunityState.GetThreadAsync(channel.Id, threadId);
+            if (generation != _shellNavigationGeneration) return;
+            await OpenThreadAsync(thread, result.MessageId, ThreadNavigationSource.Search,
+                explicitNavigation: true);
+        }
         else if (result.ForumPostId is { } forumPostId)
             await OpenForumPostAsync(channel.Id, forumPostId, ForumPostNavigationSource.Search,
                 explicitNavigation: true);
-        else await SelectChannelAsync(channel, searchTargetMessageId: result.MessageId);
+        else await ExitThreadAndNavigateToChannelAsync(channel, ThreadNavigationSource.Search,
+            searchTargetMessageId: result.MessageId);
     }
     private async Task OpenForwardSourceAsync(ForwardSourceReferenceDto source)
     {
+        ExitActiveThreadForExplicitDestination(ThreadNavigationSource.ForwardSource,
+            source.CommunityId, source.ChannelId);
         var community = Session.Communities.FirstOrDefault(value => value.Id == source.CommunityId);
         if (community is null) return;
         if (_selectedCommunity?.Id != community.Id) await SelectCommunity(community);
         var channel = CommunityState.Channels.FirstOrDefault(value => value.Id == source.ChannelId);
         if (channel is null) return;
-        await SelectChannelAsync(channel, searchTargetMessageId: source.MessageId);
+        await ExitThreadAndNavigateToChannelAsync(channel, ThreadNavigationSource.ForwardSource,
+            searchTargetMessageId: source.MessageId);
     }
     private Task OpenDirectSearchResultAsync(MessageSearchResultDto result) =>
         _directMessageView?.OpenSearchResultAsync(result) ?? Task.CompletedTask;
     private void SelectHomeView(string view)
     {
+        ExitActiveThreadForExplicitDestination(ThreadNavigationSource.Home, null, null);
         CollapseMobileDirectCall();
         _composerFocusChannelId = null;
         _composerFocusConversationId = null;
@@ -1150,6 +1237,8 @@ else
     private Task RemoveFriendAsync(FriendDto friend) => RemoveFriendshipAsync(friend.FriendshipId);
     private async Task OpenDirectMessageAsync(Guid accountId)
     {
+        ExitActiveThreadForExplicitDestination(ThreadNavigationSource.DirectMessage, null, null);
+        var generation = _shellNavigationGeneration;
         CollapseMobileDirectCall();
         _composerFocusChannelId = null;
         _composerFocusConversationId = null;
@@ -1160,6 +1249,7 @@ else
         try
         {
             var conversation = await Session.OpenDirectConversationAsync(accountId);
+            if (generation != _shellNavigationGeneration) return;
             _showAddFriend = false;
             await SelectDirectConversationAsync(conversation, requestComposerFocus: ShouldAutoFocusNavigation,
                 mobilePanelSource: "OpenDirectMessageSelected");
@@ -1182,6 +1272,8 @@ else
         _selectedCommunity = null;
         CloseQuickInvite();
         _selectedChannel = null;
+        _selectedThread = null;
+        _threadBrowserOpen = false;
         _searchTargetMessageId = null;
         CommunityState.Clear();
         _selectedDirectConversation = conversation;
@@ -1194,6 +1286,7 @@ else
         SelectDirectConversationFromMobileNavigationAsync(conversation);
     private async Task SelectDirectConversationFromMobileNavigationAsync(DirectConversationDto conversation)
     {
+        ExitActiveThreadForExplicitDestination(ThreadNavigationSource.DirectMessage, null, null);
         await SelectDirectConversationAsync(conversation, requestComposerFocus: ShouldAutoFocusNavigation,
             mobilePanelSource: "DirectMessageClick");
     }
@@ -1524,9 +1617,19 @@ else
         }
         if (_selectedThread is { } selectedThread && _selectedChannel is { } parent)
         {
-            try { _selectedThread = await CommunityState.GetThreadAsync(parent.Id, selectedThread.Id); }
+            var generation = _shellNavigationGeneration;
+            try
+            {
+                var refreshedThread = await CommunityState.GetThreadAsync(parent.Id, selectedThread.Id);
+                if (generation == _shellNavigationGeneration && _selectedThread?.Id == selectedThread.Id &&
+                    _selectedChannel?.Id == parent.Id)
+                    _selectedThread = refreshedThread;
+            }
             catch (NodeApiException exception) when (exception.StatusCode == System.Net.HttpStatusCode.NotFound)
-            { _selectedThread = null; }
+            {
+                if (generation == _shellNavigationGeneration && _selectedThread?.Id == selectedThread.Id)
+                    _selectedThread = null;
+            }
         }
         StateHasChanged();
     });
@@ -1563,6 +1666,21 @@ else
         Notification,
         BrowserRoute,
         StateRestoration
+    }
+    private enum ThreadNavigationSource
+    {
+        BrowserRoute,
+        ChannelSidebar,
+        CommunitySidebar,
+        ThreadSidebar,
+        ThreadBack,
+        ForumOverview,
+        ForumPost,
+        Search,
+        MessageSummary,
+        ForwardSource,
+        DirectMessage,
+        Home
     }
     private ProfileMediaEditState? CommunityHeaderBannerState => string.IsNullOrWhiteSpace(_selectedCommunity?.BannerUrl) ||
         _selectedCommunity.BannerIsProcessed ? null : new(_selectedCommunity.BannerUrl,

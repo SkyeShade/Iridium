@@ -17,7 +17,7 @@ else
     private RenderFragment Browser => @<section @ref="_browser" class="thread-browser @(IsMobile ? "mobile" : "anchored")"
         role="dialog" aria-label="Threads" @onclick:stopPropagation="true">
         <header>
-            <div><h2>Threads</h2><small>#@Channel.Name</small></div>
+            <div><h2 class="thread-browser-heading"><Icon Name="thread" Size="16" />Threads</h2><small>#@Channel.Name</small></div>
             <button type="button" title="Close" aria-label="Close Threads" @onclick="OnClose"><Icon Name="close" /></button>
         </header>
         <div class="thread-browser-tools">
@@ -26,7 +26,7 @@ else
             @if (CanCreatePublic || CanCreatePrivate)
             {
                 <button class="create-thread" type="button" title="Create Thread" @onclick="() => _creating = true">
-                    <Icon Name="plus" /><span>Create</span>
+                    <Icon Name="thread" /><span>Create</span>
                 </button>
             }
         </div>
