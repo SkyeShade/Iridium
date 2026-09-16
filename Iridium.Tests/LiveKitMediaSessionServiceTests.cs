@@ -16,6 +16,49 @@ public sealed class LiveKitMediaSessionServiceTests
     private static readonly DateTimeOffset Now = DateTimeOffset.Parse("2026-08-24T12:00:00Z");
     private const string Secret = "server-only-livekit-secret";
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void BothCallDirectionsUseOneRoomAndStreamOwnersMatchTokenIdentities(bool reverse)
+    {
+        var a = Guid.NewGuid(); var b = Guid.NewGuid();
+        var participants = reverse ? new[] { b, a } : new[] { a, b };
+        var calls = new Iridium.Server.Calls.CallService(Options.Create(new MediaOptions()), TimeProvider.System,
+            NullLogger<Iridium.Server.Calls.CallService>.Instance);
+        var call = calls.CreateDirect(Guid.NewGuid(), participants[0], "Caller", participants[1], "Callee", participants[0].ToString());
+        calls.Accept(call.Id, participants[1], participants[1].ToString());
+        var callId = call.Id;
+        var service = Create();
+        var registry = new VoiceStreamRegistry(TimeProvider.System);
+        var rooms = participants.Select(id => service.CreateDirectCallSession(callId, id)).ToArray();
+        Assert.Equal(rooms[0].RoomName, rooms[1].RoomName);
+        Assert.NotEqual(rooms[0].ParticipantIdentity, rooms[1].ParticipantIdentity);
+        foreach (var owner in participants)
+        {
+            var route = calls.RequireSignalingRoute(callId, owner, owner.ToString(), CallState.Active);
+            Assert.Equal(participants.Single(id => id != owner), route.TargetAccountId);
+            Assert.Equal(route.TargetAccountId.ToString(), route.TargetConnectionId);
+            var stream = registry.Publish(VoiceMediaSessionKind.DirectCall, callId, owner, "test", owner.ToString(),
+                new(Guid.NewGuid(), VoicePublishedStreamKind.ScreenShare, true, $"iridium-screen-{owner:N}")).Stream;
+            Assert.Equal(service.CreateDirectCallSession(callId, owner).ParticipantIdentity,
+                stream.MediaParticipantIdentity(liveKit: true));
+            foreach (var viewer in participants)
+                Assert.True(registry.Watch(viewer.ToString(), VoiceMediaSessionKind.DirectCall, callId, stream.StreamId));
+        }
+        Assert.Equal(2, registry.Get(VoiceMediaSessionKind.DirectCall, callId).Count);
+    }
+
+    [Fact]
+    public void CommunityMediaIdentityUsesAccountForLiveKitAndConnectionForPeerMesh()
+    {
+        var owner = Guid.NewGuid();
+        var stream = new VoiceStreamRegistry(TimeProvider.System).Publish(VoiceMediaSessionKind.CommunityVoice,
+            Guid.NewGuid(), owner, "test", "signalr-connection", new(Guid.NewGuid(),
+                VoicePublishedStreamKind.ScreenShare, true, "screen")).Stream;
+        Assert.Equal(owner.ToString("N"), stream.MediaParticipantIdentity(true));
+        Assert.Equal("signalr-connection", stream.MediaParticipantIdentity(false));
+    }
+
     [Fact]
     public void DirectCallTokenIsSignedShortLivedAndIdentityScoped()
     {

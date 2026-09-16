@@ -72,7 +72,8 @@ public sealed class LiveKitCallMediaService(
             mediaStreamId, elementId, audioMuted, volumePercent);
     public Task DetachStreamViewerAsync(string elementId, CancellationToken cancellationToken = default) => Invoke("detachStreamViewer", cancellationToken, elementId);
     public Task SetStreamSubscriptionAsync(string mediaStreamId, bool subscribed,
-        CancellationToken cancellationToken = default) => Invoke("setStreamSubscription", cancellationToken, mediaStreamId, subscribed);
+        CancellationToken cancellationToken = default) =>
+        SetStreamSubscriptionAsync(mediaStreamId, mediaStreamId, null, subscribed, cancellationToken);
     public Task SetStreamSubscriptionAsync(string iridiumStreamId, string mediaStreamId,
         string? participantIdentity, bool subscribed, CancellationToken cancellationToken = default) =>
         Invoke("setStreamSubscription", cancellationToken, iridiumStreamId, mediaStreamId, participantIdentity, subscribed);

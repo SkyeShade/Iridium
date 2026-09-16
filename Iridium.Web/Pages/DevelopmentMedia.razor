@@ -1,0 +1,16 @@
+@page "/development/media"
+@inject IWebAssemblyHostEnvironment Environment
+@inject ISavedNodeStore Nodes
+@inject AccountSwitchService Accounts
+
+@if (Environment.IsDevelopment())
+{
+    <p>Media audit: minimal viewer. Sign in on the home page first in each independent browser context.</p>
+}
+
+@code {
+    protected override async Task OnInitializedAsync()
+    {
+        if (Environment.IsDevelopment()) await Accounts.InitializeAsync(await Nodes.LoadAsync());
+    }
+}

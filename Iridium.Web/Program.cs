@@ -57,7 +57,7 @@ builder.Services.AddScoped<RealtimeConnectionService>();
 builder.Services.AddScoped<CommunitySession>();
 builder.Services.AddScoped<CommunityForumSession>();
 builder.Services.AddScoped<ChannelMessagingSession>();
-if (builder.HostEnvironment.IsDevelopment())
+if (builder.HostEnvironment.IsDevelopment() && builder.Configuration["Media:UseLiveKit"] != "true")
 {
     // Explicit local-development fallback only. Production never silently falls back to P2P/mesh.
     builder.Services.AddScoped<ICallMediaService, WebRtcCallMediaService>();

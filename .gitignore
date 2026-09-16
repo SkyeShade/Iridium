@@ -71,6 +71,9 @@ release/
 buildcheck/
 testruns/
 
+# Local/generated media audit notes
+scripts/media-audit/
+
 
 *.db
 *.db-shm

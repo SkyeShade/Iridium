@@ -40,7 +40,12 @@ public sealed record PublishedVoiceStreamDto(
     VoicePublishedStreamKind Kind,
     bool HasAudio,
     string MediaStreamId,
-    DateTimeOffset StartedAt);
+    DateTimeOffset StartedAt)
+{
+    // SignalR participant IDs belong to the development peer mesh. LiveKit token subjects
+    // are account IDs in both DM and Community rooms, regardless of call initiator.
+    public string? MediaParticipantIdentity(bool liveKit) => liveKit ? OwnerAccountId.ToString("N") : OwnerParticipantId;
+}
 
 public sealed record VoiceStreamPublishedEvent(PublishedVoiceStreamDto Stream);
 public sealed record VoiceStreamEndedEvent(

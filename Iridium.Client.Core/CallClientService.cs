@@ -349,7 +349,7 @@ public sealed class CallClientService(
                 CurrentCall.Id, streamId, cancellationToken);
         WatchedStream = stream;
         await media.SetStreamSubscriptionAsync(stream.StreamId.ToString("D"), stream.MediaStreamId,
-            stream.OwnerParticipantId, true, cancellationToken);
+            stream.MediaParticipantIdentity(_activeMediaMode == MediaMode.NodeSfu), true, cancellationToken);
         NotifyChanged();
     }
 
@@ -361,7 +361,7 @@ public sealed class CallClientService(
             await _connection!.InvokeAsync(VoiceStreamHubContract.StopWatching, stream.StreamId, cancellationToken);
         if (stream is not null)
             await media.SetStreamSubscriptionAsync(stream.StreamId.ToString("D"), stream.MediaStreamId,
-                stream.OwnerParticipantId, false, cancellationToken);
+                stream.MediaParticipantIdentity(_activeMediaMode == MediaMode.NodeSfu), false, cancellationToken);
         NotifyChanged();
     }
 
@@ -429,8 +429,13 @@ public sealed class CallClientService(
         _handlerRegistrations.Add(connection.On<VoiceStreamPublishedEvent>(VoiceStreamHubContract.Published,
             value => RunHandlerAsync(() => { ApplyPublishedStream(value.Stream); return Task.CompletedTask; })));
         _handlerRegistrations.Add(connection.On<VoiceStreamEndedEvent>(VoiceStreamHubContract.Ended,
-            value => RunHandlerAsync(() => { if (value.SessionKind == VoiceMediaSessionKind.DirectCall)
-                ApplyEndedStream(value.StreamId); return Task.CompletedTask; })));
+            value => RunHandlerAsync(async () => {
+                if (value.SessionKind != VoiceMediaSessionKind.DirectCall || value.SessionId != CurrentCall?.Id) return;
+                if (WatchedStream is { } watched && watched.StreamId == value.StreamId)
+                    await media.SetStreamSubscriptionAsync(watched.StreamId.ToString("D"), watched.MediaStreamId,
+                        watched.MediaParticipantIdentity(_activeMediaMode == MediaMode.NodeSfu), false);
+                ApplyEndedStream(value.StreamId);
+            })));
         VoiceDiagnostic("subscribed to signaling", registrationCount: _handlerRegistrationCount,
             details: $"activeHandlers={_handlerRegistrations.Count}");
     }
@@ -838,6 +843,7 @@ public sealed class CallClientService(
         _heartbeatCancellation?.Dispose();
         _heartbeatCancellation = new CancellationTokenSource();
         _ = HeartbeatAsync(_heartbeatCancellation.Token);
+        if (CurrentCall?.State == CallState.Active) await RestorePublishedStreamsAsync(cancellationToken);
     }
 
     private async Task SendIceAsync(LocalIceCandidateSignal signal)
@@ -1406,6 +1412,7 @@ public sealed class CallClientService(
 
     private void ApplyPublishedStream(PublishedVoiceStreamDto stream)
     {
+        if (stream.SessionKind != VoiceMediaSessionKind.DirectCall || stream.SessionId != CurrentCall?.Id) return;
         _publishedStreams.RemoveAll(value => value.StreamId == stream.StreamId ||
             value.OwnerAccountId == stream.OwnerAccountId && value.Kind == stream.Kind);
         _publishedStreams.Add(stream);
@@ -1434,6 +1441,7 @@ public sealed class CallClientService(
         else if (CurrentCall?.Id == restored.Id)
         {
             CurrentCall = restored;
+            if (restored.State == CallState.Active) await RestorePublishedStreamsAsync(CancellationToken.None);
             StatusMessage = null;
             ErrorMessage = null;
             NotifyChanged();
@@ -1455,6 +1463,29 @@ public sealed class CallClientService(
             StatusMessage = "Call ended after the page reconnected";
             await FinishAsync(clearMessage: false);
         }
+    }
+
+    private async Task RestorePublishedStreamsAsync(CancellationToken cancellationToken)
+    {
+        if (CurrentCall is not { State: CallState.Active } call || !IsSignalingConnected) return;
+        var streams = await _connection!.InvokeAsync<IReadOnlyList<PublishedVoiceStreamDto>>(
+            VoiceStreamHubContract.GetPublished, VoiceMediaSessionKind.DirectCall, call.Id, cancellationToken);
+        var watched = WatchedStream;
+        _publishedStreams.Clear();
+        foreach (var stream in streams) ApplyPublishedStream(stream);
+        WatchedStream = streams.FirstOrDefault(stream => stream.StreamId == watched?.StreamId);
+        if (watched is not null && WatchedStream is null)
+            await media.SetStreamSubscriptionAsync(watched.StreamId.ToString("D"), watched.MediaStreamId,
+                watched.MediaParticipantIdentity(_activeMediaMode == MediaMode.NodeSfu), false, cancellationToken);
+        if (WatchedStream is { } current)
+        {
+            if (current.OwnerAccountId != _accountId)
+                await _connection!.InvokeAsync(VoiceStreamHubContract.Watch, VoiceMediaSessionKind.DirectCall,
+                    call.Id, current.StreamId, cancellationToken);
+            await media.SetStreamSubscriptionAsync(current.StreamId.ToString("D"), current.MediaStreamId,
+                current.MediaParticipantIdentity(_activeMediaMode == MediaMode.NodeSfu), true, cancellationToken);
+        }
+        NotifyChanged();
     }
 
     private async Task FinishAsync(bool clearMessage = true)

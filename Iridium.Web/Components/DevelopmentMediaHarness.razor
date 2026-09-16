@@ -1,0 +1,90 @@
+@using Iridium.Protocol
+@implements IAsyncDisposable
+@inject IWebAssemblyHostEnvironment Environment
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+@inject NodeSession Session
+@inject CallClientService Calls
+
+@if (_enabled && _minimal)
+{
+    <video id="media-audit-viewer" autoplay playsinline muted style="width:640px;max-width:100%"></video>
+}
+
+@code {
+    private bool _enabled;
+    private bool _minimal;
+    private IJSObjectReference? _module;
+    private DotNetObjectReference<DevelopmentMediaHarness>? _reference;
+
+    protected override void OnInitialized()
+    {
+        var uri = new Uri(Navigation.Uri);
+        _enabled = Environment.IsDevelopment() && uri.Query.Split('&', '?').Contains("mediaAudit=1");
+        _minimal = uri.AbsolutePath == "/development/media";
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender || !_enabled) return;
+        _reference = DotNetObjectReference.Create(this);
+        _module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/developmentMediaHarness.js");
+        await _module.InvokeVoidAsync("install", _reference, MediaBuildInfo.Id);
+    }
+
+    [JSInvokable]
+    public object Snapshot()
+    {
+        RequireEnabled();
+        return new {
+            localAccountId = Session.Account?.Id, callId = Calls.CurrentCall?.Id,
+            initiatorAccountId = Calls.CurrentCall?.CallerAccountId,
+            participants = Calls.CurrentCall?.Participants.Select(p => p.AccountId),
+            incomingCallId = Calls.IncomingCall?.CallId,
+            lifecycle = Calls.CurrentCall?.State.ToString(), mediaState = Calls.MediaConnectionState.ToString(),
+            streams = Calls.PublishedStreams, watchedStreamId = Calls.WatchedStream?.StreamId,
+            muted = Calls.IsMuted, deafened = Calls.IsDeafened
+        };
+    }
+
+    [JSInvokable]
+    public async Task Execute(string operation, string? value)
+    {
+        RequireEnabled();
+        switch (operation)
+        {
+            case "call": await Calls.StartAsync(Session.DirectConversations.Single(c => c.Id == Guid.Parse(value!))); break;
+            case "accept": await Calls.AcceptAsync(); break;
+            case "publish": await Calls.StartScreenShareAsync(); break;
+            case "switch": await Calls.SwitchScreenShareAsync(); break;
+            case "stopPublish": await Calls.StopScreenShareAsync(); break;
+            case "watch":
+                await Calls.WatchStreamAsync(Guid.Parse(value!));
+                if (_minimal) await Calls.AttachWatchedStreamAsync("media-audit-viewer");
+                break;
+            case "stopWatch":
+                await Calls.DetachWatchedStreamAsync("media-audit-viewer");
+                await Calls.StopWatchingAsync();
+                break;
+            case "muteStream":
+                var elementId = await _module!.InvokeAsync<string>("viewerElementId");
+                await Calls.SetStreamAudioMutedAsync(elementId, value == "true");
+                break;
+            case "muteMic": await Calls.ToggleMuteAsync(); break;
+            case "deafen": await Calls.ToggleDeafenAsync(); break;
+            case "hangup": await Calls.HangUpAsync(); break;
+            default: throw new InvalidOperationException("Unknown media audit operation.");
+        }
+    }
+
+    private void RequireEnabled()
+    {
+        if (!_enabled) throw new InvalidOperationException("Media harness requires Development and mediaAudit=1.");
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_module is not null) { await _module.InvokeVoidAsync("uninstall"); await _module.DisposeAsync(); }
+        _reference?.Dispose();
+    }
+}

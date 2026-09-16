@@ -22,11 +22,20 @@ export async function createRemoteVoicePlayback(stream, audioContext, options = 
     element.muted = state.deafened || state.locallyMuted;
     document.body.appendChild(element);
     state.element = element;
+    state.abortSignal = options.signal;
+    const aborted = options.signal ? new Promise(resolve => {
+        state.abortHandler = () => { destroyRemoteVoicePlayback(state); resolve(); };
+        if (options.signal.aborted) state.abortHandler();
+        else options.signal.addEventListener("abort", state.abortHandler, { once: true });
+    }) : null;
+    if (state.disposed) return state;
     state.diagnostic("RemoteAudioElementCreated", { elementMuted:element.muted, elementVolume:element.volume });
     state.diagnostic("RemoteStreamAttached", { remoteAudioTrackCount:stream.getAudioTracks().length });
     state.diagnostic("AudioPlayRequested", { elementMuted:element.muted, elementVolume:element.volume });
     try {
-        await element.play();
+        const playing = element.play();
+        await (aborted ? Promise.race([playing, aborted]) : playing);
+        if (state.disposed) return state;
         state.mode = "element";
         state.diagnostic("AudioPlaySucceeded", { elementMuted:element.muted, elementVolume:element.volume });
     } catch (error) {
@@ -35,9 +44,11 @@ export async function createRemoteVoicePlayback(stream, audioContext, options = 
             elementMuted:element.muted, elementVolume:element.volume });
     }
 
+    if (state.disposed) return state;
     if (audioContext) {
         try {
             if (audioContext.state === "suspended") await audioContext.resume();
+            if (state.disposed) return state;
             state.diagnostic("AudioContextState", { audioContextState:audioContext.state });
             if (audioContext.state === "running") {
                 state.source = audioContext.createMediaStreamSource(stream);
@@ -100,6 +111,7 @@ export function updateRemoteVoicePlayback(state, options) {
 export function destroyRemoteVoicePlayback(state) {
     if (!state || state.disposed) return;
     state.disposed = true;
+    state.abortSignal?.removeEventListener("abort", state.abortHandler);
     state.source?.disconnect(); state.gain?.disconnect(); state.limiter?.disconnect();
     if (state.element) { state.element.pause(); state.element.srcObject = null; state.element.remove(); }
 }

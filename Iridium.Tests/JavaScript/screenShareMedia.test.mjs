@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import { attachStreamViewerForSession, captureScreenTracks, detachStreamViewerForSession,
     fitScreenShareResolution, publicationStreamIdentity, publishScreenTracks, reconcileScreenWatch,
     refreshViewers, replacePublishedScreenTracks, screenShareBitrate, screenShareCaptureOptions,
-    setStreamSubscriptionForSession, wireScreenEnded
+    setStreamSubscriptionForSession, wireScreenEnded, wireRoom, mediaStatsInterval
 } from "../../Iridium.Web/wwwroot/js/liveKitMedia.js";
-import { clampPlaybackVolume, effectiveGain } from "../../Iridium.Web/wwwroot/js/voicePlayback.js";
+import { clampPlaybackVolume, effectiveGain, createRemoteVoicePlayback } from "../../Iridium.Web/wwwroot/js/voicePlayback.js";
 
 test("display capture requests browser-provided audio without Safari resolution constraints", () => {
     const chromium = screenShareCaptureOptions({ suppressLocalAudioPlayback: true }, false);
@@ -166,6 +166,83 @@ function screenSession(publications, participantIdentity = "publisher") {
         viewers:new Map(), watched:new Map(), audioContext:null, deafened:false };
 }
 
+for (const caller of ["A", "B"]) {
+    for (const owner of ["A", "B"]) {
+        test(`CALLER=${caller} owner=${owner}: legacy DM metadata discovers remote publications without self-watch`, async () => {
+            installCapture();
+            installPlaybackDom();
+            const publications = [screenPublication("video", `stream-${owner}`), screenPublication("audio", `stream-${owner}`)];
+            const session = screenSession(publications, owner);
+            session.kind = "call";
+            session.room.localParticipant.identity = owner === "A" ? "B" : "A";
+            await setStreamSubscriptionForSession(session, "id", `stream-${owner}`, null, true);
+            assert.deepEqual(publications.map(p => p.subscriptionRequests), [[true], [true]]);
+        });
+    }
+}
+
+test("reconciliation preserves the video MediaStream when only screen audio changes", async () => {
+    installCapture();
+    const dom = installPlaybackDom();
+    const video = screenPublication("video", "stable", true);
+    const session = screenSession([video]);
+    await setStreamSubscriptionForSession(session, "id", "stable", "publisher", true);
+    attachStreamViewerForSession(session, "stable", "viewer", false);
+    await refreshViewers(session, "stable");
+    const before = dom.elements.get("viewer").srcObject;
+    session.room.remoteParticipants.get("publisher").trackPublications.set("audio", screenPublication("audio", "stable", true));
+    await refreshViewers(session, "stable");
+    assert.equal(dom.elements.get("viewer").srcObject, before);
+});
+
+test("Stop Watching detaches immediately even while SDK retains unsubscribing tracks", async () => {
+    installCapture();
+    const dom = installPlaybackDom();
+    const session = screenSession([screenPublication("video", "stop", true), screenPublication("audio", "stop", true)]);
+    await setStreamSubscriptionForSession(session, "id", "stop", "publisher", true);
+    attachStreamViewerForSession(session, "stop", "viewer", false);
+    await refreshViewers(session, "stop");
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const playback = session.viewers.get("viewer").audioPlayback;
+    await setStreamSubscriptionForSession(session, "id", "stop", "publisher", false);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(dom.elements.get("viewer").srcObject, null);
+    assert.equal(playback.disposed, true);
+});
+
+test("pending first video frame does not block screen audio or stop-watch cleanup", async () => {
+    installCapture();
+    const dom = installPlaybackDom();
+    dom.elements.get("viewer").play = () => new Promise(() => {});
+    const session = screenSession([screenPublication("video", "pending", true), screenPublication("audio", "pending", true)]);
+    await setStreamSubscriptionForSession(session, "id", "pending", "publisher", true);
+    attachStreamViewerForSession(session, "pending", "viewer", false);
+    await refreshViewers(session, "pending");
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const audio = session.viewers.get("viewer").audioPlayback;
+    assert.ok(audio);
+    await setStreamSubscriptionForSession(session, "id", "pending", "publisher", false);
+    assert.equal(audio.disposed, true);
+    assert.equal(dom.elements.get("viewer").srcObject, null);
+});
+
+test("cancelled audio attachment disposes a media element even when autoplay never settles", async () => {
+    installPlaybackDom();
+    const original = document.createElement;
+    let element;
+    document.createElement = kind => {
+        element = original(kind);
+        element.play = () => new Promise(() => {});
+        return element;
+    };
+    const controller = new AbortController();
+    const pending = createRemoteVoicePlayback(new MediaStream([{ kind:"audio" }]), null, { signal:controller.signal });
+    controller.abort();
+    const playback = await pending;
+    assert.equal(playback.disposed, true);
+    assert.equal(element.srcObject, null);
+});
+
 test("Watch enumerates existing remote video and audio and requests both subscriptions despite DTO lag", async () => {
     installPlaybackDom();
     const video = screenPublication("video", "existing-stream"), audio = screenPublication("audio", "existing-stream");
@@ -202,6 +279,7 @@ test("already-subscribed audio attaches immediately and duplicate reconciliation
     attachStreamViewerForSession(session, "ready", "viewer", false, 100);
     await refreshViewers(session, "ready");
     await refreshViewers(session, "ready");
+    await new Promise(resolve => setTimeout(resolve, 0));
 
     assert.equal(session.viewers.get("viewer").audioTrackId, "audio-track");
     assert.equal(dom.audioElements.length, 1);
@@ -340,4 +418,51 @@ test("failed source replacement stops only replacement capture and republishes o
     assert.deepEqual(oldStopped, []);
     assert.deepEqual(newStopped, ["video"]);
     assert.equal(publishCount, 2);
+});
+
+for (const caller of ["A", "B"]) {
+    test(`CALLER=${caller}: room events reconcile both owners, late audio and replacement participants`, async () => {
+        installCapture(); installPlaybackDom();
+        const names = ["TrackPublished", "TrackSubscribed", "TrackUnsubscribed", "TrackUnpublished", "TrackMuted", "TrackUnmuted",
+            "LocalTrackPublished", "LocalTrackUnpublished", "ParticipantConnected", "ParticipantDisconnected", "Reconnecting", "Reconnected", "Disconnected", "ConnectionStateChanged"];
+        LivekitClient.RoomEvent = Object.fromEntries(names.map(name => [name, name]));
+        LivekitClient.VideoQuality = { HIGH:2 };
+        const handlers = new Map();
+        const video = screenPublication("video", "remote");
+        video.setVideoQuality = quality => { video.quality = quality; };
+        const session = screenSession([video], caller === "A" ? "B" : "A");
+        session.playbacks = new Map();
+        session.room.on = (event, handler) => handlers.set(event, handler);
+        wireRoom(session);
+        const remote = [...session.room.remoteParticipants.values()][0];
+        await setStreamSubscriptionForSession(session, "id", "remote", remote.identity, true);
+        assert.equal(video.quality, 2);
+        const audio = screenPublication("audio", "remote");
+        remote.trackPublications.set("audio", audio);
+        handlers.get("TrackPublished")(audio, remote);
+        assert.equal(audio.subscriptionRequests.at(-1), true);
+        const newVideo = screenPublication("video", "remote"), newAudio = screenPublication("audio", "remote");
+        const replacement = { identity:remote.identity, trackPublications:new Map([["v",newVideo],["a",newAudio]]) };
+        session.room.remoteParticipants.set(remote.identity, replacement);
+        handlers.get("Reconnected")();
+        assert.equal(newVideo.subscriptionRequests.at(-1), true);
+        assert.equal(newAudio.subscriptionRequests.at(-1), true);
+        replacement.trackPublications.delete("a");
+        handlers.get("TrackUnpublished")(newAudio, replacement);
+        assert.equal(session.watched.get("remote").audioAvailable, false);
+        await setStreamSubscriptionForSession(session, "id", "remote", remote.identity, false);
+        assert.equal(newVideo.subscriptionRequests.at(-1), false);
+    });
+}
+
+test("diagnostic intervals use elapsed RTP time and reject counters reset by reconnect", () => {
+    const previous = { timestamp:1000, bytes:100, framesEncoded:10, framesDecoded:5, totalEncodeTime:1, totalDecodeTime:.5 };
+    const current = { timestamp:3000, bytes:2100, framesEncoded:130, framesDecoded:125, totalEncodeTime:1.6, totalDecodeTime:.8 };
+    const sample = mediaStatsInterval(previous, current);
+    assert.equal(sample.bitrateBps, 8000);
+    assert.equal(sample.encodedFps, 60);
+    assert.equal(sample.decodedFps, 60);
+    assert.ok(Math.abs(sample.encodeMsPerFrame - 5) < .001);
+    assert.equal(mediaStatsInterval(current, previous), null);
+    assert.equal(mediaStatsInterval(previous, { ...current, bytes:0 }), null);
 });

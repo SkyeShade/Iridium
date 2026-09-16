@@ -3,6 +3,32 @@ namespace Iridium.Tests;
 public sealed class DirectCallMediaStateSymmetryTests
 {
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void StreamProjectionAcceptsBothOwnersAndRejectsOtherSessions(bool reverse)
+    {
+        var a = Guid.NewGuid(); var b = Guid.NewGuid(); var callId = Guid.NewGuid();
+        var service = CreateCallClient();
+        var call = new Iridium.Protocol.CallSessionDto(callId, Iridium.Protocol.CallKind.DirectVoice,
+            Guid.NewGuid(), reverse ? b : a, Iridium.Protocol.CallState.Active,
+            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMinutes(1), []);
+        typeof(Iridium.Client.Core.CallClientService).GetProperty("CurrentCall")!.SetValue(service, call);
+        var apply = typeof(Iridium.Client.Core.CallClientService).GetMethod("ApplyPublishedStream",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        foreach (var owner in new[] { a, b })
+        {
+            var stream = new Iridium.Protocol.PublishedVoiceStreamDto(Guid.NewGuid(),
+                Iridium.Protocol.VoiceMediaSessionKind.DirectCall, callId, owner, "owner", null,
+                Iridium.Protocol.VoicePublishedStreamKind.ScreenShare, true, $"screen-{owner:N}", DateTimeOffset.UtcNow);
+            apply.Invoke(service, [stream]);
+            apply.Invoke(service, [stream with { SessionId = Guid.NewGuid(), HasAudio = false }]);
+            apply.Invoke(service, [stream with { SessionKind = Iridium.Protocol.VoiceMediaSessionKind.CommunityVoice, HasAudio = false }]);
+        }
+        Assert.Equal(2, service.PublishedStreams.Count);
+        Assert.All(service.PublishedStreams, stream => Assert.True(stream.HasAudio));
+    }
+
+    [Theory]
     [InlineData("caller")]
     [InlineData("callee")]
     public async Task LiveKitConnectedCallbackTransitionsEitherLocalRoleAndRaisesChanged(string role)

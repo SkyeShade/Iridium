@@ -167,6 +167,14 @@ function statsSummary(report, direction) {
         framesEncoded: rows.reduce((sum, row) => sum + Number(row.framesEncoded || 0), 0),
         framesSent: rows.reduce((sum, row) => sum + Number(row.framesSent || 0), 0),
         framesDecoded: rows.reduce((sum, row) => sum + Number(row.framesDecoded || 0), 0),
+        framesReceived: rows.reduce((sum, row) => sum + Number(row.framesReceived || 0), 0),
+        keyFramesDecoded: rows.reduce((sum, row) => sum + Number(row.keyFramesDecoded || 0), 0),
+        totalDecodeTime: rows.reduce((sum, row) => sum + Number(row.totalDecodeTime || 0), 0),
+        packetsSent: rows.reduce((sum, row) => sum + Number(row.packetsSent || 0), 0),
+        packetsReceived: rows.reduce((sum, row) => sum + Number(row.packetsReceived || 0), 0),
+        nackCount: rows.reduce((sum, row) => sum + Number(row.nackCount || 0), 0),
+        targetBitrate: rows.reduce((sum, row) => sum + Number(row.targetBitrate || 0), 0),
+        availableOutgoingBitrate: pairs.map(row => row.availableOutgoingBitrate).find(Number.isFinite) ?? null,
         framesDropped: rows.reduce((sum, row) => sum + Number(row.framesDropped || 0), 0),
         freezeCount: rows.reduce((sum, row) => sum + Number(row.freezeCount || 0), 0),
         totalFreezesDuration: rows.reduce((sum, row) => sum + Number(row.totalFreezesDuration || 0), 0),
@@ -240,6 +248,71 @@ function scheduleVideoDiagnostics(session, track, direction, details) {
         if (!sessions.has(session.id) || track?.mediaStreamTrack?.readyState === "ended") return;
         diagnoseVideoBitrate(session, track, direction, { ...details, sample: "10s" });
     }, 9000);
+}
+
+// Explicit allowlist: never return nodeSession, credentials, SDP, candidate addresses or SDK objects.
+export async function collectMediaDiagnostics() {
+    const snapshots = [];
+    for (const session of sessions.values()) {
+        if (!session.diagnostics) continue;
+        const publications = [];
+        for (const participant of [session.room.localParticipant, ...session.room.remoteParticipants.values()]) {
+            for (const publication of allPublications(participant)) {
+                if (publication.source !== sdk().Track.Source.ScreenShare &&
+                    publication.source !== sdk().Track.Source.ScreenShareAudio) continue;
+                const direction = participant === session.room.localParticipant ? "outbound" : "inbound";
+                const track = publication.track;
+                let stats = null;
+                try {
+                    const report = await track?.getRTCStatsReport?.();
+                    stats = publication.kind === "video" ? statsSummary(report, direction) : audioStatsSummary(report, direction);
+                } catch { }
+                publications.push({ participantIdentity: participant.identity, direction,
+                    ...safePublicationDiagnostic(publication), selectedQuality: selectedVideoQuality(publication),
+                    capture: direction === "outbound" ? safeTrackDiagnostic(track?.mediaStreamTrack) : null,
+                    senderEncodings: direction === "outbound" ? senderEncodingSummary(track) : null, stats,
+                    interval: mediaStatsInterval(session.diagnosticStats?.get(publication.trackSid), stats) });
+                session.diagnosticStats ??= new Map();
+                if (stats) session.diagnosticStats.set(publication.trackSid, stats);
+            }
+        }
+        snapshots.push({ timestamp: performance.now(), roomName: session.room.name,
+            localParticipantIdentity: session.room.localParticipant.identity,
+            participantIdentities: [...session.room.remoteParticipants.values()].map(p => p.identity),
+            state: session.room.state, publications,
+            watches: [...session.watched.values()].map(w => ({ ...w })),
+            longTasks: session.longTasks?.splice(0) ?? [],
+            viewers: [...session.viewers.values()].map(v => ({
+                mediaStreamId: v.mediaStreamId, elementId: v.elementId,
+                readyState: v.videoElement?.readyState, width: v.videoElement?.videoWidth,
+                height: v.videoElement?.videoHeight, renderedFrames: v.renderedFrames ?? null,
+                lastFrameAt: v.lastFrameAt ?? null, maxFrameGapMs: v.maxFrameGapMs ?? null,
+                audioAttached: !!v.audioPlayback, audioBlocked: v.audioPlayback?.playBlocked ?? null,
+                audioMuted: v.audioMuted, audioMode: v.audioPlayback?.mode ?? null
+            })) });
+    }
+    return snapshots;
+}
+
+export function mediaStatsInterval(previous, current) {
+    if (!previous || !current || current.timestamp <= previous.timestamp || current.bytes < previous.bytes) return null;
+    const seconds = (current.timestamp - previous.timestamp) / 1000;
+    const delta = field => Number.isFinite(current[field]) && Number.isFinite(previous[field]) && current[field] >= previous[field]
+        ? current[field] - previous[field] : null;
+    return { seconds, bitrateBps: delta("bytes") * 8 / seconds,
+        encodedFps: delta("framesEncoded") == null ? null : delta("framesEncoded") / seconds,
+        decodedFps: delta("framesDecoded") == null ? null : delta("framesDecoded") / seconds,
+        framesDropped: delta("framesDropped"), packetsLost: delta("packetsLost"),
+        freezes: delta("freezeCount"), freezeSeconds: delta("totalFreezesDuration"),
+        encodeMsPerFrame: delta("framesEncoded") > 0 ? delta("totalEncodeTime") * 1000 / delta("framesEncoded") : null,
+        decodeMsPerFrame: delta("framesDecoded") > 0 ? delta("totalDecodeTime") * 1000 / delta("framesDecoded") : null };
+}
+
+export async function reconnectDevelopmentMedia() {
+    const active = [...sessions.values()].filter(session => session.diagnostics);
+    if (active.length !== 1) throw new Error("Reconnect audit requires exactly one Development media session.");
+    // SDK-supported local signaling interruption; does not alter the SFU or Iridium SignalR connection.
+    await active[0].room.simulateScenario("signal-reconnect");
 }
 
 function audioStatsSummary(report, direction) {
@@ -343,11 +416,20 @@ function makeAudioPlayback(session, participant, track) {
 }
 
 function participantMatchesWatch(session, participant, watch) {
-    if (!watch?.participantIdentity) return true;
+    if (!participant || !watch) return false;
+    if (!watch.participantIdentity)
+        return participant === participantForWatch(session, watch);
     return accountKey(participant?.identity) === accountKey(watch.participantIdentity);
 }
 
 function participantForWatch(session, watch) {
+    if (!watch?.participantIdentity) {
+        // Compatibility with older DM metadata: only an unambiguous canonical stream
+        // association can identify the owner. Never default to the local participant.
+        const owners = [session.room.localParticipant, ...session.room.remoteParticipants.values()]
+            .filter(participant => allPublications(participant).some(p => publicationMatchesWatch(p, watch)));
+        return owners.length === 1 ? owners[0] : null;
+    }
     if (participantMatchesWatch(session, session.room.localParticipant, watch))
         return session.room.localParticipant;
     return Array.from(session.room.remoteParticipants.values())
@@ -426,7 +508,7 @@ function configurePublication(session, publication, participant = null) {
     if (publication.setSubscribed) setScreenSubscription(session, publication, shouldSubscribe);
 }
 
-function wireRoom(session) {
+export function wireRoom(session) {
     const { RoomEvent, Track } = sdk();
     const room = session.room;
     room.on(RoomEvent.TrackPublished, (publication, participant) => {
@@ -550,12 +632,12 @@ function startLocalSpeaking(session) {
 function matchingPublications(session, mediaStreamId) {
     const watch = session.watched.get(mediaStreamId);
     const participant = watch ? participantForWatch(session, watch) : null;
-    const publications = participant ? allPublications(participant) : [
+    const publications = participant ? allPublications(participant) : watch ? [] : [
         ...allPublications(session.room.localParticipant),
         ...Array.from(session.room.remoteParticipants.values()).flatMap(allPublications)
     ];
-    return publications.filter(publication => publicationStreamIdentity(publication) === mediaStreamId &&
-        publication.track?.mediaStreamTrack);
+    return publications.filter(publication => publicationMatchesWatch(publication, { mediaStreamId }) &&
+        publication.track?.mediaStreamTrack && publication.track.mediaStreamTrack.readyState !== "ended");
 }
 
 function matchingTracks(session, mediaStreamId) {
@@ -565,10 +647,21 @@ function matchingTracks(session, mediaStreamId) {
 function configureLiveVideoElement(session, viewer, element) {
     if (viewer.videoElement === element) return;
     if (viewer.videoElement) {
+        if (viewer.frameCallback != null) viewer.videoElement.cancelVideoFrameCallback?.(viewer.frameCallback);
         viewer.videoElement.removeEventListener("click", viewer.preventVideoToggle);
         viewer.videoElement.removeEventListener("pause", viewer.resumeLiveVideo);
     }
     viewer.videoElement = element;
+    if (session.diagnostics && element.requestVideoFrameCallback) {
+        const frame = now => {
+            if (session.viewers.get(viewer.elementId) !== viewer || viewer.videoElement !== element) return;
+            viewer.renderedFrames = (viewer.renderedFrames ?? 0) + 1;
+            if (viewer.lastFrameAt != null) viewer.maxFrameGapMs = Math.max(viewer.maxFrameGapMs ?? 0, now - viewer.lastFrameAt);
+            viewer.lastFrameAt = now;
+            viewer.frameCallback = element.requestVideoFrameCallback(frame);
+        };
+        viewer.frameCallback = element.requestVideoFrameCallback(frame);
+    }
     element.controls = false;
     element.disablePictureInPicture = true;
     element.removeAttribute("controls");
@@ -591,26 +684,49 @@ export async function refreshViewers(session, mediaStreamId) {
     for (const viewer of session.viewers.values()) {
         if (viewer.mediaStreamId !== mediaStreamId) continue;
         viewer.refreshGeneration++;
+        const refreshGeneration = viewer.refreshGeneration;
         const element = document.getElementById(viewer.elementId);
         if (!element) continue;
         configureLiveVideoElement(session, viewer, element);
-        const publications = matchingPublications(session, mediaStreamId);
+        const publications = session.watched.has(mediaStreamId) ? matchingPublications(session, mediaStreamId) : [];
         const tracks = publications.map(publication => publication.track.mediaStreamTrack);
         const videoTracks = tracks.filter(track => track.kind === "video");
         const audioTrack = tracks.find(track => track.kind === "audio");
-        element.srcObject = new MediaStream(videoTracks);
+        const attached = element.srcObject?.getVideoTracks?.() ?? [];
+        if (attached.length !== videoTracks.length || attached.some((track, index) => track !== videoTracks[index]))
+            element.srcObject = videoTracks.length ? new MediaStream(videoTracks) : null;
         // Shared audio has exactly one playback path: a separate GainNode graph. The video is
         // always muted so attaching the combined LiveKit stream cannot duplicate audio.
         element.muted = true;
         element.playsInline = true;
-        try { await element.play?.(); }
+        // Video play can remain pending until the first decoded frame. Audio attachment and
+        // Stop Watching cleanup must not wait for that promise (or for an empty video's play).
+        try {
+            if (videoTracks.length) element.play?.()?.catch(error => {
+                if (session.diagnostics) console.debug("LiveKit screen video play blocked", { name: error?.name });
+            });
+            else element.pause?.();
+        }
         catch (error) {
             if (session.diagnostics) console.debug("LiveKit screen video play blocked", { name: error?.name });
+        }
+        if (viewer.refreshGeneration !== refreshGeneration) continue;
+        // Detach, source replacement, or a newer refresh may have won while play awaited.
+        if (session.viewers.get(viewer.elementId) !== viewer ||
+            !session.watched.has(mediaStreamId)) {
+            viewer.audioAbort?.abort();
+            viewer.pendingAudioAttachment = null;
+            viewer.pendingAudioTrackId = null;
+            destroyRemoteVoicePlayback(viewer.audioPlayback);
+            viewer.audioPlayback = null;
+            viewer.audioTrackId = null;
+            continue;
         }
         if (viewer.audioTrackId === audioTrack?.id && viewer.audioPlayback && !viewer.audioPlayback.disposed) continue;
         if (audioTrack && viewer.pendingAudioTrackId === audioTrack.id) continue;
         viewer.pendingAudioAttachment = null;
         viewer.pendingAudioTrackId = null;
+        viewer.audioAbort?.abort();
         if (viewer.audioPlayback) destroyRemoteVoicePlayback(viewer.audioPlayback);
         viewer.audioPlayback = null;
         viewer.audioTrackId = null;
@@ -624,7 +740,9 @@ export async function refreshViewers(session, mediaStreamId) {
         const audioAttachment = {};
         viewer.pendingAudioAttachment = audioAttachment;
         viewer.pendingAudioTrackId = audioTrack.id;
+        viewer.audioAbort = new AbortController();
         const playback = await createRemoteVoicePlayback(new MediaStream([audioTrack]), session.audioContext, {
+            signal: viewer.audioAbort.signal,
             volumePercent: viewer.volumePercent, minimumVolumePercent: 0,
             locallyMuted: viewer.audioMuted, deafened: session.deafened,
             diagnostic: (event, details) => session.diagnostics && console.debug("LiveKit screen audio", event, {
@@ -641,6 +759,9 @@ export async function refreshViewers(session, mediaStreamId) {
         viewer.pendingAudioTrackId = null;
         viewer.audioPlayback = playback;
         viewer.audioTrackId = audioTrack.id;
+        // Preferences can change while browser autoplay/AudioContext activation awaits.
+        updateRemoteVoicePlayback(playback, { volumePercent: viewer.volumePercent,
+            locallyMuted: viewer.audioMuted, deafened: session.deafened });
         element.dataset.audioBlocked = playback.playBlocked ? "true" : "false";
         if (session.diagnostics) console.debug("LiveKit screen viewer media attached", {
             mediaStreamId, screenVideoSubscribed: videoTracks.length > 0,
@@ -681,6 +802,14 @@ async function connectCore(callbackRef, nodeSession, preferences, kind, peerGene
             ? new (globalThis.AudioContext || globalThis.webkitAudioContext)() : null
     };
     sessions.set(id, session);
+    if (session.diagnostics && globalThis.PerformanceObserver?.supportedEntryTypes?.includes("longtask")) {
+        session.longTasks = [];
+        session.longTaskObserver = new PerformanceObserver(list => {
+            for (const entry of list.getEntries()) session.longTasks.push({ startTime: entry.startTime, duration: entry.duration });
+            session.longTasks = session.longTasks.slice(-100);
+        });
+        session.longTaskObserver.observe({ type: "longtask" });
+    }
     wireRoom(session);
     try {
         await session.room.connect(nodeSession.publicUrl, nodeSession.accessToken, { autoSubscribe: false });
@@ -701,12 +830,17 @@ async function connectCore(callbackRef, nodeSession, preferences, kind, peerGene
         }
         startLocalSpeaking(session);
         for (const participant of session.room.remoteParticipants.values())
-            allPublications(participant).forEach(p => configurePublication(session, p));
+            allPublications(participant).forEach(p => configurePublication(session, p, participant));
         await reportState(session, "connected");
-        if (session.diagnostics) console.debug("LiveKit connected", { provider: nodeSession.provider, roomKind: nodeSession.roomKind });
+        if (session.diagnostics) console.debug("LiveKit connected", { provider: nodeSession.provider,
+            roomKind: nodeSession.roomKind, roomName: session.room.name,
+            localParticipantIdentity: session.room.localParticipant.identity,
+            remoteParticipantIdentities: [...session.room.remoteParticipants.values()].map(p => p.identity) });
         return id;
     } catch (error) {
         sessions.delete(id);
+        session.longTaskObserver?.disconnect();
+        await session.audioContext?.close?.();
         await session.room.disconnect();
         throw error;
     }
@@ -1048,8 +1182,7 @@ export async function setStreamSubscription(id, iridiumStreamId, mediaStreamId, 
 
 export function attachStreamViewerForSession(session, mediaStreamId, elementId, audioMuted, volumePercent = 100) {
     const previous = session.viewers.get(elementId);
-    if (previous?.audioPlayback) destroyRemoteVoicePlayback(previous.audioPlayback);
-    if (previous) previous.refreshGeneration++;
+    if (previous) detachStreamViewerForSession(session, elementId);
     session.viewers.set(elementId, { mediaStreamId, elementId, audioMuted,
         volumePercent: Math.min(300, Math.max(0, Number(volumePercent) || 0)),
         audioTrackId: null, audioPlayback: null, pendingAudioTrackId: null,
@@ -1067,8 +1200,10 @@ export function attachStreamViewer(id, mediaStreamId, elementId, audioMuted, vol
 export function detachStreamViewerForSession(session, elementId) {
     const viewer = session.viewers.get(elementId), element = document.getElementById(elementId);
     session.viewers.delete(elementId);
+    viewer?.audioAbort?.abort();
     if (viewer) viewer.refreshGeneration++;
     if (viewer?.videoElement) {
+        if (viewer.frameCallback != null) viewer.videoElement.cancelVideoFrameCallback?.(viewer.frameCallback);
         viewer.videoElement.removeEventListener("click", viewer.preventVideoToggle);
         viewer.videoElement.removeEventListener("pause", viewer.resumeLiveVideo);
     }
@@ -1133,13 +1268,11 @@ export async function disconnect(id, reason) {
     const session = sessions.get(id); if (!session) return;
     await stopScreenShare(id, reason);
     sessions.delete(id);
+    session.longTaskObserver?.disconnect();
     if (session.speakingFrame) cancelAnimationFrame(session.speakingFrame);
     session.speakingAnalyser?.cleanup?.();
     for (const playback of session.playbacks.values()) destroyRemoteVoicePlayback(playback);
-    for (const viewer of session.viewers.values()) {
-        destroyRemoteVoicePlayback(viewer.audioPlayback);
-        const element = document.getElementById(viewer.elementId); if (element) element.srcObject = null;
-    }
+    for (const elementId of Array.from(session.viewers.keys())) detachStreamViewerForSession(session, elementId);
     await session.room.disconnect();
     await session.audioContext?.close?.();
 }

@@ -201,7 +201,7 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
                 CurrentRoom.ChannelId, streamId, cancellationToken);
         WatchedStream = stream;
         await media.SetStreamSubscriptionAsync(stream.StreamId.ToString("D"), stream.MediaStreamId,
-            stream.OwnerParticipantId, true, cancellationToken);
+            stream.MediaParticipantIdentity(MediaSession?.NodeSession is not null), true, cancellationToken);
         Changed?.Invoke();
     }
 
@@ -214,7 +214,7 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
             await _connection.InvokeAsync(VoiceStreamHubContract.StopWatching, stream.StreamId, cancellationToken);
         if (stream is not null)
             await media.SetStreamSubscriptionAsync(stream.StreamId.ToString("D"), stream.MediaStreamId,
-                stream.OwnerParticipantId, false, cancellationToken);
+                stream.MediaParticipantIdentity(MediaSession?.NodeSession is not null), false, cancellationToken);
         Changed?.Invoke();
     }
 
@@ -285,7 +285,13 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
         _handlers.Add(connection.On<VoiceStreamPublishedEvent>(VoiceStreamHubContract.Published,
             value => { ApplyPublishedStream(value.Stream); }));
         _handlers.Add(connection.On<VoiceStreamEndedEvent>(VoiceStreamHubContract.Ended,
-            value => { if (value.SessionKind == VoiceMediaSessionKind.CommunityVoice) ApplyEndedStream(value.StreamId); }));
+            async value => {
+                if (value.SessionKind != VoiceMediaSessionKind.CommunityVoice || value.SessionId != CurrentRoom?.ChannelId) return;
+                if (WatchedStream is { } watched && watched.StreamId == value.StreamId)
+                    await media.SetStreamSubscriptionAsync(watched.StreamId.ToString("D"), watched.MediaStreamId,
+                        watched.MediaParticipantIdentity(MediaSession?.NodeSession is not null), false);
+                ApplyEndedStream(value.StreamId);
+            }));
     }
 
     private void EnsureRecoveryRegistration()
@@ -443,6 +449,7 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
 
     private void ApplyPublishedStream(PublishedVoiceStreamDto stream)
     {
+        if (stream.SessionKind != VoiceMediaSessionKind.CommunityVoice || stream.SessionId != CurrentRoom?.ChannelId) return;
         _publishedStreams.RemoveAll(value => value.StreamId == stream.StreamId ||
             value.OwnerAccountId == stream.OwnerAccountId && value.Kind == stream.Kind);
         _publishedStreams.Add(stream);
