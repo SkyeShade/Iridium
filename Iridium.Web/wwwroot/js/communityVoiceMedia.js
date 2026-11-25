@@ -1,5 +1,6 @@
 import { createVoiceActivityGate, evaluateVoiceActivity, inputSensitivityConfiguration,
     normalizedInputLevel, updateVoiceActivityConfiguration } from "./inputSensitivity.js";
+import { captureVoiceMicrophone, replaceVoiceMicrophone } from "./noiseSuppression.js";
 
 let createRemoteVoicePlayback, updateRemoteVoicePlayback, destroyRemoteVoicePlayback;
 // Community voice media stays behind this module so DevelopmentPeerMesh can be replaced by NodeSfu.
@@ -358,23 +359,24 @@ export async function connect(mediaBuildId, callback, mediaSession, room, localA
         await build.loadVoicePlayback(mediaBuildId));
     if (!navigator.mediaDevices?.getUserMedia)
         throw new Error("This browser does not support microphone capture.");
-    let localStream;
+    let microphone;
     try {
         const inputSensitivity = inputSensitivityConfiguration(localVoicePreference);
-        localStream = await navigator.mediaDevices.getUserMedia({ audio: {
-            ...(inputSensitivity.inputDeviceId ? { deviceId: { exact: inputSensitivity.inputDeviceId } } : {}),
-            channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true
-        } });
+        microphone = await captureVoiceMicrophone(inputSensitivity.inputDeviceId, inputSensitivity.noiseSuppression,
+            mediaSession.diagnosticsEnabled === true
+                ? (name, values) => console.debug("[Iridium Community Voice]", name, values) : null);
     } catch (error) {
         throw new Error(`${error?.name ?? "MediaError"}: ${error?.message ?? "Microphone access failed."}`);
     }
+    const localStream = microphone.stream;
     const id = crypto.randomUUID();
     const localParticipant = (room.participants ?? []).find(value => value.participantId === mediaSession.participantId);
     const configurationMetadata = iceConfigurationMetadata(iceConfiguration);
     const session = {
         id, callback, mediaSession, iceConfiguration: iceConfiguration ?? { iceServers:[], iceTransportPolicy:"all" },
         room, localAccountId, localParticipantId: mediaSession.participantId,
-        localStream, peers: new Map(), muted: localParticipant?.muted === true,
+        microphone, localStream, microphoneChange: Promise.resolve(), peers: new Map(),
+        muted: localParticipant?.muted === true,
         deafened: localParticipant?.deafened === true, speaking: false,
         vadFrame: null, context: null, source: null, analyser: null, voiceActivityGate: null,
         inputSensitivity: inputSensitivityConfiguration(localVoicePreference),
@@ -426,6 +428,26 @@ export function setInputSensitivity(id, preference) {
     session.inputSensitivity = inputSensitivityConfiguration(preference);
     if (session.voiceActivityGate)
         updateVoiceActivityConfiguration(session.voiceActivityGate, session.inputSensitivity);
+    session.microphoneChange = session.microphoneChange.then(() => replaceMicrophone(session))
+        .catch(error => reportError(session, "Microphone change failed", error));
+}
+
+async function replaceMicrophone(session) {
+    if (!sessions.has(session.id)) return;
+    const { inputDeviceId, noiseSuppression } = session.inputSensitivity;
+    const next = await replaceVoiceMicrophone(session.microphone, inputDeviceId, noiseSuppression,
+        [...session.peers.values()].map(state => state.peer), !session.muted);
+    if (!next) return;
+    if (!sessions.has(session.id)) { next.release(); return; }
+    const previous = session.microphone;
+    Object.assign(session, { microphone: next, localStream: next.stream });
+    if (session.context && session.analyser) {
+        session.source?.disconnect();
+        session.source = session.context.createMediaStreamSource(next.stream);
+        session.source.connect(session.analyser);
+    }
+    previous.release();
+    void diagnostic(session, "MicrophoneChanged", null, { noiseSuppression: next.noiseSuppression });
 }
 
 export function setDeafened(id, deafened) {
@@ -703,7 +725,7 @@ export async function disconnect(id, reason = "unspecified") {
     if (session.vadFrame !== null) cancelAnimationFrame(session.vadFrame);
     publishSpeaking(session, false);
     for (const participantId of [...session.peers.keys()]) closePeer(session, participantId, reason);
-    for (const track of session.localStream.getTracks()) track.stop();
+    session.microphone.release();
     session.source?.disconnect();
     session.analyser?.disconnect();
     if (session.context) await session.context.close().catch(() => {});

@@ -29,9 +29,9 @@ public sealed class VoiceInputSensitivityUiTests
         Assert.Contains("rebindMicrophoneInputMeter", settings);
         Assert.Contains("SetInputDeviceAsync", settings);
         Assert.Contains("stopMicrophoneInputMeter", settings);
-        Assert.Contains("getUserMedia(microphoneConstraints(deviceId))", meter);
+        Assert.Contains("captureVoiceMicrophone(deviceId, noiseSuppression)", meter);
         Assert.Contains("releaseGraph(meter)", meter);
-        Assert.Contains("track.stop()", meter);
+        Assert.Contains("meter.capture?.release()", meter);
         Assert.Contains("requestAnimationFrame(sample)", meter);
     }
 

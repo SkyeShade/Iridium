@@ -2,6 +2,8 @@ import { createRemoteVoicePlayback, updateRemoteVoicePlayback, destroyRemoteVoic
     resumeRemoteVoicePlayback } from "./voicePlayback.js";
 import { createVoiceActivityGate, evaluateVoiceActivity, inputSensitivityConfiguration,
     normalizedInputLevel, updateVoiceActivityConfiguration } from "./inputSensitivity.js";
+import { createLiveKitNoiseProcessor, enhancedNoiseSuppressionSupported,
+    microphoneCaptureConstraints } from "./noiseSuppression.js";
 
 const sessions = new Map();
 
@@ -122,17 +124,13 @@ function screenSharePublishOptions(track, mediaStreamId) {
     };
 }
 
-export function microphoneProfile(configuredBitrate, inputDeviceId = null) {
+// A noise processor turns the browser suppressor off; it falls back to it if RNNoise cannot start.
+export function microphoneProfile(configuredBitrate, inputDeviceId = null, noiseSuppression = "standard",
+        noiseProcessor = null) {
     const bitrate = Math.max(64_000, Math.min(128_000, Number(configuredBitrate) || 96_000));
     return {
         bitrate,
-        capture: {
-            channelCount: 1,
-            ...(inputDeviceId ? { deviceId: { exact: inputDeviceId } } : {}),
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true
-        },
+        capture: microphoneCaptureConstraints(inputDeviceId, noiseSuppression, noiseProcessor !== null),
         publish: {
             audioPreset: { maxBitrate: bitrate, priority: "high" },
             dtx: true,
@@ -608,6 +606,7 @@ function startLocalSpeaking(session) {
     const publication = allPublications(session.room.localParticipant).find(p => p.source === Track.Source.Microphone);
     if (!publication?.track) return;
     try {
+        // mediaStreamTrack is the processed track while noise suppression runs, so noise isn't speech.
         const analyser = createAudioAnalyser(publication.track, { fftSize: 512, smoothingTimeConstant: .65 });
         session.speakingAnalyser = analyser;
         const gate = createVoiceActivityGate(session.inputSensitivity);
@@ -627,6 +626,62 @@ function startLocalSpeaking(session) {
     } catch (error) {
         if (session.diagnostics) console.debug("LiveKit local speaking analysis unavailable", error?.name);
     }
+}
+
+function restartLocalSpeaking(session) {
+    if (session.speakingFrame) cancelAnimationFrame(session.speakingFrame);
+    session.speakingFrame = 0;
+    session.speakingAnalyser?.cleanup?.();
+    session.speakingAnalyser = null;
+    startLocalSpeaking(session);
+}
+
+function noiseProcessorFor(session, mode) {
+    if (mode !== "enhanced" || !enhancedNoiseSuppressionSupported()) return null;
+    return createLiveKitNoiseProcessor((event, details) => session.diagnostics &&
+        console.debug("LiveKit noise suppression", event, details));
+}
+
+function microphoneFor(session, mode) {
+    session.noiseSuppression = mode;
+    session.noiseProcessor = noiseProcessorFor(session, mode);
+    session.microphone = microphoneProfile(session.voiceBitrate, session.activeInputDeviceId, mode,
+        session.noiseProcessor);
+    return session.microphone;
+}
+
+function localMicrophoneTrack(session) {
+    const { Track } = sdk();
+    return allPublications(session.room.localParticipant).find(p => p.source === Track.Source.Microphone)?.track;
+}
+
+// Processors can't go in the capture options: LiveKit only hands a track an AudioContext when the
+// room mixes remote audio itself, which Iridium doesn't, so the processor is attached once published.
+async function attachNoiseProcessor(session, track = localMicrophoneTrack(session)) {
+    const processor = session.noiseProcessor;
+    if (!track || !processor || track.getProcessor?.() === processor) return;
+    track.setAudioContext(session.audioContext);
+    await track.setProcessor(processor);
+}
+
+// Switching modes mid-call re-acquires the microphone, since browsers can't toggle their own
+// suppressor on a live track reliably.
+async function applyNoiseSuppression(session) {
+    const mode = session.inputSensitivity.noiseSuppression;
+    if (mode === session.noiseSuppression) return;
+    const previousProcessor = session.noiseProcessor;
+    const microphone = microphoneFor(session, mode);
+    const track = localMicrophoneTrack(session);
+    // Without a track yet, the next setMicrophoneEnabled picks up session.microphone.
+    if (!track) return;
+    if (track.getProcessor?.()) await track.stopProcessor();
+    else await previousProcessor?.destroy();
+    await track.restartTrack(microphone.capture);
+    await attachNoiseProcessor(session, track);
+    restartLocalSpeaking(session);
+    if (session.diagnostics) console.debug("LiveKit noise suppression changed", {
+        mode, enhanced: session.noiseProcessor?.active === true
+    });
 }
 
 function matchingPublications(session, mediaStreamId) {
@@ -785,8 +840,7 @@ async function connectCore(callbackRef, nodeSession, preferences, kind, peerGene
     const { Room, RoomEvent } = sdk();
     const id = crypto.randomUUID();
     const inputSensitivity = inputSensitivityConfiguration(localVoicePreference);
-    const microphone = microphoneProfile(nodeSession.voiceBitrate, inputSensitivity.inputDeviceId);
-    const voiceBitrate = microphone.bitrate;
+    const voiceBitrate = microphoneProfile(nodeSession.voiceBitrate).bitrate;
     const session = {
         id, kind, peerGeneration, callback: callbackRef, diagnostics: nodeSession.diagnosticsEnabled === true,
         voiceBitrate,
@@ -796,11 +850,13 @@ async function connectCore(callbackRef, nodeSession, preferences, kind, peerGene
         playbacks: new Map(), viewers: new Map(), watched: new Map(), deafened: initialDeafened === true,
         muted: initialMuted === true, speaking: false, inputSensitivity, voiceActivityGate: null,
         activeInputDeviceId: inputSensitivity.inputDeviceId,
+        noiseSuppression: null, noiseProcessor: null, microphone: null, microphoneChange: Promise.resolve(),
         screenTracks: [], screenStreamId: null, screenMediaStreamId: null, screenGeneration: 0,
         screenAudioAvailable: false, screenPublicationMutation: false,
         audioContext: (globalThis.AudioContext || globalThis.webkitAudioContext)
             ? new (globalThis.AudioContext || globalThis.webkitAudioContext)() : null
     };
+    const microphone = microphoneFor(session, inputSensitivity.noiseSuppression);
     sessions.set(id, session);
     if (session.diagnostics && globalThis.PerformanceObserver?.supportedEntryTypes?.includes("longtask")) {
         session.longTasks = [];
@@ -815,6 +871,7 @@ async function connectCore(callbackRef, nodeSession, preferences, kind, peerGene
         await session.room.connect(nodeSession.publicUrl, nodeSession.accessToken, { autoSubscribe: false });
         const microphonePublication = await session.room.localParticipant.setMicrophoneEnabled(
             initialMuted !== true, microphone.capture, microphone.publish);
+        await attachNoiseProcessor(session, microphonePublication?.track);
         if (session.diagnostics && microphonePublication?.track) {
             const settings = microphonePublication.track.mediaStreamTrack.getSettings();
             console.debug("LiveKit microphone published", {
@@ -823,6 +880,7 @@ async function connectCore(callbackRef, nodeSession, preferences, kind, peerGene
                 dtx: true, red: true, inBandFec: "browser-negotiated",
                 echoCancellation: settings.echoCancellation ?? true,
                 noiseSuppression: settings.noiseSuppression ?? true,
+                enhancedNoiseSuppression: session.noiseProcessor?.active === true,
                 autoGainControl: settings.autoGainControl ?? true,
                 senderEncodings: senderEncodingSummary(microphonePublication.track)
             });
@@ -867,7 +925,12 @@ export async function setMuted(id, muted) {
         if (wasSpeaking)
             await callback(session, "OnSpeakingChanged", ...(session.kind === "call" ? [session.peerGeneration, false] : [false]));
     }
-    await session.room.localParticipant.setMicrophoneEnabled(!muted);
+    // A track first created on unmute still needs the session's capture profile and noise processor.
+    await session.room.localParticipant.setMicrophoneEnabled(!muted, session.microphone.capture,
+        session.microphone.publish);
+    if (!muted) await attachNoiseProcessor(session);
+    // Joining muted publishes no microphone, so the speaking detector starts with the first unmute.
+    if (!muted && !session.speakingAnalyser) startLocalSpeaking(session);
 }
 
 export async function setInputSensitivity(id, preference) {
@@ -879,7 +942,13 @@ export async function setInputSensitivity(id, preference) {
     if (deviceId !== session.activeInputDeviceId && session.room.switchActiveDevice) {
         await session.room.switchActiveDevice("audioinput", deviceId || "default");
         session.activeInputDeviceId = deviceId;
+        session.microphone = microphoneProfile(session.voiceBitrate, deviceId, session.noiseSuppression,
+            session.noiseProcessor);
     }
+    // Preference changes arrive in bursts (the sensitivity slider); mode switches run one at a time.
+    session.microphoneChange = session.microphoneChange.then(() => sessions.has(id) && applyNoiseSuppression(session))
+        .catch(error => { if (session.diagnostics) console.debug("LiveKit noise suppression change failed", error?.name); });
+    await session.microphoneChange;
 }
 
 export function setDeafened(id, deafened) {
@@ -1274,5 +1343,6 @@ export async function disconnect(id, reason) {
     for (const playback of session.playbacks.values()) destroyRemoteVoicePlayback(playback);
     for (const elementId of Array.from(session.viewers.keys())) detachStreamViewerForSession(session, elementId);
     await session.room.disconnect();
+    await session.noiseProcessor?.destroy();
     await session.audioContext?.close?.();
 }

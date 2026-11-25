@@ -91,11 +91,16 @@ public sealed class WebRtcClientArchitectureTests
     {
         var sfu = Source("Iridium.Web", "wwwroot", "js", "liveKitMedia.js");
 
-        Assert.Contains("microphoneProfile(nodeSession.voiceBitrate, inputSensitivity.inputDeviceId)", sfu);
-        Assert.Contains("channelCount: 1", sfu);
-        Assert.Contains("echoCancellation: true", sfu);
-        Assert.Contains("noiseSuppression: true", sfu);
-        Assert.Contains("autoGainControl: true", sfu);
+        var capture = Source("Iridium.Web", "wwwroot", "js", "noiseSuppression.js");
+
+        Assert.Contains("microphoneProfile(session.voiceBitrate, session.activeInputDeviceId, mode,", sfu);
+        Assert.Contains("microphoneCaptureConstraints(inputDeviceId, noiseSuppression, noiseProcessor !== null)", sfu);
+        Assert.Contains("await track.setProcessor(processor)", sfu);
+        Assert.Contains("await attachNoiseProcessor(session, microphonePublication?.track)", sfu);
+        Assert.Contains("channelCount: 1", capture);
+        Assert.Contains("echoCancellation: true", capture);
+        Assert.Contains("noiseSuppression: mode !== \"off\" && !enhanced", capture);
+        Assert.Contains("autoGainControl: true", capture);
         Assert.Contains("audioPreset: { maxBitrate: bitrate, priority: \"high\" }", sfu);
         Assert.Contains("true, microphone.capture, microphone.publish", sfu);
         Assert.Contains("dtx: true", sfu);

@@ -1,11 +1,23 @@
+using System.Text.Json.Serialization;
+
 namespace Iridium.Client.Core;
+
+/// <summary>Enhanced runs RNNoise in the browser; Standard is the browser's own suppressor.</summary>
+[JsonConverter(typeof(JsonStringEnumConverter<NoiseSuppressionMode>))]
+public enum NoiseSuppressionMode
+{
+    Enhanced,
+    Standard,
+    Off
+}
 
 public sealed record LocalVoicePreference(
     bool PreferredMuted = false,
     bool PreferredDeafened = false,
     bool AutoInputSensitivity = true,
     double ManualInputSensitivityThreshold = 0.5,
-    string? InputDeviceId = null)
+    string? InputDeviceId = null,
+    NoiseSuppressionMode NoiseSuppression = NoiseSuppressionMode.Enhanced)
 {
     public bool EffectiveMuted => PreferredMuted || PreferredDeafened;
 }
@@ -33,6 +45,7 @@ public sealed class LocalVoicePreferenceService(ILocalVoicePreferenceStore store
     public bool AutoInputSensitivity => Current.AutoInputSensitivity;
     public double ManualInputSensitivityThreshold => Current.ManualInputSensitivityThreshold;
     public string? InputDeviceId => Current.InputDeviceId;
+    public NoiseSuppressionMode NoiseSuppression => Current.NoiseSuppression;
 
     public async Task SetScopeAsync(string nodeAuthority, Guid accountId,
         CancellationToken cancellationToken = default)
@@ -71,6 +84,13 @@ public sealed class LocalVoicePreferenceService(ILocalVoicePreferenceStore store
         UpdateAsync(Current with
         {
             InputDeviceId = string.IsNullOrWhiteSpace(deviceId) ? null : deviceId.Trim()
+        }, cancellationToken);
+
+    public Task SetNoiseSuppressionAsync(NoiseSuppressionMode mode,
+        CancellationToken cancellationToken = default) =>
+        UpdateAsync(Current with
+        {
+            NoiseSuppression = Enum.IsDefined(mode) ? mode : NoiseSuppressionMode.Enhanced
         }, cancellationToken);
 
     private async Task UpdateAsync(LocalVoicePreference preference, CancellationToken cancellationToken)

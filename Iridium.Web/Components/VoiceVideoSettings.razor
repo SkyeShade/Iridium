@@ -24,6 +24,25 @@
 
         <div class="settings-divider"></div>
 
+        <div class="setting-heading">
+            <div>
+                <strong>Noise Suppression</strong>
+                <small>@NoiseSuppressionDescription</small>
+            </div>
+        </div>
+        <select class="microphone-select" value="@Preferences.NoiseSuppression"
+                aria-label="Noise suppression" @onchange="NoiseSuppressionChangedAsync">
+            <option value="@NoiseSuppressionMode.Enhanced">Enhanced</option>
+            <option value="@NoiseSuppressionMode.Standard">Standard</option>
+            <option value="@NoiseSuppressionMode.Off">Off</option>
+        </select>
+        @if (EnhancedUnavailable)
+        {
+            <p class="manual-note" role="status">Enhanced noise suppression isn't available in this browser, so Iridium is using Standard.</p>
+        }
+
+        <div class="settings-divider"></div>
+
         <label class="toggle-row">
             <span>
                 <strong>Automatically Adjust Input Sensitivity</strong>
@@ -80,11 +99,20 @@
     private double _level;
     private string _meterStatus = "loading";
     private string _meterMessage = "Starting live microphone input preview…";
+    private string? _effectiveNoiseSuppression;
     private bool _disposed;
     private readonly CancellationTokenSource _lifetime = new();
 
     private int LevelPercent => (int)Math.Round(Math.Clamp(_level, 0, 1) * 100);
     private int ThresholdPercent => (int)Math.Round(Preferences.ManualInputSensitivityThreshold * 100);
+    private bool EnhancedUnavailable => Preferences.NoiseSuppression == NoiseSuppressionMode.Enhanced &&
+                                        _effectiveNoiseSuppression == "standard";
+    private string NoiseSuppressionDescription => Preferences.NoiseSuppression switch
+    {
+        NoiseSuppressionMode.Enhanced => "Filters out background noise like fans, keyboards and traffic so only your voice comes through.",
+        NoiseSuppressionMode.Standard => "Your browser's built-in suppression. Lighter, but lets more background noise through.",
+        _ => "Sends your microphone as it is. Useful for music or a studio microphone."
+    };
     private string ActivityClass => !Preferences.AutoInputSensitivity &&
                                     _level >= Preferences.ManualInputSensitivityThreshold ? "active" : "quiet";
 
@@ -112,12 +140,13 @@
             _meterId = meterId;
             var module = _module;
             var result = await module.InvokeAsync<MicrophoneMeterStartResult>("startMicrophoneInputMeter",
-                _lifetime.Token, meterId, callback, Preferences.InputDeviceId);
+                _lifetime.Token, meterId, callback, Preferences.InputDeviceId, Preferences.NoiseSuppression.ToString());
             if (_disposed || _lifetime.IsCancellationRequested) return;
             _meterId = result.MeterId;
             _meterStatus = result.Status;
             _meterMessage = result.Message ?? string.Empty;
             _devices = result.Devices ?? [];
+            _effectiveNoiseSuppression = result.NoiseSuppression;
             await InvokeAsync(StateHasChanged);
         }
         catch (OperationCanceledException) when (_disposed || _lifetime.IsCancellationRequested) { }
@@ -165,24 +194,37 @@
     {
         if (_disposed) return;
         var deviceId = string.IsNullOrWhiteSpace(args.Value?.ToString()) ? null : args.Value!.ToString();
+        if (!await RebindMeterAsync(deviceId, Preferences.NoiseSuppression)) return;
+        await Preferences.SetInputDeviceAsync(deviceId);
+    }
+
+    private async Task NoiseSuppressionChangedAsync(ChangeEventArgs args)
+    {
+        if (_disposed || !Enum.TryParse<NoiseSuppressionMode>(args.Value?.ToString(), out var mode)) return;
+        await Preferences.SetNoiseSuppressionAsync(mode);
+        await RebindMeterAsync(Preferences.InputDeviceId, mode);
+    }
+
+    // Acquires the preview microphone with the given settings; false when that failed or was cancelled.
+    private async Task<bool> RebindMeterAsync(string? deviceId, NoiseSuppressionMode noiseSuppression)
+    {
         var module = _module;
         var meterId = _meterId;
-        if (module is not null && meterId is not null)
+        if (module is null || meterId is null) return true;
+        MicrophoneMeterRebindResult result;
+        try
         {
-            MicrophoneMeterRebindResult result;
-            try
-            {
-                result = await module.InvokeAsync<MicrophoneMeterRebindResult>(
-                    "rebindMicrophoneInputMeter", _lifetime.Token, meterId, deviceId);
-            }
-            catch (OperationCanceledException) when (_disposed || _lifetime.IsCancellationRequested) { return; }
-            catch (ObjectDisposedException) when (_disposed) { return; }
-            if (_disposed || _lifetime.IsCancellationRequested) return;
-            _meterStatus = result.Status;
-            _meterMessage = result.Message ?? string.Empty;
-            if (result.Status != "ready") return;
+            result = await module.InvokeAsync<MicrophoneMeterRebindResult>("rebindMicrophoneInputMeter",
+                _lifetime.Token, meterId, deviceId, noiseSuppression.ToString());
         }
-        await Preferences.SetInputDeviceAsync(deviceId);
+        catch (OperationCanceledException) when (_disposed || _lifetime.IsCancellationRequested) { return false; }
+        catch (ObjectDisposedException) when (_disposed) { return false; }
+        if (_disposed || _lifetime.IsCancellationRequested) return false;
+        _meterStatus = result.Status;
+        _meterMessage = result.Message ?? string.Empty;
+        if (result.Status != "ready") return false;
+        _effectiveNoiseSuppression = result.NoiseSuppression;
+        return true;
     }
 
     private void PreferencesChanged()
@@ -222,6 +264,6 @@
 
     private sealed record MicrophoneDeviceOption(string DeviceId, string Label);
     private sealed record MicrophoneMeterStartResult(string? MeterId, string Status, string? Message,
-        MicrophoneDeviceOption[]? Devices);
-    private sealed record MicrophoneMeterRebindResult(string Status, string? Message);
+        MicrophoneDeviceOption[]? Devices, string? NoiseSuppression);
+    private sealed record MicrophoneMeterRebindResult(string Status, string? Message, string? NoiseSuppression);
 }

@@ -1,3 +1,5 @@
+import { noiseSuppressionMode } from "./noiseSuppression.js";
+
 export const defaultManualInputSensitivityThreshold = 0.5;
 
 export function clampInputLevel(value) {
@@ -16,7 +18,8 @@ export function inputSensitivityConfiguration(value) {
         automatic: value?.autoInputSensitivity !== false,
         manualThreshold: clampInputLevel(
             value?.manualInputSensitivityThreshold ?? defaultManualInputSensitivityThreshold),
-        inputDeviceId: value?.inputDeviceId || null
+        inputDeviceId: value?.inputDeviceId || null,
+        noiseSuppression: noiseSuppressionMode(value?.noiseSuppression)
     };
 }
 

@@ -1,5 +1,6 @@
 import { createVoiceActivityGate, evaluateVoiceActivity, inputSensitivityConfiguration,
     normalizedInputLevel, updateVoiceActivityConfiguration } from "./inputSensitivity.js";
+import { captureVoiceMicrophone, replaceVoiceMicrophone } from "./noiseSuppression.js";
 
 let createRemoteVoicePlayback, updateRemoteVoicePlayback, destroyRemoteVoicePlayback;
 const sessions = new Map();
@@ -552,17 +553,17 @@ export async function initialize(mediaBuildId, callback, iceServers, iceTranspor
     if (!navigator.mediaDevices?.getUserMedia) throw new Error("NotSupportedError: This browser does not support microphone capture.");
     const initializing = { callback, diagnostics, callId, localAccountId, role, peerGeneration,
         negotiationGeneration, peer: null };
-    let localStream;
+    let microphone, localStream;
     try {
         diagnostic(initializing, "GetUserMediaStarted");
         const inputSensitivity = inputSensitivityConfiguration(localVoicePreference);
-        localStream = await navigator.mediaDevices.getUserMedia({ audio: {
-            ...(inputSensitivity.inputDeviceId ? { deviceId: { exact: inputSensitivity.inputDeviceId } } : {}),
-            channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true
-        } });
+        microphone = await captureVoiceMicrophone(inputSensitivity.inputDeviceId, inputSensitivity.noiseSuppression,
+            (name, values) => diagnostic(initializing, name, values));
+        localStream = microphone.stream;
         const firstTrack = localStream.getAudioTracks()[0];
         diagnostic(initializing, "GetUserMediaSucceeded", { audioTrackCount: localStream.getAudioTracks().length,
-            trackEnabled: firstTrack?.enabled, trackReadyState: firstTrack?.readyState });
+            trackEnabled: firstTrack?.enabled, trackReadyState: firstTrack?.readyState,
+            noiseSuppression: microphone.noiseSuppression });
     } catch (error) {
         diagnostic(initializing, "GetUserMediaFailed", { name: error?.name, message: error?.message });
         throw new Error(`${error?.name ?? "MediaError"}: ${error?.message ?? "Microphone access failed."}`);
@@ -577,7 +578,8 @@ export async function initialize(mediaBuildId, callback, iceServers, iceTranspor
         });
         const configurationMetadata = iceConfigurationMetadata(iceServers);
         session = {
-            id, callback, peer, localStream, remoteStream: new MediaStream(), diagnostics,
+            id, callback, peer, microphone, localStream, microphoneChange: Promise.resolve(),
+            remoteStream: new MediaStream(), diagnostics,
             callId, localAccountId, role, peerGeneration, negotiationId, negotiationGeneration,
             appliedAnswerNegotiationId: null,
             answersReceived: 0, answersApplied: 0, answersIgnored: 0,
@@ -760,10 +762,9 @@ export async function initialize(mediaBuildId, callback, iceServers, iceTranspor
         return id;
     } catch (error) {
         sessions.delete(id);
-        for (const track of localStream.getTracks()) {
+        for (const track of localStream.getTracks())
             diagnostic(session ?? initializing, "local media track stop()", { reason: "initialization failure", kind: track.kind });
-            track.stop();
-        }
+        microphone.release();
         if (session?.audioContext) await session.audioContext.close().catch(() => {});
         throw error;
     }
@@ -970,6 +971,26 @@ export function setInputSensitivity(id, preference) {
     session.inputSensitivity = inputSensitivityConfiguration(preference);
     if (session.voiceActivityGate)
         updateVoiceActivityConfiguration(session.voiceActivityGate, session.inputSensitivity);
+    session.microphoneChange = session.microphoneChange.then(() => replaceMicrophone(session))
+        .catch(error => diagnostic(session, "microphone change failed", { name: error?.name, message: error?.message }));
+}
+
+async function replaceMicrophone(session) {
+    if (!sessions.has(session.id)) return;
+    const { inputDeviceId, noiseSuppression } = session.inputSensitivity;
+    const next = await replaceVoiceMicrophone(session.microphone, inputDeviceId, noiseSuppression,
+        [session.peer], !session.muted, (name, values) => diagnostic(session, name, values));
+    if (!next) return;
+    if (!sessions.has(session.id)) { next.release(); return; }
+    const previous = session.microphone;
+    Object.assign(session, { microphone: next, localStream: next.stream });
+    if (session.audioContext && session.analyser) {
+        session.audioSource?.disconnect();
+        session.audioSource = session.audioContext.createMediaStreamSource(next.stream);
+        session.audioSource.connect(session.analyser);
+    }
+    previous.release();
+    diagnostic(session, "microphone changed", { noiseSuppression: next.noiseSuppression });
 }
 
 export function setDeafened(id, deafened) {
@@ -1171,10 +1192,9 @@ export async function cleanup(id, reason = "unspecified cleanup") {
     session.peer.ontrack = null;
     await diagnostic(session, "RTCPeerConnection.close()", { reason });
     session.peer.close();
-    for (const track of session.localStream.getTracks()) {
+    for (const track of session.localStream.getTracks())
         diagnostic(session, "local media track stop()", { reason, kind: track.kind });
-        track.stop();
-    }
+    session.microphone.release();
     for (const track of session.remoteStream.getTracks()) {
         diagnostic(session, "remote media track stop()", { reason, kind: track.kind });
         track.stop();

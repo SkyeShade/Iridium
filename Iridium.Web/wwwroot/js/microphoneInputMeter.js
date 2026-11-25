@@ -1,18 +1,7 @@
 import { normalizedInputLevel } from "./inputSensitivity.js";
+import { captureVoiceMicrophone } from "./noiseSuppression.js";
 
 const meters = new Map();
-
-function microphoneConstraints(deviceId) {
-    return {
-        audio: {
-            ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
-            channelCount: 1,
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true
-        }
-    };
-}
 
 async function inputDevices() {
     if (!navigator.mediaDevices?.enumerateDevices) return [];
@@ -37,7 +26,8 @@ function releaseGraph(meter) {
     meter.frame = 0;
     try { meter.source?.disconnect(); } catch { }
     try { meter.analyser?.disconnect(); } catch { }
-    for (const track of meter.stream?.getTracks?.() ?? []) track.stop();
+    meter.capture?.release();
+    meter.capture = null;
     meter.stream = null;
     meter.source = null;
     meter.analyser = null;
@@ -45,8 +35,10 @@ function releaseGraph(meter) {
     meter.context = null;
 }
 
-async function createGraph(deviceId) {
-    const stream = await navigator.mediaDevices.getUserMedia(microphoneConstraints(deviceId));
+// The preview meters what voice sessions would send, after noise suppression.
+async function createGraph(deviceId, noiseSuppression) {
+    const capture = await captureVoiceMicrophone(deviceId, noiseSuppression);
+    const stream = capture.stream;
     let context;
     try {
         const AudioContextType = window.AudioContext ?? window.webkitAudioContext;
@@ -59,9 +51,10 @@ async function createGraph(deviceId) {
         analyser.smoothingTimeConstant = 0.72;
         source.connect(analyser);
         if (context.state === "suspended") await context.resume().catch(() => {});
-        return { stream, context, source, analyser, deviceId: deviceId || null };
+        return { capture, stream, context, source, analyser, deviceId: deviceId || null,
+            noiseSuppression: capture.noiseSuppression };
     } catch (error) {
-        stream.getTracks().forEach(track => track.stop());
+        capture.release();
         try { await context?.close?.(); } catch { }
         throw error;
     }
@@ -89,19 +82,21 @@ function installGraph(meter, graph) {
     meter.frame = requestAnimationFrame(sample);
 }
 
-export async function startMicrophoneInputMeter(meterId, callback, deviceId) {
+export async function startMicrophoneInputMeter(meterId, callback, deviceId, noiseSuppression = "enhanced") {
     if (!navigator.mediaDevices?.getUserMedia)
         return { meterId: null, status: "unavailable", message: "This browser does not support microphone input preview.", devices: [] };
-    const meter = { id: meterId, callback, frame: 0, stream: null, context: null, source: null, analyser: null };
+    const meter = { id: meterId, callback, frame: 0, capture: null, stream: null, context: null, source: null,
+        analyser: null };
     meters.set(meter.id, meter);
     try {
-        const graph = await createGraph(deviceId);
+        const graph = await createGraph(deviceId, noiseSuppression);
         if (!meters.has(meter.id)) {
             releaseGraph(graph);
             return { meterId: null, status: "cancelled", message: null, devices: [] };
         }
         installGraph(meter, graph);
-        return { meterId: meter.id, status: "ready", message: null, devices: await inputDevices() };
+        return { meterId: meter.id, status: "ready", message: null, devices: await inputDevices(),
+            noiseSuppression: meter.noiseSuppression };
     } catch (error) {
         meters.delete(meter.id);
         releaseGraph(meter);
@@ -109,13 +104,13 @@ export async function startMicrophoneInputMeter(meterId, callback, deviceId) {
     }
 }
 
-export async function rebindMicrophoneInputMeter(meterId, deviceId) {
+export async function rebindMicrophoneInputMeter(meterId, deviceId, noiseSuppression = "enhanced") {
     const meter = meters.get(meterId);
     if (!meter) return { status: "unavailable", message: "Live microphone input preview is unavailable." };
     // Acquire the replacement first; a failed device switch leaves the current meter alive.
     try {
-        installGraph(meter, await createGraph(deviceId));
-        return { status: "ready", message: null };
+        installGraph(meter, await createGraph(deviceId, noiseSuppression));
+        return { status: "ready", message: null, noiseSuppression: meter.noiseSuppression };
     } catch (error) {
         return unavailableStatus(error);
     }

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Iridium.Client.Core;
 
 namespace Iridium.Tests;
@@ -78,6 +79,38 @@ public sealed class LocalVoicePreferenceTests
         Assert.Equal(1, reloaded.ManualInputSensitivityThreshold);
         await reloaded.SetManualInputSensitivityThresholdAsync(-2);
         Assert.Equal(0, reloaded.ManualInputSensitivityThreshold);
+    }
+
+    [Fact]
+    public async Task NoiseSuppressionDefaultsToEnhancedAndPersists()
+    {
+        var store = new MemoryStore();
+        var accountId = Guid.NewGuid();
+        var service = new LocalVoicePreferenceService(store);
+        await service.SetScopeAsync("https://node.example", accountId);
+        Assert.Equal(NoiseSuppressionMode.Enhanced, service.NoiseSuppression);
+
+        await service.SetNoiseSuppressionAsync(NoiseSuppressionMode.Off);
+        var reloaded = new LocalVoicePreferenceService(store);
+        await reloaded.SetScopeAsync("https://node.example", accountId);
+        Assert.Equal(NoiseSuppressionMode.Off, reloaded.NoiseSuppression);
+
+        await reloaded.SetNoiseSuppressionAsync((NoiseSuppressionMode)42);
+        Assert.Equal(NoiseSuppressionMode.Enhanced, reloaded.NoiseSuppression);
+    }
+
+    [Fact]
+    public void NoiseSuppressionSerializesByNameAndOlderSavedPreferencesGetEnhanced()
+    {
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        var json = JsonSerializer.Serialize(new LocalVoicePreference(NoiseSuppression: NoiseSuppressionMode.Standard), options);
+        Assert.Contains("\"noiseSuppression\":\"Standard\"", json);
+
+        var older = JsonSerializer.Deserialize<LocalVoicePreference>(
+            """{"preferredMuted":true,"autoInputSensitivity":false,"inputDeviceId":"mic"}""", options)!;
+        Assert.True(older.PreferredMuted);
+        Assert.Equal("mic", older.InputDeviceId);
+        Assert.Equal(NoiseSuppressionMode.Enhanced, older.NoiseSuppression);
     }
 
     private sealed class MemoryStore : ILocalVoicePreferenceStore
