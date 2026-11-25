@@ -7,7 +7,14 @@
     <ProfileAvatar AccountId="AccountId" AvatarRevision="AvatarRevision" AvatarPresetId="AvatarPresetId" DisplayName="@DisplayName" Presence="Presence" Surface="raised" />
     <div class="profile-copy">
         <span class="display-name">@DisplayName</span>
-        <span>@PublicIdentity</span>
+        @if (Voice.Current is not null)
+        {
+            <span class="in-voice" title="@PublicIdentity"><Icon Name="speaker" Size="12" />In voice</span>
+        }
+        else
+        {
+            <span>@PublicIdentity</span>
+        }
     </div>
     @if (ShowVoiceControls)
     {

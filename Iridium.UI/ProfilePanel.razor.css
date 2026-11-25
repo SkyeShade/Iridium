@@ -9,3 +9,4 @@
 .settings-button,.voice-button { flex:0 0 2.25rem;width:2.25rem;height:2.25rem;display:grid;place-items:center;padding:0;border:0;border-radius:.4rem;color:var(--text-muted);background:transparent;cursor:pointer; }
 .settings-button:hover,.voice-button:hover { color: var(--text-strong); background: var(--surface-active); }
 .voice-button.active{color:var(--danger);background:color-mix(in srgb,var(--danger) 12%,transparent)}
+.profile-copy span.in-voice{display:flex;align-items:center;gap:.25rem;color:#43c58a}.profile-copy span.in-voice ::deep svg{flex:0 0 auto}

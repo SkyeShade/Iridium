@@ -35,9 +35,13 @@
         </div>
     </div>
     <div class="desktop-player-panel-slot">
-        <ProfilePanel AccountId="AccountId" AvatarRevision="AvatarRevision" AvatarPresetId="AvatarPresetId" DisplayName="@DisplayName"
-                      PublicIdentity="@PublicIdentity" Presence="Presence" OnProfile="OnProfile" OnSettings="OnSettings"
-                      ShowVoiceControls="true" />
+        @* Desktop shows the voice connection and the player as one card, like Discord; phones keep the sidebar slot. *@
+        <div class="desktop-player-card">
+            @if (VoiceConnection is not null) { <div class="desktop-voice-connection-slot">@VoiceConnection</div> }
+            <ProfilePanel AccountId="AccountId" AvatarRevision="AvatarRevision" AvatarPresetId="AvatarPresetId" DisplayName="@DisplayName"
+                          PublicIdentity="@PublicIdentity" Presence="Presence" OnProfile="OnProfile" OnSettings="OnSettings"
+                          ShowVoiceControls="true" />
+        </div>
     </div>
     <main class="main-content" data-mobile-content-kind="@MobileConversationContentKind" @ref="_mainContent">
         <header class="mobile-conversation-header @(UseCompactMobileConversationHeader ? "compact-dm" : null)">

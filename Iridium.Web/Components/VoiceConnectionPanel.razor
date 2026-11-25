@@ -3,42 +3,53 @@
 @implements IDisposable
 @inject ActiveVoiceSessionCoordinator Voice
 @inject BrowserScreenShareCapability ScreenShareCapability
+@inject LocalVoicePreferenceService Preferences
 @inject ILogger<VoiceConnectionPanel> Logger
 
 @if (Voice.Current is { } session)
 {
-    <section class="voice-connection-panel" aria-label="Active voice connection">
-        <div class="voice-connection-copy">
-            <strong><span class="connection-dot"></span>@Status(session)</strong>
-            <span>@PrimaryLabel(session)</span>
-            @if (LocalScreenShare is not null) { <small class="sharing-status"><Icon Name="screen" /> Sharing screen</small> }
-            @if (session.StartedAt is { } startedAt) { <VoiceElapsedTimer StartedAt="startedAt" /> }
-        </div>
-        <div class="voice-controls">
-            <button class="@(session.Muted ? "active" : null)" title="@(Voice.PreferredMuted ? "Unmute" : "Mute")" @onclick="ToggleMuteAsync"><Icon Name="microphone" /></button>
-            <button class="@(session.Deafened ? "active" : null)" title="@(Voice.PreferredDeafened ? "Undeafen" : "Deafen")" @onclick="ToggleDeafenAsync"><Icon Name="headphones" /></button>
-            <button class="disconnect" title="Disconnect" @onclick="DisconnectAsync"><Icon Name="hangup" /></button>
-        </div>
-        @if (LocalScreenShare is null && session.CanPublishMedia && ScreenShareCapability.IsSupported)
-        {
-            <div class="voice-media-actions">
-                <button title="Share screen. Audio availability depends on the selected source and browser."
-                        aria-label="Share screen" @onclick="StartScreenShareAsync"><Icon Name="screen" /><span>Share Screen</span></button>
+    <section class="voice-connection-panel @StatusClass(session)" aria-label="Active voice connection">
+        <div class="voice-connection-header">
+            <span class="voice-signal" aria-hidden="true"><Icon Name="signal" Size="16" /></span>
+            <div class="voice-connection-copy">
+                <strong>@Status(session)</strong>
+                <span title="@PrimaryLabel(session)">@PrimaryLabel(session)</span>
             </div>
-        }
-        else if (LocalScreenShare is not null)
-        {
-            <div class="voice-media-actions">
-                <button title="Switch shared source" aria-label="Switch shared source" @onclick="SwitchScreenShareAsync"><Icon Name="refresh" /><span>Switch</span></button>
-                <button class="streaming" title="Stop sharing screen" aria-label="Stop sharing screen" @onclick="StopScreenShareAsync"><Icon Name="screen" /><span>Stop Sharing</span></button>
-            </div>
-        }
+            <button class="voice-icon-button @(EnhancedNoiseSuppression ? "active" : null)"
+                    title="@(EnhancedNoiseSuppression ? "Enhanced noise suppression is on" : "Enhanced noise suppression is off")"
+                    aria-label="Enhanced noise suppression" aria-pressed="@EnhancedNoiseSuppression"
+                    @onclick="ToggleNoiseSuppressionAsync"><Icon Name="waveform" Size="20" /></button>
+            <button class="voice-icon-button disconnect" title="Disconnect" aria-label="Disconnect" @onclick="DisconnectAsync"><Icon Name="hangup" Size="20" /></button>
+        </div>
+        <div class="voice-media-actions">
+            @* The user panel carries mute and deafen on desktop; phones only have this panel. *@
+            <button class="mobile-only @(session.Muted ? "danger" : null)" title="@(Voice.PreferredMuted ? "Unmute" : "Mute")"
+                    aria-label="@(Voice.PreferredMuted ? "Unmute" : "Mute")" @onclick="ToggleMuteAsync"><Icon Name="microphone" Size="20" /></button>
+            <button class="mobile-only @(session.Deafened ? "danger" : null)" title="@(Voice.PreferredDeafened ? "Undeafen" : "Deafen")"
+                    aria-label="@(Voice.PreferredDeafened ? "Undeafen" : "Deafen")" @onclick="ToggleDeafenAsync"><Icon Name="headphones" Size="20" /></button>
+            @if (LocalScreenShare is null && session.CanPublishMedia && ScreenShareCapability.IsSupported)
+            {
+                <button title="Share your screen. Audio availability depends on the selected source and browser."
+                        aria-label="Share screen" @onclick="StartScreenShareAsync"><Icon Name="screen-share" Size="20" /></button>
+            }
+            else if (LocalScreenShare is not null)
+            {
+                <button class="sharing" title="Stop sharing your screen" aria-label="Stop sharing screen"
+                        aria-pressed="true" @onclick="StopScreenShareAsync"><Icon Name="screen-share" Size="20" /></button>
+                <button title="Switch the shared screen or window" aria-label="Switch shared source"
+                        @onclick="SwitchScreenShareAsync"><Icon Name="refresh" Size="20" /></button>
+            }
+        </div>
         @if (!string.IsNullOrWhiteSpace(_streamError)) { <small class="stream-error">@_streamError</small> }
     </section>
 }
 
 @code {
-    protected override void OnInitialized() => Voice.Changed += OnChanged;
+    protected override void OnInitialized()
+    {
+        Voice.Changed += OnChanged;
+        Preferences.Changed += OnChanged;
+    }
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (!firstRender) return;
@@ -75,18 +86,32 @@
             _streamError = ScreenShareFailure.UserMessage(exception);
         }
     }
+    private bool EnhancedNoiseSuppression => Preferences.NoiseSuppression == NoiseSuppressionMode.Enhanced;
+    // Like Discord's Krisp toggle: on is Enhanced, off falls back to the browser's Standard suppression.
+    private Task ToggleNoiseSuppressionAsync() => Preferences.SetNoiseSuppressionAsync(
+        EnhancedNoiseSuppression ? NoiseSuppressionMode.Standard : NoiseSuppressionMode.Enhanced);
     private static string Status(ActiveVoiceSession session) => session.ConnectionState switch
     {
-        CallConnectionState.Connected => "Connected",
+        CallConnectionState.Connected => "Voice Connected",
         CallConnectionState.Connecting => "Connecting",
         CallConnectionState.Failed => "Media connection failed",
-        _ when session.Kind == ActiveVoiceSessionKind.CommunityVoiceChannel => "Control connected · Media unavailable",
+        _ when session.Kind == ActiveVoiceSessionKind.CommunityVoiceChannel => "Media unavailable",
         _ => "Connecting"
+    };
+    private static string StatusClass(ActiveVoiceSession session) => session.ConnectionState switch
+    {
+        CallConnectionState.Connected => "connected",
+        CallConnectionState.Failed => "failed",
+        _ => "connecting"
     };
     private string PrimaryLabel(ActiveVoiceSession session) => session.Kind switch
     {
-        ActiveVoiceSessionKind.DirectCall => $"{session.DisplayName} · Direct Call",
-        _ => $"{Voice.CommunityVoice.CurrentRoom?.CommunityName ?? "Server"} · {session.DisplayName}"
+        ActiveVoiceSessionKind.DirectCall => $"{session.DisplayName} / Direct Call",
+        _ => $"{session.DisplayName} / {Voice.CommunityVoice.CurrentRoom?.CommunityName ?? "Server"}"
     };
-    public void Dispose() => Voice.Changed -= OnChanged;
+    public void Dispose()
+    {
+        Voice.Changed -= OnChanged;
+        Preferences.Changed -= OnChanged;
+    }
 }

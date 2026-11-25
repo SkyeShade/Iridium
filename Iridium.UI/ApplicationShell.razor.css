@@ -20,6 +20,8 @@
 .mobile-conversation-header,.mobile-context-header,.mobile-context-backdrop,.mobile-call-bar-slot { display:none; }
 .main-content-slot { display:contents; }
 .voice-connection-slot { display:contents; }
+.desktop-player-card{margin:var(--bottom-control-inset);border-radius:var(--radius-md);background:var(--surface-raised);overflow:hidden}.desktop-player-card ::deep .profile-panel,.desktop-player-card ::deep .profile-panel:hover{margin:0;border-color:transparent;border-radius:0}.desktop-player-card ::deep .profile-panel{background:transparent}.desktop-player-card ::deep .voice-connection-panel{padding:.65rem .6rem .55rem;border-top:0;border-bottom:1px solid var(--border-subtle);background:transparent}.desktop-player-card ::deep .voice-media-actions button:not(.sharing):not(.danger){background:var(--surface-hover)}.desktop-player-card ::deep .voice-media-actions button:not(.sharing):not(.danger):hover{background:var(--surface-active)}
+@media (min-width:861px){.secondary-sidebar .voice-connection-slot{display:none}}
 @media (max-width: 1180px) {
     .app-shell.has-context-sidebar { grid-template-columns: var(--desktop-community-rail-width) var(--desktop-secondary-sidebar-width) minmax(0,1fr); }
     .context-sidebar { display:none; }
