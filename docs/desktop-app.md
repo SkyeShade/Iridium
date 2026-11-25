@@ -43,4 +43,10 @@ packaged build with `IRIDIUM_UPDATE_URL=http://localhost:<port>/`. Closing that 
 version for real (install on quit), so uninstall it afterwards.
 
 The installer is unsigned, so Windows SmartScreen warns on first install until the app has a code-signing
-certificate. The icon is still Blazor's default logo (`Iridium.Desktop/build/icon.png`).
+certificate.
+
+## Icon
+
+The icon sources are `branding/iridium-icon.svg` (full), `iridium-icon-small.svg` (simplified, for 16 and 32 px) and
+`iridium-icon-maskable.svg` (PWA). `node branding/source/gen.cjs` regenerates them from `takes.cjs`. The desktop
+installer uses `Iridium.Desktop/build/icon.ico`, which packs the small design at 16/32 and the full one at 48-256.
