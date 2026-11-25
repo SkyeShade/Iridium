@@ -42,6 +42,12 @@
     .mobile-conversation .main-content,.mobile-context .main-content { transform:translateX(0); visibility:visible; pointer-events:auto;transition:transform 170ms cubic-bezier(.2,.75,.25,1),visibility 0s; }
     .mobile-swipe-revealing .mobile-navigation-panel{transform:translate3d(0,0,0);visibility:visible;pointer-events:none;transition:none}
     .mobile-swipe-revealing .main-content{will-change:transform;box-shadow:-12px 0 28px #0007}
+    /* Browsers stop at the nearest scroll container when resolving touch-action, so pan-y on .main-content alone
+       lets the message list claim horizontal pans and cancel the back swipe. Low specificity keeps component rules
+       (touch-action:none drag handles) winning; horizontal scrollers get their own panning back. */
+    :where(.main-content) ::deep :where(*) { touch-action:pan-y; touch-action:pan-y pinch-zoom; }
+    .main-content ::deep :is(pre,.embedded-document-table,.sheet-overflow,.sheet-tabs,.forum-tag-filter,.viewer-participants,.viewer-controls,.active-call-controls,.preset-strip,.avatar-preset-scroll,.avatar-preset-list,[data-horizontal-scroll]),
+    .main-content ::deep :is(pre,.embedded-document-table,.sheet-overflow,.sheet-tabs,.forum-tag-filter,.viewer-participants,.viewer-controls,.active-call-controls,.preset-strip,.avatar-preset-scroll,.avatar-preset-list,[data-horizontal-scroll]) * { touch-action:auto; }
     .mobile-conversation-header { flex:0 0 3.25rem; display:grid; grid-template-columns:3.1rem minmax(0,1fr) 2.75rem; align-items:center; gap:.35rem; padding:0 .35rem; border-bottom:1px solid var(--border-subtle); background:var(--bg-base); box-shadow:0 1px 4px #0003; }
     .mobile-conversation-header.compact-dm { grid-template-columns:3.1rem minmax(0,1fr) 2.75rem 2.75rem; gap:.2rem; }
     .mobile-conversation-header strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }

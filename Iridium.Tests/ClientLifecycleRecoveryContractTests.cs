@@ -68,7 +68,7 @@ public sealed class ClientLifecycleRecoveryContractTests
         Assert.Contains("RealtimeLifecycleState.Disconnected", lifecycle);
         Assert.Contains("Signaling reconnected, but call state could not be restored.", source);
         Assert.Contains("else if (restored is null)\n        {\n            StatusMessage = null;", restore.Replace("\r\n", "\n"));
-        Assert.Contains("CurrentCall = restored;\n            StatusMessage = null;", restore.Replace("\r\n", "\n"));
+        Assert.Contains("CurrentCall = restored;\n            if (restored.State == CallState.Active) await RestorePublishedStreamsAsync(CancellationToken.None);\n            StatusMessage = null;", restore.Replace("\r\n", "\n"));
         Assert.DoesNotContain("connection.Reconnected +=", source);
     }
 

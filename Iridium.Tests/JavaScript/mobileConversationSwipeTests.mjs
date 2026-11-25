@@ -39,6 +39,7 @@ windowFake.innerHeight = 500;
 windowFake.innerWidth = 390;
 windowFake.setTimeout = setTimeout;
 windowFake.clearTimeout = clearTimeout;
+windowFake.dispatchEvent = () => true;
 globalThis.window = windowFake;
 
 let nextFrame = 1;
@@ -161,5 +162,39 @@ assert.equal(windowFake.count('pageshow'), 0);
 assert.equal(windowFake.count('focus'), 0);
 assert.equal(documentFake.count('visibilitychange'), 0);
 module.unwireRealtimeResume(shell);
+
+globalThis.Element ??= class {};
+query.matches = true;
+const swipeShell = { classList: new Set(['app-shell', 'mobile-conversation']) };
+swipeShell.classList.contains = swipeShell.classList.has;
+swipeShell.classList.remove = (...names) => names.forEach(name => swipeShell.classList.delete(name));
+const swipeElement = new EventTargetFake();
+Object.assign(swipeElement, {
+    style: new StyleFake(),
+    computedStyle: { transform: 'none' },
+    isConnected: true,
+    captured: null,
+    closest: () => swipeShell,
+    getBoundingClientRect: () => ({ width: 390 }),
+    setPointerCapture(pointerId) { this.captured = pointerId; },
+    hasPointerCapture(pointerId) { return this.captured === pointerId; },
+    releasePointerCapture() { this.captured = null; }
+});
+const touchedChild = { closest: () => null, parentElement: null };
+const pointer = (clientX, target = touchedChild) => ({ pointerId: 7, pointerType: 'touch', isPrimary: true, button: 0,
+    clientX, clientY: 300, target, cancelable: true, preventDefault() {} });
+module.wireMobileConversationSwipe(swipeElement, dotnet);
+swipeElement.dispatch('pointerdown', pointer(20));
+swipeElement.dispatch('pointermove', pointer(60));
+assert.equal(module.inspectMobileConversationSwipeState(swipeElement).phase, 'DraggingHorizontal');
+swipeElement.dispatch('lostpointercapture', { pointerId: 7, target: touchedChild });
+assert.equal(module.inspectMobileConversationSwipeState(swipeElement).phase, 'DraggingHorizontal',
+    "a descendant losing its implicit touch capture must not cancel the swipe");
+swipeElement.dispatch('pointermove', pointer(140));
+flushFrames();
+assert.equal(module.inspectMobileConversationSwipeState(swipeElement).dragX, 120);
+swipeElement.dispatch('lostpointercapture', { pointerId: 7, target: swipeElement });
+assert.equal(module.inspectMobileConversationSwipeState(swipeElement).phase, 'SnappingBack');
+module.unwireMobileConversationSwipe(swipeElement);
 
 console.log('mobileConversationSwipe tests passed');

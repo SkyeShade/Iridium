@@ -338,7 +338,11 @@ export function wireMobileConversationSwipe(element, dotnet, diagnosticsEnabled 
         });
     };
     const lostPointerCapture = event => {
-        diagnostic('POINTER CAPTURE', { action: 'lostpointercapture', eventPointerId: event.pointerId });
+        diagnostic('POINTER CAPTURE', { action: 'lostpointercapture', eventPointerId: event.pointerId,
+            target: targetDescription(event.target) });
+        // Touch pointers start implicitly captured by the touched descendant; taking capture fires a bubbling
+        // lostpointercapture from that descendant, which isn't this element losing the gesture.
+        if (event.target !== element) return;
         if (state.pointerId === event.pointerId &&
             shouldCancelMobileConversationSwipe(state.phase, 'lostpointercapture'))
             void snapBack('lostpointercapture');
