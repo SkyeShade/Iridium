@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'">
+    <title>Iridium</title>
+    <style>
+        :root { color-scheme: dark; }
+        html, body { height: 100%; margin: 0; background: #1a1d25; color: #a8afbd; font: 14px/1.5 "Segoe UI", system-ui, sans-serif; }
+        body { display: grid; place-items: center; text-align: center; }
+        h1 { margin: 0 0 .3rem; color: #f4f6fb; font-size: 1.2rem; }
+        button { margin-top: 1rem; padding: .55rem 1.2rem; border: 0; border-radius: 6px; color: #fff; background: #5865f2; font: inherit; font-weight: 600; cursor: pointer; }
+    </style>
+</head>
+<body>
+<main>
+    <h1>Can't reach your Iridium node</h1>
+    <p id="detail">Check your connection, then try again.</p>
+    <button type="button" id="retry">Try again</button>
+</main>
+<script>
+    const node = new URLSearchParams(location.search).get('node');
+    if (node) document.getElementById('detail').textContent = `${new URL(node).host} didn't respond. Check your connection, then try again.`;
+    document.getElementById('retry').addEventListener('click', () => { if (node) location.href = node; });
+</script>
+</body>
+</html>

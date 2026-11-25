@@ -1,0 +1,50 @@
+{
+  "name": "iridium-desktop",
+  "productName": "Iridium",
+  "version": "0.2.9-alpha",
+  "description": "Iridium desktop app",
+  "author": "SkyeShade",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test",
+    "dist": "electron-builder --win --publish never"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.11"
+  },
+  "devDependencies": {
+    "electron": "^45.5.0",
+    "electron-builder": "^26.18.0"
+  },
+  "build": {
+    "appId": "net.iridiumonline.desktop",
+    "productName": "Iridium",
+    "artifactName": "Iridium-Setup-${version}.${ext}",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "deleteAppDataOnUninstall": false
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "SkyeShade",
+      "repo": "Iridium",
+      "releaseType": "release"
+    }
+  }
+}

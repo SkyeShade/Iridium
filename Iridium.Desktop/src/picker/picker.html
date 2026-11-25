@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'">
+    <title>Share your screen</title>
+    <style>
+        :root { color-scheme: dark; --panel: #1a1d25; --tile: #232631; --tile-hover: #2b2f3c; --text: #a8afbd; --strong: #f4f6fb;
+            --accent: #5865f2; --green: #23a55a; }
+        * { box-sizing: border-box; }
+        html, body { height: 100%; margin: 0; overflow: hidden; background: #0009; color: var(--text);
+            font: 13px/1.35 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; user-select: none; }
+        body { display: grid; place-items: center; }
+        .dialog { width: min(46rem, calc(100vw - 2rem)); max-height: calc(100vh - 2rem); display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto;
+            border-radius: 10px; background: var(--panel); box-shadow: 0 20px 60px #000a; overflow: hidden; }
+        header { padding: 1rem 1.1rem .4rem; }
+        header h1 { margin: 0; color: var(--strong); font-size: 1.1rem; }
+        .tabs { display: flex; gap: .25rem; padding: .3rem 1.1rem .6rem; border-bottom: 1px solid #ffffff12; }
+        .tabs button { padding: .4rem .8rem; border: 0; border-radius: 6px; color: var(--text); background: transparent; font: inherit; font-weight: 600; cursor: pointer; }
+        .tabs button:hover { color: var(--strong); background: #ffffff0d; }
+        .tabs button[aria-selected="true"] { color: var(--strong); background: #ffffff17; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(12.5rem, 1fr)); gap: .7rem; padding: .9rem 1.1rem; overflow-y: auto; }
+        .source { display: grid; gap: .4rem; padding: .45rem; border: 2px solid transparent; border-radius: 8px; color: inherit; background: var(--tile);
+            font: inherit; text-align: left; cursor: pointer; }
+        .source:hover { background: var(--tile-hover); }
+        .source[aria-pressed="true"] { border-color: var(--accent); }
+        .source img.thumb { width: 100%; aspect-ratio: 16 / 9; object-fit: contain; border-radius: 4px; background: #000; }
+        .source .label { display: flex; align-items: center; gap: .4rem; min-width: 0; color: var(--strong); }
+        .source .label img { width: 16px; height: 16px; flex: 0 0 auto; }
+        .source .label span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .empty { grid-column: 1 / -1; padding: 2rem 0; text-align: center; }
+        footer { display: flex; align-items: center; gap: .8rem; padding: .8rem 1.1rem; border-top: 1px solid #ffffff12; background: #15171e; }
+        .audio { display: flex; align-items: center; gap: .5rem; color: var(--strong); cursor: pointer; }
+        .audio input { width: 16px; height: 16px; accent-color: var(--green); }
+        .audio small { color: var(--text); }
+        .spacer { flex: 1; }
+        footer button { padding: .5rem 1rem; border: 0; border-radius: 6px; font: inherit; font-weight: 600; cursor: pointer; }
+        .cancel { color: var(--strong); background: transparent; }
+        .cancel:hover { text-decoration: underline; }
+        .go { color: #fff; background: var(--green); }
+        .go:disabled { opacity: .45; cursor: not-allowed; }
+    </style>
+</head>
+<body>
+<div class="dialog" role="dialog" aria-modal="true" aria-labelledby="title">
+    <header><h1 id="title">Share your screen</h1></header>
+    <div class="tabs" role="tablist">
+        <button type="button" role="tab" data-kind="window" aria-selected="true">Applications</button>
+        <button type="button" role="tab" data-kind="screen" aria-selected="false">Screens</button>
+    </div>
+    <div class="grid" id="grid"></div>
+    <footer>
+        <label class="audio"><input type="checkbox" id="audio" checked> Share sound <small id="audio-note"></small></label>
+        <span class="spacer"></span>
+        <button type="button" class="cancel" id="cancel">Cancel</button>
+        <button type="button" class="go" id="go" disabled>Go Live</button>
+    </footer>
+</div>
+<script src="picker.js"></script>
+</body>
+</html>

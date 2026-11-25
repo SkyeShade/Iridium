@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'">
+    <title>Iridium</title>
+    <style>
+        :root { color-scheme: dark; --bar: #111319; --text: #a8afbd; --strong: #f4f6fb; --hover: #ffffff14; --green: #23a55a; }
+        * { box-sizing: border-box; }
+        html, body { height: 100%; margin: 0; overflow: hidden; background: var(--bar); color: var(--text);
+            font: 12px/1 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; user-select: none; }
+        /* The right edge is left free for the Windows caption buttons drawn by titleBarOverlay. */
+        .bar { height: 100%; display: flex; align-items: center; gap: .5rem; padding: 0 calc(env(titlebar-area-x, 0px) + 8px);
+            padding-right: calc(100vw - env(titlebar-area-width, calc(100vw - 138px)) + 6px); -webkit-app-region: drag; }
+        .brand { display: flex; align-items: center; gap: .45rem; color: var(--strong); font-weight: 600; letter-spacing: .01em; }
+        .brand img { width: 16px; height: 16px; }
+        .node { -webkit-app-region: no-drag; max-width: 18rem; overflow: hidden; padding: .3rem .5rem; border: 0; border-radius: 4px;
+            color: var(--text); background: transparent; font: inherit; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+        .node:hover { color: var(--strong); background: var(--hover); }
+        .node:focus { outline: none; }
+        .node-form { -webkit-app-region: no-drag; display: none; align-items: center; gap: .3rem; }
+        .node-form input { width: 16rem; height: 22px; padding: 0 .45rem; border: 1px solid #ffffff26; border-radius: 4px;
+            color: var(--strong); background: #1a1d25; font: inherit; outline: none; }
+        .node-form input:focus { border-color: #5865f2; }
+        .node-form small { color: #f2777a; }
+        .editing .node { display: none; }
+        .editing .node-form { display: flex; }
+        .spacer { flex: 1; }
+        .update { -webkit-app-region: no-drag; display: none; width: 28px; height: 24px; place-items: center; padding: 0; border: 0;
+            border-radius: 4px; color: var(--green); background: transparent; cursor: pointer; }
+        .update:hover { background: color-mix(in srgb, var(--green) 18%, transparent); }
+        .update svg { width: 18px; height: 18px; }
+        .update.ready { display: grid; }
+    </style>
+</head>
+<body>
+<div class="bar" id="bar">
+    <span class="brand"><img src="icon.png" alt="">Iridium</span>
+    <button class="node" id="node" type="button" title="Change node"></button>
+    <form class="node-form" id="node-form">
+        <input id="node-input" spellcheck="false" autocomplete="off" aria-label="Node address" placeholder="iridiumonline.net">
+        <small id="node-error"></small>
+    </form>
+    <span class="spacer"></span>
+    <button class="update" id="update" type="button" aria-label="Update ready, restart to install">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M11 3h2v9.17l3.59-3.58L18 10l-6 6-6-6 1.41-1.41L11 12.17V3Zm-6 15h14v2H5v-2Z"/></svg>
+    </button>
+</div>
+<script src="titlebar.js"></script>
+</body>
+</html>
