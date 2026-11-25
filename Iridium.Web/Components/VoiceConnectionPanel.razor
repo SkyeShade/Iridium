@@ -15,20 +15,24 @@
             @if (session.StartedAt is { } startedAt) { <VoiceElapsedTimer StartedAt="startedAt" /> }
         </div>
         <div class="voice-controls">
-            @if (LocalScreenShare is null && session.CanPublishMedia && ScreenShareCapability.IsSupported)
-            {
-                <button title="Share screen. Audio availability depends on the selected source and browser."
-                        aria-label="Share screen" @onclick="StartScreenShareAsync"><Icon Name="screen" /></button>
-            }
-            else if (LocalScreenShare is not null)
-            {
-                <button class="streaming" title="Switch shared source" @onclick="SwitchScreenShareAsync"><Icon Name="refresh" /></button>
-                <button class="streaming" title="Stop sharing screen" @onclick="StopScreenShareAsync"><Icon Name="screen" /></button>
-            }
             <button class="@(session.Muted ? "active" : null)" title="@(Voice.PreferredMuted ? "Unmute" : "Mute")" @onclick="ToggleMuteAsync"><Icon Name="microphone" /></button>
             <button class="@(session.Deafened ? "active" : null)" title="@(Voice.PreferredDeafened ? "Undeafen" : "Deafen")" @onclick="ToggleDeafenAsync"><Icon Name="headphones" /></button>
             <button class="disconnect" title="Disconnect" @onclick="DisconnectAsync"><Icon Name="hangup" /></button>
         </div>
+        @if (LocalScreenShare is null && session.CanPublishMedia && ScreenShareCapability.IsSupported)
+        {
+            <div class="voice-media-actions">
+                <button title="Share screen. Audio availability depends on the selected source and browser."
+                        aria-label="Share screen" @onclick="StartScreenShareAsync"><Icon Name="screen" /><span>Share Screen</span></button>
+            </div>
+        }
+        else if (LocalScreenShare is not null)
+        {
+            <div class="voice-media-actions">
+                <button title="Switch shared source" aria-label="Switch shared source" @onclick="SwitchScreenShareAsync"><Icon Name="refresh" /><span>Switch</span></button>
+                <button class="streaming" title="Stop sharing screen" aria-label="Stop sharing screen" @onclick="StopScreenShareAsync"><Icon Name="screen" /><span>Stop Sharing</span></button>
+            </div>
+        }
         @if (!string.IsNullOrWhiteSpace(_streamError)) { <small class="stream-error">@_streamError</small> }
     </section>
 }

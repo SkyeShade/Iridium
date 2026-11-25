@@ -30,6 +30,9 @@ cleanup() {
     [[ -n "$TMP_DIR" && -d "$TMP_DIR" ]] && rm -rf -- "$TMP_DIR"
     [[ -d "$SERVER_NEW" ]] && rm -rf -- "$SERVER_NEW"
     [[ -d "$WEB_NEW" ]] && rm -rf -- "$WEB_NEW"
+    # After a successful swap the staged directories are gone, so the tests above are false;
+    # returning their status would trip the ERR trap and report a healthy update as failed.
+    return 0
 }
 
 show_journal() {
