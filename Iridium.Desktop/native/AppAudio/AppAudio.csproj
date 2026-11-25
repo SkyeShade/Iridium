@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>iridium-app-audio</AssemblyName>
+    <RootNamespace>Iridium.AppAudio</RootNamespace>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <!-- Ships inside the Electron app, so it must run without a .NET install and stay small. -->
+    <PublishAot>true</PublishAot>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <UseSystemResourceKeys>true</UseSystemResourceKeys>
+    <DebuggerSupport>false</DebuggerSupport>
+  </PropertyGroup>
+
+</Project>

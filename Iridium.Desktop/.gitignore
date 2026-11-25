@@ -1,3 +1,6 @@
 node_modules/
 dist/
 dist-next/
+native/bin/
+native/AppAudio/bin/
+native/AppAudio/obj/

@@ -4,6 +4,7 @@ import { createVoiceActivityGate, evaluateVoiceActivity, inputSensitivityConfigu
     normalizedInputLevel, updateVoiceActivityConfiguration } from "./inputSensitivity.js";
 import { createLiveKitNoiseProcessor, enhancedNoiseSuppressionSupported,
     microphoneCaptureConstraints } from "./noiseSuppression.js";
+import { takeDesktopAppAudioTrack } from "./desktopAppAudio.js";
 
 const sessions = new Map();
 
@@ -1022,6 +1023,15 @@ export async function captureScreenTracks(session) {
     catch (error) {
         media.getTracks().forEach(track => track.stop());
         throw error;
+    }
+    // The desktop app captures the shared program's own sound natively instead of browser loopback.
+    if (!audioTracks.length) {
+        try {
+            const appAudio = await takeDesktopAppAudioTrack();
+            if (appAudio) audioTracks.push(appAudio);
+        } catch (error) {
+            if (session.diagnostics) console.debug("Desktop app audio unavailable", { name: error?.name, message: error?.message });
+        }
     }
     const videoTrack = new LocalVideoTrack(video, undefined, false);
     videoTrack.source = Track.Source.ScreenShare;

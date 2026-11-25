@@ -4,12 +4,15 @@ const path = require('node:path');
 const { createSettingsStore, normalizeNodeUrl } = require('./settings');
 const { allowsPermission, isExternalWebUrl, isNodeUrl } = require('./navigation');
 const { createUpdater } = require('./updater');
+const { createAppAudio } = require('./appAudio');
 
 const TITLE_BAR_HEIGHT = 32;
 const BAR_COLOR = '#111319';
 const ICON = path.join(__dirname, 'titlebar', 'icon.png');
 
 app.setAppUserModelId('net.iridiumonline.desktop');
+// Test runs use their own profile so they never touch the installed app's logins (or its single-instance lock).
+if (process.env.IRIDIUM_USER_DATA_DIR) app.setPath('userData', path.resolve(process.env.IRIDIUM_USER_DATA_DIR));
 if (!app.requestSingleInstanceLock()) app.quit();
 
 let window = null;
@@ -19,6 +22,7 @@ let pickerView = null;
 let resolvePicker = null;
 let settings = null;
 let updater = null;
+let appAudio = null;
 
 function log(message) {
     try {
@@ -92,6 +96,9 @@ function wireContent(contents) {
         event.preventDefault();
         if (isExternalWebUrl(url)) shell.openExternal(url);
     });
+    // A reload or navigation drops the page's audio tracks; stop their native captures with them.
+    contents.on('did-start-navigation', details => { if (details.isMainFrame && !details.isSameDocument) appAudio.stopFor(contents); });
+    contents.on('destroyed', () => appAudio.stopFor(contents));
     contents.on('did-fail-load', (_event, code, description, url, isMainFrame) => {
         // -3 is an aborted load (navigation replaced), not an outage.
         if (!isMainFrame || code === -3) return;
@@ -131,7 +138,10 @@ function wireSession() {
         try {
             const choice = await pickDisplaySource();
             if (!choice) return callback({});
-            callback(choice.audio ? { video: choice.source, audio: 'loopback' } : { video: choice.source });
+            if (!choice.audio) return callback({ video: choice.source });
+            // Per-app capture hands the page its own audio track; system loopback is the fallback.
+            const perApp = await appAudio.prepare(contentView.webContents, choice.source.id);
+            callback(perApp ? { video: choice.source } : { video: choice.source, audio: 'loopback' });
         } catch (error) {
             log(`screen picker failed: ${error?.message ?? error}`);
             callback({});
@@ -183,6 +193,8 @@ function wireIpc() {
     });
     ipcMain.on('titlebar:install-update', () => updater.install());
     ipcMain.on('picker:choose', (_event, choice) => resolvePicker?.(choice));
+    ipcMain.handle('app-audio:take', event => appAudio.take(event.sender));
+    ipcMain.on('app-audio:stop', (event, id) => appAudio.stop(id));
 }
 
 app.on('second-instance', () => {
@@ -194,6 +206,7 @@ app.on('second-instance', () => {
 app.whenReady().then(() => {
     Menu.setApplicationMenu(null);
     settings = createSettingsStore(app.getPath('userData'));
+    appAudio = createAppAudio({ app, log });
     updater = createUpdater({
         app, log,
         onState: state => titleView?.webContents.send('titlebar:update-state', state)
@@ -205,3 +218,4 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => app.quit());
+app.on('before-quit', () => appAudio?.stopAll());

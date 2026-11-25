@@ -29,6 +29,13 @@ try {
     }
     Write-Host "[Iridium Desktop] Running tests..."
     Invoke-Checked "npm" @("test", "--silent")
+    Write-Host "[Iridium Desktop] Building the per-app audio helper (Native AOT)..."
+    # The AOT linker locates MSVC through vswhere, which lives in the Visual Studio Installer folder.
+    $vsInstaller = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer"
+    if ((Test-Path $vsInstaller) -and ($env:PATH -notlike "*$vsInstaller*")) { $env:PATH = "$env:PATH;$vsInstaller" }
+    $helperOutput = Join-Path $desktopRoot "native\bin"
+    Invoke-Checked "dotnet" @("publish", (Join-Path $desktopRoot "native\AppAudio\AppAudio.csproj"), "-c", "Release", "-o", $helperOutput)
+    if (-not (Test-Path (Join-Path $helperOutput "iridium-app-audio.exe"))) { throw "The per-app audio helper was not built." }
     if (Test-Path $distRoot) { Remove-Item -Recurse -Force $distRoot }
     Write-Host "[Iridium Desktop] Building installer $Version..."
     # The release version is injected here so package.json doesn't need a commit per release.

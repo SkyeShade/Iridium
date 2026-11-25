@@ -45,6 +45,12 @@
       "owner": "SkyeShade",
       "repo": "Iridium",
       "releaseType": "release"
-    }
+    },
+    "extraResources": [
+      {
+        "from": "native/bin/iridium-app-audio.exe",
+        "to": "bin/iridium-app-audio.exe"
+      }
+    ]
   }
 }

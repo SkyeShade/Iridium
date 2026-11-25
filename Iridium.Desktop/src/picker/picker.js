@@ -41,8 +41,9 @@ function render() {
         button.addEventListener('dblclick', () => { select(source.id); confirm(); });
         grid.append(button);
     }
-    // Until per-app audio lands, sound always means everything playing on the PC.
-    audioNote.textContent = 'Includes all sound playing on your PC';
+    audioNote.textContent = kind === 'window'
+        ? "Only this app's sound"
+        : 'All sound on your PC except Iridium';
     go.disabled = !visible.some(source => source.id === selectedId);
 }
 

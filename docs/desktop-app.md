@@ -6,12 +6,15 @@ node deploy. The app itself only updates for desktop features.
 
 What the shell adds over the browser:
 
-- A screen-share picker with Applications and Screens (Electron has none built in). "Share sound" sends
-  Windows system audio, so sharing a game or app window includes its sound, which browsers can't do.
-  Until per-app audio capture lands it is all PC sound, not just the chosen app.
+- A screen-share picker with Applications and Screens (Electron has none built in). "Share sound" uses
+  Windows process loopback through a small native helper (`native/AppAudio`, built with Native AOT into
+  `resources/bin/iridium-app-audio.exe`): an app window sends only that program's sound, a whole screen sends
+  everything except Iridium. Unlike Chromium's loopback this doesn't depend on the default output device, so
+  GoXLR/Sonar-style setups work. The helper streams 48 kHz float stereo; `Iridium.Web/wwwroot/js/desktopAppAudio.js`
+  turns it into the share's audio track. If the helper can't start, the app falls back to system loopback.
 - Calls keep running at full speed while the window is minimised (`backgroundThrottling: false`).
 - Only the node stays in the window and gets device permissions; other links open in the browser.
-- `window.iridiumDesktop` (`platform`, `version`) lets the web client detect the app.
+- `window.iridiumDesktop` (`platform`, `version`, `takeAppAudio`) lets the web client detect the app and claim per-app sound.
 
 ## Updates
 
@@ -34,6 +37,7 @@ This uploads `Iridium-Setup-<version>.exe`, its `.blockmap` (for delta updates) 
 cd Iridium.Desktop
 npm ci
 npm test
+dotnet publish native\AppAudio\AppAudio.csproj -c Release -o native\bin   # needs VS C++ build tools
 $env:IRIDIUM_NODE_URL = "http://localhost:5185"   # optional: point at a local node
 npm start
 ```
