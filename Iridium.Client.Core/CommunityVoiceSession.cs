@@ -357,6 +357,9 @@ public sealed class CommunityVoiceSession(RealtimeConnectionService realtime, No
                     Muted, Deafened, cancellationToken);
                 _mediaConnected = true;
             }
+            // The Node hands out every session as Connecting; the media is live (kept or just rejoined),
+            // so without this the panel showed "Connecting" for the rest of the call after any resume.
+            MediaSession = mediaSession with { Status = CommunityVoiceMediaStatus.Connected };
             logger.LogInformation("Restored Community voice signaling for {CommunityId}/{ChannelId} without replacing healthy media.",
                 previous.CommunityId, previous.ChannelId);
         }

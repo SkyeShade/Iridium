@@ -81,6 +81,8 @@ public sealed class ClientLifecycleRecoveryContractTests
         Assert.Contains("CommunityVoiceHubContract.Join", recovery);
         Assert.Contains("if (!_mediaConnected)", recovery);
         Assert.Contains("await media.ConnectAsync", recovery);
+        // The Node returns a fresh session as Connecting; recovery must mark the live media Connected again.
+        Assert.Contains("MediaSession = mediaSession with { Status = CommunityVoiceMediaStatus.Connected };", recovery);
         Assert.DoesNotContain("connection.Reconnected +=", source);
     }
 
